@@ -43,6 +43,7 @@ class AudioCapture:
             confidence_threshold=ac.confidence_threshold,
             onset_threshold=ac.onset_threshold,
             noise_gate_db=ac.noise_gate_db,
+            yin_tolerance=ac.yin_tolerance,
             calibration=calibration if calibration else None,
         )
         self.note_queue: queue.Queue[TimestampedNote] = queue.Queue()

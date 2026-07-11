@@ -24,11 +24,12 @@ class AudioConfig:
     """Audio capture and detection settings."""
     device_index: int | None = None  # None = system default
     sample_rate: int = 44100
-    buf_size: int = 2048
+    buf_size: int = 4096
     hop_size: int = 512
     confidence_threshold: float = 0.8
     onset_threshold: float = 0.3
     noise_gate_db: float = -60.0  # ignore signals below this dB level
+    yin_tolerance: float = 0.15  # YIN dip threshold, NOT the confidence filter
 
 
 @dataclass
@@ -101,6 +102,10 @@ class Config:
             data.pop("_default_chord_partial_credit", None)
             audio_data = data.pop("audio", {})
             display_data = data.pop("display", {})
+            # Migration: 2048 was the old default and there is no UI to set
+            # buf_size, so any stored 2048 came from the old default
+            if audio_data.get("buf_size") == 2048:
+                audio_data["buf_size"] = 4096
             return cls(
                 audio=AudioConfig(**audio_data),
                 display=DisplayConfig(**display_data),

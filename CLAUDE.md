@@ -40,19 +40,24 @@ Modules:
 ## aubio Configuration
 
 ```python
-# Pitch detection
-pitch_detector = aubio.pitch("yin", buf_size=2048, hop_size=512, samplerate=44100)
+# Pitch detection — yinfast = YIN computed via FFT, cheap at large windows
+pitch_detector = aubio.pitch("yinfast", buf_size=4096, hop_size=512, samplerate=44100)
 pitch_detector.set_unit("Hz")
-pitch_detector.set_tolerance(0.8)  # confidence threshold
+pitch_detector.set_tolerance(0.15)  # YIN dip threshold — NOT the confidence filter!
 
-# Onset detection
+# Onset detection — short window for strike-timing precision
 onset_detector = aubio.onset("default", buf_size=2048, hop_size=512, samplerate=44100)
 onset_detector.set_threshold(0.3)  # adjust based on testing
 ```
 
-- Buffer/hop sizes tuned for guitar frequency range (82 Hz low E to ~1300 Hz high E 24th fret)
-- 44100 Hz sample rate (standard for USB audio devices)
-- Noise gate: ignore pitches below configurable confidence threshold
+- Pitch window 4096 covers ~7.6 periods of low E (82 Hz); 2048 octave-errors on bass strings
+- `set_tolerance` on yin/yinfast is the dip threshold (aubio default 0.15). Setting it high
+  (e.g. 0.8) makes YIN accept the first weak dip — harmonics instead of the fundamental.
+  The confidence filter (`get_confidence() >= 0.8`) is a separate knob; never pass one as the other.
+- 44100 Hz is the configured default, but AudioCapture probes the device and falls back to its
+  actual rate (USB interfaces often only accept 48000 in Windows shared mode); detectors are
+  rebuilt at the resolved rate
+- Noise gate: ignore buffers below configurable dB level
 
 ## pyguitarpro Data Extraction
 

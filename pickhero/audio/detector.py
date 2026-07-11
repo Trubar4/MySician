@@ -31,12 +31,13 @@ class PitchDetector:
 
     def __init__(
         self,
-        buf_size: int = 2048,
+        buf_size: int = 4096,
         hop_size: int = 512,
         sample_rate: int = 44100,
         confidence_threshold: float = 0.8,
         onset_threshold: float = 0.3,
         noise_gate_db: float = -60.0,
+        yin_tolerance: float = 0.15,
         calibration: dict | None = None,
     ):
         self.buf_size = buf_size
@@ -45,6 +46,7 @@ class PitchDetector:
         self.confidence_threshold = confidence_threshold
         self.onset_threshold = onset_threshold
         self.noise_gate_db = noise_gate_db
+        self.yin_tolerance = yin_tolerance
         self.last_signal_db: float = -120.0
         self.last_freq: float = 0.0
         self.last_confidence: float = 0.0
@@ -53,13 +55,21 @@ class PitchDetector:
         self._prev_freq: float = 0.0
         self._calibration = calibration
 
-        # Pitch detector (YIN algorithm)
-        self._pitch = aubio.pitch("yin", buf_size, hop_size, sample_rate)
+        # Pitch detector — yinfast is the YIN algorithm computed via FFT,
+        # cheap enough for a 4096 window (covers ~7.6 periods of low E at
+        # 82 Hz; 2048 covers only ~3.8 and octave-errors on bass strings).
+        # yin_tolerance is the YIN dip threshold (aubio default 0.15) and
+        # must NOT be confused with the confidence filter below: a high
+        # tolerance makes YIN accept the first weak dip, i.e. harmonics
+        # instead of the fundamental.
+        self._pitch = aubio.pitch("yinfast", buf_size, hop_size, sample_rate)
         self._pitch.set_unit("Hz")
-        self._pitch.set_tolerance(confidence_threshold)
+        self._pitch.set_tolerance(yin_tolerance)
 
-        # Onset detector
-        self._onset = aubio.onset("default", buf_size, hop_size, sample_rate)
+        # Onset detector — keep a short 2048 window for strike-timing
+        # precision regardless of the pitch window size
+        self._onset_buf_size = min(buf_size, 2048)
+        self._onset = aubio.onset("default", self._onset_buf_size, hop_size, sample_rate)
         self._onset.set_threshold(onset_threshold)
 
     def process(self, audio_buffer: np.ndarray) -> DetectedNote | None:
@@ -166,12 +176,13 @@ class PitchDetector:
 
         # Re-create detectors to clear internal state
         self._pitch = aubio.pitch(
-            "yin", self.buf_size, self.hop_size, self.sample_rate
+            "yinfast", self.buf_size, self.hop_size, self.sample_rate
         )
         self._pitch.set_unit("Hz")
-        self._pitch.set_tolerance(self.confidence_threshold)
+        self._pitch.set_tolerance(self.yin_tolerance)
 
+        self._onset_buf_size = min(self.buf_size, 2048)
         self._onset = aubio.onset(
-            "default", self.buf_size, self.hop_size, self.sample_rate
+            "default", self._onset_buf_size, self.hop_size, self.sample_rate
         )
         self._onset.set_threshold(self.onset_threshold)
