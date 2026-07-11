@@ -61,29 +61,56 @@ PickHero reads Guitar Pro files (`.gp3`, `.gp4`, `.gp5`, `.gp7`, `.gp8`). You ca
 
 ## Installation
 
-### Option 1: Download (recommended)
+### Option 1: Download (no Python needed)
 
-Grab `PickHero.exe` from the [latest release](https://github.com/Artemarius/PickHero/releases/latest). No Python install needed — just run it.
+Every push to this repo builds `MySician.exe` automatically via GitHub Actions.
+Go to [Actions](https://github.com/Trubar4/MySician/actions), open the newest
+green run, and download the **MySician** artifact (a ZIP containing the exe).
 
-### Option 2: From source
+### Option 2: Local development on Windows
 
-```bash
-# Clone
-git clone https://github.com/Artemarius/PickHero.git
-cd PickHero
+One-time setup:
 
-# Install dependencies
+1. **Python 3.12** from [python.org](https://www.python.org/downloads/) —
+   check *"Add python.exe to PATH"* in the installer. (3.10–3.12 work;
+   avoid 3.13 until the `aubio` build supports it.)
+2. **Microsoft C++ compiler** — needed because `aubio` compiles from source:
+   - If you have Visual Studio installed: open *Visual Studio Installer* →
+     *Modify* → check the workload **"Desktop development with C++"**
+     (German: *"Desktopentwicklung mit C++"*) → install.
+   - Without Visual Studio: install the standalone
+     [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+     and select the same C++ workload. VS Code alone is *not* enough —
+     the compiler comes from this installer, not from the editor.
+
+Then, in PowerShell inside the repo folder:
+
+```powershell
+# One-time: create and activate a virtual environment
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+# If activation is blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+# One-time: install dependencies (aubio compiles here, takes a few minutes)
 pip install -r requirements.txt
 
-# Run
+# Run from source — the fast loop for development
 python -m pickhero
+```
+
+Building your own exe (optional — only for a portable copy):
+
+```powershell
+pip install pyinstaller
+.\build.bat
+# Result: dist\MySician.exe
 ```
 
 ### Requirements
 
 - Windows 10/11 (primary target; Linux/macOS may work but untested)
-- A USB audio input device (guitar cable or microphone)
-- Python 3.10+ (only if running from source)
+- A USB audio input device (guitar cable, audio interface, or microphone)
+- Python 3.10–3.12 + MSVC build tools (only for running/building from source)
 
 ## Project Structure
 
