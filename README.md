@@ -73,7 +73,9 @@ One-time setup:
 
 1. **Python 3.12** from [python.org](https://www.python.org/downloads/) —
    check *"Add python.exe to PATH"* in the installer. (3.10–3.12 work;
-   avoid 3.13 until the `aubio` build supports it.)
+   3.13+ does not — `aubio` and `pygame` have no wheels there and fail to
+   build. If another Python is also installed, create the venv explicitly
+   with `py -3.12 -m venv .venv`.)
 2. **Microsoft C++ compiler** — needed because `aubio` compiles from source:
    - If you have Visual Studio installed: open *Visual Studio Installer* →
      *Modify* → check the workload **"Desktop development with C++"**
