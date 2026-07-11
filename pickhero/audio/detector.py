@@ -50,6 +50,7 @@ class PitchDetector:
         self.last_signal_db: float = -120.0
         self.last_freq: float = 0.0
         self.last_confidence: float = 0.0
+        self.last_is_onset: bool = False
 
         # Octave jump protection
         self._prev_freq: float = 0.0
@@ -95,6 +96,7 @@ class PitchDetector:
         self.last_signal_db = db
 
         if db < self.noise_gate_db:
+            self.last_is_onset = False
             return None
 
         # Detect pitch
@@ -109,8 +111,11 @@ class PitchDetector:
         self.last_freq = freq
         self.last_confidence = confidence
 
-        # Detect onset
+        # Detect onset — exposed via last_is_onset even when the confidence
+        # filter below rejects this frame, because the attack transient of a
+        # strike often fails the filter while the onset itself is real
         is_onset = bool(self._onset(audio_buffer))
+        self.last_is_onset = is_onset
 
         # Filter: need minimum confidence and valid frequency
         if confidence < self.confidence_threshold or freq <= 0:
@@ -139,8 +144,11 @@ class PitchDetector:
         corrected = freq
 
         # Calibration-based correction: if freq/2 is near a calibrated string,
-        # prefer freq/2 (the fundamental was likely the intended note)
-        if self._calibration and freq > 0:
+        # prefer freq/2 (the fundamental was likely the intended note).
+        # Only when confidence is shaky — a confident detection one octave
+        # above an open string is usually a real fretted note (e.g. E3),
+        # not a harmonic of the open string.
+        if self._calibration and freq > 0 and confidence < 0.9:
             cal_strings = self._calibration.get("strings", {})
             half_freq = freq / 2.0
             for cal in cal_strings.values():

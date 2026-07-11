@@ -47,11 +47,16 @@ class NoteMatcher:
         chord_threshold_ms: float = 50.0,
         note_filter: Callable[[NoteEvent], bool] | None = None,
         chord_partial_credit: bool = True,
+        late_window_ms: float = 0.0,
     ):
         self._timeline = timeline
         self._timing_window_ms = timing_window_ms
         self._audio_offset_ms = audio_offset_ms
         self._chord_threshold_ms = chord_threshold_ms
+        # Strike notes arrive up to ~70 ms after their timestamp (the onset
+        # collector waits for the pitch to settle) — delay miss-marking so
+        # a late-arriving strike can still claim its note
+        self._late_window_ms = late_window_ms
         self.note_filter = note_filter
         self.chord_partial_credit = chord_partial_credit
 
@@ -131,7 +136,7 @@ class NoteMatcher:
     def _mark_missed_notes(self, playback_ms: float) -> list[MatchResult]:
         """Mark PENDING notes that have passed the timing window as MISS."""
         results = []
-        cutoff = playback_ms - self._timing_window_ms
+        cutoff = playback_ms - self._timing_window_ms - self._late_window_ms
         if cutoff <= 0:
             return results
 

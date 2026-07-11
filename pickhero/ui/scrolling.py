@@ -1243,6 +1243,7 @@ class PlayingScreen:
                 chord_threshold_ms=self._config.chord_threshold_ms,
                 note_filter=self._note_passes_filter if self._is_filter_active() else None,
                 chord_partial_credit=self._chord_partial_credit,
+                late_window_ms=150.0,
             )
             self._feedback.reset()
         except Exception as e:

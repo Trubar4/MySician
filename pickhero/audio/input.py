@@ -5,6 +5,7 @@ Detected notes are pushed to a thread-safe queue for consumption by the main thr
 """
 
 import queue
+import statistics
 import time
 from dataclasses import dataclass
 
@@ -12,6 +13,7 @@ import numpy as np
 import sounddevice as sd
 
 from pickhero.audio.detector import PitchDetector, DetectedNote
+from pickhero.audio.note_utils import freq_to_midi, midi_to_name, is_in_guitar_range
 from pickhero.config import Config
 
 
@@ -20,6 +22,88 @@ class TimestampedNote:
     """A detected note with a timestamp (ms from session start)."""
     note: DetectedNote
     timestamp_ms: float
+
+
+class OnsetPitchCollector:
+    """Aggregates post-onset pitch frames into one note per strike.
+
+    The frame where the onset fires contains the attack transient, where
+    YIN either fails the confidence filter or reports a wrong pitch — and
+    with a 4096 pitch window the first frames after the strike still mostly
+    contain the PREVIOUS note's decay. Matching a strike on the onset frame
+    alone loses most notes or blames the old pitch. So: when an onset
+    fires, skip the first frames until the analysis window has flushed,
+    collect confident pitch frames, and emit one note carrying the median
+    of the latest samples and the strike timestamp.
+    """
+
+    # Frames to ignore right after the onset (analysis window still
+    # dominated by the previous note / attack transient)
+    SKIP_FRAMES = 3
+    # Total frames after the onset before the strike is finalized
+    # (~128 ms at 48 kHz / hop 512); a re-strike finalizes earlier
+    COLLECT_FRAMES = 12
+    # Median over the latest samples only — they are the most settled
+    MEDIAN_LAST = 4
+
+    def __init__(self):
+        self._pending_t_ms: float | None = None
+        self._frame_count = 0
+        self._freqs: list[float] = []
+        self._confs: list[float] = []
+
+    def reset(self) -> None:
+        self._pending_t_ms = None
+        self._frame_count = 0
+        self._freqs = []
+        self._confs = []
+
+    def process_frame(
+        self, freq: float, confidence: float, is_onset: bool,
+        t_ms: float, min_confidence: float,
+    ) -> TimestampedNote | None:
+        """Feed one detector frame; returns a strike note when one settles."""
+        if is_onset:
+            finished = self._finalize()  # a rapid re-strike closes the previous one
+            self._pending_t_ms = t_ms
+            self._frame_count = 0
+            self._freqs = []
+            self._confs = []
+            return finished
+
+        if self._pending_t_ms is None:
+            return None
+
+        self._frame_count += 1
+        if self._frame_count > self.SKIP_FRAMES:
+            self._collect(freq, confidence, min_confidence)
+        if self._frame_count >= self.COLLECT_FRAMES:
+            return self._finalize()
+        return None
+
+    def _collect(self, freq: float, confidence: float, min_confidence: float) -> None:
+        if confidence >= min_confidence and freq > 0 and is_in_guitar_range(freq_to_midi(freq)):
+            self._freqs.append(freq)
+            self._confs.append(confidence)
+
+    def _finalize(self) -> TimestampedNote | None:
+        if self._pending_t_ms is None:
+            return None
+        t_ms = self._pending_t_ms
+        freqs, confs = self._freqs, self._confs
+        self.reset()
+        if not freqs:
+            return None  # strike never produced a confident pitch
+        freq = statistics.median(freqs[-self.MEDIAN_LAST:])
+        midi = freq_to_midi(freq)
+        note = DetectedNote(
+            midi_note=midi,
+            frequency=freq,
+            confidence=max(confs),
+            name=midi_to_name(midi),
+            is_onset=True,
+        )
+        return TimestampedNote(note=note, timestamp_ms=t_ms)
 
 
 class AudioCapture:
@@ -55,6 +139,7 @@ class AudioCapture:
         # Cached (samplerate, channels) probe result, keyed by device index
         self._resolved_settings: tuple[int, int] | None = None
         self._resolved_device: int | None = None
+        self._onset_collector = OnsetPitchCollector()
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
         """Sounddevice callback — runs in audio thread."""
@@ -77,8 +162,24 @@ class AudioCapture:
             self._signal_db = self.detector.last_signal_db
             self._tuner_freq = self.detector.last_freq
             self._tuner_confidence = self.detector.last_confidence
+            elapsed_ms = (time.perf_counter() - self._start_time) * 1000
+
+            # Strike notes come from the onset collector: it waits for the
+            # pitch to settle after the attack and stamps the strike time
+            strike = self._onset_collector.process_frame(
+                self.detector.last_freq,
+                self.detector.last_confidence,
+                self.detector.last_is_onset,
+                elapsed_ms,
+                self.detector.confidence_threshold,
+            )
+            if strike is not None:
+                self.note_queue.put(strike)
+
+            # Sustained pitch stream (tuner, console, wait mode) — onset
+            # flag cleared so strikes are only reported by the collector
             if result is not None:
-                elapsed_ms = (time.perf_counter() - self._start_time) * 1000
+                result.is_onset = False
                 self.note_queue.put(TimestampedNote(note=result, timestamp_ms=elapsed_ms))
 
     def _resolve_input_settings(self) -> tuple[int, int]:
@@ -134,6 +235,7 @@ class AudioCapture:
         # detected frequency would be scaled by the rate mismatch
         self.detector.sample_rate = sample_rate
         self.detector.reset()
+        self._onset_collector.reset()
 
         # Drain any leftover notes
         while not self.note_queue.empty():
