@@ -1,6 +1,8 @@
-# PickHero 🎸
+# MySician 🎸
 
-Free, open-source desktop guitar practice app with real-time pitch detection and scrolling tab playback — a lightweight Yousician alternative.
+Private Yousician-style guitar practice app: real-time pitch detection and scrolling Guitar Pro tab playback on Windows.
+
+Based on [PickHero](https://github.com/Artemarius/PickHero) (MIT) — see [LICENSE](LICENSE). The sections below document the app as inherited from upstream; the internal package name is still `pickhero`.
 
 ## Why?
 
