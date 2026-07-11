@@ -7,7 +7,7 @@ setlocal enabledelayedexpansion
 ::         build.bat --clean   — wipe build/dist dirs then build
 
 set "SPEC=pickhero.spec"
-set "EXE=dist\PickHero.exe"
+set "EXE=dist\MySician.exe"
 
 :: ── Pre-flight checks ──────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ if not exist "%SPEC%" (
 :: ── Build ──────────────────────────────────────────────────────────────────
 
 echo.
-echo Building PickHero...
+echo Building MySician...
 echo.
 pyinstaller "%SPEC%" --noconfirm
 if errorlevel 1 (
@@ -74,9 +74,9 @@ if exist "%EXE%" (
     echo ========================================
     echo.
     echo Next steps:
-    echo   1. Place a "songs" folder next to PickHero.exe containing
+    echo   1. Place a "songs" folder next to MySician.exe containing
     echo      your .gp3/.gp4/.gp5/.gp7/.gp8 tab files.
-    echo   2. Run PickHero.exe to launch the app.
+    echo   2. Run MySician.exe to launch the app.
     echo.
     echo Tip: You can also download tabs from within the app
     echo      by pressing S on the song selection screen.

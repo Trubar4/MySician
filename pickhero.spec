@@ -2,7 +2,7 @@
 """PyInstaller spec file for PickHero.
 
 Build with:  pyinstaller pickhero.spec --noconfirm
-Output:      dist/PickHero.exe  (single-file, windowed)
+Output:      dist/MySician.exe  (single-file, windowed)
 """
 
 import glob
@@ -79,7 +79,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="PickHero",
+    name="MySician",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

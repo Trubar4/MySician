@@ -31,16 +31,16 @@ jobs:
 
       - name: Verify build output
         run: |
-          if (!(Test-Path "dist\PickHero.exe")) {
-            Write-Error "PickHero.exe not found in dist/"
+          if (!(Test-Path "dist\MySician.exe")) {
+            Write-Error "MySician.exe not found in dist/"
             exit 1
           }
-          $size = (Get-Item "dist\PickHero.exe").Length / 1MB
-          Write-Host "PickHero.exe size: $([math]::Round($size, 1)) MB"
+          $size = (Get-Item "dist\MySician.exe").Length / 1MB
+          Write-Host "MySician.exe size: $([math]::Round($size, 1)) MB"
         shell: pwsh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/PickHero.exe
+          files: dist/MySician.exe
           generate_release_notes: true
