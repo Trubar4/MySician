@@ -51,6 +51,9 @@ class AudioCapture:
         self._signal_db: float = -120.0
         self._tuner_freq: float = 0.0
         self._tuner_confidence: float = 0.0
+        # Cached (samplerate, channels) probe result, keyed by device index
+        self._resolved_settings: tuple[int, int] | None = None
+        self._resolved_device: int | None = None
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
         """Sounddevice callback — runs in audio thread."""
@@ -58,8 +61,12 @@ class AudioCapture:
             # Overflow or other issue — skip this buffer
             return
 
-        # indata shape: (frames, channels) — take first channel
-        mono = indata[:, 0].copy()
+        # indata shape: (frames, channels) — downmix so the guitar is picked
+        # up no matter which interface input (1 or 2) it is plugged into
+        if indata.shape[1] > 1:
+            mono = indata.mean(axis=1)
+        else:
+            mono = indata[:, 0].copy()
 
         # Process in hop_size chunks
         hop = self.detector.hop_size
@@ -73,9 +80,58 @@ class AudioCapture:
                 elapsed_ms = (time.perf_counter() - self._start_time) * 1000
                 self.note_queue.put(TimestampedNote(note=result, timestamp_ms=elapsed_ms))
 
+    def _resolve_input_settings(self) -> tuple[int, int]:
+        """Find a (samplerate, channels) combination the input device accepts.
+
+        USB interfaces (e.g. Focusrite) often run at 48000 Hz in Windows shared
+        mode and reject the 44100 Hz default with "Invalid sample rate". Probe
+        the configured rate first, then the device default, then common rates;
+        for each rate try mono first, then stereo (callback uses channel 0).
+        """
+        ac = self.config.audio
+        if self._resolved_settings is not None and self._resolved_device == ac.device_index:
+            return self._resolved_settings
+
+        candidates = [int(ac.sample_rate)]
+        try:
+            info = sd.query_devices(ac.device_index, "input")
+            default_sr = int(info["default_samplerate"])
+            if default_sr not in candidates:
+                candidates.append(default_sr)
+        except Exception:
+            pass
+        for sr in (48000, 44100, 96000, 88200, 32000, 22050):
+            if sr not in candidates:
+                candidates.append(sr)
+
+        resolved = (int(ac.sample_rate), 1)
+        for sr in candidates:
+            found = False
+            for ch in (1, 2):
+                try:
+                    sd.check_input_settings(
+                        device=ac.device_index, channels=ch,
+                        samplerate=sr, dtype="float32",
+                    )
+                    resolved = (sr, ch)
+                    found = True
+                    break
+                except Exception:
+                    continue
+            if found:
+                break
+
+        self._resolved_settings = resolved
+        self._resolved_device = ac.device_index
+        return resolved
+
     def start(self):
         """Start audio capture."""
         ac = self.config.audio
+        sample_rate, channels = self._resolve_input_settings()
+        # aubio detectors must run at the stream's actual rate or every
+        # detected frequency would be scaled by the rate mismatch
+        self.detector.sample_rate = sample_rate
         self.detector.reset()
 
         # Drain any leftover notes
@@ -88,8 +144,8 @@ class AudioCapture:
         self._start_time = time.perf_counter()
         self._stream = sd.InputStream(
             device=ac.device_index,
-            channels=1,
-            samplerate=ac.sample_rate,
+            channels=channels,
+            samplerate=sample_rate,
             blocksize=ac.hop_size,
             dtype="float32",
             callback=self._audio_callback,

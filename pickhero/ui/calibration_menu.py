@@ -49,7 +49,8 @@ class CalibrationMenuScreen:
     def __init__(self, config: Config):
         self._config = config
         self._capture: AudioCapture | None = None
-        self._state = "intro"  # intro, noise, waiting, listen, confirm, done
+        self._state = "intro"  # intro, noise, waiting, listen, confirm, done, error
+        self._error_message = ""
         self._string_idx = 0  # index into STRING_ORDER
         self._start_time: float = 0.0
         self._waiting_start: float = 0.0
@@ -84,10 +85,10 @@ class CalibrationMenuScreen:
             self._stop_capture()
             return "back"
 
-        if self._state == "intro":
+        if self._state in ("intro", "error"):
             if event.key == pygame.K_RETURN:
-                self._start_capture()
-                self._begin_noise()
+                if self._start_capture():
+                    self._begin_noise()
             return None
 
         if self._state == "confirm":
@@ -249,6 +250,23 @@ class CalibrationMenuScreen:
             self._render_centered(surface, hint_font,
                                   "ENTER: accept  |  R: retry  |  ESC: cancel", t.hud_text, h - 36)
 
+        elif self._state == "error":
+            self._render_centered(surface, big_font,
+                                  "Audio device error", t.feedback_miss, cy - 20)
+            self._render_centered(surface, body_font,
+                                  "Could not open the audio input device.", t.hud_text, cy + 40)
+            # Show the raw error, truncated to fit the window
+            msg = self._error_message
+            if len(msg) > 90:
+                msg = msg[:87] + "..."
+            if msg:
+                self._render_centered(surface, hint_font, msg, t.hud_text, cy + 75)
+            self._render_centered(surface, body_font,
+                                  "Check the input device (D on the menu) and try again.",
+                                  t.hud_text, cy + 110)
+            self._render_centered(surface, hint_font,
+                                  "ENTER: retry  |  ESC: back", t.hud_text, h - 36)
+
         elif self._state == "done":
             self._render_centered(surface, big_font,
                                   "Calibration Complete!", t.hud_accent, cy - 40)
@@ -294,11 +312,19 @@ class CalibrationMenuScreen:
             pygame.draw.rect(surface, t.hud_accent, (bar_x, y, fill_w, bar_h))
         pygame.draw.rect(surface, t.hud_text, (bar_x, y, bar_w, bar_h), 1)
 
-    def _start_capture(self) -> None:
-        """Start audio capture for calibration."""
-        if self._capture is None:
-            self._capture = AudioCapture(self._config)
-        self._capture.start()
+    def _start_capture(self) -> bool:
+        """Start audio capture for calibration. Returns False on device error."""
+        try:
+            if self._capture is None:
+                self._capture = AudioCapture(self._config)
+            self._capture.start()
+            self._error_message = ""
+            return True
+        except Exception as e:
+            self._stop_capture()
+            self._error_message = str(e)
+            self._state = "error"
+            return False
 
     def _stop_capture(self) -> None:
         """Stop audio capture."""
