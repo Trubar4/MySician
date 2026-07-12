@@ -13,7 +13,9 @@ import numpy as np
 import sounddevice as sd
 
 from pickhero.audio.detector import PitchDetector, DetectedNote
-from pickhero.audio.note_utils import freq_to_midi, midi_to_name, is_in_guitar_range
+from pickhero.audio.note_utils import (
+    GUITAR_MIDI_MIN, freq_to_midi, midi_to_name, is_in_guitar_range,
+)
 from pickhero.config import Config
 
 
@@ -46,17 +48,24 @@ class OnsetPitchCollector:
     # Median over the latest samples only — they are the most settled
     MEDIAN_LAST = 4
 
+    # A pitch below the guitar range is a chord subharmonic (the common
+    # period of several strings): fold it up by octaves until it is
+    # playable. At most 2 octaves — anything deeper is noise.
+    MAX_FOLD_OCTAVES = 2
+
     def __init__(self):
         self._pending_t_ms: float | None = None
         self._frame_count = 0
         self._freqs: list[float] = []
         self._confs: list[float] = []
+        self._folded: list[bool] = []
 
     def reset(self) -> None:
         self._pending_t_ms = None
         self._frame_count = 0
         self._freqs = []
         self._confs = []
+        self._folded = []
 
     def process_frame(
         self, freq: float, confidence: float, is_onset: bool,
@@ -69,6 +78,7 @@ class OnsetPitchCollector:
             self._frame_count = 0
             self._freqs = []
             self._confs = []
+            self._folded = []
             return finished
 
         if self._pending_t_ms is None:
@@ -82,19 +92,30 @@ class OnsetPitchCollector:
         return None
 
     def _collect(self, freq: float, confidence: float, min_confidence: float) -> None:
-        if confidence >= min_confidence and freq > 0 and is_in_guitar_range(freq_to_midi(freq)):
+        if confidence < min_confidence or freq <= 0:
+            return
+        folded = False
+        for _ in range(self.MAX_FOLD_OCTAVES):
+            if freq_to_midi(freq) >= GUITAR_MIDI_MIN:
+                break
+            freq *= 2.0
+            folded = True
+        if is_in_guitar_range(freq_to_midi(freq)):
             self._freqs.append(freq)
             self._confs.append(confidence)
+            self._folded.append(folded)
 
     def _finalize(self) -> TimestampedNote | None:
         if self._pending_t_ms is None:
             return None
         t_ms = self._pending_t_ms
-        freqs, confs = self._freqs, self._confs
+        freqs, confs, folded = self._freqs, self._confs, self._folded
         self.reset()
         if not freqs:
             return None  # strike never produced a confident pitch
-        freq = statistics.median(freqs[-self.MEDIAN_LAST:])
+        used = freqs[-self.MEDIAN_LAST:]
+        used_folded = folded[-self.MEDIAN_LAST:]
+        freq = statistics.median(used)
         midi = freq_to_midi(freq)
         note = DetectedNote(
             midi_note=midi,
@@ -102,6 +123,7 @@ class OnsetPitchCollector:
             confidence=max(confs),
             name=midi_to_name(midi),
             is_onset=True,
+            subharmonic=sum(used_folded) * 2 >= len(used_folded),
         )
         return TimestampedNote(note=note, timestamp_ms=t_ms)
 

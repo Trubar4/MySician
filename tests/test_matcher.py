@@ -334,3 +334,46 @@ class TestLateWindow:
         results = matcher.process_detected_notes([], 1260.0)
         assert len(results) == 1
         assert results[0].match_type == MatchType.MISS
+
+
+class TestStrummedChordCredit:
+    """A strike carrying subharmonic (polyphonic) evidence credits the chord."""
+
+    def _power_chord(self):
+        # E5 power chord: E2 + B2 + E3 at the same time on strings 6/5/4
+        return [
+            _note_event(1000.0, midi_note=40, string=6),
+            _note_event(1000.0, midi_note=47, string=5),
+            _note_event(1000.0, midi_note=52, string=4),
+        ]
+
+    def _strike(self, midi: int, ts: float, subharmonic: bool) -> TimestampedNote:
+        n = _detected(midi, ts)
+        n.note.subharmonic = subharmonic
+        return n
+
+    def test_subharmonic_strike_credits_whole_chord(self):
+        matcher = _make_matcher(self._power_chord())
+        # Detector folded E1 (28) up to E2 (40) and flagged the strum
+        results = matcher.process_detected_notes(
+            [self._strike(40, 1010.0, subharmonic=True)], 1020.0)
+        assert matcher.hits == 3
+        assert matcher.misses == 0
+        assert len(results) == 1
+        assert len(results[0].matched_events) == 3
+
+    def test_plain_strike_keeps_partial_credit(self):
+        matcher = _make_matcher(self._power_chord())
+        # Single picked string: no polyphonic evidence, only that note counts
+        matcher.process_detected_notes(
+            [self._strike(40, 1010.0, subharmonic=False)], 1020.0)
+        assert matcher.hits == 1
+
+    def test_two_plain_strikes_complete_chord_by_majority(self):
+        matcher = _make_matcher(self._power_chord())
+        matcher.process_detected_notes(
+            [self._strike(40, 1010.0, subharmonic=False)], 1020.0)
+        matcher.process_detected_notes(
+            [self._strike(47, 1030.0, subharmonic=False)], 1040.0)
+        # 2 of 3 matched -> majority auto-completes the third
+        assert matcher.hits == 3

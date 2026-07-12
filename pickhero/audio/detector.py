@@ -9,7 +9,9 @@ from dataclasses import dataclass
 import aubio
 import numpy as np
 
-from pickhero.audio.note_utils import freq_to_midi, midi_to_name, is_in_guitar_range
+from pickhero.audio.note_utils import (
+    GUITAR_MIDI_MIN, freq_to_midi, midi_to_name, is_in_guitar_range,
+)
 
 
 @dataclass
@@ -20,6 +22,11 @@ class DetectedNote:
     confidence: float
     name: str
     is_onset: bool  # True if a new note strike was detected
+    # True if the pitch was octave-folded up from below the guitar range.
+    # A subharmonic (e.g. 41 Hz from an E5 power chord) can only be produced
+    # by multiple strings sounding at once — it is evidence of a strummed
+    # chord, not a single note.
+    subharmonic: bool = False
 
 
 class PitchDetector:
@@ -161,7 +168,13 @@ class PitchDetector:
                         self._prev_freq = corrected
                         return corrected
 
-        # Generic ratio-based correction
+        # Generic ratio-based correction — but never rewrite frequencies
+        # below the guitar range: those are chord subharmonics (multiple
+        # strings sounding), which the onset collector folds and flags
+        if freq_to_midi(freq) < GUITAR_MIDI_MIN:
+            self._prev_freq = freq
+            return freq
+
         if self._prev_freq > 0 and confidence < 0.95:
             ratio = freq / self._prev_freq
             if 1.95 <= ratio <= 2.05:

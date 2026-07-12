@@ -100,3 +100,38 @@ def test_frames_without_pending_onset_are_ignored():
     c = OnsetPitchCollector()
     frames = [(E2, 0.95, False)] * 10
     assert _feed_frames(c, frames) == []
+
+
+def test_subharmonic_is_folded_into_range_and_flagged():
+    """41 Hz (E5 power chord subharmonic) folds up to E2 with the strum flag."""
+    c = OnsetPitchCollector()
+    frames = [(0.0, 0.0, True)] + [(41.2, 0.92, False)] * COLLECT
+    notes = _feed_frames(c, frames)
+    assert len(notes) == 1
+    assert notes[0].note.midi_note == 40  # E2
+    assert notes[0].note.subharmonic is True
+
+
+def test_two_octave_subharmonic_folds():
+    """27.5 Hz (A5 chord double subharmonic) folds up to A2."""
+    c = OnsetPitchCollector()
+    frames = [(0.0, 0.0, True)] + [(27.5, 0.9, False)] * COLLECT
+    notes = _feed_frames(c, frames)
+    assert len(notes) == 1
+    assert notes[0].note.midi_note == 45  # A2
+    assert notes[0].note.subharmonic is True
+
+
+def test_normal_pitch_not_flagged_as_subharmonic():
+    c = OnsetPitchCollector()
+    frames = [(0.0, 0.0, True)] + [(E2, 0.94, False)] * COLLECT
+    notes = _feed_frames(c, frames)
+    assert len(notes) == 1
+    assert notes[0].note.subharmonic is False
+
+
+def test_too_deep_frequency_rejected():
+    """A frequency needing more than 2 octave folds is noise, not a chord."""
+    c = OnsetPitchCollector()
+    frames = [(0.0, 0.0, True)] + [(12.0, 0.9, False)] * (COLLECT + 1)
+    assert _feed_frames(c, frames) == []

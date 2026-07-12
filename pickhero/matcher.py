@@ -228,7 +228,19 @@ class NoteMatcher:
             # Filter out excluded notes from siblings
             siblings = [s for s in siblings if not self._is_filtered(s)]
 
-            if self.chord_partial_credit and len(siblings) > 1:
+            # A subharmonic pitch can only be produced by several strings
+            # sounding together — the strum itself is proven, so credit the
+            # whole chord (a monophonic detector can never report a second
+            # chord tone to reach the majority threshold).
+            strummed = getattr(ts_note.note, "subharmonic", False)
+
+            if self.chord_partial_credit and len(siblings) > 1 and strummed:
+                matched_events = []
+                for sibling in siblings:
+                    if self._get_state(sibling) == MatchType.PENDING:
+                        self._record_match(sibling, match_type)
+                        matched_events.append(sibling)
+            elif self.chord_partial_credit and len(siblings) > 1:
                 # Partial credit mode: only mark the matched note
                 matched_events = []
                 if self._get_state(best) == MatchType.PENDING:
