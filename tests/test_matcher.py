@@ -276,3 +276,61 @@ class TestAudioOffset:
 
         hits = [r for r in results if r.match_type == MatchType.HIT]
         assert len(hits) == 1
+
+
+class TestTimingErrorTracking:
+    def test_timing_errors_recorded_for_matches(self):
+        notes = [_note_event(1000.0), _note_event(2000.0)]
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([_detected(64, 1040.0)], 1050.0)
+        matcher.process_detected_notes([_detected(64, 2050.0)], 2060.0)
+        assert matcher.timing_errors_ms == [40.0, 50.0]
+
+    def test_median_requires_min_samples(self):
+        notes = [_note_event(1000.0)]
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([_detected(64, 1040.0)], 1050.0)
+        assert matcher.median_timing_error_ms(min_samples=5) is None
+        assert matcher.median_timing_error_ms(min_samples=1) == 40.0
+
+    def test_median_reflects_audio_offset(self):
+        """After compensating, the reported error should shrink to zero."""
+        notes = [_note_event(t * 1000.0) for t in range(1, 6)]
+        matcher = _make_matcher(notes, audio_offset_ms=-40.0)
+        for t in range(1, 6):
+            # Strikes consistently detected 40 ms late, offset cancels it
+            matcher.process_detected_notes([_detected(64, t * 1000.0 + 40.0)], t * 1000.0 + 50.0)
+        assert matcher.median_timing_error_ms() == 0.0
+
+    def test_reset_clears_timing_errors(self):
+        notes = [_note_event(1000.0)]
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([_detected(64, 1040.0)], 1050.0)
+        matcher.reset()
+        assert matcher.timing_errors_ms == []
+
+
+class TestLateWindow:
+    def test_late_strike_can_still_match_within_grace(self):
+        """A strike note arriving after the timing window (collector delay)
+        must still claim its tab note when late_window_ms covers it."""
+        notes = [_note_event(1000.0)]
+        timeline = Timeline(notes, SongMetadata(title="Test", tempo=120))
+        matcher = NoteMatcher(timeline, timing_window_ms=100.0, late_window_ms=150.0)
+
+        # Playback has advanced past the timing window, but not past the grace
+        results = matcher.process_detected_notes([], 1180.0)
+        assert results == []  # not yet marked missed
+
+        # The strike (timestamped inside the window) arrives late
+        results = matcher.process_detected_notes([_detected(64, 1080.0)], 1190.0)
+        assert len(results) == 1
+        assert results[0].match_type == MatchType.HIT
+
+    def test_miss_marked_after_grace_expires(self):
+        notes = [_note_event(1000.0)]
+        timeline = Timeline(notes, SongMetadata(title="Test", tempo=120))
+        matcher = NoteMatcher(timeline, timing_window_ms=100.0, late_window_ms=150.0)
+        results = matcher.process_detected_notes([], 1260.0)
+        assert len(results) == 1
+        assert results[0].match_type == MatchType.MISS

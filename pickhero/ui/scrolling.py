@@ -444,6 +444,12 @@ class PlayingScreen:
             self._show_help = not self._show_help
         elif event.key == pygame.K_w:
             self._toggle_wait_mode()
+        elif event.key == pygame.K_k:
+            self._auto_sync_timing()
+        elif event.key == pygame.K_COMMA:
+            self._adjust_latency_offset(-10.0)
+        elif event.key == pygame.K_PERIOD:
+            self._adjust_latency_offset(10.0)
 
         return None
 
@@ -712,6 +718,26 @@ class PlayingScreen:
             chord_text = "Chords: strict" if self._chord_partial_credit else "Chords: easy"
             chord_surf = hint_font.render(chord_text, True, t.hud_accent)
             surface.blit(chord_surf, (12, info_y))
+            info_y += 16
+
+        # Latency sync HUD — show measured timing error once enough strikes
+        # were scored, so the player knows K (auto-sync) has data to work with
+        if self._audio_enabled and self._matcher is not None:
+            offset = self._config.audio_latency_offset_ms
+            err = self._matcher.median_timing_error_ms()
+            if err is not None:
+                direction = "late" if err > 0 else "early"
+                sync_text = (f"Sync: {int(offset):+d} ms  |  strikes {int(abs(err)):d} ms "
+                             f"{direction} — K to auto-sync")
+                sync_color = t.hud_accent if abs(err) > 20 else t.hud_text
+            elif offset != 0:
+                sync_text = f"Sync: {int(offset):+d} ms"
+                sync_color = t.hud_text
+            else:
+                sync_text = None
+            if sync_text:
+                sync_surf = hint_font.render(sync_text, True, sync_color)
+                surface.blit(sync_surf, (12, info_y))
 
     def _draw_signal_meter(self, surface: pygame.Surface, font: pygame.font.Font,
                            screen_w: int, y: int) -> None:
@@ -1009,6 +1035,7 @@ class PlayingScreen:
             "B: backing track    T: theme    I/O: loop markers    P: toggle loop",
             "F: fret limit    F1-F6: toggle strings    V: chord mode    L: loop weakest",
             "W: wait mode (pause until correct note played)",
+            "K: auto-sync timing (fixes 'I must play early/late to score')    ,/.: sync by hand",
         ]
         for line in controls:
             surf = hint_font.render(line, True, t.hud_text)
@@ -1091,6 +1118,34 @@ class PlayingScreen:
         self._config.save()
         if not self._wait_mode:
             self._wait_mode_frozen = False
+
+    # -- Latency sync --
+
+    def _adjust_latency_offset(self, delta_ms: float) -> None:
+        """Shift the audio latency compensation and persist it.
+
+        Negative values register strikes earlier (use when you feel forced
+        to play ahead of the music to score hits).
+        """
+        self._config.audio_latency_offset_ms += delta_ms
+        self._config.save()
+        if self._matcher is not None:
+            self._matcher.audio_offset_ms += delta_ms
+            # Old measurements no longer reflect the new offset
+            self._matcher.timing_errors_ms.clear()
+
+    def _auto_sync_timing(self) -> None:
+        """Cancel out the measured input latency (K key).
+
+        Uses the median timing error of the strikes matched so far in this
+        run; needs a handful of scored notes before it can do anything.
+        """
+        if self._matcher is None:
+            return
+        err = self._matcher.median_timing_error_ms()
+        if err is None:
+            return
+        self._adjust_latency_offset(-err)
 
     # -- Loop weakest section --
 

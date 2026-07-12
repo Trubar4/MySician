@@ -7,6 +7,7 @@ hit/close/miss feedback. No pygame dependency — pure logic.
 from __future__ import annotations
 
 import math
+import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
@@ -67,6 +68,10 @@ class NoteMatcher:
         self.hits = 0
         self.close = 0
         self.misses = 0
+
+        # Signed timing error of each matched strike (positive = detected
+        # late relative to the tab). Used for latency-offset calibration.
+        self.timing_errors_ms: list[float] = []
 
         # Per-measure statistics: {measure_idx: {"hits": n, "close": n, "misses": n}}
         self._measure_stats: dict[int, dict[str, int]] = defaultdict(
@@ -216,6 +221,8 @@ class NoteMatcher:
                 # Too far off — ignore this detection, no penalty
                 continue
 
+            self.timing_errors_ms.append(adjusted_ms - best.timestamp_ms)
+
             # Chord handling
             siblings = self._find_chord_siblings(best)
             # Filter out excluded notes from siblings
@@ -262,6 +269,16 @@ class NoteMatcher:
             ))
 
         return results
+
+    def median_timing_error_ms(self, min_samples: int = 5) -> float | None:
+        """Median signed timing error of matched strikes, or None if too few.
+
+        Positive = strikes register late (the player feels forced to play
+        early). Compensate by lowering audio_offset_ms by this amount.
+        """
+        if len(self.timing_errors_ms) < min_samples:
+            return None
+        return statistics.median(self.timing_errors_ms)
 
     def get_statistics(self) -> dict:
         """Return current match statistics."""
@@ -346,3 +363,4 @@ class NoteMatcher:
         self.close = 0
         self.misses = 0
         self._measure_stats.clear()
+        self.timing_errors_ms.clear()
