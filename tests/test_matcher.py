@@ -377,3 +377,46 @@ class TestStrummedChordCredit:
             [self._strike(47, 1030.0, subharmonic=False)], 1040.0)
         # 2 of 3 matched -> majority auto-completes the third
         assert matcher.hits == 3
+
+
+class TestUnbiasedLatencyMeasurement:
+    def test_error_recorded_even_when_strike_misses_window(self):
+        """Latency larger than the timing window must still be measurable,
+        otherwise auto-sync can never correct it."""
+        notes = [_note_event(1000.0)]
+        matcher = _make_matcher(notes)
+        # Strike detected 250 ms late — far outside the 100 ms window
+        results = matcher.process_detected_notes([_detected(64, 1250.0)], 1260.0)
+        assert all(r.match_type != MatchType.HIT for r in results)
+        assert matcher.timing_errors_ms == [250.0]
+
+    def test_error_measured_against_nearest_pitch_match(self):
+        notes = [_note_event(1000.0, midi_note=64), _note_event(1300.0, midi_note=46)]
+        matcher = _make_matcher(notes)
+        # E4 strike at 1240: nearest E4 note is at 1000 (the Bb2 at 1300 is
+        # closer in time but doesn't match the pitch, not even octave-wise)
+        matcher.process_detected_notes([_detected(64, 1240.0)], 1250.0)
+        assert matcher.timing_errors_ms == [240.0]
+
+    def test_unrelated_pitch_records_nothing(self):
+        notes = [_note_event(1000.0, midi_note=64)]
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([_detected(45, 1050.0)], 1060.0)
+        assert matcher.timing_errors_ms == []
+
+    def test_recording_can_be_disabled_for_wait_mode(self):
+        notes = [_note_event(1000.0)]
+        matcher = _make_matcher(notes)
+        matcher.record_timing_samples = False
+        matcher.process_detected_notes([_detected(64, 1040.0)], 1050.0)
+        assert matcher.timing_errors_ms == []
+
+    def test_repeated_riff_does_not_alias_to_next_note(self):
+        """With identical notes every 500 ms and +300 ms latency, the
+        measurement must attribute the strike to the PAST note (+300),
+        not the closer upcoming one (-200): latency is never negative."""
+        notes = [_note_event(t * 500.0, midi_note=40, duration_ms=120.0)
+                 for t in range(1, 5)]
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([_detected(40, 800.0)], 810.0)
+        assert matcher.timing_errors_ms == [300.0]

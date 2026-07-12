@@ -34,7 +34,7 @@ Modules:
 - **Note representation:** use MIDI note numbers internally (0-127). Convert to name/octave only for display.
 - **Timing:** all timestamps in milliseconds (float). Timeline positions are ms from song start.
 - **Frequency → note:** use `round(12 * log2(freq / 440) + 69)` for MIDI note number. Standard A4 = 440 Hz.
-- **Tolerance:** pitch match within ±1 semitone = "close" (yellow). Exact semitone = "hit" (green). Timing window configurable, default 100ms.
+- **Tolerance:** pitch match within ±1 semitone = "close" (yellow). Exact semitone = "hit" (green). Timing window configurable, default 150ms.
 - **Guitar tuning:** standard E2-A2-D3-G3-B3-E4 (MIDI 40-45-50-55-59-64). Support alternate tunings from GP file header.
 
 ## aubio Configuration

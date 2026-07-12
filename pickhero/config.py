@@ -48,7 +48,7 @@ class Config:
     display: DisplayConfig = field(default_factory=DisplayConfig)
     songs_dir: str = "songs"
     tempo_factor: float = 1.0
-    timing_window_ms: float = 100.0
+    timing_window_ms: float = 150.0
     audio_latency_offset_ms: float = 0.0
     chord_threshold_ms: float = 50.0
     backing_track_enabled: bool = True
@@ -106,6 +106,9 @@ class Config:
             # buf_size, so any stored 2048 came from the old default
             if audio_data.get("buf_size") == 2048:
                 audio_data["buf_size"] = 4096
+            # Migration: same for the old 100 ms timing window default
+            if data.get("timing_window_ms") == 100.0:
+                data["timing_window_ms"] = 150.0
             return cls(
                 audio=AudioConfig(**audio_data),
                 display=DisplayConfig(**display_data),

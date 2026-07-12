@@ -18,6 +18,14 @@ from pickhero.audio.input import TimestampedNote
 from pickhero.tabs.timeline import NoteEvent, Timeline
 
 
+# How far around a strike to search for its intended tab note when
+# measuring input latency. Deliberately much wider than the timing window:
+# latency larger than the window would otherwise be unmeasurable, because
+# only matched notes would contribute samples (and those are capped at the
+# window by definition).
+LATENCY_SEARCH_MS = 500.0
+
+
 class MatchType(Enum):
     PENDING = "pending"
     HIT = "hit"
@@ -69,9 +77,12 @@ class NoteMatcher:
         self.close = 0
         self.misses = 0
 
-        # Signed timing error of each matched strike (positive = detected
-        # late relative to the tab). Used for latency-offset calibration.
+        # Signed timing error of each strike vs the nearest pitch-matching
+        # tab note (positive = detected late). Used for latency calibration.
+        # Recording is disabled while wait mode pins timestamps, which would
+        # otherwise contribute meaningless zero errors.
         self.timing_errors_ms: list[float] = []
+        self.record_timing_samples = True
 
         # Per-measure statistics: {measure_idx: {"hits": n, "close": n, "misses": n}}
         self._measure_stats: dict[int, dict[str, int]] = defaultdict(
@@ -85,6 +96,14 @@ class NoteMatcher:
     @audio_offset_ms.setter
     def audio_offset_ms(self, value: float) -> None:
         self._audio_offset_ms = value
+
+    @property
+    def late_window_ms(self) -> float:
+        return self._late_window_ms
+
+    @late_window_ms.setter
+    def late_window_ms(self, value: float) -> None:
+        self._late_window_ms = value
 
     def _note_key(self, event: NoteEvent) -> tuple[float, int]:
         return (event.timestamp_ms, event.string)
@@ -184,6 +203,8 @@ class NoteMatcher:
             adjusted_ms = ts_note.timestamp_ms + self._audio_offset_ms
             detected_midi = ts_note.note.midi_note
 
+            self._record_timing_sample(adjusted_ms, detected_midi)
+
             # Find tab notes active near this time
             candidates = self._timeline.get_active_notes_at_time(
                 adjusted_ms, self._timing_window_ms
@@ -220,8 +241,6 @@ class NoteMatcher:
             else:
                 # Too far off — ignore this detection, no penalty
                 continue
-
-            self.timing_errors_ms.append(adjusted_ms - best.timestamp_ms)
 
             # Chord handling
             siblings = self._find_chord_siblings(best)
@@ -281,6 +300,39 @@ class NoteMatcher:
             ))
 
         return results
+
+    def _record_timing_sample(self, adjusted_ms: float, detected_midi: int) -> None:
+        """Measure the strike's offset from the nearest pitch-matching tab note.
+
+        Independent of match outcome and searched over a much wider range
+        than the timing window, so K (auto-sync) can measure latency even
+        when it is so large that nothing scores.
+        """
+        if not self.record_timing_samples:
+            return
+        # Asymmetric search: input latency is always positive (a strike can
+        # never be detected before it was played), so a strike may trail its
+        # note by up to LATENCY_SEARCH_MS but can only precede it by normal
+        # human earliness (the timing window). Without this, repeated
+        # same-pitch riffs alias the measurement onto the NEXT note.
+        candidates = self._timeline.get_notes_in_range(
+            adjusted_ms - LATENCY_SEARCH_MS, adjusted_ms + self._timing_window_ms
+        )
+        best_delta: float | None = None
+        for note in candidates:
+            if self._is_filtered(note):
+                continue
+            dist = semitone_distance(detected_midi, note.midi_note)
+            octave_dist = dist % 12 if dist >= 12 else dist
+            if min(dist, octave_dist) > 1:
+                continue
+            delta = adjusted_ms - note.timestamp_ms
+            if delta < -self._timing_window_ms or delta > LATENCY_SEARCH_MS:
+                continue
+            if best_delta is None or abs(delta) < abs(best_delta):
+                best_delta = delta
+        if best_delta is not None:
+            self.timing_errors_ms.append(best_delta)
 
     def median_timing_error_ms(self, min_samples: int = 5) -> float | None:
         """Median signed timing error of matched strikes, or None if too few.

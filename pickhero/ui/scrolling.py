@@ -329,6 +329,8 @@ class PlayingScreen:
                 pinned_ts = self._playback_ms - self._matcher.audio_offset_ms
                 for d in detected:
                     d.timestamp_ms = pinned_ts
+            # Pinned timestamps carry no latency information
+            self._matcher.record_timing_samples = not self._wait_mode_frozen
             results = self._matcher.process_detected_notes(detected, self._playback_ms)
             self._feedback.add_results(results, self._playback_ms)
             self._feedback.cleanup(self._playback_ms)
@@ -1121,6 +1123,15 @@ class PlayingScreen:
 
     # -- Latency sync --
 
+    def _late_window_ms(self) -> float:
+        """Grace period for late-arriving strike notes.
+
+        Base 150 ms covers the onset collector delay; a compensated input
+        latency delays the strike's real-world arrival by the same amount
+        on top, so misses must be marked correspondingly later.
+        """
+        return 150.0 + max(0.0, -self._config.audio_latency_offset_ms)
+
     def _adjust_latency_offset(self, delta_ms: float) -> None:
         """Shift the audio latency compensation and persist it.
 
@@ -1131,6 +1142,7 @@ class PlayingScreen:
         self._config.save()
         if self._matcher is not None:
             self._matcher.audio_offset_ms += delta_ms
+            self._matcher.late_window_ms = self._late_window_ms()
             # Old measurements no longer reflect the new offset
             self._matcher.timing_errors_ms.clear()
 
@@ -1298,7 +1310,7 @@ class PlayingScreen:
                 chord_threshold_ms=self._config.chord_threshold_ms,
                 note_filter=self._note_passes_filter if self._is_filter_active() else None,
                 chord_partial_credit=self._chord_partial_credit,
-                late_window_ms=150.0,
+                late_window_ms=self._late_window_ms(),
             )
             self._feedback.reset()
         except Exception as e:
