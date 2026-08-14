@@ -444,6 +444,24 @@ class NoteMatcher:
             return None
         return statistics.median(self.timing_errors_ms)
 
+    def timing_spread_ms(self, min_samples: int = 5) -> float | None:
+        """How much strike timing scatters around its own median.
+
+        This is the number that says WHICH timing problem you have. A large
+        median error with a small spread is plain latency: every strike is
+        off by the same amount, and shifting the offset fixes all of them.
+        A large spread means the strikes disagree with each other, which no
+        offset can repair — that is jitter in delivery or detection, or
+        simply uneven playing.
+
+        Median absolute deviation rather than standard deviation, so a
+        couple of wild outliers do not swamp the figure.
+        """
+        if len(self.timing_errors_ms) < min_samples:
+            return None
+        median = statistics.median(self.timing_errors_ms)
+        return statistics.median([abs(e - median) for e in self.timing_errors_ms])
+
     def get_statistics(self) -> dict:
         """Return current match statistics."""
         total = self.hits + self.close + self.misses

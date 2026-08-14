@@ -353,3 +353,39 @@ class TestSustainWidth:
     def test_differs_from_note_width_which_pads_to_a_minimum(self):
         short = 1.0
         assert PlayingScreen.sustain_width(short, 0.5) < PlayingScreen.note_width(short, 0.5)
+
+
+class TestNeighbourGaps:
+    """Notes may not take more room than they have before their neighbour."""
+
+    def _n(self, ts, string, dur=500.0):
+        return NoteEvent(timestamp_ms=ts, duration_ms=dur, midi_note=40,
+                         string=string, fret=0)
+
+    def test_lone_note_has_no_neighbour(self):
+        gaps = PlayingScreen._neighbour_gaps([self._n(0.0, 6)])
+        assert gaps.get((0.0, 6)) is None
+
+    def test_gap_is_to_the_nearest_neighbour_on_the_same_string(self):
+        notes = [self._n(0.0, 6), self._n(200.0, 6), self._n(1000.0, 6)]
+        gaps = PlayingScreen._neighbour_gaps(notes)
+        assert gaps[(200.0, 6)] == pytest.approx(200.0)   # backwards, not 800
+        assert gaps[(0.0, 6)] == pytest.approx(200.0)
+        assert gaps[(1000.0, 6)] == pytest.approx(800.0)
+
+    def test_other_strings_do_not_constrain(self):
+        """Different lanes never collide, so they must not shrink each other."""
+        notes = [self._n(0.0, 6), self._n(10.0, 5), self._n(900.0, 6)]
+        gaps = PlayingScreen._neighbour_gaps(notes)
+        assert gaps[(0.0, 6)] == pytest.approx(900.0)
+        assert gaps.get((10.0, 5)) is None
+
+    def test_chord_notes_at_one_instant_are_not_neighbours(self):
+        """A chord strikes several strings at once; that is not congestion."""
+        notes = [self._n(0.0, 6), self._n(0.0, 5), self._n(0.0, 4)]
+        assert PlayingScreen._neighbour_gaps(notes) == {}
+
+    def test_duplicate_timestamps_on_one_string_collapse(self):
+        notes = [self._n(0.0, 6), self._n(0.0, 6), self._n(300.0, 6)]
+        gaps = PlayingScreen._neighbour_gaps(notes)
+        assert gaps[(0.0, 6)] == pytest.approx(300.0)

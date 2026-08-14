@@ -48,6 +48,11 @@ STRING_THICKNESS = (1, 1, 2, 2, 3, 4)
 # without this, a run of eighths renders as one unbroken bar.
 SUSTAIN_GAP_FRACTION = 0.18
 
+# A head never shrinks below this fraction of full size. Sixteenths at speed
+# sit closer together than any legible circle is wide, so past this point a
+# slight overlap -- beads on a string -- beats notes too small to read.
+MIN_HEAD_FRACTION = 0.28
+
 # Left margin for notes that already passed the hit zone (ms)
 LEFT_MARGIN_MS = 2000
 # Right margin for notes not yet visible (ms)
@@ -161,6 +166,9 @@ class PlayingScreen:
 
         # Chord partial credit mode
         self._chord_partial_credit: bool = self._config.chord_partial_credit
+
+        # Fret-number fonts, keyed by pixel size
+        self._fret_fonts: dict[int, pygame.font.Font] = {}
 
         # Help overlay
         self._show_help: bool = False
@@ -534,6 +542,38 @@ class PlayingScreen:
         """Calculate note rectangle width, enforcing minimum."""
         return max(duration_ms * pixels_per_ms, MIN_NOTE_WIDTH_PX)
 
+    def _fret_font(self, radius: float) -> pygame.font.Font:
+        """Font sized to a note head, cached: building one per note per frame
+        is far too slow, and heads now vary in size within a single frame."""
+        size = max(9, int(radius * 1.1))
+        font = self._fret_fonts.get(size)
+        if font is None:
+            font = _get_font("consolas", size)
+            self._fret_fonts[size] = font
+        return font
+
+    @staticmethod
+    def _neighbour_gaps(notes: list[NoteEvent]) -> dict[tuple[float, int], float]:
+        """Time to the nearest neighbouring note on the same string, in ms.
+
+        Notes only collide within their own lane, so this is what limits how
+        much room a note may take. Missing key means nothing else is near.
+        """
+        by_string: dict[int, list[float]] = {}
+        for note in notes:
+            by_string.setdefault(note.string, []).append(note.timestamp_ms)
+
+        gaps: dict[tuple[float, int], float] = {}
+        for string, stamps in by_string.items():
+            unique = sorted(set(stamps))
+            for i, ts in enumerate(unique):
+                before = ts - unique[i - 1] if i > 0 else None
+                after = unique[i + 1] - ts if i + 1 < len(unique) else None
+                candidates = [g for g in (before, after) if g is not None]
+                if candidates:
+                    gaps[(ts, string)] = min(candidates)
+        return gaps
+
     @staticmethod
     def sustain_width(duration_ms: float, pixels_per_ms: float) -> float:
         """Length of a note's sustain body, with no minimum.
@@ -587,8 +627,7 @@ class PlayingScreen:
 
         notes = self._timeline.get_notes_in_range(view_start, view_end)
 
-        fret_font_size = max(12, int(layout.note_h * 0.55))
-        fret_font = _get_font("consolas", fret_font_size)
+        neighbour_gap = self._neighbour_gaps(notes)
 
         for note in notes:
             # Difficulty filter: skip notes that fail
@@ -599,15 +638,26 @@ class PlayingScreen:
                 note.timestamp_ms, self._playback_ms,
                 layout.hit_zone_x, layout.pixels_per_ms,
             )
+            # A note may never occupy more room than it has before its
+            # neighbour on the same string. Tab durations regularly overlap
+            # the next note, and dense passages put onsets closer together
+            # than a full-size head is wide — both drew notes on top of
+            # each other.
+            gap_ms = neighbour_gap.get((note.timestamp_ms, note.string))
+            gap_px = (gap_ms * layout.pixels_per_ms
+                      if gap_ms is not None else float("inf"))
+            visual_gap = layout.note_h * SUSTAIN_GAP_FRACTION
+
             radius = layout.note_h / 2
-            # The capsule runs from the head's left edge to a gap short of
-            # where the next note's head would begin, so a run of equal notes
-            # abuts cleanly instead of overlapping by two radii each time.
+            if gap_px < layout.note_h + visual_gap:
+                radius = max(layout.note_h * MIN_HEAD_FRACTION,
+                             (gap_px - visual_gap) / 2)
+
             body = self.sustain_width(note.duration_ms, layout.pixels_per_ms)
-            capsule_w = body - layout.note_h * SUSTAIN_GAP_FRACTION
+            capsule_w = min(body, gap_px) - visual_gap
 
             # Skip notes fully off-screen — the head extends a radius left of x
-            if x + max(capsule_w, layout.note_h) - radius < 0 or x - radius > layout.screen_w:
+            if x + max(capsule_w, 2 * radius) - radius < 0 or x - radius > layout.screen_w:
                 continue
 
             # Centre of the string lane this note sits on
@@ -626,10 +676,10 @@ class PlayingScreen:
             # A short note is a circle sitting on its string; a sustained one
             # stretches into a capsule. Either way the HEAD is centred on the
             # note's own time, so what crosses the hit line is the moment to play.
-            if capsule_w > layout.note_h:
+            if capsule_w > 2 * radius:
                 rect = pygame.Rect(
                     int(x - radius), int(cy - radius),
-                    int(capsule_w), int(layout.note_h),
+                    int(capsule_w), int(2 * radius),
                 )
                 pygame.draw.rect(surface, color, rect, border_radius=int(radius))
                 pygame.draw.rect(surface, t.note_border, rect, width=2,
@@ -639,10 +689,12 @@ class PlayingScreen:
                 pygame.draw.circle(surface, color, centre, int(radius))
                 pygame.draw.circle(surface, t.note_border, centre, int(radius), 2)
 
-            # Fret number centred in the head
+            # Fret number centred in the head, sized to the head it sits in —
+            # a fixed size spills out of the shrunken heads of a fast run
+            fret_font = self._fret_font(radius)
             fret_label = str(note.fret)
             fret_text = fret_font.render(fret_label, True, t.note_text)
-            if fret_text.get_width() <= layout.note_h:
+            if fret_text.get_width() <= 2 * radius:
                 tx = int(x) - fret_text.get_width() // 2
                 ty = int(cy) - fret_text.get_height() // 2
                 outline = fret_font.render(fret_label, True, (0, 0, 0))
@@ -802,8 +854,17 @@ class PlayingScreen:
             err = self._matcher.median_timing_error_ms()
             if err is not None:
                 direction = "late" if err > 0 else "early"
+                # Spread separates the two timing problems: a big error with a
+                # small spread is latency and K fixes it; a big spread means
+                # the strikes disagree with each other and no offset can help
+                spread = self._matcher.timing_spread_ms()
+                spread_text = f"  ±{int(spread):d} ms" if spread is not None else ""
+                verdict = ""
+                if spread is not None:
+                    verdict = ("— K to auto-sync" if spread <= 25
+                               else "— spread too wide for K to help")
                 sync_text = (f"Sync: {int(offset):+d} ms  |  strikes {int(abs(err)):d} ms "
-                             f"{direction} — K to auto-sync")
+                             f"{direction}{spread_text} {verdict}")
                 sync_color = t.hud_accent if abs(err) > 20 else t.hud_text
             elif offset != 0:
                 sync_text = f"Sync: {int(offset):+d} ms"

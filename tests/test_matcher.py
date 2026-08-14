@@ -420,3 +420,36 @@ class TestUnbiasedLatencyMeasurement:
         matcher = _make_matcher(notes)
         matcher.process_detected_notes([_detected(40, 800.0)], 810.0)
         assert matcher.timing_errors_ms == [300.0]
+
+
+class TestTimingSpread:
+    """Spread is what tells latency (fixable by an offset) from jitter."""
+
+    def _matcher_with(self, errors):
+        timeline = Timeline([_note_event(1000.0)])
+        m = NoteMatcher(timeline)
+        m.timing_errors_ms = list(errors)
+        return m
+
+    def test_none_until_enough_samples(self):
+        assert self._matcher_with([10.0, 12.0]).timing_spread_ms() is None
+
+    def test_constant_offset_has_no_spread(self):
+        """Every strike 80 ms late: pure latency, an offset fixes all of it."""
+        m = self._matcher_with([80.0] * 8)
+        assert m.median_timing_error_ms() == pytest.approx(80.0)
+        assert m.timing_spread_ms() == pytest.approx(0.0)
+
+    def test_scattered_strikes_have_large_spread(self):
+        m = self._matcher_with([-60.0, 70.0, -50.0, 80.0, -70.0, 60.0, 0.0])
+        assert m.timing_spread_ms() > 40.0
+
+    def test_outliers_do_not_dominate(self):
+        """Median absolute deviation, so one wild strike is not the verdict."""
+        tight = self._matcher_with([20.0] * 9 + [900.0])
+        assert tight.timing_spread_ms() == pytest.approx(0.0)
+
+    def test_spread_is_independent_of_offset(self):
+        near = self._matcher_with([-5.0, 0.0, 5.0, -5.0, 0.0, 5.0])
+        far = self._matcher_with([195.0, 200.0, 205.0, 195.0, 200.0, 205.0])
+        assert near.timing_spread_ms() == pytest.approx(far.timing_spread_ms())

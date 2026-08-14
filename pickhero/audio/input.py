@@ -236,7 +236,6 @@ class AudioCapture:
         self._pending_windows: list[tuple[float, int]] = []
         self._sample_rate: int = int(ac.sample_rate)
         self._stream: sd.InputStream | None = None
-        self._start_time: float = 0.0
         self._signal_db: float = -120.0
         self._tuner_freq: float = 0.0
         self._tuner_confidence: float = 0.0
@@ -271,7 +270,13 @@ class AudioCapture:
             self._signal_db = self.detector.last_signal_db
             self._tuner_freq = self.detector.last_freq
             self._tuner_confidence = self.detector.last_confidence
-            elapsed_ms = (time.perf_counter() - self._start_time) * 1000
+            # Timestamp from the SAMPLE position, not the wall clock. The
+            # callback reads perf_counter when it happens to run, so a block
+            # delivered late — or several delivered back to back, as WASAPI
+            # does under load — stamped strikes with whatever time processing
+            # started, wandering by however long the burst was. The sample
+            # index advances exactly with the audio and cannot drift.
+            elapsed_ms = (base + i) * 1000.0 / self._sample_rate
 
             # Strike notes come from the onset collector: it waits for the
             # pitch to settle after the attack and stamps the strike time
@@ -396,7 +401,7 @@ class AudioCapture:
             except queue.Empty:
                 break
 
-        self._start_time = time.perf_counter()
+        # Sample counter restarts with the stream, so timestamps do too
         self._stream = sd.InputStream(
             device=ac.device_index,
             channels=channels,
