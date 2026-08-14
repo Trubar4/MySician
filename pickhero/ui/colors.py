@@ -171,3 +171,9 @@ def dimmed(color: tuple[int, int, int], factor: float = 0.4) -> tuple[int, int, 
         int(color[1] * factor),
         int(color[2] * factor),
     )
+
+
+def lightened(color: tuple[int, int, int], amount: float = 0.4) -> tuple[int, int, int]:
+    """Blend a color toward white. Works on dark and light themes alike,
+    where multiplying by a factor > 1 would clip on already-bright colors."""
+    return tuple(int(c + (255 - c) * amount) for c in color)

@@ -294,3 +294,62 @@ class TestLoopState:
     def test_loop_hud_text_no_markers(self):
         screen = PlayingScreen(_make_timeline())
         assert screen._loop_hud_text() is None
+
+
+class TestFretboardLayout:
+    """The display is a compact fretboard band, not six full-height rows."""
+
+    class _MockSurface:
+        def __init__(self, w, h):
+            self._size = (w, h)
+
+        def get_size(self):
+            return self._size
+
+    def test_band_is_compact_not_full_height(self):
+        from pickhero.ui.scrolling import LANE_BOTTOM_MARGIN, LANE_TOP_MARGIN
+        screen = PlayingScreen(_make_timeline(tempo=120))
+        layout = screen._layout(self._MockSurface(1280, 720))
+        available = 720 - LANE_TOP_MARGIN - LANE_BOTTOM_MARGIN
+        assert 6 * layout.lane_height < available * 0.75
+
+    def test_band_is_centred_between_the_margins(self):
+        from pickhero.ui.scrolling import LANE_BOTTOM_MARGIN, LANE_TOP_MARGIN
+        screen = PlayingScreen(_make_timeline(tempo=120))
+        layout = screen._layout(self._MockSurface(1280, 720))
+        gap_above = layout.lane_top - LANE_TOP_MARGIN
+        gap_below = (720 - LANE_BOTTOM_MARGIN) - (layout.lane_top + 6 * layout.lane_height)
+        assert gap_above == pytest.approx(gap_below, abs=1.0)
+
+    def test_band_still_scales_with_window_size(self):
+        screen = PlayingScreen(_make_timeline(tempo=120))
+        small = screen._layout(self._MockSurface(800, 600))
+        large = screen._layout(self._MockSurface(1920, 1080))
+        assert large.lane_height > small.lane_height
+
+    def test_lane_top_never_above_the_margin(self):
+        from pickhero.ui.scrolling import LANE_TOP_MARGIN
+        screen = PlayingScreen(_make_timeline(tempo=120))
+        # a window too short for six lanes must not push the band off-screen
+        layout = screen._layout(self._MockSurface(1280, 200))
+        assert layout.lane_top >= LANE_TOP_MARGIN
+
+
+class TestSustainWidth:
+    """Short notes draw as circles, sustained ones as capsules."""
+
+    def test_no_minimum_so_short_notes_stay_circles(self):
+        assert PlayingScreen.sustain_width(1.0, 0.5) == pytest.approx(0.5)
+
+    def test_zero_duration_has_no_body(self):
+        assert PlayingScreen.sustain_width(0.0, 1.0) == 0.0
+
+    def test_negative_duration_clamps_to_zero(self):
+        assert PlayingScreen.sustain_width(-5.0, 1.0) == 0.0
+
+    def test_proportional_to_duration(self):
+        assert PlayingScreen.sustain_width(500.0, 0.5) == pytest.approx(250.0)
+
+    def test_differs_from_note_width_which_pads_to_a_minimum(self):
+        short = 1.0
+        assert PlayingScreen.sustain_width(short, 0.5) < PlayingScreen.note_width(short, 0.5)

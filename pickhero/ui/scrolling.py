@@ -22,6 +22,7 @@ from pickhero.ui.colors import (
     cycle_theme,
     dimmed,
     get_theme,
+    lightened,
 )
 from pickhero.ui.feedback import FeedbackRenderer
 
@@ -31,6 +32,21 @@ LANE_BOTTOM_MARGIN = 40
 MIN_NOTE_WIDTH_PX = 20
 NOTE_HEIGHT_FRACTION = 0.7
 NOTE_CORNER_RADIUS = 4
+
+# The six lanes form a fretboard band rather than filling the window: a lane
+# stretched to 100 px reads as a spreadsheet row, not a string. Capped as a
+# fraction of window height so it still scales with the display.
+MAX_LANE_HEIGHT_FRACTION = 0.075
+
+# Wound strings are visibly thicker than plain ones; drawing them at one
+# weight loses the strongest cue for which lane is which. Index 0 = high e.
+STRING_THICKNESS = (1, 1, 2, 2, 3, 4)
+
+# Gap left between a sustain and the next note, as a fraction of note height.
+# A capsule is drawn from the head's left edge to one radius before the next
+# note's centre, so back-to-back notes abut instead of merging into a ribbon —
+# without this, a run of eighths renders as one unbroken bar.
+SUSTAIN_GAP_FRACTION = 0.18
 
 # Left margin for notes that already passed the hit zone (ms)
 LEFT_MARGIN_MS = 2000
@@ -70,6 +86,9 @@ class _Layout:
     usable_width: float
     pixels_per_ms: float
     visible_window_ms: float
+    # Top of the fretboard band. Not the same as LANE_TOP_MARGIN: the band is
+    # compact and centred in the area between the margins.
+    lane_top: float = float(LANE_TOP_MARGIN)
 
 
 class PlayingScreen:
@@ -484,7 +503,10 @@ class PlayingScreen:
         """Compute layout from current surface dimensions."""
         w, h = surface.get_size()
         lane_area = h - LANE_TOP_MARGIN - LANE_BOTTOM_MARGIN
-        lane_height = lane_area / 6
+        # Compact fretboard band, centred in the available area, instead of
+        # six lanes stretched over the whole window
+        lane_height = min(lane_area / 6, h * MAX_LANE_HEIGHT_FRACTION)
+        lane_top = LANE_TOP_MARGIN + max(0.0, lane_area - 6 * lane_height) / 2
         note_h = lane_height * NOTE_HEIGHT_FRACTION
         hit_zone_x = w * self._hit_zone_fraction
         usable_width = w - hit_zone_x
@@ -498,6 +520,7 @@ class PlayingScreen:
             usable_width=usable_width,
             pixels_per_ms=pixels_per_ms,
             visible_window_ms=self._visible_window_ms,
+            lane_top=lane_top,
         )
 
     @staticmethod
@@ -511,29 +534,49 @@ class PlayingScreen:
         """Calculate note rectangle width, enforcing minimum."""
         return max(duration_ms * pixels_per_ms, MIN_NOTE_WIDTH_PX)
 
+    @staticmethod
+    def sustain_width(duration_ms: float, pixels_per_ms: float) -> float:
+        """Length of a note's sustain body, with no minimum.
+
+        Unlike note_width this may be zero: a short note is drawn as a bare
+        circle, and padding it to a minimum length would turn every note into
+        a capsule and destroy the short/long distinction.
+        """
+        return max(0.0, duration_ms * pixels_per_ms)
+
     # -- Drawing --
 
     def _draw_lanes(self, surface: pygame.Surface, layout: _Layout) -> None:
+        """Draw the fretboard band: one panel, six strings across it."""
         t = get_theme()
+        board_h = 6 * layout.lane_height
+        # One uniform board, not alternating bands: the banding is what made
+        # the old display read as a table of rows instead of a fretboard.
+        pygame.draw.rect(
+            surface, t.lane_bg_even,
+            (0, int(layout.lane_top), layout.screen_w, int(board_h)),
+        )
+        # The strings themselves, down the middle of each lane, thicker toward
+        # the low E so the lanes are told apart at a glance
+        string_color = lightened(t.lane_line, 0.35)
         for i in range(6):
-            y = LANE_TOP_MARGIN + i * layout.lane_height
-            bg = t.lane_bg_even if i % 2 == 0 else t.lane_bg_odd
-            pygame.draw.rect(
-                surface, bg,
-                (0, y, layout.screen_w, layout.lane_height),
+            y = int(layout.lane_top + (i + 0.5) * layout.lane_height)
+            pygame.draw.line(
+                surface, string_color, (0, y), (layout.screen_w, y),
+                STRING_THICKNESS[i],
             )
-            # Divider line at bottom of lane
-            line_y = int(y + layout.lane_height)
+        # Edges of the board
+        for edge_y in (layout.lane_top, layout.lane_top + board_h):
             pygame.draw.line(
                 surface, t.lane_line,
-                (0, line_y), (layout.screen_w, line_y),
+                (0, int(edge_y)), (layout.screen_w, int(edge_y)), 2,
             )
 
     def _draw_hit_zone(self, surface: pygame.Surface, layout: _Layout) -> None:
         t = get_theme()
         x = int(layout.hit_zone_x)
-        top = int(LANE_TOP_MARGIN)
-        bottom = int(LANE_TOP_MARGIN + 6 * layout.lane_height)
+        top = int(layout.lane_top)
+        bottom = int(layout.lane_top + 6 * layout.lane_height)
         pygame.draw.line(surface, t.hit_zone, (x, top), (x, bottom), 2)
 
     def _draw_notes(self, surface: pygame.Surface, layout: _Layout) -> None:
@@ -556,15 +599,19 @@ class PlayingScreen:
                 note.timestamp_ms, self._playback_ms,
                 layout.hit_zone_x, layout.pixels_per_ms,
             )
-            w = self.note_width(note.duration_ms, layout.pixels_per_ms)
+            radius = layout.note_h / 2
+            # The capsule runs from the head's left edge to a gap short of
+            # where the next note's head would begin, so a run of equal notes
+            # abuts cleanly instead of overlapping by two radii each time.
+            body = self.sustain_width(note.duration_ms, layout.pixels_per_ms)
+            capsule_w = body - layout.note_h * SUSTAIN_GAP_FRACTION
 
-            # Skip notes fully off-screen
-            if x + w < 0 or x > layout.screen_w:
+            # Skip notes fully off-screen — the head extends a radius left of x
+            if x + max(capsule_w, layout.note_h) - radius < 0 or x - radius > layout.screen_w:
                 continue
 
-            # Y position: string 1-6
-            lane_y = LANE_TOP_MARGIN + (note.string - 1) * layout.lane_height
-            y = lane_y + layout.lane_height / 2 - layout.note_h / 2
+            # Centre of the string lane this note sits on
+            cy = layout.lane_top + (note.string - 0.5) * layout.lane_height
 
             # Color: feedback color if matched, dimmed if past the hit zone
             base_color = STRING_COLORS.get(note.string, (180, 180, 180))
@@ -576,17 +623,28 @@ class PlayingScreen:
             else:
                 color = dimmed(base_color) if past_hit_zone else base_color
 
-            rect = pygame.Rect(int(x), int(y), int(w), int(layout.note_h))
-            pygame.draw.rect(surface, color, rect, border_radius=NOTE_CORNER_RADIUS)
-            pygame.draw.rect(surface, t.note_border, rect, width=2, border_radius=NOTE_CORNER_RADIUS)
+            # A short note is a circle sitting on its string; a sustained one
+            # stretches into a capsule. Either way the HEAD is centred on the
+            # note's own time, so what crosses the hit line is the moment to play.
+            if capsule_w > layout.note_h:
+                rect = pygame.Rect(
+                    int(x - radius), int(cy - radius),
+                    int(capsule_w), int(layout.note_h),
+                )
+                pygame.draw.rect(surface, color, rect, border_radius=int(radius))
+                pygame.draw.rect(surface, t.note_border, rect, width=2,
+                                 border_radius=int(radius))
+            else:
+                centre = (int(x), int(cy))
+                pygame.draw.circle(surface, color, centre, int(radius))
+                pygame.draw.circle(surface, t.note_border, centre, int(radius), 2)
 
-            # Fret number with outline, left-aligned inside note
+            # Fret number centred in the head
             fret_label = str(note.fret)
             fret_text = fret_font.render(fret_label, True, t.note_text)
-            if fret_text.get_width() + 4 <= rect.width:
-                tx = rect.x + 4
-                ty = rect.y + rect.height // 2 - fret_text.get_height() // 2
-                # Black outline (render at offsets)
+            if fret_text.get_width() <= layout.note_h:
+                tx = int(x) - fret_text.get_width() // 2
+                ty = int(cy) - fret_text.get_height() // 2
                 outline = fret_font.render(fret_label, True, (0, 0, 0))
                 for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                     surface.blit(outline, (tx + dx, ty + dy))
@@ -1269,8 +1327,8 @@ class PlayingScreen:
             return
 
         t = get_theme()
-        lane_top = int(LANE_TOP_MARGIN)
-        lane_bottom = int(LANE_TOP_MARGIN + 6 * layout.lane_height)
+        lane_top = int(layout.lane_top)
+        lane_bottom = int(layout.lane_top + 6 * layout.lane_height)
         lane_h = lane_bottom - lane_top
 
         marker_color = t.loop_marker if self._loop_enabled else t.loop_marker_disabled
