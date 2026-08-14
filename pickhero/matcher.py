@@ -418,7 +418,7 @@ class NoteMatcher:
         candidates = self._timeline.get_notes_in_range(
             adjusted_ms - LATENCY_SEARCH_MS, adjusted_ms + self._timing_window_ms
         )
-        best_delta: float | None = None
+        deltas: list[float] = []
         for note in candidates:
             if self._is_filtered(note):
                 continue
@@ -429,10 +429,21 @@ class NoteMatcher:
             delta = adjusted_ms - note.timestamp_ms
             if delta < -self._timing_window_ms or delta > LATENCY_SEARCH_MS:
                 continue
-            if best_delta is None or abs(delta) < abs(best_delta):
-                best_delta = delta
-        if best_delta is not None:
-            self.timing_errors_ms.append(best_delta)
+            deltas.append(delta)
+        if not deltas:
+            return
+
+        # Only measure when exactly one note can explain the strike. A riff
+        # repeating one pitch puts two identical candidates in the search
+        # window as soon as the offset drifts, and there is then no way to
+        # tell "late against this note" from "early against the next" —
+        # picking the nearer one measures against the wrong note and walks
+        # the offset further out on every auto-sync instead of converging.
+        # Refusing to measure keeps a bad offset from getting worse; samples
+        # come back by themselves once it is close enough to be unambiguous.
+        if len(deltas) > 1:
+            return
+        self.timing_errors_ms.append(deltas[0])
 
     def median_timing_error_ms(self, min_samples: int = 5) -> float | None:
         """Median signed timing error of matched strikes, or None if too few.

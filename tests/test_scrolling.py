@@ -389,3 +389,74 @@ class TestNeighbourGaps:
         notes = [self._n(0.0, 6), self._n(0.0, 6), self._n(300.0, 6)]
         gaps = PlayingScreen._neighbour_gaps(notes)
         assert gaps[(0.0, 6)] == pytest.approx(300.0)
+
+
+class TestScrollPacing:
+    """Dense passages scroll faster; notes keep their size."""
+
+    class _MockSurface:
+        def __init__(self, w, h):
+            self._size = (w, h)
+
+        def get_size(self):
+            return self._size
+
+    def _screen(self, spacing_ms, count=20, tempo=120):
+        notes = [
+            NoteEvent(timestamp_ms=i * spacing_ms, duration_ms=spacing_ms * 0.8,
+                      midi_note=40, string=6, fret=0)
+            for i in range(count)
+        ]
+        screen = PlayingScreen(Timeline(notes, SongMetadata(tempo=tempo)))
+        screen._last_layout = screen._layout(self._MockSurface(1280, 720))
+        return screen
+
+    def _settle(self, screen, seconds=3.0):
+        for _ in range(int(seconds * 60)):
+            screen._update_scroll_pacing(1 / 60)
+
+    def test_sparse_song_keeps_the_base_window(self):
+        from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS
+        screen = self._screen(spacing_ms=1000.0)
+        self._settle(screen)
+        assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS, rel=0.02)
+
+    def test_dense_song_shrinks_the_window(self):
+        from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS
+        screen = self._screen(spacing_ms=125.0)
+        self._settle(screen)
+        assert screen._visible_window_ms < BASE_VISIBLE_WINDOW_MS * 0.6
+
+    def test_notes_keep_their_size_when_it_gets_dense(self):
+        """The point of the whole mechanism: speed changes, size does not."""
+        screen = self._screen(spacing_ms=125.0)
+        self._settle(screen)
+        layout = screen._layout(self._MockSurface(1280, 720))
+        spacing_px = 125.0 * layout.pixels_per_ms
+        assert spacing_px >= layout.note_h
+
+    def test_never_shrinks_below_the_floor(self):
+        from pickhero.ui.scrolling import MIN_VISIBLE_WINDOW_MS
+        screen = self._screen(spacing_ms=20.0)
+        self._settle(screen)
+        assert screen._visible_window_ms >= MIN_VISIBLE_WINDOW_MS - 0.01
+
+    def test_change_is_eased_not_instant(self):
+        screen = self._screen(spacing_ms=125.0)
+        before = screen._visible_window_ms
+        screen._update_scroll_pacing(1 / 60)
+        after_one_frame = screen._visible_window_ms
+        self._settle(screen)
+        assert before > after_one_frame > screen._visible_window_ms
+
+    def test_no_layout_yet_is_harmless(self):
+        screen = self._screen(spacing_ms=125.0)
+        screen._last_layout = None
+        screen._update_scroll_pacing(1 / 60)   # must not raise
+
+    def test_empty_lookahead_returns_to_base(self):
+        from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS
+        screen = self._screen(spacing_ms=125.0, count=4)
+        screen._playback_ms = 100_000.0        # far past every note
+        self._settle(screen)
+        assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS, rel=0.02)

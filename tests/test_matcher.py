@@ -453,3 +453,48 @@ class TestTimingSpread:
         near = self._matcher_with([-5.0, 0.0, 5.0, -5.0, 0.0, 5.0])
         far = self._matcher_with([195.0, 200.0, 205.0, 195.0, 200.0, 205.0])
         assert near.timing_spread_ms() == pytest.approx(far.timing_spread_ms())
+
+
+class TestTimingSampleAmbiguity:
+    """A repeated riff must not be measured against the wrong note."""
+
+    def _repeating(self, spacing_ms=600.0, count=8, midi=40):
+        return Timeline([
+            _note_event(i * spacing_ms, midi_note=midi, string=6)
+            for i in range(count)
+        ])
+
+    def test_clear_attribution_is_recorded(self):
+        m = NoteMatcher(self._repeating(), timing_window_ms=150.0)
+        # 60 ms after note 3, and 540 ms from the next: unambiguous
+        m._record_timing_sample(1860.0, 40)
+        assert m.timing_errors_ms == [pytest.approx(60.0)]
+
+    def test_two_candidate_notes_are_rejected(self):
+        """Exactly the case that used to walk the offset out to nonsense.
+
+        At 1690 the strike is 490 ms after the note at 1200 and 110 ms before
+        the one at 1800. Both are in the search window and both are the same
+        pitch, so "late against the first" and "early against the second" are
+        indistinguishable — and taking the nearer one measures -110 when the
+        truth is +490, which auto-sync would then apply in the wrong direction.
+        """
+        m = NoteMatcher(self._repeating(), timing_window_ms=150.0)
+        m._record_timing_sample(1690.0, 40)
+        assert m.timing_errors_ms == []
+
+    def test_asymmetric_window_keeps_late_notes_out_of_reach(self):
+        """A strike is never attributed to a note it clearly preceded."""
+        m = NoteMatcher(self._repeating(), timing_window_ms=150.0)
+        m._record_timing_sample(1500.0, 40)   # 300 ms early for 1800 is not credible
+        assert m.timing_errors_ms == [pytest.approx(300.0)]
+
+    def test_no_matching_pitch_records_nothing(self):
+        m = NoteMatcher(self._repeating(), timing_window_ms=150.0)
+        m._record_timing_sample(1860.0, 60)
+        assert m.timing_errors_ms == []
+
+    def test_widely_spaced_notes_still_measure(self):
+        m = NoteMatcher(self._repeating(spacing_ms=4000.0), timing_window_ms=150.0)
+        m._record_timing_sample(4200.0, 40)
+        assert m.timing_errors_ms == [pytest.approx(200.0)]

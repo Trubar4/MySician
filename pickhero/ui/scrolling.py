@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import pygame
 
 from pickhero.audio.midi_playback import BackingTrack, MidiPlayer
-from pickhero.config import Config
+from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
 from pickhero.matcher import NoteMatcher
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.timeline import NoteEvent, Timeline
@@ -60,6 +60,19 @@ RIGHT_MARGIN_MS = 500
 
 # Difficulty filter: fret limit cycle values
 FRET_LIMITS = [24, 12, 7, 5, 3]
+
+# Scroll pacing. The window shrinks — i.e. the tab scrolls faster — where the
+# notes crowd together, so a note keeps its size instead of being squeezed.
+# Yousician does the same: dense passages fly past, they do not get smaller.
+BASE_VISIBLE_WINDOW_MS = 8000.0
+MIN_VISIBLE_WINDOW_MS = 2500.0
+# Fraction of the change applied per second, so the speed eases in and out
+# rather than snapping the moment a fast bar enters the lookahead.
+WINDOW_EASE_PER_SECOND = 3.0
+
+# Auto-sync refuses above this much scatter: no single offset fixes strikes
+# that disagree with each other, and applying one anyway walks the offset out.
+AUTO_SYNC_MAX_SPREAD_MS = 60.0
 
 
 def _get_font(name: str, size: int) -> pygame.font.Font:
@@ -117,7 +130,8 @@ class PlayingScreen:
 
         tempo = max(1, self._timeline.metadata.tempo)
         self._ms_per_beat = 60_000 / tempo
-        self._visible_window_ms = 8000.0  # Fixed 8-second window
+        self._visible_window_ms = BASE_VISIBLE_WINDOW_MS
+        self._last_layout: _Layout | None = None
 
         # Count-in state
         count_in_beats = max(0, self._config.count_in_beats)
@@ -309,6 +323,7 @@ class PlayingScreen:
         if self._last_tick is not None:
             elapsed_ms = (now - self._last_tick) * 1000.0 * self._tempo_factor
             self._playback_ms += elapsed_ms
+            self._update_scroll_pacing(now - self._last_tick)
         self._last_tick = now
 
         # Wait mode: freeze if there are pending notes the player hasn't hit yet
@@ -482,7 +497,10 @@ class PlayingScreen:
         elif event.key == pygame.K_w:
             self._toggle_wait_mode()
         elif event.key == pygame.K_k:
-            self._auto_sync_timing()
+            if event.mod & pygame.KMOD_SHIFT:
+                self._reset_latency_offset()
+            else:
+                self._auto_sync_timing()
         elif event.key == pygame.K_COMMA:
             self._adjust_latency_offset(-10.0)
         elif event.key == pygame.K_PERIOD:
@@ -494,6 +512,7 @@ class PlayingScreen:
         """Draw the full playing screen."""
         t = get_theme()
         layout = self._layout(surface)
+        self._last_layout = layout
 
         surface.fill(t.bg)
         self._draw_lanes(surface, layout)
@@ -551,6 +570,41 @@ class PlayingScreen:
             font = _get_font("consolas", size)
             self._fret_fonts[size] = font
         return font
+
+    def _tightest_spacing_ms(self, from_ms: float, to_ms: float) -> float | None:
+        """Smallest gap between consecutive notes on any one string ahead.
+
+        Only same-string gaps count: notes in different lanes never crowd
+        each other, and a six-string chord is one strum, not congestion.
+        """
+        notes = [n for n in self._timeline.get_notes_in_range(from_ms, to_ms)
+                 if self._note_passes_filter(n)]
+        gaps = self._neighbour_gaps(notes)
+        return min(gaps.values()) if gaps else None
+
+    def _update_scroll_pacing(self, dt_s: float) -> None:
+        """Ease the visible window toward what the upcoming notes need.
+
+        A note needs a head plus a gap of screen width. Where the tightest
+        spacing ahead cannot afford that at the current speed, the window
+        shrinks until it can — the tab scrolls faster and the notes stay
+        their proper size.
+        """
+        layout = self._last_layout
+        if layout is None or layout.usable_width <= 0:
+            return
+
+        target = BASE_VISIBLE_WINDOW_MS
+        spacing = self._tightest_spacing_ms(
+            self._playback_ms, self._playback_ms + BASE_VISIBLE_WINDOW_MS
+        )
+        if spacing and spacing > 0:
+            needed_px = layout.note_h * (1.0 + SUSTAIN_GAP_FRACTION)
+            target = spacing * layout.usable_width / needed_px
+
+        target = max(MIN_VISIBLE_WINDOW_MS, min(BASE_VISIBLE_WINDOW_MS, target))
+        alpha = min(1.0, WINDOW_EASE_PER_SECOND * max(0.0, dt_s))
+        self._visible_window_ms += (target - self._visible_window_ms) * alpha
 
     @staticmethod
     def _neighbour_gaps(notes: list[NoteEvent]) -> dict[tuple[float, int], float]:
@@ -1173,6 +1227,7 @@ class PlayingScreen:
             "W: wait mode (pause until correct note played)",
             "J: per-string chord check (marks the one string on the wrong fret)",
             "K: auto-sync timing (fixes 'I must play early/late to score')    ,/.: sync by hand",
+            "Shift+K: reset sync to 0 (use when the offset has run away)",
         ]
         for line in controls:
             surf = hint_font.render(line, True, t.hud_text)
@@ -1287,7 +1342,10 @@ class PlayingScreen:
         Negative values register strikes earlier (use when you feel forced
         to play ahead of the music to score hits).
         """
-        self._config.audio_latency_offset_ms += delta_ms
+        target = self._config.audio_latency_offset_ms + delta_ms
+        clamped = max(-MAX_LATENCY_OFFSET_MS, min(MAX_LATENCY_OFFSET_MS, target))
+        delta_ms = clamped - self._config.audio_latency_offset_ms
+        self._config.audio_latency_offset_ms = clamped
         self._config.save()
         if self._matcher is not None:
             self._matcher.audio_offset_ms += delta_ms
@@ -1300,13 +1358,27 @@ class PlayingScreen:
 
         Uses the median timing error of the strikes matched so far in this
         run; needs a handful of scored notes before it can do anything.
+        Refuses when the strikes disagree too much among themselves — there
+        is no single offset that fixes scattered timing, and applying one
+        anyway is how the offset used to walk away from any sane value.
         """
         if self._matcher is None:
             return
         err = self._matcher.median_timing_error_ms()
         if err is None:
             return
+        spread = self._matcher.timing_spread_ms()
+        if spread is not None and spread > AUTO_SYNC_MAX_SPREAD_MS:
+            return
         self._adjust_latency_offset(-err)
+
+    def _reset_latency_offset(self) -> None:
+        """Put latency compensation back to zero (Shift+K).
+
+        The way out when the offset no longer resembles anything real and
+        every fresh measurement is taken against the wrong note.
+        """
+        self._adjust_latency_offset(-self._config.audio_latency_offset_ms)
 
     # -- Loop weakest section --
 

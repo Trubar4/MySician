@@ -10,6 +10,10 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".pickhero"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 
+# Plausible bound for latency compensation. Kept here rather than in the UI so
+# a stored runaway can be repaired on load, before any screen exists.
+MAX_LATENCY_OFFSET_MS = 300.0
+
 
 @dataclass
 class StringCalibration:
@@ -113,6 +117,13 @@ class Config:
             # Migration: same for the old 100 ms timing window default
             if data.get("timing_window_ms") == 100.0:
                 data["timing_window_ms"] = 150.0
+            # Repair: auto-sync used to be unbounded and could measure against
+            # the wrong note in a repeating riff, walking the offset out to
+            # values no real latency can explain. Anything past a plausible
+            # range is a runaway, not a measurement — start over from zero.
+            offset = data.get("audio_latency_offset_ms")
+            if offset is not None and abs(offset) > MAX_LATENCY_OFFSET_MS:
+                data["audio_latency_offset_ms"] = 0.0
             return cls(
                 audio=AudioConfig(**audio_data),
                 display=DisplayConfig(**display_data),
