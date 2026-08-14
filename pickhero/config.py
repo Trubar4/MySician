@@ -57,6 +57,10 @@ class Config:
     max_fret: int = 24
     active_strings: list[bool] = field(default_factory=lambda: [True] * 6)
     chord_partial_credit: bool = True
+    # Check each string of a chord against the raw audio and mark the ones
+    # proven to be on the wrong fret. Costs ~380 ms before a chord's verdict
+    # settles, so it can be turned off for pure latency.
+    chord_verify: bool = True
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     calibration: dict = field(default_factory=dict)

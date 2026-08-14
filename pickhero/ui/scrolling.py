@@ -332,6 +332,12 @@ class PlayingScreen:
             # Pinned timestamps carry no latency information
             self._matcher.record_timing_samples = not self._wait_mode_frozen
             results = self._matcher.process_detected_notes(detected, self._playback_ms)
+            # Per-string chord verdicts arrive ~380 ms after their strike, once
+            # enough audio exists to tell a semitone apart. They can only
+            # downgrade strings already credited by the pitch path above.
+            results.extend(self._matcher.process_strike_windows(
+                self._audio_capture.get_strike_windows()
+            ))
             self._feedback.add_results(results, self._playback_ms)
             self._feedback.cleanup(self._playback_ms)
 
@@ -440,6 +446,8 @@ class PlayingScreen:
             self._toggle_string(6)
         elif event.key == pygame.K_v:
             self._toggle_chord_mode()
+        elif event.key == pygame.K_j:
+            self._toggle_chord_verify()
         elif event.key == pygame.K_l:
             self._loop_weakest_section()
         elif event.key == pygame.K_h:
@@ -720,6 +728,13 @@ class PlayingScreen:
             chord_text = "Chords: strict" if self._chord_partial_credit else "Chords: easy"
             chord_surf = hint_font.render(chord_text, True, t.hud_accent)
             surface.blit(chord_surf, (12, info_y))
+            info_y += 16
+
+        # Per-string chord check HUD — only when switched off, so the default
+        # costs no screen space but a disabled check is never a silent surprise
+        if not getattr(self._config, "chord_verify", True):
+            verify_surf = hint_font.render("Strings: off (J)", True, t.hud_accent)
+            surface.blit(verify_surf, (12, info_y))
             info_y += 16
 
         # Latency sync HUD — show measured timing error once enough strikes
@@ -1037,6 +1052,7 @@ class PlayingScreen:
             "B: backing track    T: theme    I/O: loop markers    P: toggle loop",
             "F: fret limit    F1-F6: toggle strings    V: chord mode    L: loop weakest",
             "W: wait mode (pause until correct note played)",
+            "J: per-string chord check (marks the one string on the wrong fret)",
             "K: auto-sync timing (fixes 'I must play early/late to score')    ,/.: sync by hand",
         ]
         for line in controls:
@@ -1131,6 +1147,20 @@ class PlayingScreen:
         on top, so misses must be marked correspondingly later.
         """
         return 150.0 + max(0.0, -self._config.audio_latency_offset_ms)
+
+    def _make_chord_verifier(self):
+        """Per-string chord verifier, or None when the setting is off."""
+        if not getattr(self._config, "chord_verify", True):
+            return None
+        from pickhero.audio.chord_verify import ChordVerifier
+        return ChordVerifier()
+
+    def _toggle_chord_verify(self) -> None:
+        """Turn per-string chord verification on or off (key: J)."""
+        self._config.chord_verify = not getattr(self._config, "chord_verify", True)
+        self._config.save()
+        if self._matcher is not None:
+            self._matcher.chord_verifier = self._make_chord_verifier()
 
     def _adjust_latency_offset(self, delta_ms: float) -> None:
         """Shift the audio latency compensation and persist it.
@@ -1311,6 +1341,7 @@ class PlayingScreen:
                 note_filter=self._note_passes_filter if self._is_filter_active() else None,
                 chord_partial_credit=self._chord_partial_credit,
                 late_window_ms=self._late_window_ms(),
+                chord_verifier=self._make_chord_verifier(),
             )
             self._feedback.reset()
         except Exception as e:

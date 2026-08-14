@@ -14,7 +14,8 @@ from enum import Enum
 from typing import Callable
 
 from pickhero.audio.note_utils import semitone_distance
-from pickhero.audio.input import TimestampedNote
+from pickhero.audio.chord_verify import ChordVerifier
+from pickhero.audio.input import StrikeWindow, TimestampedNote
 from pickhero.tabs.timeline import NoteEvent, Timeline
 
 
@@ -57,6 +58,7 @@ class NoteMatcher:
         note_filter: Callable[[NoteEvent], bool] | None = None,
         chord_partial_credit: bool = True,
         late_window_ms: float = 0.0,
+        chord_verifier: ChordVerifier | None = None,
     ):
         self._timeline = timeline
         self._timing_window_ms = timing_window_ms
@@ -89,6 +91,16 @@ class NoteMatcher:
             lambda: {"hits": 0, "close": 0, "misses": 0}
         )
 
+        # Per-string chord verification. The pitch path above credits a chord
+        # immediately so feedback stays responsive; the raw audio needed to
+        # tell WHICH string was mis-fretted only arrives ~380 ms later, and
+        # then downgrades the strings it can prove wrong. With no verifier the
+        # behaviour is exactly the pitch path's.
+        self._chord_verifier = chord_verifier
+        self._pending_verifications: dict[int, list[NoteEvent]] = {}
+        self.chord_verifications = 0
+        self.chord_strings_corrected = 0
+
     @property
     def audio_offset_ms(self) -> float:
         return self._audio_offset_ms
@@ -96,6 +108,17 @@ class NoteMatcher:
     @audio_offset_ms.setter
     def audio_offset_ms(self, value: float) -> None:
         self._audio_offset_ms = value
+
+    @property
+    def chord_verifier(self) -> ChordVerifier | None:
+        return self._chord_verifier
+
+    @chord_verifier.setter
+    def chord_verifier(self, verifier: ChordVerifier | None) -> None:
+        self._chord_verifier = verifier
+        if verifier is None:
+            # Chords recorded while it was on would otherwise wait forever
+            self._pending_verifications.clear()
 
     @property
     def late_window_ms(self) -> float:
@@ -132,6 +155,26 @@ class NoteMatcher:
             )
             if abs(n.timestamp_ms - event.timestamp_ms) <= self._chord_threshold_ms
         ]
+
+    def _undo_match(self, event: NoteEvent, match_type: MatchType) -> None:
+        """Reverse the counters a previous _record_match applied."""
+        if match_type == MatchType.HIT:
+            self.hits -= 1
+            self._measure_stats[event.measure]["hits"] -= 1
+        elif match_type == MatchType.CLOSE:
+            self.close -= 1
+            self._measure_stats[event.measure]["close"] -= 1
+        elif match_type == MatchType.MISS:
+            self.misses -= 1
+            self._measure_stats[event.measure]["misses"] -= 1
+
+    def _rerecord_match(self, event: NoteEvent, match_type: MatchType) -> None:
+        """Change an already-recorded verdict, keeping the statistics honest."""
+        previous = self._get_state(event)
+        if previous == match_type:
+            return
+        self._undo_match(event, previous)
+        self._record_match(event, match_type)
 
     def _record_match(self, event: NoteEvent, match_type: MatchType) -> None:
         """Record a match for a note, updating stats and measure stats."""
@@ -293,6 +336,14 @@ class NoteMatcher:
                         self._record_match(best, match_type)
                         matched_events.append(best)
 
+            # Remember the chord so the audio window for this strike, which
+            # arrives later, can be checked string by string. Keyed by sample
+            # position: timestamps are rescaled by tempo and rewritten in wait
+            # mode, the sample index is not.
+            if (self._chord_verifier is not None and len(siblings) > 1
+                    and ts_note.sample_pos is not None):
+                self._pending_verifications[ts_note.sample_pos] = siblings
+
             results.append(MatchResult(
                 match_type=match_type,
                 matched_events=matched_events,
@@ -300,6 +351,55 @@ class NoteMatcher:
             ))
 
         return results
+
+    def process_strike_windows(
+        self, windows: list[StrikeWindow]
+    ) -> list[MatchResult]:
+        """Verify chords string by string against the raw audio of each strike.
+
+        Only downgrades: a string is marked MISS when the audio positively
+        shows a different pitch on it. A string whose expected note cannot be
+        confirmed (an octave or fifth of a lower string already sounding) is
+        left alone, so absence of evidence is never treated as a wrong note.
+        """
+        results: list[MatchResult] = []
+        if self._chord_verifier is None or not windows:
+            return results
+
+        for window in windows:
+            siblings = self._pending_verifications.pop(window.sample_pos, None)
+            if not siblings:
+                continue
+            expected = [n.midi_note for n in siblings]
+            verdicts = self._chord_verifier.verify(
+                window.audio, window.sample_rate, expected
+            )
+            if not verdicts:
+                continue
+            self.chord_verifications += 1
+            for note in siblings:
+                verdict = verdicts.get(note.midi_note)
+                if verdict is None or not verdict.wrong:
+                    continue
+                if self._get_state(note) not in (MatchType.HIT, MatchType.CLOSE):
+                    continue
+                self._rerecord_match(note, MatchType.MISS)
+                self.chord_strings_corrected += 1
+                results.append(MatchResult(
+                    match_type=MatchType.MISS,
+                    matched_events=[note],
+                    semitone_distance=None,
+                ))
+
+        self._prune_pending_verifications()
+        return results
+
+    def _prune_pending_verifications(self, keep: int = 32) -> None:
+        """Drop chords whose audio window never showed up (dropped buffers)."""
+        if len(self._pending_verifications) <= keep:
+            return
+        for stamp in sorted(self._pending_verifications)[:-keep]:
+            del self._pending_verifications[stamp]
 
     def _record_timing_sample(self, adjusted_ms: float, detected_midi: int) -> None:
         """Measure the strike's offset from the nearest pitch-matching tab note.
@@ -428,3 +528,7 @@ class NoteMatcher:
         self.misses = 0
         self._measure_stats.clear()
         self.timing_errors_ms.clear()
+        # Chords awaiting their audio window belong to the abandoned position
+        self._pending_verifications.clear()
+        self.chord_verifications = 0
+        self.chord_strings_corrected = 0

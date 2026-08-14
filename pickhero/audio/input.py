@@ -12,11 +12,22 @@ from dataclasses import dataclass
 import numpy as np
 import sounddevice as sd
 
+from pickhero.audio.chord_verify import (
+    samples_needed, skip_samples, window_samples,
+)
 from pickhero.audio.detector import PitchDetector, DetectedNote
 from pickhero.audio.note_utils import (
     GUITAR_MIDI_MIN, freq_to_midi, midi_to_name, is_in_guitar_range,
 )
 from pickhero.config import Config
+
+# Seconds of raw audio kept for chord verification. Only ~0.4 s is needed per
+# strike; the rest is slack for a main thread that falls behind.
+RING_SECONDS = 3.0
+
+# Verification windows held for the main thread. Each is ~64 KB, and a
+# consumer more than this many strikes behind has no use for the old ones.
+MAX_QUEUED_WINDOWS = 16
 
 
 @dataclass
@@ -24,6 +35,67 @@ class TimestampedNote:
     """A detected note with a timestamp (ms from session start)."""
     note: DetectedNote
     timestamp_ms: float
+    # Absolute sample index of the strike, so the raw audio window for chord
+    # verification can be cut from the ring buffer once it has filled.
+    sample_pos: int | None = None
+
+
+@dataclass
+class StrikeWindow:
+    """Raw audio just after a strike, for per-string chord verification.
+
+    Emitted ~380 ms after the strike (the verifier needs a 341 ms window to
+    resolve a semitone), so it always trails the strike note it belongs to.
+
+    Matched back to its strike by sample_pos, not by timestamp: the UI scales
+    note timestamps by the tempo factor and overwrites them entirely in wait
+    mode, while the sample index stays what the audio thread recorded.
+    """
+    timestamp_ms: float
+    sample_pos: int
+    audio: np.ndarray
+    sample_rate: int
+
+
+class _AudioRing:
+    """Fixed-size ring of recent mono audio, indexed by absolute sample number.
+
+    Written only from the audio thread; windows are copied out there too, so
+    nothing mutable crosses the thread boundary.
+    """
+
+    def __init__(self, capacity: int):
+        self._buf = np.zeros(capacity, dtype=np.float32)
+        self._cap = capacity
+        self.written = 0
+
+    def push(self, chunk: np.ndarray) -> None:
+        n = len(chunk)
+        if n >= self._cap:
+            self._buf[:] = chunk[-self._cap:]
+        else:
+            end = self.written % self._cap
+            first = min(n, self._cap - end)
+            self._buf[end:end + first] = chunk[:first]
+            if n > first:
+                self._buf[:n - first] = chunk[first:]
+        self.written += n
+
+    def read(self, start: int, length: int) -> np.ndarray | None:
+        """Samples [start, start+length), or None if not (yet) available."""
+        if start < 0 or length <= 0:
+            return None
+        if start + length > self.written:
+            return None                       # has not arrived yet
+        if start < self.written - self._cap:
+            return None                       # already overwritten
+        out = np.empty(length, dtype=np.float32)
+        begin = start % self._cap
+        first = min(length, self._cap - begin)
+        out[:first] = self._buf[begin:begin + first]
+        if length > first:
+            out[first:] = self._buf[:length - first]
+        return out
 
 
 class OnsetPitchCollector:
@@ -55,6 +127,7 @@ class OnsetPitchCollector:
 
     def __init__(self):
         self._pending_t_ms: float | None = None
+        self._pending_sample: int | None = None
         self._frame_count = 0
         self._freqs: list[float] = []
         self._confs: list[float] = []
@@ -62,6 +135,7 @@ class OnsetPitchCollector:
 
     def reset(self) -> None:
         self._pending_t_ms = None
+        self._pending_sample = None
         self._frame_count = 0
         self._freqs = []
         self._confs = []
@@ -69,12 +143,13 @@ class OnsetPitchCollector:
 
     def process_frame(
         self, freq: float, confidence: float, is_onset: bool,
-        t_ms: float, min_confidence: float,
+        t_ms: float, min_confidence: float, sample_pos: int | None = None,
     ) -> TimestampedNote | None:
         """Feed one detector frame; returns a strike note when one settles."""
         if is_onset:
             finished = self._finalize()  # a rapid re-strike closes the previous one
             self._pending_t_ms = t_ms
+            self._pending_sample = sample_pos
             self._frame_count = 0
             self._freqs = []
             self._confs = []
@@ -109,6 +184,7 @@ class OnsetPitchCollector:
         if self._pending_t_ms is None:
             return None
         t_ms = self._pending_t_ms
+        sample_pos = self._pending_sample
         freqs, confs, folded = self._freqs, self._confs, self._folded
         self.reset()
         if not freqs:
@@ -125,7 +201,7 @@ class OnsetPitchCollector:
             is_onset=True,
             subharmonic=sum(used_folded) * 2 >= len(used_folded),
         )
-        return TimestampedNote(note=note, timestamp_ms=t_ms)
+        return TimestampedNote(note=note, timestamp_ms=t_ms, sample_pos=sample_pos)
 
 
 class AudioCapture:
@@ -153,6 +229,12 @@ class AudioCapture:
             calibration=calibration if calibration else None,
         )
         self.note_queue: queue.Queue[TimestampedNote] = queue.Queue()
+        # Raw audio windows for chord verification, one per strike. Separate
+        # from note_queue because they trail their strike by ~380 ms.
+        self.strike_queue: queue.Queue[StrikeWindow] = queue.Queue()
+        self._ring = _AudioRing(int(ac.sample_rate * RING_SECONDS))
+        self._pending_windows: list[tuple[float, int]] = []
+        self._sample_rate: int = int(ac.sample_rate)
         self._stream: sd.InputStream | None = None
         self._start_time: float = 0.0
         self._signal_db: float = -120.0
@@ -176,6 +258,11 @@ class AudioCapture:
         else:
             mono = indata[:, 0].copy()
 
+        # Keep the raw audio so a strike's verification window can be cut out
+        # once enough of it has arrived. Sample index of hop i is base + i.
+        base = self._ring.written
+        self._ring.push(mono)
+
         # Process in hop_size chunks
         hop = self.detector.hop_size
         for i in range(0, len(mono) - hop + 1, hop):
@@ -194,15 +281,48 @@ class AudioCapture:
                 self.detector.last_is_onset,
                 elapsed_ms,
                 self.detector.confidence_threshold,
+                sample_pos=base + i,
             )
             if strike is not None:
                 self.note_queue.put(strike)
+                if strike.sample_pos is not None:
+                    self._pending_windows.append(
+                        (strike.timestamp_ms, strike.sample_pos)
+                    )
 
             # Sustained pitch stream (tuner, console, wait mode) — onset
             # flag cleared so strikes are only reported by the collector
             if result is not None:
                 result.is_onset = False
                 self.note_queue.put(TimestampedNote(note=result, timestamp_ms=elapsed_ms))
+
+        self._emit_ready_windows()
+
+    def _emit_ready_windows(self) -> None:
+        """Publish verification windows whose audio has fully arrived."""
+        if not self._pending_windows:
+            return
+        sr = self._sample_rate
+        need = samples_needed(sr)
+        skip = skip_samples(sr)
+        length = window_samples(sr)
+        still_waiting = []
+        for t_ms, pos in self._pending_windows:
+            if self._ring.written < pos + need:
+                still_waiting.append((t_ms, pos))
+                continue
+            audio = self._ring.read(pos + skip, length)
+            if audio is not None:
+                # Bounded: capture also runs with no matcher consuming these
+                # (tuner, calibration), and an unread queue must not grow.
+                while self.strike_queue.qsize() >= MAX_QUEUED_WINDOWS:
+                    try:
+                        self.strike_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                self.strike_queue.put(StrikeWindow(t_ms, pos, audio, sr))
+            # dropped otherwise: the ring wrapped before we got to it
+        self._pending_windows = still_waiting
 
     def _resolve_input_settings(self) -> tuple[int, int]:
         """Find a (samplerate, channels) combination the input device accepts.
@@ -259,10 +379,20 @@ class AudioCapture:
         self.detector.reset()
         self._onset_collector.reset()
 
+        # The ring is indexed in samples, so it must match the resolved rate
+        self._sample_rate = sample_rate
+        self._ring = _AudioRing(int(sample_rate * RING_SECONDS))
+        self._pending_windows = []
+
         # Drain any leftover notes
         while not self.note_queue.empty():
             try:
                 self.note_queue.get_nowait()
+            except queue.Empty:
+                break
+        while not self.strike_queue.empty():
+            try:
+                self.strike_queue.get_nowait()
             except queue.Empty:
                 break
 
@@ -308,6 +438,16 @@ class AudioCapture:
             except queue.Empty:
                 break
         return notes
+
+    def get_strike_windows(self) -> list[StrikeWindow]:
+        """Drain raw audio windows for chord verification (non-blocking)."""
+        windows = []
+        while True:
+            try:
+                windows.append(self.strike_queue.get_nowait())
+            except queue.Empty:
+                break
+        return windows
 
 
 def list_audio_devices() -> list[dict]:

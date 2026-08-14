@@ -59,6 +59,20 @@ onset_detector.set_threshold(0.3)  # adjust based on testing
   rebuilt at the resolved rate
 - Noise gate: ignore buffers below configurable dB level
 
+## Chord Verification
+
+Monophonic pitch detection cannot say which string of a chord was mis-fretted, so `audio/chord_verify.py` answers that separately, using the
+tab as a prior. For each expected note it scores competing pitch hypotheses on the partials no other expected note produces.
+
+- **Presumption of innocence.** A string is marked wrong only on positive evidence of a wrong pitch, never on absence of evidence for the right
+  one. A string whose expected note is an octave or fifth of a lower string in the same chord can never be confirmed (its partials are a strict
+  subset of one already sounding); judging it anyway means ranking noise, which is exactly how the first calibration produced false alarms.
+  This also reproduces the familiar behaviour that omitting a string from an open chord still passes.
+- **Needs 341 ms of audio after the strike**, so chord verdicts trail the pitch path by ~380 ms and can only downgrade what it already credited.
+  `AudioCapture` keeps a ring buffer and emits one `StrikeWindow` per strike; the matcher applies verdicts in `process_strike_windows`.
+- **Thresholds are calibrated, not guessed** — see `tools/analyze_reference.py` and `reference_recordings/`. Re-fit them with real takes rather
+  than tuning by feel; `tools/record_reference.py` records a labelled set including deliberately wrong takes, which the calibration needs.
+
 ## pyguitarpro Data Extraction
 
 GP file → iterate tracks → find guitar track(s) → iterate measures → beats → notes:
@@ -93,6 +107,7 @@ pickhero/
 │   ├── __init__.py
 │   ├── input.py
 │   ├── detector.py
+│   ├── chord_verify.py  # per-string chord checking (score-informed)
 │   ├── midi_playback.py
 │   └── note_utils.py
 ├── tabs/
@@ -138,4 +153,7 @@ pyinstaller pickhero.spec --noconfirm
 - Don't create a web UI or Electron wrapper. This is a desktop app.
 - Don't add online features, accounts, or cloud sync. Offline-first, local files only.
 - Don't over-abstract. Simple classes, no deep inheritance hierarchies. This is a ~3K LOC app, not a framework.
-- Don't add polyphonic pitch detection. aubio YIN is monophonic. Chord scoring uses a majority-match model instead.
+- Don't add **blind** polyphonic transcription ("here is audio, name every note") and don't add ML. aubio YIN is monophonic and stays the note detector.
+  Verifying the notes the tab already predicts is a different problem and is allowed: `audio/chord_verify.py` checks each expected string against
+  the partials no other chord tone can produce. That is signal processing against a known answer, costs ~1 ms per strike, and is what makes
+  per-string right/wrong feedback possible.
