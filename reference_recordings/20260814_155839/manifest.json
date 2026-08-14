@@ -1,0 +1,64 @@
+{
+  "created": "2026-08-14T15:58:39",
+  "samplerate": 48000,
+  "channels": 1,
+  "device": "Analogue 1 + 2 (Focusrite USB Audio)",
+  "tuning_offset_semitones": 0,
+  "takes": [
+    {
+      "id": "00_silence",
+      "block": 0,
+      "title": "Stille - Rauschboden messen",
+      "file": "00_silence.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [],
+      "expected_midi": [],
+      "seconds": 5,
+      "peak_dbfs": -73.4,
+      "rms_dbfs": -87.5
+    },
+    {
+      "id": "01_open_E6",
+      "block": 0,
+      "title": "Leersaite E (Saite 6)",
+      "file": "01_open_E6.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          40
+        ]
+      ],
+      "seconds": 5,
+      "peak_dbfs": -39.2,
+      "rms_dbfs": -52.6
+    },
+    {
+      "id": "01_open_A5",
+      "block": 0,
+      "title": "Leersaite A (Saite 5)",
+      "file": "01_open_A5.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "5": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          45
+        ]
+      ],
+      "seconds": 5,
+      "peak_dbfs": -22.8,
+      "rms_dbfs": -41.6
+    }
+  ]
+}

@@ -1,0 +1,740 @@
+{
+  "created": "2026-08-14T16:00:19",
+  "samplerate": 48000,
+  "channels": 1,
+  "device": "Analogue 1 + 2 (Focusrite USB Audio)",
+  "tuning_offset_semitones": 0,
+  "takes": [
+    {
+      "id": "00_silence",
+      "block": 0,
+      "title": "Stille - Rauschboden messen",
+      "file": "00_silence.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [],
+      "expected_midi": [],
+      "seconds": 5,
+      "peak_dbfs": -61.4,
+      "rms_dbfs": -72.5
+    },
+    {
+      "id": "01_open_E6",
+      "block": 0,
+      "title": "Leersaite E (Saite 6)",
+      "file": "01_open_E6.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          40
+        ]
+      ],
+      "seconds": 5,
+      "peak_dbfs": -5.9,
+      "rms_dbfs": -23.6
+    },
+    {
+      "id": "01_open_A5",
+      "block": 0,
+      "title": "Leersaite A (Saite 5)",
+      "file": "01_open_A5.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "5": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          45
+        ]
+      ],
+      "seconds": 5,
+      "peak_dbfs": -15.6,
+      "rms_dbfs": -35.5
+    },
+    {
+      "id": "01_open_D4",
+      "block": 0,
+      "title": "Leersaite D (Saite 4)",
+      "file": "01_open_D4.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "4": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          50
+        ]
+      ],
+      "seconds": 5,
+      "peak_dbfs": -19.5,
+      "rms_dbfs": -39.9
+    },
+    {
+      "id": "01_open_G3",
+      "block": 0,
+      "title": "Leersaite G (Saite 3)",
+      "file": "01_open_G3.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "3": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          55
+        ]
+      ],
+      "seconds": 5,
+      "peak_dbfs": -19.1,
+      "rms_dbfs": -41.1
+    },
+    {
+      "id": "01_open_B2",
+      "block": 0,
+      "title": "Leersaite B (Saite 2)",
+      "file": "01_open_B2.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "2": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          59
+        ]
+      ],
+      "seconds": 5,
+      "peak_dbfs": -31.0,
+      "rms_dbfs": -52.8
+    },
+    {
+      "id": "01_open_e1",
+      "block": 0,
+      "title": "Leersaite e (Saite 1)",
+      "file": "01_open_e1.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "1": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          64
+        ]
+      ],
+      "seconds": 5,
+      "peak_dbfs": -33.9,
+      "rms_dbfs": -55.3
+    },
+    {
+      "id": "10_chrom_E",
+      "block": 1,
+      "title": "Tiefe E-Saite: Bund 0, 1, 2, 3, 5",
+      "file": "10_chrom_E.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 0
+        },
+        {
+          "6": 1
+        },
+        {
+          "6": 2
+        },
+        {
+          "6": 3
+        },
+        {
+          "6": 5
+        }
+      ],
+      "expected_midi": [
+        [
+          40
+        ],
+        [
+          41
+        ],
+        [
+          42
+        ],
+        [
+          43
+        ],
+        [
+          45
+        ]
+      ],
+      "seconds": 10,
+      "peak_dbfs": -24.4,
+      "rms_dbfs": -42.1
+    },
+    {
+      "id": "11_chrom_A",
+      "block": 1,
+      "title": "A-Saite: Bund 0, 1, 2, 3, 5",
+      "file": "11_chrom_A.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "5": 0
+        },
+        {
+          "5": 1
+        },
+        {
+          "5": 2
+        },
+        {
+          "5": 3
+        },
+        {
+          "5": 5
+        }
+      ],
+      "expected_midi": [
+        [
+          45
+        ],
+        [
+          46
+        ],
+        [
+          47
+        ],
+        [
+          48
+        ],
+        [
+          50
+        ]
+      ],
+      "seconds": 10,
+      "peak_dbfs": -28.4,
+      "rms_dbfs": -44.8
+    },
+    {
+      "id": "12_same_pitch",
+      "block": 1,
+      "title": "Derselbe Ton (E3) an drei Stellen",
+      "file": "12_same_pitch.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "4": 2
+        },
+        {
+          "5": 7
+        },
+        {
+          "6": 12
+        }
+      ],
+      "expected_midi": [
+        [
+          52
+        ],
+        [
+          52
+        ],
+        [
+          52
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -22.1,
+      "rms_dbfs": -42.2
+    },
+    {
+      "id": "20_E5_ok",
+      "block": 2,
+      "title": "Powerchord E5 - RICHTIG",
+      "file": "20_E5_ok.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 0,
+          "5": 2
+        }
+      ],
+      "expected_midi": [
+        [
+          40,
+          47
+        ]
+      ],
+      "seconds": 8,
+      "peak_dbfs": -15.6,
+      "rms_dbfs": -34.0
+    },
+    {
+      "id": "21_E5_sharp",
+      "block": 2,
+      "title": "Powerchord E5 - Quinte EINEN BUND ZU HOCH",
+      "file": "21_E5_sharp.wav",
+      "technique": "normal",
+      "intentional_error": "A-Saite absichtlich im 3. statt 2. Bund",
+      "shapes": [
+        {
+          "6": 0,
+          "5": 3
+        }
+      ],
+      "expected_midi": [
+        [
+          40,
+          48
+        ]
+      ],
+      "seconds": 8,
+      "peak_dbfs": -12.9,
+      "rms_dbfs": -33.0
+    },
+    {
+      "id": "22_E5_flat",
+      "block": 2,
+      "title": "Powerchord E5 - Quinte EINEN BUND ZU TIEF",
+      "file": "22_E5_flat.wav",
+      "technique": "normal",
+      "intentional_error": "A-Saite absichtlich im 1. statt 2. Bund",
+      "shapes": [
+        {
+          "6": 0,
+          "5": 1
+        }
+      ],
+      "expected_midi": [
+        [
+          40,
+          46
+        ]
+      ],
+      "seconds": 8,
+      "peak_dbfs": -11.7,
+      "rms_dbfs": -32.5
+    },
+    {
+      "id": "23_E5_root_only",
+      "block": 2,
+      "title": "Powerchord E5 - nur Grundton",
+      "file": "23_E5_root_only.wav",
+      "technique": "normal",
+      "intentional_error": "Quinte fehlt komplett",
+      "shapes": [
+        {
+          "6": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          40
+        ]
+      ],
+      "seconds": 8,
+      "peak_dbfs": -24.1,
+      "rms_dbfs": -40.6
+    },
+    {
+      "id": "24_G5_ok",
+      "block": 2,
+      "title": "Powerchord G5 - RICHTIG",
+      "file": "24_G5_ok.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 3,
+          "5": 5
+        }
+      ],
+      "expected_midi": [
+        [
+          43,
+          50
+        ]
+      ],
+      "seconds": 8,
+      "peak_dbfs": -13.8,
+      "rms_dbfs": -33.5
+    },
+    {
+      "id": "25_G5_sharp",
+      "block": 2,
+      "title": "Powerchord G5 - Quinte EINEN BUND ZU HOCH",
+      "file": "25_G5_sharp.wav",
+      "technique": "normal",
+      "intentional_error": "A-Saite absichtlich im 6. statt 5. Bund",
+      "shapes": [
+        {
+          "6": 3,
+          "5": 6
+        }
+      ],
+      "expected_midi": [
+        [
+          43,
+          51
+        ]
+      ],
+      "seconds": 8,
+      "peak_dbfs": -13.1,
+      "rms_dbfs": -33.1
+    },
+    {
+      "id": "26_A5_ok",
+      "block": 2,
+      "title": "Powerchord A5 - RICHTIG",
+      "file": "26_A5_ok.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 5,
+          "5": 7
+        }
+      ],
+      "expected_midi": [
+        [
+          45,
+          52
+        ]
+      ],
+      "seconds": 8,
+      "peak_dbfs": -12.3,
+      "rms_dbfs": -33.4
+    },
+    {
+      "id": "27_E5_palm",
+      "block": 2,
+      "title": "Powerchord E5 - PALM MUTE",
+      "file": "27_E5_palm.wav",
+      "technique": "palm_mute",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 0,
+          "5": 2
+        }
+      ],
+      "expected_midi": [
+        [
+          40,
+          47
+        ]
+      ],
+      "seconds": 8,
+      "peak_dbfs": -6.0,
+      "rms_dbfs": -28.6
+    },
+    {
+      "id": "28_E5_palm_sharp",
+      "block": 2,
+      "title": "Powerchord E5 PALM MUTE - Quinte zu hoch",
+      "file": "28_E5_palm_sharp.wav",
+      "technique": "palm_mute",
+      "intentional_error": "A-Saite absichtlich im 3. statt 2. Bund",
+      "shapes": [
+        {
+          "6": 0,
+          "5": 3
+        }
+      ],
+      "expected_midi": [
+        [
+          40,
+          48
+        ]
+      ],
+      "seconds": 8,
+      "peak_dbfs": -7.1,
+      "rms_dbfs": -29.9
+    },
+    {
+      "id": "30_Emaj_ok",
+      "block": 3,
+      "title": "E-Dur - RICHTIG",
+      "file": "30_Emaj_ok.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 0,
+          "5": 2,
+          "4": 2,
+          "3": 1,
+          "2": 0,
+          "1": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          40,
+          47,
+          52,
+          56,
+          59,
+          64
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -12.3,
+      "rms_dbfs": -32.4
+    },
+    {
+      "id": "31_Emaj_G_open",
+      "block": 3,
+      "title": "E-Dur - G-Saite OFFEN statt 1. Bund",
+      "file": "31_Emaj_G_open.wav",
+      "technique": "normal",
+      "intentional_error": "Terz G statt G# - einen Bund zu tief. Das ist DER entscheidende Testfall.",
+      "shapes": [
+        {
+          "6": 0,
+          "5": 2,
+          "4": 2,
+          "3": 0,
+          "2": 0,
+          "1": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          40,
+          47,
+          52,
+          55,
+          59,
+          64
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -16.4,
+      "rms_dbfs": -34.0
+    },
+    {
+      "id": "32_Emaj_D_open",
+      "block": 3,
+      "title": "E-Dur - D-Saite OFFEN statt 2. Bund",
+      "file": "32_Emaj_D_open.wav",
+      "technique": "normal",
+      "intentional_error": "D statt E - zwei Buende zu tief",
+      "shapes": [
+        {
+          "6": 0,
+          "5": 2,
+          "4": 0,
+          "3": 1,
+          "2": 0,
+          "1": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          40,
+          47,
+          50,
+          56,
+          59,
+          64
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -19.2,
+      "rms_dbfs": -37.4
+    },
+    {
+      "id": "33_Emaj_no_high_e",
+      "block": 3,
+      "title": "E-Dur - hohe E-Saite AUSGELASSEN",
+      "file": "33_Emaj_no_high_e.wav",
+      "technique": "normal",
+      "intentional_error": "Eine Saite fehlt (klingt trotzdem richtig)",
+      "shapes": [
+        {
+          "6": 0,
+          "5": 2,
+          "4": 2,
+          "3": 1,
+          "2": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          40,
+          47,
+          52,
+          56,
+          59
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -11.3,
+      "rms_dbfs": -34.6
+    },
+    {
+      "id": "34_Amin_ok",
+      "block": 3,
+      "title": "A-Moll - RICHTIG",
+      "file": "34_Amin_ok.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "5": 0,
+          "4": 2,
+          "3": 2,
+          "2": 1,
+          "1": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          45,
+          52,
+          57,
+          60,
+          64
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -18.3,
+      "rms_dbfs": -37.8
+    },
+    {
+      "id": "35_Amin_B_open",
+      "block": 3,
+      "title": "A-Moll - H-Saite OFFEN statt 1. Bund",
+      "file": "35_Amin_B_open.wav",
+      "technique": "normal",
+      "intentional_error": "H statt C - einen Bund zu tief",
+      "shapes": [
+        {
+          "5": 0,
+          "4": 2,
+          "3": 2,
+          "2": 0,
+          "1": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          45,
+          52,
+          57,
+          59,
+          64
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -20.1,
+      "rms_dbfs": -39.3
+    },
+    {
+      "id": "36_Dmaj_ok",
+      "block": 3,
+      "title": "D-Dur - RICHTIG",
+      "file": "36_Dmaj_ok.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "4": 0,
+          "3": 2,
+          "2": 3,
+          "1": 2
+        }
+      ],
+      "expected_midi": [
+        [
+          50,
+          57,
+          62,
+          66
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -20.2,
+      "rms_dbfs": -39.0
+    },
+    {
+      "id": "40_E5_fast",
+      "block": 4,
+      "title": "E5 schnelles Downpicking",
+      "file": "40_E5_fast.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 0,
+          "5": 2
+        }
+      ],
+      "expected_midi": [
+        [
+          40,
+          47
+        ]
+      ],
+      "seconds": 8,
+      "peak_dbfs": -6.0,
+      "rms_dbfs": -18.9
+    },
+    {
+      "id": "41_riff",
+      "block": 4,
+      "title": "Freies Riff deiner Wahl",
+      "file": "41_riff.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [],
+      "expected_midi": [],
+      "seconds": 15,
+      "peak_dbfs": -6.0,
+      "rms_dbfs": -24.1
+    },
+    {
+      "id": "42_bend",
+      "block": 4,
+      "title": "Bending auf der G-Saite (7. Bund, ganzer Ton hoch)",
+      "file": "42_bend.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "3": 7
+        }
+      ],
+      "expected_midi": [
+        [
+          62
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -19.6,
+      "rms_dbfs": -39.1
+    }
+  ]
+}
