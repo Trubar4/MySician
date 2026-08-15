@@ -736,11 +736,25 @@ class PlayingScreen:
             )
 
     def _draw_hit_zone(self, surface: pygame.Surface, layout: _Layout) -> None:
+        """The line a note's LEADING edge has to reach, plus the slack around it.
+
+        Drawing the tolerance band as well as the line answers the question
+        every player asks first — how exactly do I have to hit it — without
+        anyone having to explain the timing window.
+        """
         t = get_theme()
         x = int(layout.hit_zone_x)
         top = int(layout.lane_top)
         bottom = int(layout.lane_top + 6 * layout.lane_height)
-        pygame.draw.line(surface, t.hit_zone, (x, top), (x, bottom), 2)
+        height = bottom - top
+
+        slack_px = self._config.timing_window_ms * layout.pixels_per_ms
+        if slack_px >= 2:
+            band = pygame.Surface((int(slack_px * 2), height), pygame.SRCALPHA)
+            band.fill((*t.hit_zone, 28))
+            surface.blit(band, (x - int(slack_px), top))
+
+        pygame.draw.line(surface, t.hit_zone, (x, top), (x, bottom), 3)
 
     def _draw_notes(self, surface: pygame.Surface, layout: _Layout) -> None:
         t = get_theme()
