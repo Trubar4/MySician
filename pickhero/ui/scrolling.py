@@ -61,18 +61,23 @@ RIGHT_MARGIN_MS = 500
 # Difficulty filter: fret limit cycle values
 FRET_LIMITS = [24, 12, 7, 5, 3]
 
-# Scroll pacing. The window shrinks — i.e. the tab scrolls faster — where the
-# notes crowd together, so a note keeps its size instead of being squeezed.
-# Yousician does the same: dense passages fly past, they do not get smaller.
+# Scroll pacing. A song scrolls at ONE speed throughout, fast enough that its
+# tightest passage still has room for full-size notes. Notes therefore never
+# change size or width while playing — a fast song simply flies past. Varying
+# the speed during a song was the obvious idea and the wrong one: easing the
+# window visibly stretched and squeezed every note on screen, which is exactly
+# what a player notices and what Yousician never does.
 BASE_VISIBLE_WINDOW_MS = 8000.0
-MIN_VISIBLE_WINDOW_MS = 2500.0
-# Fraction of the change applied per second, so the speed eases in and out
-# rather than snapping the moment a fast bar enters the lookahead.
-WINDOW_EASE_PER_SECOND = 3.0
+MIN_VISIBLE_WINDOW_MS = 1200.0
 
-# Auto-sync refuses above this much scatter: no single offset fixes strikes
-# that disagree with each other, and applying one anyway walks the offset out.
-AUTO_SYNC_MAX_SPREAD_MS = 60.0
+# Auto-sync confidence. Scatter does not invalidate the median — a player is
+# simply not a metronome — it only means more strikes are needed before the
+# median is trustworthy. Refuse outright only when the scatter is so wide that
+# no systematic offset is visible in it at all.
+AUTO_SYNC_MIN_SAMPLES = 8
+AUTO_SYNC_WIDE_SPREAD_MS = 40.0
+AUTO_SYNC_WIDE_MIN_SAMPLES = 24
+AUTO_SYNC_HOPELESS_SPREAD_MS = 150.0
 
 
 def _get_font(name: str, size: int) -> pygame.font.Font:
@@ -132,6 +137,7 @@ class PlayingScreen:
         self._ms_per_beat = 60_000 / tempo
         self._visible_window_ms = BASE_VISIBLE_WINDOW_MS
         self._last_layout: _Layout | None = None
+        self._scroll_speed_signature: tuple | None = None
 
         # Count-in state
         count_in_beats = max(0, self._config.count_in_beats)
@@ -323,7 +329,6 @@ class PlayingScreen:
         if self._last_tick is not None:
             elapsed_ms = (now - self._last_tick) * 1000.0 * self._tempo_factor
             self._playback_ms += elapsed_ms
-            self._update_scroll_pacing(now - self._last_tick)
         self._last_tick = now
 
         # Wait mode: freeze if there are pending notes the player hasn't hit yet
@@ -512,6 +517,13 @@ class PlayingScreen:
         """Draw the full playing screen."""
         t = get_theme()
         layout = self._layout(surface)
+        if (self._last_layout is None
+                or self._scroll_speed_signature != self._filter_signature()):
+            # Needs a layout to know note size and width, and changes the
+            # window it was built from — so redo it rather than draw one
+            # frame at the stale speed.
+            self._recompute_scroll_speed(layout)
+            layout = self._layout(surface)
         self._last_layout = layout
 
         surface.fill(t.bg)
@@ -582,29 +594,31 @@ class PlayingScreen:
         gaps = self._neighbour_gaps(notes)
         return min(gaps.values()) if gaps else None
 
-    def _update_scroll_pacing(self, dt_s: float) -> None:
-        """Ease the visible window toward what the upcoming notes need.
+    def _recompute_scroll_speed(self, layout: _Layout | None = None) -> None:
+        """Pick this song's one scroll speed, from its tightest passage.
 
-        A note needs a head plus a gap of screen width. Where the tightest
-        spacing ahead cannot afford that at the current speed, the window
-        shrinks until it can — the tab scrolls faster and the notes stay
-        their proper size.
+        Set once per song (and again when the difficulty filter changes the
+        notes in play) rather than per frame: a speed that moves while the
+        song plays makes every note on screen visibly stretch and squeeze.
         """
-        layout = self._last_layout
+        layout = layout or self._last_layout
         if layout is None or layout.usable_width <= 0:
             return
 
-        target = BASE_VISIBLE_WINDOW_MS
-        spacing = self._tightest_spacing_ms(
-            self._playback_ms, self._playback_ms + BASE_VISIBLE_WINDOW_MS
-        )
+        window = BASE_VISIBLE_WINDOW_MS
+        spacing = self._tightest_spacing_ms(0.0, self._timeline.duration_ms + 1)
         if spacing and spacing > 0:
             needed_px = layout.note_h * (1.0 + SUSTAIN_GAP_FRACTION)
-            target = spacing * layout.usable_width / needed_px
+            window = spacing * layout.usable_width / needed_px
 
-        target = max(MIN_VISIBLE_WINDOW_MS, min(BASE_VISIBLE_WINDOW_MS, target))
-        alpha = min(1.0, WINDOW_EASE_PER_SECOND * max(0.0, dt_s))
-        self._visible_window_ms += (target - self._visible_window_ms) * alpha
+        self._visible_window_ms = max(
+            MIN_VISIBLE_WINDOW_MS, min(BASE_VISIBLE_WINDOW_MS, window)
+        )
+        self._scroll_speed_signature = self._filter_signature()
+
+    def _filter_signature(self) -> tuple:
+        """What the scroll speed depends on, so it is only redone when needed."""
+        return (self._max_fret, tuple(self._active_strings))
 
     @staticmethod
     def _neighbour_gaps(notes: list[NoteEvent]) -> dict[tuple[float, int], float]:
@@ -915,8 +929,14 @@ class PlayingScreen:
                 spread_text = f"  ±{int(spread):d} ms" if spread is not None else ""
                 verdict = ""
                 if spread is not None:
-                    verdict = ("— K to auto-sync" if spread <= 25
-                               else "— spread too wide for K to help")
+                    samples = len(self._matcher.timing_errors_ms)
+                    if spread > AUTO_SYNC_HOPELESS_SPREAD_MS:
+                        verdict = "— too scattered to sync"
+                    elif (spread > AUTO_SYNC_WIDE_SPREAD_MS
+                            and samples < AUTO_SYNC_WIDE_MIN_SAMPLES):
+                        verdict = f"— play on ({samples}/{AUTO_SYNC_WIDE_MIN_SAMPLES}) then K"
+                    else:
+                        verdict = "— K to auto-sync"
                 sync_text = (f"Sync: {int(offset):+d} ms  |  strikes {int(abs(err)):d} ms "
                              f"{direction}{spread_text} {verdict}")
                 sync_color = t.hud_accent if abs(err) > 20 else t.hud_text
@@ -1364,12 +1384,16 @@ class PlayingScreen:
         """
         if self._matcher is None:
             return
-        err = self._matcher.median_timing_error_ms()
+        err = self._matcher.median_timing_error_ms(AUTO_SYNC_MIN_SAMPLES)
         if err is None:
             return
         spread = self._matcher.timing_spread_ms()
-        if spread is not None and spread > AUTO_SYNC_MAX_SPREAD_MS:
-            return
+        samples = len(self._matcher.timing_errors_ms)
+        if spread is not None:
+            if spread > AUTO_SYNC_HOPELESS_SPREAD_MS:
+                return
+            if spread > AUTO_SYNC_WIDE_SPREAD_MS and samples < AUTO_SYNC_WIDE_MIN_SAMPLES:
+                return
         self._adjust_latency_offset(-err)
 
     def _reset_latency_offset(self) -> None:

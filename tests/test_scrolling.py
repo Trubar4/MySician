@@ -391,8 +391,8 @@ class TestNeighbourGaps:
         assert gaps[(0.0, 6)] == pytest.approx(300.0)
 
 
-class TestScrollPacing:
-    """Dense passages scroll faster; notes keep their size."""
+class TestScrollSpeed:
+    """One speed per song, chosen so notes never have to shrink or resize."""
 
     class _MockSurface:
         def __init__(self, w, h):
@@ -408,55 +408,60 @@ class TestScrollPacing:
             for i in range(count)
         ]
         screen = PlayingScreen(Timeline(notes, SongMetadata(tempo=tempo)))
-        screen._last_layout = screen._layout(self._MockSurface(1280, 720))
+        layout = screen._layout(self._MockSurface(1280, 720))
+        screen._last_layout = layout
+        screen._recompute_scroll_speed(layout)
         return screen
-
-    def _settle(self, screen, seconds=3.0):
-        for _ in range(int(seconds * 60)):
-            screen._update_scroll_pacing(1 / 60)
 
     def test_sparse_song_keeps_the_base_window(self):
         from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS
         screen = self._screen(spacing_ms=1000.0)
-        self._settle(screen)
-        assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS, rel=0.02)
+        assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS)
 
-    def test_dense_song_shrinks_the_window(self):
+    def test_dense_song_scrolls_faster(self):
         from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS
         screen = self._screen(spacing_ms=125.0)
-        self._settle(screen)
         assert screen._visible_window_ms < BASE_VISIBLE_WINDOW_MS * 0.6
 
-    def test_notes_keep_their_size_when_it_gets_dense(self):
-        """The point of the whole mechanism: speed changes, size does not."""
+    def test_notes_get_room_for_their_full_size(self):
+        """The whole point: speed adapts so the head never has to shrink."""
         screen = self._screen(spacing_ms=125.0)
-        self._settle(screen)
         layout = screen._layout(self._MockSurface(1280, 720))
-        spacing_px = 125.0 * layout.pixels_per_ms
-        assert spacing_px >= layout.note_h
+        assert 125.0 * layout.pixels_per_ms >= layout.note_h
 
-    def test_never_shrinks_below_the_floor(self):
+    def test_never_scrolls_faster_than_the_floor(self):
         from pickhero.ui.scrolling import MIN_VISIBLE_WINDOW_MS
-        screen = self._screen(spacing_ms=20.0)
-        self._settle(screen)
+        screen = self._screen(spacing_ms=5.0)
         assert screen._visible_window_ms >= MIN_VISIBLE_WINDOW_MS - 0.01
 
-    def test_change_is_eased_not_instant(self):
-        screen = self._screen(spacing_ms=125.0)
+    def test_speed_is_constant_while_the_song_plays(self):
+        """Notes must never visibly stretch or squeeze mid-song."""
+        screen = self._screen(spacing_ms=125.0, count=200)
         before = screen._visible_window_ms
-        screen._update_scroll_pacing(1 / 60)
-        after_one_frame = screen._visible_window_ms
-        self._settle(screen)
-        assert before > after_one_frame > screen._visible_window_ms
+        for pos in (0.0, 4000.0, 12000.0, 24000.0):
+            screen._playback_ms = pos
+            screen.update()
+        assert screen._visible_window_ms == pytest.approx(before)
+
+    def test_one_fast_passage_sets_the_speed_for_the_whole_song(self):
+        """A song is paced by its tightest bar, so nothing resizes later on."""
+        notes = [NoteEvent(timestamp_ms=i * 1000.0, duration_ms=500.0,
+                           midi_note=40, string=6, fret=0) for i in range(8)]
+        notes += [NoteEvent(timestamp_ms=20000.0 + i * 100.0, duration_ms=90.0,
+                            midi_note=40, string=6, fret=0) for i in range(8)]
+        screen = PlayingScreen(Timeline(notes, SongMetadata(tempo=120)))
+        layout = screen._layout(self._MockSurface(1280, 720))
+        screen._recompute_scroll_speed(layout)
+        assert 100.0 * screen._layout(self._MockSurface(1280, 720)).pixels_per_ms \
+            >= layout.note_h * 0.9
 
     def test_no_layout_yet_is_harmless(self):
-        screen = self._screen(spacing_ms=125.0)
+        screen = PlayingScreen(_make_timeline(tempo=120))
         screen._last_layout = None
-        screen._update_scroll_pacing(1 / 60)   # must not raise
+        screen._recompute_scroll_speed()   # must not raise
 
-    def test_empty_lookahead_returns_to_base(self):
+    def test_song_without_notes_keeps_the_base_window(self):
         from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS
-        screen = self._screen(spacing_ms=125.0, count=4)
-        screen._playback_ms = 100_000.0        # far past every note
-        self._settle(screen)
-        assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS, rel=0.02)
+        screen = PlayingScreen(Timeline([], SongMetadata(tempo=120)))
+        screen._recompute_scroll_speed(screen._layout(self._MockSurface(1280, 720)))
+        assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS)
