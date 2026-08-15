@@ -30,13 +30,13 @@ from pickhero.ui.feedback import FeedbackRenderer
 LANE_TOP_MARGIN = 80
 LANE_BOTTOM_MARGIN = 40
 MIN_NOTE_WIDTH_PX = 20
-NOTE_HEIGHT_FRACTION = 0.7
+NOTE_HEIGHT_FRACTION = 0.85
 NOTE_CORNER_RADIUS = 4
 
 # The six lanes form a fretboard band rather than filling the window: a lane
 # stretched to 100 px reads as a spreadsheet row, not a string. Capped as a
 # fraction of window height so it still scales with the display.
-MAX_LANE_HEIGHT_FRACTION = 0.075
+MAX_LANE_HEIGHT_FRACTION = 0.082
 
 # Wound strings are visibly thicker than plain ones; drawing them at one
 # weight loses the strongest cue for which lane is which. Index 0 = high e.
@@ -63,13 +63,16 @@ FRET_LIMITS = [24, 12, 7, 5, 3]
 # window visibly stretched and squeezed every note on screen, which is exactly
 # what a player notices and what Yousician never does.
 BASE_VISIBLE_WINDOW_MS = 8000.0
-# Fastest a song is ever scrolled. Reading notes has a speed limit that has
-# nothing to do with how dense the music is, so past this point the notes
-# shrink toward the readable minimum instead of the tab going faster still.
-MIN_VISIBLE_WINDOW_MS = 4000.0
-# Smallest head that still shows a two-digit fret ("22" needs 22 px at a
-# 13 px font). Below this the number is unreadable and the note is pointless.
-MIN_READABLE_HEAD_PX = 22.0
+# Bounds on the derived window. The lower one keeps a minimum of lookahead;
+# the upper one stops a sparse song from crawling.
+MIN_VISIBLE_WINDOW_MS = 1500.0
+
+# The window is set from a low percentile of the note spacing rather than its
+# minimum. Real tabs contain the odd near-simultaneous pair — grace notes,
+# ties, sloppy transcription — and letting one of those decide the pacing
+# shrinks every note in the song for the sake of two. Those few overlap
+# slightly instead, which is the cheaper price by far.
+SPACING_PERCENTILE = 10.0
 # How far the manual speed control may go, and its step.
 SCROLL_FACTOR_RANGE = (0.4, 2.5)
 SCROLL_FACTOR_STEP = 0.1
@@ -594,7 +597,7 @@ class PlayingScreen:
         return font
 
     def _tightest_spacing_ms(self, from_ms: float, to_ms: float) -> float | None:
-        """Smallest gap between consecutive notes on any one string ahead.
+        """Smallest gap between consecutive notes on any one string in a range.
 
         Only same-string gaps count: notes in different lanes never crowd
         each other, and a six-string chord is one strum, not congestion.
@@ -603,6 +606,26 @@ class PlayingScreen:
                  if self._note_passes_filter(n)]
         gaps = self._neighbour_gaps(notes)
         return min(gaps.values()) if gaps else None
+
+    def _spacing_percentile(self, percentile: float) -> float | None:
+        """How often something happens in this song, in ms, near its densest.
+
+        Measured between distinct onset times across ALL strings, not within
+        each string: an arpeggio rotating over three strings looks roomy per
+        string while the screen is in fact busy, and it is the screen that
+        has to stay readable. Notes struck together are one event, so a
+        six-string chord counts once rather than as five gaps of zero.
+
+        A percentile rather than the minimum, so a couple of freak-close
+        notes cannot set the pacing for everything else.
+        """
+        onsets = sorted({n.timestamp_ms for n in self._timeline.notes
+                         if self._note_passes_filter(n)})
+        if len(onsets) < 2:
+            return None
+        gaps = sorted(b - a for a, b in zip(onsets, onsets[1:]))
+        idx = min(len(gaps) - 1, int(len(gaps) * percentile / 100.0))
+        return gaps[idx]
 
     def _recompute_scroll_speed(self, layout: _Layout | None = None) -> None:
         """Pick this song's one scroll speed and one note size.
@@ -620,29 +643,20 @@ class PlayingScreen:
         if layout is None or layout.usable_width <= 0:
             return
 
-        full_head = layout.note_h
-        needed = 1.0 + SUSTAIN_GAP_FRACTION
-        spacing = self._tightest_spacing_ms(0.0, self._timeline.duration_ms + 1)
+        head = layout.note_h
+        spacing = self._spacing_percentile(SPACING_PERCENTILE)
 
-        # Scroll as slowly as the song allows, and buy the room the notes
-        # need out of their size first. Speeding up is the last resort, not
-        # the first: a smaller-but-readable note is easier to follow than the
-        # same note flying past. Only when even the smallest legible head no
-        # longer fits does the tab start moving faster.
+        # Notes are always full size. The window follows from that: however
+        # much time fits on screen once every note has its room is how much
+        # gets shown. A dense song therefore shows less of itself at once
+        # rather than drawing itself smaller.
         window = BASE_VISIBLE_WINDOW_MS
-        head = full_head
         if spacing and spacing > 0:
-            room = spacing * layout.usable_width / BASE_VISIBLE_WINDOW_MS
-            if room < full_head * needed:
-                head = room / needed
-                if head < MIN_READABLE_HEAD_PX:
-                    head = MIN_READABLE_HEAD_PX
-                    window = spacing * layout.usable_width / (head * needed)
+            window = spacing * layout.usable_width / (head * (1.0 + SUSTAIN_GAP_FRACTION))
 
         window = max(MIN_VISIBLE_WINDOW_MS, min(BASE_VISIBLE_WINDOW_MS, window))
-        window /= self._scroll_factor()
-        self._head_px = max(MIN_READABLE_HEAD_PX, min(full_head, head))
-        self._visible_window_ms = window
+        self._visible_window_ms = window / self._scroll_factor()
+        self._head_px = head
         self._scroll_speed_signature = self._filter_signature()
 
     def _scroll_factor(self) -> float:
@@ -767,8 +781,8 @@ class PlayingScreen:
             body = self.sustain_width(note.duration_ms, layout.pixels_per_ms)
             capsule_w = min(body, gap_px) - visual_gap
 
-            # Skip notes fully off-screen — the head extends a radius left of x
-            if x + max(capsule_w, 2 * radius) - radius < 0 or x - radius > layout.screen_w:
+            # Skip notes fully off-screen
+            if x + max(capsule_w, 2 * radius) < 0 or x > layout.screen_w:
                 continue
 
             # Centre of the string lane this note sits on
@@ -785,18 +799,19 @@ class PlayingScreen:
                 color = dimmed(base_color) if past_hit_zone else base_color
 
             # A short note is a circle sitting on its string; a sustained one
-            # stretches into a capsule. Either way the HEAD is centred on the
-            # note's own time, so what crosses the hit line is the moment to play.
+            # stretches into a capsule. Either way the note's LEADING EDGE is
+            # at its own time, so the moment to play is when the start of the
+            # shape reaches the hit line -- not its middle, which put the cue
+            # half a note late.
             if capsule_w > 2 * radius:
                 rect = pygame.Rect(
-                    int(x - radius), int(cy - radius),
-                    int(capsule_w), int(2 * radius),
+                    int(x), int(cy - radius), int(capsule_w), int(2 * radius),
                 )
                 pygame.draw.rect(surface, color, rect, border_radius=int(radius))
                 pygame.draw.rect(surface, t.note_border, rect, width=2,
                                  border_radius=int(radius))
             else:
-                centre = (int(x), int(cy))
+                centre = (int(x + radius), int(cy))
                 pygame.draw.circle(surface, color, centre, int(radius))
                 pygame.draw.circle(surface, t.note_border, centre, int(radius), 2)
 
@@ -806,7 +821,7 @@ class PlayingScreen:
             fret_label = str(note.fret)
             fret_text = fret_font.render(fret_label, True, t.note_text)
             if fret_text.get_width() <= 2 * radius:
-                tx = int(x) - fret_text.get_width() // 2
+                tx = int(x + radius) - fret_text.get_width() // 2
                 ty = int(cy) - fret_text.get_height() // 2
                 outline = fret_font.render(fret_label, True, (0, 0, 0))
                 for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):

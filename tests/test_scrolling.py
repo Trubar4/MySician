@@ -418,13 +418,11 @@ class TestScrollSpeed:
         screen = self._screen(spacing_ms=1000.0)
         assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS)
 
-    def test_size_gives_way_before_speed_does(self):
-        """Notes shrink first; the tab only speeds up once they cannot."""
-        from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS
-        moderate = self._screen(spacing_ms=280.0)
-        assert moderate._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS)
-        assert moderate._head_px < moderate._layout(
-            self._MockSurface(1280, 720)).note_h
+    def test_notes_are_the_same_size_whatever_the_song(self):
+        """Notes are always full size; the window is what gives way."""
+        sizes = {round(self._screen(spacing_ms=sp)._head_px, 3)
+                 for sp in (1000.0, 280.0, 125.0, 60.0)}
+        assert len(sizes) == 1
 
     def test_very_dense_song_finally_scrolls_faster(self):
         from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS
@@ -436,21 +434,27 @@ class TestScrollSpeed:
         layout = screen._layout(self._MockSurface(1280, 720))
         assert 125.0 * layout.pixels_per_ms >= screen._head_px
 
-    def test_head_stays_readable_however_dense_the_song(self):
-        """A fret number must stay legible; that is the floor everything else
-        gives way to."""
-        from pickhero.ui.scrolling import MIN_READABLE_HEAD_PX
-        for spacing in (500.0, 125.0, 60.0, 20.0):
-            screen = self._screen(spacing_ms=spacing)
-            assert screen._head_px >= MIN_READABLE_HEAD_PX
+    def test_head_fills_most_of_its_lane(self):
+        """Notes are meant to be seen at a glance, not squinted at."""
+        screen = self._screen(spacing_ms=500.0)
+        layout = screen._layout(self._MockSurface(1280, 720))
+        assert screen._head_px > layout.lane_height * 0.7
 
-    def test_dense_song_shrinks_the_head_rather_than_scrolling_faster(self):
-        """Reading has a speed limit that density does not change."""
-        from pickhero.ui.scrolling import MIN_VISIBLE_WINDOW_MS
+    def test_denser_song_shows_less_time_at_once(self):
         sparse = self._screen(spacing_ms=1000.0)
-        dense = self._screen(spacing_ms=80.0)
-        assert dense._visible_window_ms >= MIN_VISIBLE_WINDOW_MS - 0.01
-        assert dense._head_px < sparse._head_px
+        dense = self._screen(spacing_ms=125.0)
+        assert dense._visible_window_ms < sparse._visible_window_ms
+
+    def test_a_few_freak_close_notes_do_not_set_the_pace(self):
+        """One grace-note pair must not shrink the window for a whole song."""
+        notes = [NoteEvent(timestamp_ms=i * 500.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=0) for i in range(40)]
+        notes.append(NoteEvent(timestamp_ms=10_020.0, duration_ms=50.0,
+                               midi_note=40, string=6, fret=0))
+        screen = PlayingScreen(Timeline(notes, SongMetadata(tempo=120)))
+        screen._recompute_scroll_speed(screen._layout(self._MockSurface(1280, 720)))
+        clean = self._screen(spacing_ms=500.0)
+        assert screen._visible_window_ms == pytest.approx(clean._visible_window_ms)
 
     def test_never_scrolls_faster_than_the_floor(self):
         from pickhero.ui.scrolling import MIN_VISIBLE_WINDOW_MS

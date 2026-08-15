@@ -29,6 +29,7 @@ class App:
         self._progress = ProgressTracker()
         self._running = False
         self._state = "menu"
+        self._load_error: str | None = None
         self._menu: MenuScreen | None = None
         self._playing_screen: PlayingScreen | None = None
         self._device_menu: DeviceMenuScreen | None = None
@@ -157,16 +158,33 @@ class App:
             self._calibration_menu = None
             self._state = "menu"
 
+    def _render_load_error(self, surface: pygame.Surface) -> None:
+        """Say why the last song refused to load, on the menu it fell back to."""
+        if not getattr(self, "_load_error", None):
+            return
+        import pygame as _pg
+        font = _pg.font.SysFont("arial", 15) or _pg.font.Font(None, 15)
+        text = f"Could not load  {self._load_error}"
+        surf = font.render(text[:160], True, (255, 120, 120))
+        y = surface.get_height() - surf.get_height() - 8
+        _pg.draw.rect(surface, (40, 10, 10),
+                      (0, y - 4, surface.get_width(), surf.get_height() + 8))
+        surface.blit(surf, (12, y))
+
     def _load_song(self, path: Path) -> None:
         """Load a GP file and switch to playing state."""
         try:
             timeline = load_gp_file(path)
         except Exception as e:
+            # Show it, do not just log it: returning to the menu in silence
+            # looks like the song was ignored rather than that it failed.
+            self._load_error = f"{path.name}: {type(e).__name__}: {e}"
             try:
                 print(f"Error loading {path}: {e}")
             except UnicodeEncodeError:
                 print(f"Error loading {path}: {type(e).__name__}")
             return
+        self._load_error = None
 
         # Extract backing track (non-guitar tracks as MIDI)
         backing_track = None
@@ -205,6 +223,7 @@ class App:
     def _render(self, surface: pygame.Surface) -> None:
         if self._state == "menu" and self._menu is not None:
             self._menu.render(surface)
+            self._render_load_error(surface)
         elif self._state == "playing" and self._playing_screen is not None:
             self._playing_screen.render(surface)
         elif self._state == "device" and self._device_menu is not None:
