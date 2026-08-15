@@ -1,0 +1,4 @@
+# Test and development dependencies, on top of requirements.txt
+#   pip install -r requirements-dev.txt
+#   python -m pytest tests -q
+pytest>=7.0

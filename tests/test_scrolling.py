@@ -418,16 +418,39 @@ class TestScrollSpeed:
         screen = self._screen(spacing_ms=1000.0)
         assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS)
 
-    def test_dense_song_scrolls_faster(self):
+    def test_size_gives_way_before_speed_does(self):
+        """Notes shrink first; the tab only speeds up once they cannot."""
         from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS
-        screen = self._screen(spacing_ms=125.0)
-        assert screen._visible_window_ms < BASE_VISIBLE_WINDOW_MS * 0.6
+        moderate = self._screen(spacing_ms=280.0)
+        assert moderate._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS)
+        assert moderate._head_px < moderate._layout(
+            self._MockSurface(1280, 720)).note_h
 
-    def test_notes_get_room_for_their_full_size(self):
-        """The whole point: speed adapts so the head never has to shrink."""
+    def test_very_dense_song_finally_scrolls_faster(self):
+        from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS
+        screen = self._screen(spacing_ms=100.0)
+        assert screen._visible_window_ms < BASE_VISIBLE_WINDOW_MS
+
+    def test_notes_never_overlap_at_the_chosen_size(self):
         screen = self._screen(spacing_ms=125.0)
         layout = screen._layout(self._MockSurface(1280, 720))
-        assert 125.0 * layout.pixels_per_ms >= layout.note_h
+        assert 125.0 * layout.pixels_per_ms >= screen._head_px
+
+    def test_head_stays_readable_however_dense_the_song(self):
+        """A fret number must stay legible; that is the floor everything else
+        gives way to."""
+        from pickhero.ui.scrolling import MIN_READABLE_HEAD_PX
+        for spacing in (500.0, 125.0, 60.0, 20.0):
+            screen = self._screen(spacing_ms=spacing)
+            assert screen._head_px >= MIN_READABLE_HEAD_PX
+
+    def test_dense_song_shrinks_the_head_rather_than_scrolling_faster(self):
+        """Reading has a speed limit that density does not change."""
+        from pickhero.ui.scrolling import MIN_VISIBLE_WINDOW_MS
+        sparse = self._screen(spacing_ms=1000.0)
+        dense = self._screen(spacing_ms=80.0)
+        assert dense._visible_window_ms >= MIN_VISIBLE_WINDOW_MS - 0.01
+        assert dense._head_px < sparse._head_px
 
     def test_never_scrolls_faster_than_the_floor(self):
         from pickhero.ui.scrolling import MIN_VISIBLE_WINDOW_MS
@@ -443,7 +466,7 @@ class TestScrollSpeed:
             screen.update()
         assert screen._visible_window_ms == pytest.approx(before)
 
-    def test_one_fast_passage_sets_the_speed_for_the_whole_song(self):
+    def test_one_fast_passage_sets_the_pace_for_the_whole_song(self):
         """A song is paced by its tightest bar, so nothing resizes later on."""
         notes = [NoteEvent(timestamp_ms=i * 1000.0, duration_ms=500.0,
                            midi_note=40, string=6, fret=0) for i in range(8)]
@@ -452,8 +475,26 @@ class TestScrollSpeed:
         screen = PlayingScreen(Timeline(notes, SongMetadata(tempo=120)))
         layout = screen._layout(self._MockSurface(1280, 720))
         screen._recompute_scroll_speed(layout)
-        assert 100.0 * screen._layout(self._MockSurface(1280, 720)).pixels_per_ms \
-            >= layout.note_h * 0.9
+        ppm = screen._layout(self._MockSurface(1280, 720)).pixels_per_ms
+        assert 100.0 * ppm >= screen._head_px
+
+    def test_manual_trim_changes_the_speed(self):
+        screen = self._screen(spacing_ms=1000.0)
+        before = screen._visible_window_ms
+        screen._adjust_scroll_factor(-0.4)     # slower
+        assert screen._visible_window_ms > before
+        screen._adjust_scroll_factor(0.8)      # faster than the default
+        assert screen._visible_window_ms < before
+
+    def test_manual_trim_is_bounded(self):
+        from pickhero.ui.scrolling import SCROLL_FACTOR_RANGE
+        screen = self._screen(spacing_ms=1000.0)
+        for _ in range(50):
+            screen._adjust_scroll_factor(1.0)
+        assert screen._scroll_factor() == pytest.approx(SCROLL_FACTOR_RANGE[1])
+        for _ in range(100):
+            screen._adjust_scroll_factor(-1.0)
+        assert screen._scroll_factor() == pytest.approx(SCROLL_FACTOR_RANGE[0])
 
     def test_no_layout_yet_is_harmless(self):
         screen = PlayingScreen(_make_timeline(tempo=120))

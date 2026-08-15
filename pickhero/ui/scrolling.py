@@ -48,11 +48,6 @@ STRING_THICKNESS = (1, 1, 2, 2, 3, 4)
 # without this, a run of eighths renders as one unbroken bar.
 SUSTAIN_GAP_FRACTION = 0.18
 
-# A head never shrinks below this fraction of full size. Sixteenths at speed
-# sit closer together than any legible circle is wide, so past this point a
-# slight overlap -- beads on a string -- beats notes too small to read.
-MIN_HEAD_FRACTION = 0.28
-
 # Left margin for notes that already passed the hit zone (ms)
 LEFT_MARGIN_MS = 2000
 # Right margin for notes not yet visible (ms)
@@ -68,7 +63,16 @@ FRET_LIMITS = [24, 12, 7, 5, 3]
 # window visibly stretched and squeezed every note on screen, which is exactly
 # what a player notices and what Yousician never does.
 BASE_VISIBLE_WINDOW_MS = 8000.0
-MIN_VISIBLE_WINDOW_MS = 1200.0
+# Fastest a song is ever scrolled. Reading notes has a speed limit that has
+# nothing to do with how dense the music is, so past this point the notes
+# shrink toward the readable minimum instead of the tab going faster still.
+MIN_VISIBLE_WINDOW_MS = 4000.0
+# Smallest head that still shows a two-digit fret ("22" needs 22 px at a
+# 13 px font). Below this the number is unreadable and the note is pointless.
+MIN_READABLE_HEAD_PX = 22.0
+# How far the manual speed control may go, and its step.
+SCROLL_FACTOR_RANGE = (0.4, 2.5)
+SCROLL_FACTOR_STEP = 0.1
 
 # Auto-sync confidence. Scatter does not invalidate the median — a player is
 # simply not a metronome — it only means more strikes are needed before the
@@ -138,6 +142,8 @@ class PlayingScreen:
         self._visible_window_ms = BASE_VISIBLE_WINDOW_MS
         self._last_layout: _Layout | None = None
         self._scroll_speed_signature: tuple | None = None
+        # One head size for the whole song, set with the scroll speed
+        self._head_px: float | None = None
 
         # Count-in state
         count_in_beats = max(0, self._config.count_in_beats)
@@ -495,6 +501,10 @@ class PlayingScreen:
             self._toggle_chord_mode()
         elif event.key == pygame.K_j:
             self._toggle_chord_verify()
+        elif event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
+            self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
+        elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+            self._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
         elif event.key == pygame.K_l:
             self._loop_weakest_section()
         elif event.key == pygame.K_h:
@@ -595,26 +605,57 @@ class PlayingScreen:
         return min(gaps.values()) if gaps else None
 
     def _recompute_scroll_speed(self, layout: _Layout | None = None) -> None:
-        """Pick this song's one scroll speed, from its tightest passage.
+        """Pick this song's one scroll speed and one note size.
 
-        Set once per song (and again when the difficulty filter changes the
-        notes in play) rather than per frame: a speed that moves while the
-        song plays makes every note on screen visibly stretch and squeeze.
+        Both are set per song rather than per frame: a speed that moves while
+        the song plays makes every note on screen visibly stretch and squeeze,
+        and a size that varies note by note is the same problem in miniature.
+
+        Speed comes first. A tab can only be read so fast no matter how dense
+        the music is, so once the tightest passage would push past that limit
+        the notes shrink toward the smallest head that still shows a two-digit
+        fret, instead of the tab scrolling faster and faster.
         """
         layout = layout or self._last_layout
         if layout is None or layout.usable_width <= 0:
             return
 
-        window = BASE_VISIBLE_WINDOW_MS
+        full_head = layout.note_h
+        needed = 1.0 + SUSTAIN_GAP_FRACTION
         spacing = self._tightest_spacing_ms(0.0, self._timeline.duration_ms + 1)
-        if spacing and spacing > 0:
-            needed_px = layout.note_h * (1.0 + SUSTAIN_GAP_FRACTION)
-            window = spacing * layout.usable_width / needed_px
 
-        self._visible_window_ms = max(
-            MIN_VISIBLE_WINDOW_MS, min(BASE_VISIBLE_WINDOW_MS, window)
-        )
+        # Scroll as slowly as the song allows, and buy the room the notes
+        # need out of their size first. Speeding up is the last resort, not
+        # the first: a smaller-but-readable note is easier to follow than the
+        # same note flying past. Only when even the smallest legible head no
+        # longer fits does the tab start moving faster.
+        window = BASE_VISIBLE_WINDOW_MS
+        head = full_head
+        if spacing and spacing > 0:
+            room = spacing * layout.usable_width / BASE_VISIBLE_WINDOW_MS
+            if room < full_head * needed:
+                head = room / needed
+                if head < MIN_READABLE_HEAD_PX:
+                    head = MIN_READABLE_HEAD_PX
+                    window = spacing * layout.usable_width / (head * needed)
+
+        window = max(MIN_VISIBLE_WINDOW_MS, min(BASE_VISIBLE_WINDOW_MS, window))
+        window /= self._scroll_factor()
+        self._head_px = max(MIN_READABLE_HEAD_PX, min(full_head, head))
+        self._visible_window_ms = window
         self._scroll_speed_signature = self._filter_signature()
+
+    def _scroll_factor(self) -> float:
+        lo, hi = SCROLL_FACTOR_RANGE
+        return max(lo, min(hi, getattr(self._config, "scroll_speed_factor", 1.0)))
+
+    def _adjust_scroll_factor(self, delta: float) -> None:
+        """Speed the tab up or down by hand (+ / -), and remember it."""
+        lo, hi = SCROLL_FACTOR_RANGE
+        current = self._scroll_factor()
+        self._config.scroll_speed_factor = max(lo, min(hi, round(current + delta, 2)))
+        self._config.save()
+        self._recompute_scroll_speed()
 
     def _filter_signature(self) -> tuple:
         """What the scroll speed depends on, so it is only redone when needed."""
@@ -711,16 +752,18 @@ class PlayingScreen:
             # the next note, and dense passages put onsets closer together
             # than a full-size head is wide — both drew notes on top of
             # each other.
+            # One head size for the whole song, chosen with the scroll speed.
+            # Sizing note by note would make notes visibly change as they
+            # scroll, which is the thing this display must never do.
+            head = self._head_px if self._head_px is not None else layout.note_h
+            radius = head / 2
+            visual_gap = head * SUSTAIN_GAP_FRACTION
+
+            # A sustain still stops short of its neighbour, so a long tab
+            # duration cannot run over the next note
             gap_ms = neighbour_gap.get((note.timestamp_ms, note.string))
             gap_px = (gap_ms * layout.pixels_per_ms
                       if gap_ms is not None else float("inf"))
-            visual_gap = layout.note_h * SUSTAIN_GAP_FRACTION
-
-            radius = layout.note_h / 2
-            if gap_px < layout.note_h + visual_gap:
-                radius = max(layout.note_h * MIN_HEAD_FRACTION,
-                             (gap_px - visual_gap) / 2)
-
             body = self.sustain_width(note.duration_ms, layout.pixels_per_ms)
             capsule_w = min(body, gap_px) - visual_gap
 
@@ -906,6 +949,13 @@ class PlayingScreen:
             chord_text = "Chords: strict" if self._chord_partial_credit else "Chords: easy"
             chord_surf = hint_font.render(chord_text, True, t.hud_accent)
             surface.blit(chord_surf, (12, info_y))
+            info_y += 16
+
+        # Scroll speed HUD — only when trimmed away from the derived speed
+        if abs(self._scroll_factor() - 1.0) > 0.01:
+            speed_surf = hint_font.render(
+                f"Scroll: {self._scroll_factor():.1f}x (+/-)", True, t.hud_accent)
+            surface.blit(speed_surf, (12, info_y))
             info_y += 16
 
         # Per-string chord check HUD — only when switched off, so the default
@@ -1248,6 +1298,7 @@ class PlayingScreen:
             "J: per-string chord check (marks the one string on the wrong fret)",
             "K: auto-sync timing (fixes 'I must play early/late to score')    ,/.: sync by hand",
             "Shift+K: reset sync to 0 (use when the offset has run away)",
+            "+/-: scroll faster / slower",
         ]
         for line in controls:
             surf = hint_font.render(line, True, t.hud_text)

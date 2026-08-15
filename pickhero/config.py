@@ -65,6 +65,9 @@ class Config:
     # proven to be on the wrong fret. Costs ~380 ms before a chord's verdict
     # settles, so it can be turned off for pure latency.
     chord_verify: bool = True
+    # Manual scroll speed trim, on top of the speed derived from the song.
+    # Above 1.0 scrolls faster, below 1.0 slower.
+    scroll_speed_factor: float = 1.0
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     calibration: dict = field(default_factory=dict)
