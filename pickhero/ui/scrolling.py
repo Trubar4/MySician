@@ -48,6 +48,34 @@ STRING_THICKNESS = (1, 1, 2, 2, 3, 4)
 # without this, a run of eighths renders as one unbroken bar.
 SUSTAIN_GAP_FRACTION = 0.18
 
+# -- Bends and slides ------------------------------------------------------
+# How far a full bend (two semitones) lifts the curve, in lane heights. The
+# arc has to leave its own lane to read as a rise at all, so it overlaps the
+# lane above -- as it does in Yousician. Not a whole lane, though: landing
+# exactly on the neighbouring string's centre makes the arc look like a note
+# over there. Deeper bends are capped for the same reason.
+BEND_RISE_LANES = 0.72
+BEND_MAX_RISE_LANES = 1.15
+# A bend on a staccato note still needs somewhere to draw the arc, as a
+# multiple of head width.
+BEND_MIN_WIDTH_HEADS = 1.8
+# Segments drawn between two written bend points, to smooth the pull.
+BEND_CURVE_STEPS = 8
+# Slides slant within their own lane: the target is on the same string, so
+# there is no other axis to show direction on. Fraction of the head radius.
+SLIDE_SLANT_FRACTION = 0.7
+# Longest connector drawn, in head widths. A slide across two bars would
+# otherwise stretch its slant out until it reads as a horizontal line.
+SLIDE_SPAN_HEADS = 2.2
+SLIDE_WIDTH_PX = 5
+# A sliding note gives up part of its sustain so the connector has somewhere
+# to be. Back to back notes otherwise leave a gap of a few pixels, and a
+# connector squeezed into that is invisible however it is drawn.
+SLIDE_GAP_FRACTION = 0.85
+# Length of the stub drawn for a slide that has no note at the other end,
+# as a multiple of head width.
+SLIDE_STUB_HEADS = 0.7
+
 # Left margin for notes that already passed the hit zone (ms)
 LEFT_MARGIN_MS = 2000
 # Right margin for notes not yet visible (ms)
@@ -839,6 +867,165 @@ class PlayingScreen:
         return gaps
 
     @staticmethod
+    def _next_on_string(notes: list[NoteEvent]) -> dict[tuple[float, int], NoteEvent]:
+        """The following note on the same string, for drawing slides to it."""
+        by_string: dict[int, list[NoteEvent]] = {}
+        for note in notes:
+            by_string.setdefault(note.string, []).append(note)
+
+        out: dict[tuple[float, int], NoteEvent] = {}
+        for string, group in by_string.items():
+            group.sort(key=lambda n: n.timestamp_ms)
+            for note, following in zip(group, group[1:]):
+                if following.timestamp_ms > note.timestamp_ms:
+                    out[(note.timestamp_ms, string)] = following
+        return out
+
+    @staticmethod
+    def bend_label(semitones: float) -> str:
+        """Bend depth the way tab notation writes it, in WHOLE steps.
+
+        Guitar notation counts steps, not semitones: one semitone is a half
+        bend, two is 'full'. Writing '1' where a player expects 'full' is the
+        kind of small wrongness that makes a display feel untrustworthy.
+        """
+        halves = int(round(semitones))
+        if halves <= 0:
+            return ""
+        if halves == 1:
+            return "½"
+        if halves == 2:
+            return "full"
+        whole, rest = divmod(halves, 2)
+        return f"{whole}½" if rest else str(whole)
+
+    @staticmethod
+    def _bend_points(
+        note: NoteEvent, x: float, cy: float, width: float, lane_height: float,
+    ) -> list[tuple[float, float]]:
+        """Screen points of the bend curve, left to right.
+
+        Each written point is joined to the next by a smoothstep rather than a
+        straight line: a bend is a continuous pull, and a polyline with visible
+        kinks reads as a staircase of separate pitches.
+        """
+        rise_per_step = lane_height * BEND_RISE_LANES / 2.0
+        deepest = max((v for _, v in note.bend), default=0.0)
+        cap = lane_height * BEND_MAX_RISE_LANES
+        if deepest * rise_per_step > cap:
+            rise_per_step = cap / deepest
+        curve = list(note.bend)
+        # GP files routinely omit the starting point at (0, 0); without it the
+        # curve begins in mid-air beside the note head.
+        if curve and curve[0][0] > 0.0:
+            curve.insert(0, (0.0, 0.0))
+        if len(curve) < 2:
+            return []
+
+        points: list[tuple[float, float]] = []
+        for (p0, v0), (p1, v1) in zip(curve, curve[1:]):
+            for step in range(BEND_CURVE_STEPS):
+                f = step / BEND_CURVE_STEPS
+                eased = f * f * (3 - 2 * f)
+                pos = p0 + (p1 - p0) * f
+                val = v0 + (v1 - v0) * eased
+                points.append((x + pos * width, cy - val * rise_per_step))
+        last_pos, last_val = curve[-1]
+        points.append((x + last_pos * width, cy - last_val * rise_per_step))
+        return points
+
+    def _draw_bend(
+        self, surface: pygame.Surface, note: NoteEvent, x: float, cy: float,
+        head: float, capsule_w: float, lane_height: float,
+        color: tuple[int, int, int], dim: bool,
+    ) -> None:
+        """An arc rising off the note head, with the depth written at its top.
+
+        Drawn OVER the head rather than under it: the arc is the instruction,
+        and half of it disappeared behind the sustain when it went below. It
+        starts at the head's right edge so it reads as leaving the note, and
+        the fret number stays clear at the head's left.
+        """
+        start = x + head
+        width = max(capsule_w - head, head * BEND_MIN_WIDTH_HEADS)
+        points = self._bend_points(note, start, cy, width, lane_height)
+        if len(points) < 2:
+            return
+
+        t = get_theme()
+        line = dimmed(color) if dim else lightened(color)
+        pygame.draw.lines(surface, line, False,
+                          [(int(px), int(py)) for px, py in points], 3)
+
+        top = min(points, key=lambda p: p[1])
+        barb = max(3, int(head * 0.16))
+        # Arrowhead only where the curve actually rises, so a release-only
+        # curve (bend already held, coming back down) does not sprout one.
+        if top[1] < cy - 2:
+            tip = int(top[0]), int(top[1])
+            pygame.draw.polygon(surface, line, [
+                (tip[0], tip[1] - barb),
+                (tip[0] - barb, tip[1] + barb),
+                (tip[0] + barb, tip[1] + barb),
+            ])
+
+        label = self.bend_label(note.bend_semitones)
+        if not label:
+            return
+        font = _get_font("arial", max(11, int(head * 0.42)))
+        text = font.render(label, True, dimmed(t.hud_text) if dim else t.hud_text)
+        # Beside the top of the arc, not above it: above collides with the
+        # next string up as soon as the bend is a full step or more.
+        surface.blit(text, (int(top[0]) + barb + 2,
+                            int(top[1]) - text.get_height() // 2))
+
+    def _draw_slide(
+        self, surface: pygame.Surface, note: NoteEvent, x: float, cy: float,
+        head: float, capsule_w: float, target: NoteEvent | None,
+        target_x: float | None, color: tuple[int, int, int], dim: bool,
+    ) -> None:
+        """A slanted connector to where the finger is going.
+
+        The target of a slide sits on the SAME string, so the lane cannot show
+        direction the way a staff would. The connector is slanted within the
+        lane instead: rising to the right means sliding up the neck. It spans
+        the GAP between the two heads rather than their full separation --
+        across a long gap the slant would flatten out to nothing, and the
+        direction is the whole point of drawing it.
+        """
+        radius = head / 2
+        slant = radius * SLIDE_SLANT_FRACTION
+        line = dimmed(color) if dim else lightened(color)
+
+        if note.slide_to_next and target is not None and target_x is not None:
+            # Ends just inside the target head and starts at the end of this
+            # note's own body, so the whole connector lands in the gap the
+            # shortened sustain left for it.
+            end_x = target_x + radius * 0.5
+            start_x = max(x + max(capsule_w, head) - radius * 0.5,
+                          end_x - head * SLIDE_SPAN_HEADS)
+            if end_x - start_x < 2:
+                return
+            # Up the neck is the higher fret. Comparing frets rather than
+            # pitch keeps it right on tabs that slide across a string change.
+            rise = slant if target.fret > note.fret else -slant
+            pygame.draw.line(surface, line, (int(start_x), int(cy + rise)),
+                             (int(end_x), int(cy - rise)), SLIDE_WIDTH_PX)
+            return
+
+        stub = head * SLIDE_STUB_HEADS
+        if note.slide_out:
+            start_x = x + max(capsule_w, head)
+            rise = -slant if note.slide_out > 0 else slant
+            pygame.draw.line(surface, line, (int(start_x), int(cy)),
+                             (int(start_x + stub), int(cy + rise * 2)),
+                             SLIDE_WIDTH_PX)
+        if note.slide_in:
+            rise = slant if note.slide_in > 0 else -slant
+            pygame.draw.line(surface, line, (int(x - stub), int(cy + rise * 2)),
+                             (int(x + radius), int(cy)), SLIDE_WIDTH_PX)
+
+    @staticmethod
     def sustain_width(duration_ms: float, pixels_per_ms: float) -> float:
         """Length of a note's sustain body, with no minimum.
 
@@ -908,6 +1095,7 @@ class PlayingScreen:
         notes = self._timeline.get_notes_in_range(view_start, view_end)
 
         neighbour_gap = self._neighbour_gaps(notes)
+        next_on_string = self._next_on_string(notes)
 
         for note in notes:
             # Difficulty filter: skip notes that fail
@@ -928,7 +1116,8 @@ class PlayingScreen:
             # scroll, which is the thing this display must never do.
             head = self._head_px if self._head_px is not None else layout.note_h
             radius = head / 2
-            visual_gap = head * SUSTAIN_GAP_FRACTION
+            visual_gap = head * (SLIDE_GAP_FRACTION if note.slide_to_next
+                                 else SUSTAIN_GAP_FRACTION)
 
             # A sustain still stops short of its neighbour, so a long tab
             # duration cannot run over the next note
@@ -960,6 +1149,19 @@ class PlayingScreen:
             # at its own time, so the moment to play is when the start of the
             # shape reaches the hit line -- not its middle, which put the cue
             # half a note late.
+            # A slide connector goes UNDER the heads it runs between, so it
+            # cannot land on top of the target's fret number.
+            if note.slide_to_next or note.slide_in or note.slide_out:
+                following = next_on_string.get((note.timestamp_ms, note.string))
+                target_x = None
+                if following is not None:
+                    target_x = self.note_x(
+                        following.timestamp_ms, self._playback_ms,
+                        layout.hit_zone_x, layout.pixels_per_ms,
+                    )
+                self._draw_slide(surface, note, x, cy, head, capsule_w,
+                                 following, target_x, base_color, past_hit_zone)
+
             if capsule_w > 2 * radius:
                 rect = pygame.Rect(
                     int(x), int(cy - radius), int(capsule_w), int(2 * radius),
@@ -971,6 +1173,13 @@ class PlayingScreen:
                 centre = (int(x + radius), int(cy))
                 pygame.draw.circle(surface, color, centre, int(radius))
                 pygame.draw.circle(surface, t.note_border, centre, int(radius), 2)
+
+            # The bend arc goes OVER the head: it rises away from it, so it
+            # hides nothing, and half of it vanished behind the sustain when
+            # it was drawn underneath.
+            if note.bend:
+                self._draw_bend(surface, note, x, cy, head, capsule_w,
+                                layout.lane_height, base_color, past_hit_zone)
 
             # Fret number centred in the head, sized to the head it sits in —
             # a fixed size spills out of the shrunken heads of a fast run
@@ -984,6 +1193,73 @@ class PlayingScreen:
                 for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                     surface.blit(outline, (tx + dx, ty + dy))
                 surface.blit(fret_text, (tx, ty))
+
+    # Sizes the footer will try, largest first. A shortcut nobody can read
+    # because the line ran off the window is a shortcut nobody has.
+    FOOTER_FONT_SIZES = (14, 13, 12, 11, 10)
+
+    def _footer_lines(self) -> tuple[str, str]:
+        """The two footer lines: what is happening, then the rest of the keys.
+
+        Every key handle_event answers appears here, unconditionally. A key
+        that is bound but undocumented is a key nobody finds, so the ones
+        that need something loaded (the backing track, wait mode) are listed
+        with a dash rather than hidden -- the dash is the answer to "why does
+        pressing it do nothing".
+        """
+        if self._playback_ms < 0:
+            state = "Count-in"
+        elif self._playing:
+            if self._wait_mode_frozen:
+                state = "Waiting..."
+            elif self._audio_enabled:
+                state = "Playing"
+            else:
+                state = "Auto-scroll"
+        else:
+            state = "Paused"
+
+        audio_state = "ON" if self._audio_enabled else "off"
+        loop_state = "ON" if self._loop_enabled else "off"
+        if self._midi_player is None:
+            backing_state = "—"
+        else:
+            backing_state = "off" if self._backing_muted else "ON"
+        if not self._wait_mode:
+            wait_state = "off" if self._audio_enabled else "—"
+        else:
+            wait_state = "WAIT" if self._wait_mode_frozen else "ON"
+
+        transport = (
+            f"{state}  |  SPACE: play/pause  |  LEFT/RIGHT: seek  "
+            f"|  HOME: restart  |  PgDn/PgUp: tempo  |  A: audio {audio_state}  "
+            f"|  B: backing {backing_state}  |  W: wait {wait_state}  "
+            f"|  I/O: loop {loop_state}  |  P: toggle  |  ESC: menu"
+        )
+        tools = (
+            "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
+            "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
+            "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
+            "|  F1-F6: mute string  |  L: weakest part  |  T: theme  |  H: help"
+        )
+        return transport, tools
+
+    def _blit_footer_lines(
+        self, surface: pygame.Surface, layout: _Layout,
+        lines: tuple[str, ...], color: tuple[int, int, int],
+    ) -> None:
+        """Centre the footer lines, shrinking until the widest one fits."""
+        w = layout.screen_w
+        for size in self.FOOTER_FONT_SIZES:
+            font = _get_font("arial", size)
+            rendered = [font.render(line, True, color) for line in lines]
+            if max(s.get_width() for s in rendered) <= w - 16:
+                break
+        line_h = rendered[0].get_height() + 2
+        y = layout.screen_h - 4 - line_h * len(rendered)
+        for surf in rendered:
+            surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
+            y += line_h
 
     def _draw_hud(self, surface: pygame.Surface, layout: _Layout) -> None:
         t = get_theme()
@@ -1067,38 +1343,7 @@ class PlayingScreen:
             self._draw_tuner(surface, hint_font, w, stats_bottom_y + 18)
 
         # Bottom-center: play state + controls
-        if self._playback_ms < 0:
-            state = "Count-in"
-        elif self._playing:
-            if self._wait_mode_frozen:
-                state = "Waiting..."
-            elif self._audio_enabled:
-                state = "Playing"
-            else:
-                state = "Auto-scroll"
-        else:
-            state = "Paused"
-        audio_state = "ON" if self._audio_enabled else "off"
-        loop_state = "ON" if self._loop_enabled else "off"
-        backing_state = ""
-        if self._midi_player is not None:
-            backing_state = f"|  B: backing {'off' if self._backing_muted else 'ON'}  "
-        wait_state = ""
-        if self._wait_mode:
-            wait_state = f"|  W: wait {'WAIT' if self._wait_mode_frozen else 'ON'}  "
-        elif self._audio_enabled:
-            wait_state = "|  W: wait off  "
-        hint = (
-            f"{state}  |  SPACE: play/pause  |  LEFT/RIGHT: seek  "
-            f"|  HOME: restart  |  PgDn/PgUp: tempo  |  X/C: gate"
-            f"|  A: audio {audio_state}  "
-            f"{backing_state}"
-            f"{wait_state}"
-            f"|  I/O: loop {loop_state}  |  P: toggle  |  ESC: menu"
-        )
-        hint_surf = hint_font.render(hint, True, t.hud_text)
-        y = layout.screen_h - LANE_BOTTOM_MARGIN + 8
-        surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, y))
+        self._blit_footer_lines(surface, layout, self._footer_lines(), t.hud_text)
 
         # Top-left second line: track name + filter info
         info_y = 38
@@ -1375,134 +1620,117 @@ class PlayingScreen:
             surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, center_y + 70))
 
     def _draw_help_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:
-        """Draw a help overlay explaining the track, note colors, and controls."""
+        """Explain the track, the note colours, the techniques and the keys.
+
+        Two columns. There is more to say than fits down one side of a 720 px
+        window, and a help page whose last section falls off the bottom edge
+        is worse than no help page.
+        """
         t = get_theme()
         w, h = layout.screen_w, layout.screen_h
 
         overlay = pygame.Surface((w, h), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 180))
+        overlay.fill((0, 0, 0, 236))
         surface.blit(overlay, (0, 0))
 
-        title_font = _get_font("arial", 28)
-        section_font = _get_font("arial", 20)
-        body_font = _get_font("arial", 17)
-        hint_font = _get_font("arial", 14)
+        title_font = _get_font("arial", 26)
+        section_font = _get_font("arial", 18)
+        body_font = _get_font("arial", 15)
+        hint_font = _get_font("arial", 13)
 
         cx = w // 2
-        y = 30
-
         title_surf = title_font.render("Help", True, t.hud_accent)
-        surface.blit(title_surf, (cx - title_surf.get_width() // 2, y))
-        y += 40
+        surface.blit(title_surf, (cx - title_surf.get_width() // 2, 12))
 
-        # -- How to read the track --
-        lx = cx - 260  # left edge for content
-        section = section_font.render("Reading the Track", True, t.hud_accent)
-        surface.blit(section, (lx, y))
-        y += 26
+        top = 56
+        bottom = h - 30
+        col_w = (w - 60) // 2
+        columns = [30, 30 + col_w + 20]
+        col = 0
+        x, y = columns[0], top
 
-        track_lines = [
-            "Notes scroll right-to-left toward the hit zone (white vertical line).",
-            "The number on each note is the fret to press (0 = open string).",
-            "Play the right fret on the right string as the note crosses the line.",
-        ]
-        for line in track_lines:
-            surf = body_font.render(line, True, t.hud_text)
-            surface.blit(surf, (lx, y))
-            y += 21
-        y += 6
+        def block(title: str, items, font=body_font, step=20) -> None:
+            """One titled section, measured before anything is drawn.
 
-        # -- The 6 rows --
-        section = section_font.render("The 6 Rows = 6 Guitar Strings", True, t.hud_accent)
-        surface.blit(section, (lx, y))
-        y += 26
+            Whole blocks move to the next column, never halves of one: a
+            heading stranded at the foot of a column with its list continuing
+            at the top of the next reads as two unrelated things.
 
-        row_lines = [
-            "Each horizontal row is one guitar string, top to bottom:",
-        ]
-        for line in row_lines:
-            surf = body_font.render(line, True, t.hud_text)
-            surface.blit(surf, (lx, y))
-            y += 21
+            An item is either a line of text, or (colour, line) for a swatch.
+            """
+            nonlocal col, x, y
+            needed = 24 + step * len(items) + 8
+            if y + needed > bottom and col + 1 < len(columns):
+                col += 1
+                x, y = columns[col], top
 
-        string_info = [
-            (1, "Row 1 (top)     = high E  (thinnest)"),
-            (2, "Row 2              = B"),
-            (3, "Row 3              = G"),
-            (4, "Row 4              = D"),
-            (5, "Row 5              = A"),
-            (6, "Row 6 (bottom) = low E  (thickest)"),
-        ]
-        for s, label in string_info:
-            color = STRING_COLORS.get(s, (180, 180, 180))
-            pygame.draw.rect(surface, color, (lx, y + 3, 14, 14),
-                             border_radius=2)
-            surf = body_font.render(label, True, t.hud_text)
-            surface.blit(surf, (lx + 20, y))
-            y += 20
-        y += 4
+            surface.blit(section_font.render(title, True, t.hud_accent), (x, y))
+            y += 24
+            for item in items:
+                if isinstance(item, tuple):
+                    color, label = item
+                    pygame.draw.rect(surface, color, (x, y + 3, 13, 13),
+                                     border_radius=2)
+                    surface.blit(font.render(label, True, t.hud_text), (x + 20, y))
+                else:
+                    surface.blit(font.render(item, True, t.hud_text), (x, y))
+                y += step
+            y += 8
 
-        surf = body_font.render(
-            "A note's color tells you which string to play — it matches the row.",
-            True, t.hud_text)
-        surface.blit(surf, (lx, y))
-        y += 20
-        surf = body_font.render(
+        block("Reading the Track", [
+            "Notes scroll right-to-left toward the hit zone (white line).",
+            "The number on each note is the fret to press (0 = open).",
+            "Play it as the START of the note reaches the line.",
             "Dimmed notes have already passed the hit zone.",
-            True, t.hud_text)
-        surface.blit(surf, (lx, y))
-        y += 24
+            "A note's colour matches its row, so it names the string.",
+        ])
 
-        # -- Feedback colors --
-        section = section_font.render("Scoring (colors change after you play)", True, t.hud_accent)
-        surface.blit(section, (lx, y))
-        y += 26
+        block("The 6 Rows = 6 Guitar Strings", [
+            (STRING_COLORS.get(s, (180, 180, 180)), label)
+            for s, label in (
+                (1, "Row 1 (top)      = high E  (thinnest)"),
+                (2, "Row 2               = B"),
+                (3, "Row 3               = G"),
+                (4, "Row 4               = D"),
+                (5, "Row 5               = A"),
+                (6, "Row 6 (bottom) = low E  (thickest)"),
+            )
+        ])
 
-        surf = body_font.render(
-            "When audio is on, notes change color after they pass the hit zone:",
-            True, t.hud_text)
-        surface.blit(surf, (lx, y))
-        y += 22
+        block("Bends and Slides", [
+            "An arc curving up off a note is a BEND: fret it, then push",
+            "the string until the pitch rises. The label says how far \u2014",
+            "\u00bd is one fret, 'full' is two. The arc's height says the same.",
+            "A slanted bar between two notes is a SLIDE: strike only the",
+            "first and slide into the second. Rising to the right means",
+            "up the neck. A short stub is a slide off into nothing.",
+            "Both are scored leniently: the pitch has to land in the",
+            "right region, not exactly on the target.",
+        ])
 
-        feedback = [
-            (t.feedback_hit, "Turns green", "you played the correct note"),
-            (t.feedback_close, "Turns yellow", "close, off by 1 semitone"),
-            (t.feedback_miss, "Turns red", "you missed it (not played in time)"),
-        ]
-        for color, label, desc in feedback:
-            pygame.draw.rect(surface, color, (lx + 10, y + 3, 14, 14),
-                             border_radius=2)
-            surf = body_font.render(f"{label} — {desc}", True, t.hud_text)
-            surface.blit(surf, (lx + 30, y))
-            y += 21
-        y += 10
+        block("Scoring (colours change after you play)", [
+            (t.feedback_hit, "Green \u2014 you played the correct note"),
+            (t.feedback_close, "Yellow \u2014 close, off by 1 semitone"),
+            (t.feedback_miss, "Red \u2014 missed, or not played in time"),
+        ])
 
-        # -- Controls --
-        section = section_font.render("Controls", True, t.hud_accent)
-        surface.blit(section, (lx, y))
-        y += 24
+        block("Controls", [
+            "SPACE: play/pause     LEFT/RIGHT: seek     HOME: restart",
+            "A: toggle audio     PgDn/PgUp: tempo     X/C: noise gate",
+            "B: backing track     T: theme     I/O: loop markers",
+            "P: toggle loop     L: loop the weakest part",
+            "F: fret limit     F1-F6: mute a string     V: chord mode",
+            "W: wait mode (holds until you play the right note)",
+            "J: per-string chord check (finds the wrong-fret string)",
+            "K: auto-sync timing     ,/.: nudge sync by 10 ms",
+            "Shift+K: reset sync to 0, if it has run away",
+            "+/-: scroll faster / slower     G: hit window",
+            "N/M: backing track earlier / later",
+            "TAB: choose track     H: this help     ESC: song list",
+        ], font=hint_font, step=17)
 
-        controls = [
-            "SPACE: play/pause    LEFT/RIGHT: seek    HOME: restart",
-            "A: toggle audio    PgDn/PgUp: tempo    X/C: noise gate",
-            "B: backing track    T: theme    I/O: loop markers    P: toggle loop",
-            "F: fret limit    F1-F6: toggle strings    V: chord mode    L: loop weakest",
-            "W: wait mode (pause until correct note played)",
-            "J: per-string chord check (marks the one string on the wrong fret)",
-            "K: auto-sync timing (fixes 'I must play early/late to score')    ,/.: sync by hand",
-            "Shift+K: reset sync to 0 (use when the offset has run away)",
-            "+/-: scroll faster / slower    G: hit window (timing slack)",
-            "N/M: backing track earlier / later (if what you hear and see disagree)",
-            "TAB: choose track (for tabs with more than one playable part)",
-        ]
-        for line in controls:
-            surf = hint_font.render(line, True, t.hud_text)
-            surface.blit(surf, (lx, y))
-            y += 18
-
-        y += 10
         close_surf = hint_font.render("Press H to close", True, t.hud_accent)
-        surface.blit(close_surf, (cx - close_surf.get_width() // 2, y))
+        surface.blit(close_surf, (cx - close_surf.get_width() // 2, h - 20))
 
     # -- Difficulty filter --
 

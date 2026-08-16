@@ -519,3 +519,73 @@ class TestTimingWindowSetter:
         m.timing_window_ms = 50.0
         results = m.process_detected_notes([_detected(64, 1180.0)], 1200.0)
         assert not any(r.match_type == MatchType.HIT for r in results)
+
+
+class TestTechniqueTolerance:
+    """A bend or a slide leaves the written pitch on purpose.
+
+    Scoring it against that one pitch would mark every correctly played bend
+    in a tab as wrong, so the matcher accepts the whole region the technique
+    covers. How far a bend actually went is a separate question.
+    """
+
+    def _bent(self, semitones: float) -> NoteEvent:
+        return NoteEvent(
+            timestamp_ms=1000.0, duration_ms=500.0, midi_note=64,
+            string=1, fret=0,
+            bend=((0.0, 0.0), (0.5, semitones), (1.0, semitones)),
+        )
+
+    def test_pitch_at_the_top_of_a_full_bend_counts_as_a_hit(self):
+        matcher = _make_matcher([self._bent(2.0)])
+        results = matcher.process_detected_notes([_detected(66, 1000.0)], 1000.0)
+        assert results[0].match_type == MatchType.HIT
+
+    def test_pitch_along_the_way_counts_too(self):
+        matcher = _make_matcher([self._bent(2.0)])
+        results = matcher.process_detected_notes([_detected(65, 1000.0)], 1000.0)
+        assert results[0].match_type == MatchType.HIT
+
+    def test_the_written_pitch_still_counts(self):
+        matcher = _make_matcher([self._bent(2.0)])
+        results = matcher.process_detected_notes([_detected(64, 1000.0)], 1000.0)
+        assert results[0].match_type == MatchType.HIT
+
+    def test_past_the_top_of_the_bend_is_no_longer_exact(self):
+        """Tolerant is not unbounded -- two frets over the target is not it."""
+        matcher = _make_matcher([self._bent(2.0)])
+        results = matcher.process_detected_notes([_detected(68, 1000.0)], 1000.0)
+        assert not results or results[0].match_type != MatchType.HIT
+
+    def test_bending_down_is_not_a_thing(self):
+        matcher = _make_matcher([self._bent(2.0)])
+        results = matcher.process_detected_notes([_detected(62, 1000.0)], 1000.0)
+        assert not results or results[0].match_type != MatchType.HIT
+
+    def test_a_plain_note_keeps_its_single_pitch(self):
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        results = matcher.process_detected_notes([_detected(66, 1000.0)], 1000.0)
+        assert not results or results[0].match_type != MatchType.HIT
+
+    def test_slide_covers_the_span_up_to_its_target(self):
+        source = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=64,
+                           string=1, fret=0, slide_to_next=True)
+        target = NoteEvent(timestamp_ms=1400.0, duration_ms=400.0, midi_note=69,
+                           string=1, fret=5)
+        matcher = _make_matcher([source, target])
+        results = matcher.process_detected_notes([_detected(67, 1000.0)], 1000.0)
+        assert results[0].match_type == MatchType.HIT
+
+    def test_slide_off_the_end_allows_a_couple_of_frets(self):
+        note = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=64,
+                         string=1, fret=7, slide_out=1)
+        matcher = _make_matcher([note])
+        results = matcher.process_detected_notes([_detected(66, 1000.0)], 1000.0)
+        assert results[0].match_type == MatchType.HIT
+
+    def test_slide_off_upwards_does_not_excuse_a_lower_pitch(self):
+        note = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=64,
+                         string=1, fret=7, slide_out=1)
+        matcher = _make_matcher([note])
+        results = matcher.process_detected_notes([_detected(62, 1000.0)], 1000.0)
+        assert not results or results[0].match_type != MatchType.HIT

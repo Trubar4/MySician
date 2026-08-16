@@ -37,17 +37,55 @@ def measure_header(number: int, start: int, marker: str | None = None):
     return header
 
 
+def bend(semitones: float):
+    """A bend that rises over the note and holds, for `beat`'s note specs.
+
+    Points are (position 0-12 across the note, value in semitones), which is
+    what pyguitarpro normalises to on both read and write.
+    """
+    effect = gp.BendEffect()
+    effect.type = gp.BendType.bend
+    effect.value = int(round(semitones * 50))   # GP's own 1/50-tone units
+    effect.points = [
+        gp.BendPoint(position=0, value=0),
+        gp.BendPoint(position=6, value=int(round(semitones))),
+        gp.BendPoint(position=12, value=int(round(semitones))),
+    ]
+    return ("bend", effect)
+
+
+def slide(kind: str):
+    """A slide, as one of 'to' (to the next note), 'up' or 'down' (off it)."""
+    return ("slide", {
+        "to": gp.SlideType.shiftSlideTo,
+        "up": gp.SlideType.outUpwards,
+        "down": gp.SlideType.outDownwards,
+        "in_up": gp.SlideType.intoFromBelow,
+        "in_down": gp.SlideType.intoFromAbove,
+    }[kind])
+
+
 def beat(voice, duration_value: int, notes):
-    """One beat. `notes` is a list of (string, fret); empty means a rest."""
+    """One beat. `notes` is a list of (string, fret); empty means a rest.
+
+    A note may carry techniques as (string, fret, effect, ...), where each
+    effect comes from `bend()` or `slide()`.
+    """
     b = gp.Beat(voice=voice)
     b.duration = gp.Duration(duration_value)
     b.notes = []
-    for string, fret in notes:
+    for spec in notes:
+        string, fret, effects = spec[0], spec[1], spec[2:]
         note = gp.Note(beat=b)
         note.value = fret
         note.string = string
         note.velocity = gp.Velocities.forte
         note.type = gp.NoteType.normal
+        for kind, payload in effects:
+            if kind == "bend":
+                note.effect.bend = payload
+            else:
+                note.effect.slides.append(payload)
         b.notes.append(note)
     # Without an explicit status the writer emits the beat as 'empty' and the
     # reader then folds a whole bar's beats into one beat carrying every note.

@@ -80,6 +80,19 @@ tab as a prior. For each expected note it scores competing pitch hypotheses on t
   which the calibration needs. Current state on that set: 33 strings judged, 0 false alarms, 7/7 deliberate one-fret errors caught at the full
   window, and 0 false alarms at every window length down to 280 ms.
 
+## Bends and Slides
+
+`NoteEvent` carries the technique the tab wrote: `bend` as ((position 0..1, semitones), ...), plus `slide_to_next`, `slide_in` and
+`slide_out`. Extracted in `tabs/loader.py` from pyguitarpro's already-normalised bend points; the hand-written GP7 XML path does not carry
+them yet.
+
+- **Drawn, then scored leniently.** The arc's height and its ½ / full label both say how far to bend; a slanted connector spanning the gap
+  between two heads says which way the finger travels. Scoring accepts the whole region the technique covers (`_build_pitch_ranges`), because
+  a bend that leaves the written pitch is the point of a bend — judging how FAR it went needs a pitch contour the detector does not produce
+  yet, and being strict before then turns every bend in a tab red.
+- **A sliding note gives up part of its sustain** so the connector has somewhere to be; back-to-back notes otherwise leave a few pixels.
+- `tools/make_technique_test.py` writes a GP5 that states exactly which bend and slide is where, so a wrong drawing is the app's fault.
+
 ## pyguitarpro Data Extraction
 
 GP file → iterate tracks → find guitar track(s) → iterate measures → beats → notes:

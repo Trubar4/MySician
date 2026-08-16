@@ -26,6 +26,11 @@ from pickhero.tabs.timeline import NoteEvent, Timeline
 # window by definition).
 LATENCY_SEARCH_MS = 500.0
 
+# How far a slide with no written target is allowed to travel before the
+# pitch counts as a different note. Slides off the end of a phrase have no
+# destination in the tab, so the only honest bound is a generous one.
+OPEN_SLIDE_SEMITONES = 2
+
 
 class MatchType(Enum):
     PENDING = "pending"
@@ -100,6 +105,53 @@ class NoteMatcher:
         self._pending_verifications: dict[int, list[NoteEvent]] = {}
         self.chord_verifications = 0
         self.chord_strings_corrected = 0
+
+        self._pitch_ranges = self._build_pitch_ranges(timeline)
+
+    @staticmethod
+    def _build_pitch_ranges(timeline: Timeline) -> dict[tuple[float, int], tuple[int, int]]:
+        """Pitches each note may legitimately sound, beyond its written one.
+
+        A bend or a slide deliberately leaves the written pitch, so scoring
+        against that pitch alone marks correctly played technique as wrong.
+        Only notes that carry a technique get an entry; everything else keeps
+        the plain single-pitch comparison.
+
+        Tolerant on purpose. Judging how FAR a bend went is a separate
+        problem, and being strict about it before it can be measured would
+        turn every bend in a tab red.
+        """
+        by_string: dict[int, list[NoteEvent]] = {}
+        for note in timeline.notes:
+            by_string.setdefault(note.string, []).append(note)
+        for group in by_string.values():
+            group.sort(key=lambda n: n.timestamp_ms)
+
+        ranges: dict[tuple[float, int], tuple[int, int]] = {}
+        for group in by_string.values():
+            for i, note in enumerate(group):
+                low = high = note.midi_note
+                if note.bend:
+                    high += int(math.ceil(note.bend_semitones))
+                if note.slide_out > 0 or note.slide_in < 0:
+                    high += OPEN_SLIDE_SEMITONES
+                if note.slide_out < 0 or note.slide_in > 0:
+                    low -= OPEN_SLIDE_SEMITONES
+                if note.slide_to_next and i + 1 < len(group):
+                    target = group[i + 1].midi_note
+                    low, high = min(low, target), max(high, target)
+                if (low, high) != (note.midi_note, note.midi_note):
+                    ranges[(note.timestamp_ms, note.string)] = (low, high)
+        return ranges
+
+    def _pitch_distance(self, detected_midi: int, note: NoteEvent) -> int:
+        """Semitones from a detected pitch to the nearest one `note` allows."""
+        low, high = self._pitch_ranges.get(
+            (note.timestamp_ms, note.string), (note.midi_note, note.midi_note)
+        )
+        if low <= detected_midi <= high:
+            return 0
+        return min(abs(detected_midi - low), abs(detected_midi - high))
 
     @property
     def audio_offset_ms(self) -> float:
@@ -273,7 +325,7 @@ class NoteMatcher:
             best = None
             best_dist = None
             for note in pending:
-                dist = semitone_distance(detected_midi, note.midi_note)
+                dist = self._pitch_distance(detected_midi, note)
                 # Octave equivalence: if off by ~12 semitones, treat as 0
                 octave_dist = dist % 12 if dist >= 12 else dist
                 effective = min(dist, octave_dist)

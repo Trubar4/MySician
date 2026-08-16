@@ -660,3 +660,123 @@ class TestTrackPicker:
         screen.handle_event(self._key(pygame.K_DOWN))
         assert screen.handle_event(self._key(pygame.K_ESCAPE)) is None
         assert not screen._track_menu_open
+
+
+class TestBendDrawing:
+    def test_label_counts_steps_not_semitones(self):
+        # Guitar notation: one semitone is a half bend, two is 'full'.
+        assert PlayingScreen.bend_label(1) == "½"
+        assert PlayingScreen.bend_label(2) == "full"
+        assert PlayingScreen.bend_label(3) == "1½"
+        assert PlayingScreen.bend_label(4) == "2"
+
+    def test_no_label_without_a_bend(self):
+        assert PlayingScreen.bend_label(0) == ""
+
+    def _curve(self, bend, lane_height=50.0):
+        note = NoteEvent(timestamp_ms=0.0, duration_ms=500.0, midi_note=64,
+                         string=1, fret=0, bend=bend)
+        return PlayingScreen._bend_points(note, 100.0, 200.0, 80.0, lane_height)
+
+    def test_curve_starts_on_the_string_and_rises(self):
+        points = self._curve(((0.0, 0.0), (0.5, 2.0), (1.0, 2.0)))
+        assert points[0] == pytest.approx((100.0, 200.0))
+        assert min(p[1] for p in points) < 200.0     # screen y grows downward
+
+    def test_curve_spans_the_width_it_is_given(self):
+        points = self._curve(((0.0, 0.0), (1.0, 2.0)))
+        assert points[-1][0] == pytest.approx(180.0)
+
+    def test_a_missing_start_point_is_supplied(self):
+        """GP files routinely omit (0, 0); without it the arc floats."""
+        points = self._curve(((0.5, 2.0), (1.0, 2.0)))
+        assert points[0][1] == pytest.approx(200.0)
+
+    def test_a_deeper_bend_rises_further(self):
+        half = min(p[1] for p in self._curve(((0.0, 0.0), (1.0, 1.0))))
+        full = min(p[1] for p in self._curve(((0.0, 0.0), (1.0, 2.0))))
+        assert full < half
+
+    def test_rise_is_capped_so_it_cannot_climb_two_strings(self):
+        lane = 50.0
+        deep = min(p[1] for p in self._curve(((0.0, 0.0), (1.0, 8.0)), lane))
+        assert 200.0 - deep <= lane * 2
+
+
+class TestSlideTargets:
+    def test_finds_the_next_note_on_the_same_string(self):
+        first = NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,
+                          string=1, fret=0, slide_to_next=True)
+        second = NoteEvent(timestamp_ms=500.0, duration_ms=100.0, midi_note=69,
+                           string=1, fret=5)
+        other = NoteEvent(timestamp_ms=200.0, duration_ms=100.0, midi_note=59,
+                          string=2, fret=0)
+        found = PlayingScreen._next_on_string([first, other, second])
+        assert found[(0.0, 1)] is second
+
+    def test_a_chord_partner_is_not_a_slide_target(self):
+        """Same string, same instant cannot be where a slide is going."""
+        a = NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,
+                      string=1, fret=0)
+        b = NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,
+                      string=1, fret=0)
+        assert PlayingScreen._next_on_string([a, b]) == {}
+
+    def test_the_last_note_has_nowhere_to_slide(self):
+        only = NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,
+                         string=1, fret=0, slide_to_next=True)
+        assert PlayingScreen._next_on_string([only]) == {}
+
+
+class TestFooterCompleteness:
+    """Every key the screen answers has to be written somewhere on it.
+
+    This reads handle_event's own source rather than a hand-kept list, so
+    adding a shortcut and forgetting to document it fails here instead of
+    quietly shipping a key nobody can find.
+    """
+
+    # pygame constant suffix -> the text the footer must contain for it
+    LABELS = {
+        "SPACE": "SPACE", "ESCAPE": "ESC", "LEFT": "LEFT", "RIGHT": "RIGHT",
+        "HOME": "HOME", "PAGEDOWN": "PgDn", "PAGEUP": "PgUp", "TAB": "TAB",
+        "a": "A: audio", "b": "B: backing", "c": "X/C", "f": "F: frets",
+        "g": "G: hit window", "h": "H: help", "i": "I/O", "j": "J: strings",
+        "k": "K: sync", "l": "L: weakest", "m": "N/M", "n": "N/M",
+        "o": "I/O", "p": "P: toggle", "t": "T: theme", "v": "V: chords",
+        "w": "W: wait", "x": "X/C",
+        "COMMA": ",/.", "PERIOD": ",/.",
+        "PLUS": "+/-", "EQUALS": "+/-", "MINUS": "+/-",
+        "KP_PLUS": "+/-", "KP_MINUS": "+/-",
+        "F1": "F1-F6", "F2": "F1-F6", "F3": "F1-F6",
+        "F4": "F1-F6", "F5": "F1-F6", "F6": "F1-F6",
+    }
+
+    def _keys_handled(self) -> set[str]:
+        import inspect
+        import re
+        source = inspect.getsource(PlayingScreen.handle_event)
+        return set(re.findall(r"pygame\.K_(\w+)", source))
+
+    def test_every_handled_key_is_in_the_footer(self):
+        screen = PlayingScreen(_make_timeline())
+        footer = "  ".join(screen._footer_lines())
+        missing = []
+        for key in sorted(self._keys_handled()):
+            assert key in self.LABELS, f"new key K_{key} has no footer label"
+            if self.LABELS[key] not in footer:
+                missing.append(key)
+        assert missing == [], f"undocumented keys: {missing}"
+
+    def test_footer_keeps_the_keys_when_nothing_is_loaded(self):
+        """No backing track still means B is bound, so B stays listed."""
+        screen = PlayingScreen(_make_timeline())
+        assert screen._midi_player is None
+        footer = "  ".join(screen._footer_lines())
+        assert "B: backing" in footer and "W: wait" in footer
+
+    def test_footer_reports_the_state_it_shows(self):
+        screen = PlayingScreen(_make_timeline())
+        assert "Paused" in screen._footer_lines()[0]
+        screen.toggle_play()
+        assert "Paused" not in screen._footer_lines()[0]

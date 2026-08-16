@@ -105,6 +105,51 @@ def _extract_tuning(track: guitarpro.Track) -> dict[int, int]:
     return {i + 1: s.value for i, s in enumerate(track.strings)}
 
 
+# pyguitarpro normalises bend points to 0..12 across the note and its values
+# to semitones, so both only need scaling into the shapes NoteEvent wants.
+_BEND_MAX_POSITION = 12.0
+
+# guitarpro.models.SlideType, spelled out so a missing enum member cannot
+# silently turn a slide into no slide.
+_SLIDE_INTO_FROM_ABOVE = -2
+_SLIDE_INTO_FROM_BELOW = -1
+_SLIDE_SHIFT_TO = 1
+_SLIDE_LEGATO_TO = 2
+_SLIDE_OUT_DOWNWARDS = 3
+_SLIDE_OUT_UPWARDS = 4
+
+
+def _extract_bend(note) -> tuple[tuple[float, float], ...]:
+    """The bend curve as ((position 0..1, semitones), ...), () if unbent."""
+    effect = getattr(note, "effect", None)
+    bend = getattr(effect, "bend", None) if effect is not None else None
+    points = getattr(bend, "points", None) if bend is not None else None
+    if not points:
+        return ()
+    curve = tuple(
+        (min(1.0, max(0.0, p.position / _BEND_MAX_POSITION)), float(p.value))
+        for p in points
+    )
+    # A curve that never leaves zero is a bend the tab declares and does not
+    # use; drawing an arc of no height would only add noise.
+    return curve if any(v > 0 for _, v in curve) else ()
+
+
+def _extract_slides(note) -> tuple[bool, int, int]:
+    """(slide_to_next, slide_in, slide_out) for one note."""
+    effect = getattr(note, "effect", None)
+    slides = getattr(effect, "slides", None) if effect is not None else None
+    if not slides:
+        return False, 0, 0
+    values = {getattr(s, "value", s) for s in slides}
+    to_next = bool(values & {_SLIDE_SHIFT_TO, _SLIDE_LEGATO_TO})
+    slide_in = (1 if _SLIDE_INTO_FROM_BELOW in values
+                else -1 if _SLIDE_INTO_FROM_ABOVE in values else 0)
+    slide_out = (1 if _SLIDE_OUT_UPWARDS in values
+                 else -1 if _SLIDE_OUT_DOWNWARDS in values else 0)
+    return to_next, slide_in, slide_out
+
+
 def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap) -> list[NoteEvent]:
     """Extract all playable notes from a track."""
     notes = []
@@ -119,6 +164,7 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap) -> list[NoteEven
                     # Keep normal (1) and dead (3), skip rest (0) and tie (2)
                     if note.type.value not in (1, 3):
                         continue
+                    to_next, slide_in, slide_out = _extract_slides(note)
                     notes.append(
                         NoteEvent(
                             timestamp_ms=timestamp_ms,
@@ -127,6 +173,10 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap) -> list[NoteEven
                             string=note.string,
                             fret=note.value,
                             measure=measure_idx,
+                            bend=_extract_bend(note),
+                            slide_to_next=to_next,
+                            slide_in=slide_in,
+                            slide_out=slide_out,
                         )
                     )
     return notes
@@ -409,6 +459,10 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                         if not 0 <= midi_note <= 127:
                             continue
 
+                        # No bend or slide here: this path parses GP7's own XML
+                        # by hand, where techniques live in a separate
+                        # <Properties> block per note. Left for when a GP7 tab
+                        # actually needs them -- GP3-5 go through pyguitarpro.
                         note_events.append(NoteEvent(
                             timestamp_ms=beat_pos_ms,
                             duration_ms=dur_ms,

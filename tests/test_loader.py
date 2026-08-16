@@ -187,3 +187,54 @@ class TestLoadGPFile:
             assert tl.duration_ms > 0
             for note in tl.notes:
                 assert note.duration_ms > 0, f"{fname}: note with 0 duration"
+
+
+class TestTechniques:
+    """Bends and slides survive the trip out of a GP file.
+
+    Uses the checked-in fixtures rather than a generated file: they were
+    written by Guitar Pro itself, so they exercise the encoding the app will
+    actually meet rather than the one this project happens to write.
+    """
+
+    def test_shift_slide_marks_the_source_note(self):
+        notes = load_gp_file(FIXTURES / "Slides.gp5").notes
+        assert notes[0].slide_to_next
+        # the target is the next note on that string, and carries no slide
+        assert not notes[1].slide_to_next
+
+    def test_slide_into_a_note_records_its_direction(self):
+        notes = load_gp_file(FIXTURES / "Slides.gp5").notes
+        from_below = [n for n in notes if n.slide_in > 0]
+        from_above = [n for n in notes if n.slide_in < 0]
+        assert from_below and from_above
+
+    def test_slide_off_a_note_records_its_direction(self):
+        notes = load_gp_file(FIXTURES / "Slides.gp5").notes
+        assert [n for n in notes if n.slide_out > 0]
+        assert [n for n in notes if n.slide_out < 0]
+
+    def test_a_note_can_be_slid_into_and_out_of(self):
+        notes = load_gp_file(FIXTURES / "Slides.gp5").notes
+        assert [n for n in notes if n.slide_in and n.slide_out]
+
+    def test_bend_depth_comes_through_in_semitones(self):
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        bent = [n for n in notes if n.bend]
+        assert bent, "Effects.gp5 is the fixture that has a bend"
+        assert bent[0].bend_semitones == pytest.approx(4.0)
+
+    def test_bend_curve_starts_at_zero_and_is_ordered(self):
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        curve = [n for n in notes if n.bend][0].bend
+        positions = [p for p, _ in curve]
+        assert positions[0] == pytest.approx(0.0)
+        assert positions == sorted(positions)
+        assert max(positions) <= 1.0
+
+    def test_plain_notes_carry_no_technique(self):
+        """Guards the default: everything decorated is as wrong as nothing."""
+        for note in load_gp_file(FIXTURES / "notes.gp5").notes:
+            assert note.bend == ()
+            assert not note.slide_to_next
+            assert note.slide_in == 0 and note.slide_out == 0
