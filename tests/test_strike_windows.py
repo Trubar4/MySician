@@ -6,14 +6,19 @@ plain bookkeeping, and the matcher is exercised with a stub verifier so the
 integration is tested independently of the signal processing.
 """
 
+import queue
+
 import numpy as np
 import pytest
 
-from pickhero.audio.chord_verify import StringVerdict
+from pickhero.audio.chord_verify import (
+    StringVerdict, guard_samples, min_window_samples, samples_needed,
+    skip_samples, window_samples,
+)
 from pickhero.audio.detector import DetectedNote
 from pickhero.audio.input import (
-    MAX_QUEUED_WINDOWS, OnsetPitchCollector, StrikeWindow, TimestampedNote,
-    _AudioRing,
+    MAX_QUEUED_WINDOWS, RING_SECONDS, AudioCapture, OnsetPitchCollector,
+    StrikeWindow, TimestampedNote, _AudioRing,
 )
 from pickhero.matcher import MatchType, NoteMatcher
 from pickhero.tabs.timeline import NoteEvent, Timeline
@@ -118,6 +123,118 @@ def _strike(midi, timestamp_ms, sample_pos):
 
 def _window(sample_pos, sample_rate=48000):
     return StrikeWindow(1000.0, sample_pos, np.zeros(16384, dtype=np.float32), sample_rate)
+
+
+SR = 48000
+
+
+def _capture(sample_rate=SR):
+    """An AudioCapture with only the window bookkeeping wired up.
+
+    Deliberately not constructed through __init__: that builds an aubio
+    detector and probes the audio device, and none of the window arithmetic
+    below needs either.
+    """
+    cap = AudioCapture.__new__(AudioCapture)
+    cap._sample_rate = sample_rate
+    cap._ring = _AudioRing(int(sample_rate * RING_SECONDS))
+    cap._pending_windows = []
+    cap.strike_queue = queue.Queue()
+    return cap
+
+
+def _ms(milliseconds, sample_rate=SR):
+    return int(round(milliseconds / 1000.0 * sample_rate))
+
+
+def _fill(cap, samples):
+    cap._ring.push(np.ones(samples, dtype=np.float32))
+
+
+class TestWindowTruncation:
+    """A verification window must never reach into the following chord.
+
+    That is what made fast chord changes report wrong strings: the audio
+    handed to the verifier held the NEXT chord's pitches, which the tab does
+    not expect at that point, so correctly played strings were convicted.
+    """
+
+    def test_full_window_when_nothing_follows(self):
+        cap = _capture()
+        cap._pending_windows.append([0.0, 0, window_samples(SR)])
+        _fill(cap, samples_needed(SR))
+        cap._emit_ready_windows()
+        assert len(cap.get_strike_windows()[0].audio) == window_samples(SR)
+
+    def test_next_strike_cuts_the_window_short(self):
+        cap = _capture()
+        cap._pending_windows.append([0.0, 0, window_samples(SR)])
+        cap._limit_pending_windows(_ms(360))
+        _fill(cap, samples_needed(SR))
+        cap._emit_ready_windows()
+
+        got = cap.get_strike_windows()
+        assert len(got) == 1
+        assert len(got[0].audio) < window_samples(SR)
+
+    def test_window_stops_before_the_next_strike(self):
+        cap = _capture()
+        next_pos = _ms(360)
+        cap._pending_windows.append([0.0, 0, window_samples(SR)])
+        cap._limit_pending_windows(next_pos)
+        _fill(cap, samples_needed(SR))
+        cap._emit_ready_windows()
+
+        audio = cap.get_strike_windows()[0].audio
+        assert skip_samples(SR) + len(audio) <= next_pos - guard_samples(SR)
+
+    def test_chord_too_close_to_the_next_gets_no_window(self):
+        """Below the floor there is no honest verdict, so no window is cut."""
+        cap = _capture()
+        cap._pending_windows.append([0.0, 0, window_samples(SR)])
+        cap._limit_pending_windows(_ms(200))
+        assert cap._pending_windows == []
+
+        _fill(cap, samples_needed(SR) * 2)
+        cap._emit_ready_windows()
+        assert cap.get_strike_windows() == []
+
+    def test_trimming_only_ever_shortens(self):
+        cap = _capture()
+        cap._pending_windows.append([0.0, 0, window_samples(SR)])
+        cap._limit_pending_windows(_ms(360))
+        trimmed = cap._pending_windows[0][2]
+        cap._limit_pending_windows(_ms(900))     # a later strike, far away
+        assert cap._pending_windows[0][2] == trimmed
+
+    def test_a_trimmed_window_is_emitted_as_soon_as_it_is_full(self):
+        """It must not wait for audio it no longer needs."""
+        cap = _capture()
+        cap._pending_windows.append([0.0, 0, window_samples(SR)])
+        cap._limit_pending_windows(_ms(360))
+        needed = skip_samples(SR) + cap._pending_windows[0][2]
+        _fill(cap, needed)
+        cap._emit_ready_windows()
+        assert len(cap.get_strike_windows()) == 1
+
+    def test_only_earlier_strikes_are_trimmed(self):
+        cap = _capture()
+        cap._pending_windows.append([0.0, _ms(1000), window_samples(SR)])
+        cap._limit_pending_windows(_ms(500))     # an onset BEFORE it: bogus
+        # nothing survives a negative gap, which is the safe outcome
+        assert cap._pending_windows == []
+
+    def test_floor_is_what_decides_the_drop(self):
+        cap = _capture()
+        floor = min_window_samples(SR)
+        just_enough = skip_samples(SR) + floor + guard_samples(SR)
+        cap._pending_windows.append([0.0, 0, window_samples(SR)])
+        cap._limit_pending_windows(just_enough)
+        assert cap._pending_windows[0][2] == floor
+
+        cap._pending_windows = [[0.0, 0, window_samples(SR)]]
+        cap._limit_pending_windows(just_enough - 1)
+        assert cap._pending_windows == []
 
 
 class TestMatcherVerification:

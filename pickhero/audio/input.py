@@ -13,7 +13,7 @@ import numpy as np
 import sounddevice as sd
 
 from pickhero.audio.chord_verify import (
-    samples_needed, skip_samples, window_samples,
+    guard_samples, min_window_samples, skip_samples, window_samples,
 )
 from pickhero.audio.detector import PitchDetector, DetectedNote
 from pickhero.audio.note_utils import (
@@ -44,8 +44,10 @@ class TimestampedNote:
 class StrikeWindow:
     """Raw audio just after a strike, for per-string chord verification.
 
-    Emitted ~380 ms after the strike (the verifier needs a 341 ms window to
-    resolve a semitone), so it always trails the strike note it belongs to.
+    Emitted up to ~380 ms after the strike (the verifier wants a 341 ms window
+    to resolve a semitone), so it always trails the strike note it belongs to.
+    On a fast passage it is cut short at the next strike and arrives sooner;
+    if that leaves too little to judge, no window is emitted at all.
 
     Matched back to its strike by sample_pos, not by timestamp: the UI scales
     note timestamps by the tempo factor and overwrites them entirely in wait
@@ -233,7 +235,9 @@ class AudioCapture:
         # from note_queue because they trail their strike by ~380 ms.
         self.strike_queue: queue.Queue[StrikeWindow] = queue.Queue()
         self._ring = _AudioRing(int(ac.sample_rate * RING_SECONDS))
-        self._pending_windows: list[tuple[float, int]] = []
+        # [timestamp_ms, sample_pos, length] — length shrinks when a following
+        # strike arrives before the full window has been collected.
+        self._pending_windows: list[list[float]] = []
         self._sample_rate: int = int(ac.sample_rate)
         self._stream: sd.InputStream | None = None
         self._signal_db: float = -120.0
@@ -292,8 +296,14 @@ class AudioCapture:
                 self.note_queue.put(strike)
                 if strike.sample_pos is not None:
                     self._pending_windows.append(
-                        (strike.timestamp_ms, strike.sample_pos)
+                        [strike.timestamp_ms, strike.sample_pos,
+                         window_samples(self._sample_rate)]
                     )
+
+            # Order matters: the strike above is the one this onset just
+            # closed, so it has to be in the list before being trimmed.
+            if self.detector.last_is_onset:
+                self._limit_pending_windows(base + i)
 
             # Sustained pitch stream (tuner, console, wait mode) — onset
             # flag cleared so strikes are only reported by the collector
@@ -303,18 +313,40 @@ class AudioCapture:
 
         self._emit_ready_windows()
 
+    def _limit_pending_windows(self, next_pos: int) -> None:
+        """Cut earlier strikes' windows short so they end before this one.
+
+        A window that runs into the following chord contains pitches the tab
+        never expected there, and the verifier would convict strings that were
+        played correctly — exactly what fast chord changes were doing. Trim to
+        the gap actually available, and drop the strike entirely when the gap
+        is too small to judge: no verdict beats a wrong one.
+        """
+        if not self._pending_windows:
+            return
+        sr = self._sample_rate
+        skip = skip_samples(sr)
+        limit = next_pos - guard_samples(sr)
+        floor = min_window_samples(sr)
+        kept = []
+        for entry in self._pending_windows:
+            start = int(entry[1]) + skip
+            entry[2] = min(int(entry[2]), limit - start)
+            if entry[2] >= floor:
+                kept.append(entry)
+        self._pending_windows = kept
+
     def _emit_ready_windows(self) -> None:
         """Publish verification windows whose audio has fully arrived."""
         if not self._pending_windows:
             return
         sr = self._sample_rate
-        need = samples_needed(sr)
         skip = skip_samples(sr)
-        length = window_samples(sr)
         still_waiting = []
-        for t_ms, pos in self._pending_windows:
-            if self._ring.written < pos + need:
-                still_waiting.append((t_ms, pos))
+        for entry in self._pending_windows:
+            t_ms, pos, length = entry[0], int(entry[1]), int(entry[2])
+            if self._ring.written < pos + skip + length:
+                still_waiting.append(entry)
                 continue
             audio = self._ring.read(pos + skip, length)
             if audio is not None:

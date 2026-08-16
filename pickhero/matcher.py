@@ -369,9 +369,17 @@ class NoteMatcher:
         shows a different pitch on it. A string whose expected note cannot be
         confirmed (an octave or fifth of a lower string already sounding) is
         left alone, so absence of evidence is never treated as a wrong note.
+
+        A chord played too close to the next one never gets a window at all —
+        the audio thread drops it rather than hand over a window polluted by
+        the following chord — so pending entries have to be pruned even on a
+        call with nothing to apply.
         """
         results: list[MatchResult] = []
-        if self._chord_verifier is None or not windows:
+        if self._chord_verifier is None:
+            return results
+        if not windows:
+            self._prune_pending_verifications()
             return results
 
         for window in windows:

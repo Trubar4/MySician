@@ -68,10 +68,17 @@ tab as a prior. For each expected note it scores competing pitch hypotheses on t
   one. A string whose expected note is an octave or fifth of a lower string in the same chord can never be confirmed (its partials are a strict
   subset of one already sounding); judging it anyway means ranking noise, which is exactly how the first calibration produced false alarms.
   This also reproduces the familiar behaviour that omitting a string from an open chord still passes.
-- **Needs 341 ms of audio after the strike**, so chord verdicts trail the pitch path by ~380 ms and can only downgrade what it already credited.
+- **Wants 341 ms of audio after the strike**, so chord verdicts trail the pitch path by ~380 ms and can only downgrade what it already credited.
   `AudioCapture` keeps a ring buffer and emits one `StrikeWindow` per strike; the matcher applies verdicts in `process_strike_windows`.
-- **Thresholds are calibrated, not guessed** — see `tools/analyze_reference.py` and `reference_recordings/`. Re-fit them with real takes rather
-  than tuning by feel; `tools/record_reference.py` records a labelled set including deliberately wrong takes, which the calibration needs.
+- **The window ends at the next strike.** A window running into the following chord contains pitches the tab never expected there, and convicts
+  strings that were played right — that is what made fast chord changes light up red. `_limit_pending_windows` trims to the gap actually
+  available; under `MIN_WINDOW_MS` (280 ms, so chords closer than ~335 ms) the strike is dropped and gets no verdict at all. Two things keep a
+  trimmed window honest: the analysis floor rises with `MIN_HZ_SECONDS / T`, since a short window cannot separate a semitone low down; and the
+  intruder tier — the one that convicts a string whose expected note is masked — is allowed only at the full length, having been fitted there.
+- **Thresholds are calibrated, not guessed** — see `tools/analyze_reference.py`, `tools/sweep_chord_window.py` and `reference_recordings/`.
+  Re-fit them with real takes rather than tuning by feel; `tools/record_reference.py` records a labelled set including deliberately wrong takes,
+  which the calibration needs. Current state on that set: 33 strings judged, 0 false alarms, 7/7 deliberate one-fret errors caught at the full
+  window, and 0 false alarms at every window length down to 280 ms.
 
 ## pyguitarpro Data Extraction
 

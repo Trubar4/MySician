@@ -18,9 +18,19 @@ ranking noise, which is exactly how the first calibration run produced false
 alarms. Where the expected note is masked, a foreign pitch is still plainly
 visible, so a second tier flags an intruder that clears a stricter level.
 
+The window is as long as the playing allows. 341 ms is what a semitone needs
+to separate cleanly, but a chord struck sooner than that cuts it short, and a
+window running into the NEXT chord contains pitches the tab never expected
+there -- which convicts strings that were played correctly. So the caller
+truncates at the following strike, and two things keep the short window
+honest: the analysis floor rises as it shortens, and the intruder tier is
+withheld, having been fitted at the full length. Below MIN_WINDOW_MS the
+chord gets no verdict at all.
+
 Thresholds were fitted on reference_recordings/20260814_160019 (clean DI,
 Focusrite, 48 kHz): 7/7 deliberate one-fret errors caught, 0 false alarms
-over 33 confidently judged strings. See tools/analyze_reference.py.
+over 33 confidently judged strings, and 0 false alarms at every window length
+down to 280 ms. See tools/analyze_reference.py and tools/sweep_chord_window.py.
 
 Pure numpy: no aubio, no pygame, so it stays testable without audio hardware.
 """
@@ -41,6 +51,17 @@ WINDOW_MS = 341.0
 # have decayed substantially by 120 ms.
 SKIP_MS = 40.0
 
+# Shortest window still worth judging, from tools/sweep_chord_window.py over
+# the reference takes: no false alarm at 280 ms or above, the first ones at
+# 270 and below. Under this floor a chord gets NO verdict rather than a guess
+# -- the same presumption of innocence that protects a masked string protects
+# a rushed one. It means chords struck less than ~335 ms apart (skip + window
+# + guard) simply are not judged, which is the honest answer at that speed.
+MIN_WINDOW_MS = 280.0
+# Pulled back from the next strike so its attack transient stays out of the
+# window. One hop at 48 kHz is ~11 ms; 15 ms covers the detector's grid.
+NEXT_STRIKE_GUARD_MS = 15.0
+
 # Half-width of the search window around a partial. Wide enough to absorb a
 # guitar tuned ~20 cents flat plus string inharmonicity, narrow enough not to
 # reach the neighbouring semitone 100 cents away.
@@ -48,8 +69,16 @@ CENTS_WIN = 45.0
 # Two partials closer than this count as shared, so neither identifies a note.
 SEP_CENTS = 60.0
 N_HARM = 14
-# Below this the FFT grid is too coarse for the partial window to be reliable.
-MIN_HZ = 150.0
+# Partials below MIN_HZ_SECONDS / window_seconds are too coarsely resolved to
+# tell a semitone apart, so the analysis starts above that -- and the floor
+# rises as the window gets shorter. Derived and then confirmed: a partial's
+# Hann main lobe is ~2/T Hz wide and has to stay outside the +-45 cent band
+# around the neighbouring semitone, which needs f*T > ~61.
+# tools/sweep_chord_window.py agrees -- at 61 the reference takes give 0 false
+# alarms at every window length from 280 ms up, and the full window behaves
+# exactly as originally calibrated (33 strings judged, 7/7 errors caught). The
+# fixed 150 Hz this replaced was right at 341 ms but lies at 320 and 300.
+MIN_HZ_SECONDS = 61.0
 
 # Decision thresholds, all in dB below the frame's strongest peak.
 PRESENT_DB = -32.0    # genuine detections landed at -3..-30, noise at -36..-39
@@ -88,13 +117,36 @@ def window_samples(sample_rate: int) -> int:
     return int(round(WINDOW_MS / 1000.0 * sample_rate))
 
 
+def min_window_samples(sample_rate: int) -> int:
+    """Shortest window that still earns a verdict."""
+    return int(round(MIN_WINDOW_MS / 1000.0 * sample_rate))
+
+
 def skip_samples(sample_rate: int) -> int:
     return int(round(SKIP_MS / 1000.0 * sample_rate))
+
+
+def guard_samples(sample_rate: int) -> int:
+    return int(round(NEXT_STRIKE_GUARD_MS / 1000.0 * sample_rate))
 
 
 def samples_needed(sample_rate: int) -> int:
     """Audio required after a strike before it can be verified."""
     return skip_samples(sample_rate) + window_samples(sample_rate)
+
+
+def min_hz_for(window_len: int, sample_rate: int) -> float:
+    """Lowest partial frequency this window length can still resolve.
+
+    A short window smears neighbouring semitones into one peak at low
+    frequencies, so the partials that carry the decision have to be taken
+    from higher up the series. Returning a higher floor is what keeps a
+    truncated window honest instead of merely faster.
+    """
+    seconds = window_len / float(sample_rate) if sample_rate > 0 else 0.0
+    if seconds <= 0:
+        return float("inf")
+    return MIN_HZ_SECONDS / seconds
 
 
 class ChordVerifier:
@@ -126,7 +178,7 @@ class ChordVerifier:
 
     def _score(
         self, freqs: np.ndarray, mags: np.ndarray, peak: float,
-        cand: int, others: list[int], sample_rate: int,
+        cand: int, others: list[int], sample_rate: int, min_hz: float,
     ) -> float | None:
         """Evidence for `cand` in dB below the frame peak.
 
@@ -141,7 +193,7 @@ class ChordVerifier:
         ]
         vals = []
         for fh in self._partial_freqs(cand, sample_rate, N_HARM):
-            if fh < MIN_HZ:
+            if fh < min_hz:
                 continue
             if any(abs(1200 * np.log2(fh / tf)) < SEP_CENTS for tf in theirs):
                 continue
@@ -171,8 +223,22 @@ class ChordVerifier:
             {expected_midi: StringVerdict}, one entry per distinct expected note.
         """
         expected = sorted(set(expected_midi))
-        if len(audio) < 1024 or len(expected) < 2:
+        if len(expected) < 2:
             return {}
+        # Too short to separate a semitone anywhere useful. The caller hands
+        # over whatever fits before the next strike, so this is the case of
+        # chords played faster than they can be told apart -- no verdict.
+        if len(audio) < min_window_samples(sample_rate):
+            return {}
+        min_hz = min_hz_for(len(audio), sample_rate)
+        # The intruder tier convicts a string whose expected note cannot be
+        # confirmed at all, on the strength of what it hears instead. That is
+        # the thinnest evidence the verifier ever acts on, and it was fitted
+        # at the full window; on a shortened one the raised floor leaves it
+        # only a couple of partials to work from, and it was the sole source
+        # of false alarms in the length sweep. Truncated windows get the
+        # direct tier only.
+        allow_intruder = len(audio) >= window_samples(sample_rate)
 
         window = np.asarray(audio, dtype=np.float64)
         window = window * np.hanning(len(window))
@@ -185,13 +251,17 @@ class ChordVerifier:
             others = [o for o in expected if o != target]
             scores: dict[int, float] = {}
             for cand in range(target - self.span, target + self.span + 1):
-                s = self._score(freqs, mags, peak, cand, others, sample_rate)
+                s = self._score(
+                    freqs, mags, peak, cand, others, sample_rate, min_hz
+                )
                 if s is not None:
                     scores[cand] = s
-            verdicts[target] = self._decide(target, scores)
+            verdicts[target] = self._decide(target, scores, allow_intruder)
         return verdicts
 
-    def _decide(self, target: int, scores: dict[int, float]) -> StringVerdict:
+    def _decide(
+        self, target: int, scores: dict[int, float], allow_intruder: bool = True,
+    ) -> StringVerdict:
         if not scores:
             return StringVerdict(target, None, -120.0, 0.0, "")
         ranked = sorted(scores.items(), key=lambda kv: -kv[1])
@@ -202,7 +272,8 @@ class ChordVerifier:
         if target not in scores:
             # Expected note is masked by an octave/fifth already sounding: it
             # can never be confirmed, but an intruder still shows up loudly.
-            if best_midi != target and best_db > self.intruder_db and margin > self.margin_db:
+            if (allow_intruder and best_midi != target
+                    and best_db > self.intruder_db and margin > self.margin_db):
                 return StringVerdict(target, best_midi, best_db, margin, "intruder")
             return StringVerdict(target, None, best_db, margin, "")
 

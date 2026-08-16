@@ -33,7 +33,10 @@ CENTS_WIN = 45         # absorbs this guitar being ~19 cents flat, plus
                        # semitone (100 cents away)
 SEP_CENTS = 60         # two partials closer than this count as shared
 N_HARM = 14
-MIN_HZ = 150.0         # below this the FFT grid is too coarse to trust
+MIN_HZ = 179.0         # below this the FFT grid is too coarse to trust. Set
+                       # from chord_verify's rule (MIN_HZ_SECONDS / window) at
+                       # this window length, so the two stay in step; see
+                       # tools/sweep_chord_window.py for where 61 comes from
 
 # --- decision thresholds ---------------------------------------------------
 PRESENT_DB = -32.0     # genuine detections landed at -3..-30 dB; noise-driven

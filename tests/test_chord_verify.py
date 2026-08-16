@@ -9,7 +9,8 @@ import numpy as np
 import pytest
 
 from pickhero.audio.chord_verify import (
-    ChordVerifier, StringVerdict, samples_needed, skip_samples, window_samples,
+    MIN_WINDOW_MS, ChordVerifier, StringVerdict, guard_samples, min_hz_for,
+    min_window_samples, samples_needed, skip_samples, window_samples,
 )
 from pickhero.audio.note_utils import midi_to_freq
 
@@ -19,16 +20,33 @@ E2, A2, B2, C3, D3, E3, Gs3, B3, E4 = 40, 45, 47, 48, 50, 52, 56, 59, 64
 
 
 def pluck(midi, duration_s=0.5, sr=SR, seed=0, n_harm=14):
-    """One plucked steel string: decaying harmonics with slight inharmonicity."""
+    """One plucked steel string: decaying harmonics with slight inharmonicity.
+
+    Two properties of a real string are load-bearing here, both measured off
+    the reference recordings:
+
+    Roll-off. A DI'd electric holds its partials within ~13 dB of the peak up
+    to the twelfth, and the verification decides on exactly those upper
+    partials. A tone fading to nothing by the fourth harmonic would make
+    these tests pass or fail on a signal no guitar produces.
+
+    Unevenness. Plucking at a point along the string nulls every harmonic
+    with a node there, so real partial levels jump around by tens of dB. A
+    perfectly smooth series is what lets a WHOLE-TONE neighbour score almost
+    as well as the true note -- 9:8 means every ninth partial coincides --
+    and that near-tie is an artefact of the synthesis, not of the method.
+    """
     rng = np.random.default_rng(seed)
     t = np.arange(int(duration_s * sr)) / sr
     f0 = midi_to_freq(midi)
+    pluck_point = 0.19 + 0.03 * (seed % 4)      # fraction along the string
     sig = np.zeros_like(t)
     for h in range(1, n_harm + 1):
         fh = f0 * h * np.sqrt(1 + 8e-5 * h * h)
         if fh > sr * 0.45:
             break
-        sig += (1.0 / h ** 0.9) * np.exp(-t * (1.2 + 0.3 * h)) * np.sin(
+        comb = abs(np.sin(np.pi * h * pluck_point))
+        sig += comb * (1.0 / h ** 0.35) * np.exp(-t * (1.0 + 0.15 * h)) * np.sin(
             2 * np.pi * fh * t + rng.uniform(0, 2 * np.pi)
         )
     return sig
@@ -60,6 +78,28 @@ class TestWindowSizing:
 
     def test_scales_with_sample_rate(self):
         assert window_samples(44100) < window_samples(48000)
+
+    def test_floor_is_below_the_full_window(self):
+        assert 0 < min_window_samples(SR) < window_samples(SR)
+
+    def test_guard_is_short_next_to_the_skip(self):
+        # Only has to keep the next attack out, not the note after it.
+        assert 0 < guard_samples(SR) < skip_samples(SR)
+
+
+class TestAnalysisFloor:
+    """A shortened window must judge on higher partials, not the same ones."""
+
+    def test_shorter_window_raises_the_floor(self):
+        full = min_hz_for(window_samples(SR), SR)
+        half = min_hz_for(window_samples(SR) // 2, SR)
+        assert half > full
+
+    def test_floor_stays_finite_at_the_shortest_usable_window(self):
+        assert min_hz_for(min_window_samples(SR), SR) < 1000.0
+
+    def test_empty_window_resolves_nothing(self):
+        assert min_hz_for(0, SR) == float("inf")
 
 
 class TestVerdict:
@@ -100,9 +140,23 @@ class TestPowerChords:
         verdicts = verifier.verify(window([E2]), SR, [E2, B2])
         assert not verdicts[B2].wrong
 
-    def test_root_is_confirmed_too(self):
+    def test_root_of_a_bare_power_chord_is_never_called_wrong(self):
+        """The root is the hardest string in a two-note power chord.
+
+        A fifth swallows the root's 3rd, 6th, 9th and 12th partials, and the
+        analysis floor rules out the 1st and 2nd, so what is left to identify
+        it by is thin -- thin enough that the whole-tone neighbours, which
+        share every ninth partial with it, come close. Confirming it is
+        therefore not guaranteed; not convicting it is.
+        """
         verifier = ChordVerifier()
         verdicts = verifier.verify(window([E2, B2]), SR, [E2, B2])
+        assert not verdicts[E2].wrong
+
+    def test_root_is_confirmed_when_the_chord_leaves_it_partials(self):
+        verifier = ChordVerifier()
+        # a seventh rather than a fifth: the two series barely overlap
+        verdicts = verifier.verify(window([E2, D3]), SR, [E2, D3])
         assert verdicts[E2].correct
 
 
@@ -138,12 +192,55 @@ class TestFullChords:
             assert wrong == [], f"false alarm on {shape}: {wrong}"
 
 
+class TestIntruderTier:
+    """Convicting a string whose expected note cannot be confirmed at all is
+    the thinnest evidence the verifier ever acts on. It was fitted at the full
+    window, and on a shortened one it was the only source of false alarms in
+    tools/sweep_chord_window.py -- so it does not travel."""
+
+    # G#3 masked by E2's fifth partial, with a loud G3 sitting where it is not
+    scores = {55: -12.0, 54: -40.0}
+
+    def test_full_window_may_flag_an_intruder(self):
+        verdict = ChordVerifier()._decide(Gs3, dict(self.scores), True)
+        assert verdict.wrong and verdict.via == "intruder"
+
+    def test_truncated_window_may_not(self):
+        verdict = ChordVerifier()._decide(Gs3, dict(self.scores), False)
+        assert not verdict.decided
+
+    def test_direct_verdicts_are_unaffected(self):
+        # target itself scored, so this is the direct tier either way
+        scores = {Gs3: -50.0, 55: -10.0}
+        for allow in (True, False):
+            verdict = ChordVerifier()._decide(Gs3, dict(scores), allow)
+            assert verdict.wrong and verdict.via == "direct"
+
+
 class TestGuards:
     def test_single_note_is_not_a_chord(self):
         assert ChordVerifier().verify(window([E2]), SR, [E2]) == {}
 
     def test_too_short_audio_returns_nothing(self):
         assert ChordVerifier().verify(np.zeros(64), SR, [E2, B2]) == {}
+
+    def test_window_below_the_floor_gets_no_verdict_at_all(self):
+        """Chords played faster than they can be told apart are not judged.
+
+        The wrong note is plainly there in the audio, so this is not a
+        detection failure -- it is the refusal to decide on a window too
+        short to separate a semitone reliably.
+        """
+        verifier = ChordVerifier()
+        short = chord([E2, C3], duration_s=WINDOW_S)[:min_window_samples(SR) - 1]
+        assert verifier.verify(short, SR, [E2, B2]) == {}
+
+    def test_just_above_the_floor_still_judges(self):
+        verifier = ChordVerifier()
+        cut = chord([E2, C3], duration_s=WINDOW_S)[:min_window_samples(SR)]
+        verdicts = verifier.verify(cut, SR, [E2, B2])
+        assert verdicts, "the floor must be usable, not merely defined"
+        assert not verdicts[E2].wrong          # E2 was played correctly
 
     def test_silence_produces_no_wrong_verdicts(self):
         verifier = ChordVerifier()
