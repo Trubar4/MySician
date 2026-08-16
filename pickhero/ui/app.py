@@ -122,8 +122,8 @@ class App:
 
     def _handle_playing_event(self, event: pygame.event.Event) -> None:
         result = self._playing_screen.handle_event(event)
-        if result == "next_track":
-            self._load_next_track()
+        if isinstance(result, tuple) and result[0] == "select_track":
+            self._load_song(self._current_song_path, result[1])
             return
         if result == "menu":
             self._playing_screen.stop_audio()
@@ -174,21 +174,16 @@ class App:
                    if t.get("is_guitar") and not t.get("is_percussion")]
         return guitars or [t["index"] for t in tracks]
 
-    def _load_next_track(self) -> None:
-        """Reload the current song on its next playable track (TAB).
-
-        Multi-track tabs pick a track automatically and there was no way to
-        say otherwise, so the wrong part was simply what you got.
-        """
-        path = getattr(self, "_current_song_path", None)
-        if path is None:
-            return
-        indices = self._playable_track_indices(path)
-        if len(indices) < 2:
-            return
-        current = getattr(self, "_current_track_index", None)
-        pos = indices.index(current) if current in indices else 0
-        self._load_song(path, indices[(pos + 1) % len(indices)])
+    def _track_options(self, path: Path) -> list[tuple[int, str]]:
+        """(index, label) for every track worth offering."""
+        from pickhero.tabs.loader import list_tracks
+        try:
+            tracks = list_tracks(path)
+        except Exception:
+            return []
+        wanted = set(self._playable_track_indices(path))
+        return [(t["index"], f"{t['index'] + 1}. {t['name']}")
+                for t in tracks if t["index"] in wanted]
 
     def _render_load_error(self, surface: pygame.Surface) -> None:
         """Say why the last song refused to load, on the menu it fell back to."""
@@ -240,6 +235,9 @@ class App:
         self._state = "playing"
         self._current_song_path = path
         self._current_track_index = timeline.metadata.track_index
+        self._playing_screen.set_track_options(
+            self._track_options(path), timeline.metadata.track_index
+        )
 
         # Skip ahead so the first note is just entering the visible window
         if timeline.notes:

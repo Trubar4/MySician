@@ -586,3 +586,77 @@ class TestTimingWindowCycle:
             seen.append(screen._config.timing_window_ms)
         assert set(seen) == set(TIMING_WINDOW_PRESETS)
         assert seen[-1] == seen[len(TIMING_WINDOW_PRESETS) - 1 + 1 - len(TIMING_WINDOW_PRESETS)]
+
+
+class TestTrackPicker:
+    """Multi-track tabs used to give you whichever part they picked."""
+
+    def _screen(self):
+        screen = PlayingScreen(_make_timeline(tempo=120), config=Config())
+        screen.set_track_options([(0, "1. Guitar"), (2, "3. Lead"), (4, "5. Bass")], 2)
+        return screen
+
+    def _key(self, key):
+        import pygame
+        return pygame.event.Event(pygame.KEYDOWN, key=key, mod=0)
+
+    def test_starts_closed(self):
+        assert not self._screen()._track_menu_open
+
+    def test_cursor_starts_on_the_current_track(self):
+        assert self._screen()._track_menu_cursor == 1
+
+    def test_tab_opens_and_closes(self):
+        import pygame
+        screen = self._screen()
+        screen.handle_event(self._key(pygame.K_TAB))
+        assert screen._track_menu_open
+        screen.handle_event(self._key(pygame.K_TAB))
+        assert not screen._track_menu_open
+
+    def test_a_single_track_has_nothing_to_pick(self):
+        import pygame
+        screen = PlayingScreen(_make_timeline(tempo=120), config=Config())
+        screen.set_track_options([(0, "1. Guitar")], 0)
+        screen.handle_event(self._key(pygame.K_TAB))
+        assert not screen._track_menu_open
+
+    def test_choosing_another_track_reports_it(self):
+        import pygame
+        screen = self._screen()
+        screen.handle_event(self._key(pygame.K_TAB))
+        screen.handle_event(self._key(pygame.K_DOWN))
+        result = screen.handle_event(self._key(pygame.K_RETURN))
+        assert result == ("select_track", 4)
+        assert not screen._track_menu_open
+
+    def test_choosing_the_current_track_reports_nothing(self):
+        import pygame
+        screen = self._screen()
+        screen.handle_event(self._key(pygame.K_TAB))
+        assert screen.handle_event(self._key(pygame.K_RETURN)) is None
+
+    def test_selection_wraps(self):
+        import pygame
+        screen = self._screen()
+        screen.handle_event(self._key(pygame.K_TAB))
+        screen.handle_event(self._key(pygame.K_UP))
+        screen.handle_event(self._key(pygame.K_UP))
+        assert screen._track_menu_cursor == 2
+
+    def test_the_picker_swallows_keys_meant_for_the_song(self):
+        """Arrow keys must move the selection, not seek through the song."""
+        import pygame
+        screen = self._screen()
+        before = screen._playback_ms
+        screen.handle_event(self._key(pygame.K_TAB))
+        screen.handle_event(self._key(pygame.K_RIGHT))
+        assert screen._playback_ms == before
+
+    def test_escape_closes_without_choosing(self):
+        import pygame
+        screen = self._screen()
+        screen.handle_event(self._key(pygame.K_TAB))
+        screen.handle_event(self._key(pygame.K_DOWN))
+        assert screen.handle_event(self._key(pygame.K_ESCAPE)) is None
+        assert not screen._track_menu_open

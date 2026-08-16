@@ -76,6 +76,74 @@ class BackingTrack:
         return list(latest.values())
 
 
+def _init_midi_once() -> bool:
+    """Initialise pygame.midi exactly once per process.
+
+    pygame.midi.quit() invalidates the device IDs PortMidi handed out, so a
+    player that quit on close left the next one to open a stale default id and
+    fail with "Invalid device ID" -- which is why the backing worked on the
+    first song of a session and went silent on every one after it.
+    """
+    global _MIDI_READY
+    if _MIDI_READY:
+        return True
+    try:
+        import pygame.midi
+        pygame.midi.init()
+        _MIDI_READY = True
+    except Exception as e:
+        print(f"MIDI init failed: {e}")
+    return _MIDI_READY
+
+
+def list_midi_outputs() -> list[tuple[int, str]]:
+    """Available MIDI output devices as (id, name)."""
+    if not _init_midi_once():
+        return []
+    import pygame.midi
+    outputs = []
+    for device_id in range(pygame.midi.get_count()):
+        info = pygame.midi.get_device_info(device_id)
+        if info is None:
+            continue
+        _, name, _, is_output, _ = info
+        if is_output:
+            outputs.append((device_id, name.decode(errors="replace")
+                            if isinstance(name, bytes) else str(name)))
+    return outputs
+
+
+# A software synth is what actually makes sound on a stock Windows box; a
+# hardware port opens fine and stays silent.
+_SYNTH_HINTS = ("wavetable", "synth", "gs ", "fluid", "timidity")
+
+
+def _pick_output_device() -> int:
+    """Choose a MIDI output, preferring one that can make a sound by itself.
+
+    get_default_output_id() is not trustworthy: it returns -1 on machines with
+    no default set, and a stale id after a quit/init cycle.
+    """
+    outputs = list_midi_outputs()
+    if not outputs:
+        return -1
+    for device_id, name in outputs:
+        if any(hint in name.lower() for hint in _SYNTH_HINTS):
+            return device_id
+
+    import pygame.midi
+    try:
+        default_id = pygame.midi.get_default_output_id()
+    except Exception:
+        default_id = -1
+    if any(device_id == default_id for device_id, _ in outputs):
+        return default_id
+    return outputs[0][0]
+
+
+_MIDI_READY = False
+
+
 class MidiPlayer:
     """Wraps pygame.midi.Output for backing track playback."""
 
@@ -91,19 +159,32 @@ class MidiPlayer:
 
         Returns True on success, False if MIDI is unavailable.
         """
-        try:
-            import pygame.midi
-            pygame.midi.init()
-            device_id = pygame.midi.get_default_output_id()
-            if device_id == -1:
-                print("No MIDI output device found")
-                return False
-            self._output = pygame.midi.Output(device_id)
-            self._opened = True
-            return True
-        except Exception as e:
-            print(f"MIDI init failed: {e}")
+        if not _init_midi_once():
             return False
+        import pygame.midi
+
+        outputs = list_midi_outputs()
+        if not outputs:
+            print("No MIDI output device found - backing track will be silent")
+            return False
+
+        # Try the preferred device, then every other one: an id can be listed
+        # and still refuse to open, and giving up on the first failure leaves
+        # a working synth further down the list unused.
+        preferred = _pick_output_device()
+        order = [preferred] + [d for d, _ in outputs if d != preferred]
+        names = dict(outputs)
+        for device_id in order:
+            try:
+                self._output = pygame.midi.Output(device_id)
+                self._opened = True
+                print(f"MIDI output: {names.get(device_id, device_id)}")
+                return True
+            except Exception as e:
+                print(f"  MIDI device {device_id} "
+                      f"({names.get(device_id, '?')}) failed: {e}")
+        print("No MIDI output could be opened - backing track will be silent")
+        return False
 
     def play_click(self, velocity: int = 100) -> None:
         """Play a single metronome click on the MIDI percussion channel.
@@ -159,13 +240,9 @@ class MidiPlayer:
             except Exception:
                 pass
             self._output = None
-        if self._opened:
-            try:
-                import pygame.midi
-                pygame.midi.quit()
-            except Exception:
-                pass
-            self._opened = False
+        # Deliberately NOT calling pygame.midi.quit(): it invalidates the
+        # device ids for everything opened afterwards in this process.
+        self._opened = False
 
     def _dispatch(self, event: MidiEvent) -> None:
         """Send a single MIDI event to the output."""

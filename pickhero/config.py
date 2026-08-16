@@ -72,12 +72,29 @@ class Config:
     # LATER. The two are generated from the same timeline, but what you hear
     # goes through a synth and a sound card while what you see does not.
     backing_offset_ms: float = 0.0
+    # Per-song overrides for the above, keyed by song. How far the backing
+    # lags depends on how busy the arrangement is, so one global value never
+    # fits everything.
+    song_backing_offsets: dict = field(default_factory=dict)
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     calibration: dict = field(default_factory=dict)
 
     # Store default for HUD comparison (not serialized)
     _default_chord_partial_credit: bool = field(default=True, repr=False)
+
+    def backing_offset_for(self, song_key: str) -> float:
+        """This song's backing offset, or the global one if it has none."""
+        if song_key and song_key in self.song_backing_offsets:
+            return float(self.song_backing_offsets[song_key])
+        return float(self.backing_offset_ms)
+
+    def set_backing_offset_for(self, song_key: str, offset_ms: float) -> None:
+        """Remember an offset for one song; without a key set the global one."""
+        if song_key:
+            self.song_backing_offsets[song_key] = float(offset_ms)
+        else:
+            self.backing_offset_ms = float(offset_ms)
 
     def get_string_calibration(self, string: int) -> StringCalibration | None:
         """Return calibration for a string (1-6), or None if not calibrated."""

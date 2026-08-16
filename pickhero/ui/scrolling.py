@@ -211,6 +211,12 @@ class PlayingScreen:
         # Help overlay
         self._show_help: bool = False
 
+        # Track picker: [(index, label)], filled in by the app on load
+        self._track_options: list[tuple[int, str]] = []
+        self._track_index: int | None = None
+        self._track_menu_open: bool = False
+        self._track_menu_cursor: int = 0
+
         # Wait mode
         self._wait_mode: bool = self._config.wait_mode
         self._wait_mode_frozen: bool = False
@@ -459,10 +465,19 @@ class PlayingScreen:
                     self._weakest_sections = []
                     self._song_completed = True
 
-    def handle_event(self, event: pygame.event.Event) -> str | None:
-        """Handle input. Returns 'menu' to go back, else None."""
+    def handle_event(self, event: pygame.event.Event):
+        """Handle input.
+
+        Returns 'menu' to go back, ('select_track', index) when a track was
+        picked, else None.
+        """
         if event.type != pygame.KEYDOWN:
             return None
+
+        # While the picker is open it owns the keyboard, so arrow keys move
+        # the selection instead of seeking through the song
+        if self._track_menu_open:
+            return self._handle_track_menu_event(event)
 
         if event.key == pygame.K_SPACE:
             self.toggle_play()
@@ -516,7 +531,7 @@ class PlayingScreen:
         elif event.key == pygame.K_g:
             self._cycle_timing_window()
         elif event.key == pygame.K_TAB:
-            return "next_track"
+            self._open_track_menu()
         elif event.key == pygame.K_n:
             self._adjust_backing_offset(-BACKING_OFFSET_STEP_MS)
         elif event.key == pygame.K_m:
@@ -565,6 +580,8 @@ class PlayingScreen:
 
         if self._show_help:
             self._draw_help_overlay(surface, layout)
+        if self._track_menu_open:
+            self._draw_track_menu(surface)
 
     # -- Pure math helpers (testable without display) --
 
@@ -691,17 +708,87 @@ class PlayingScreen:
         A positive offset delays the backing, so it is subtracted from the
         position the player feeds it.
         """
-        return playback_ms - getattr(self._config, "backing_offset_ms", 0.0)
+        return playback_ms - self._backing_offset()
+
+    def _backing_offset(self) -> float:
+        """This song's offset, falling back to the global default."""
+        getter = getattr(self._config, "backing_offset_for", None)
+        if getter is None:
+            return getattr(self._config, "backing_offset_ms", 0.0)
+        return getter(self._song_key)
 
     def _adjust_backing_offset(self, delta_ms: float) -> None:
-        """Shift the backing against the notes (N earlier, M later)."""
-        current = getattr(self._config, "backing_offset_ms", 0.0)
-        self._config.backing_offset_ms = max(
-            -MAX_BACKING_OFFSET_MS, min(MAX_BACKING_OFFSET_MS, current + delta_ms)
-        )
+        """Shift the backing against the notes (N earlier, M later).
+
+        Stored per song: how far the backing lags depends on how much the
+        arrangement asks of the synth, so a value dialled in on one song is
+        wrong on the next.
+        """
+        new = max(-MAX_BACKING_OFFSET_MS,
+                  min(MAX_BACKING_OFFSET_MS, self._backing_offset() + delta_ms))
+        setter = getattr(self._config, "set_backing_offset_for", None)
+        if setter is not None:
+            setter(self._song_key, new)
+        else:
+            self._config.backing_offset_ms = new
         self._config.save()
         if self._midi_player is not None:
             self._midi_player.seek(self._backing_ms(self._playback_ms))
+
+    def set_track_options(self, options: list[tuple[int, str]],
+                          current: int | None) -> None:
+        """Tell the screen which tracks exist, so it can offer them."""
+        self._track_options = list(options)
+        self._track_index = current
+        self._track_menu_cursor = next(
+            (i for i, (idx, _) in enumerate(self._track_options) if idx == current), 0
+        )
+
+    def _open_track_menu(self) -> None:
+        if len(self._track_options) > 1:
+            self._track_menu_open = not self._track_menu_open
+
+    def _handle_track_menu_event(self, event: pygame.event.Event):
+        """Arrow keys and Enter while the picker is open. Returns a result or None."""
+        if event.type != pygame.KEYDOWN:
+            return None
+        count = len(self._track_options)
+        if event.key in (pygame.K_ESCAPE, pygame.K_TAB):
+            self._track_menu_open = False
+        elif event.key in (pygame.K_UP, pygame.K_LEFT):
+            self._track_menu_cursor = (self._track_menu_cursor - 1) % count
+        elif event.key in (pygame.K_DOWN, pygame.K_RIGHT):
+            self._track_menu_cursor = (self._track_menu_cursor + 1) % count
+        elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            self._track_menu_open = False
+            chosen = self._track_options[self._track_menu_cursor][0]
+            if chosen != self._track_index:
+                return ("select_track", chosen)
+        return None
+
+    def _draw_track_menu(self, surface: pygame.Surface) -> None:
+        t = get_theme()
+        font = _get_font("arial", 18)
+        title = _get_font("arial", 15)
+        rows = [label for _, label in self._track_options]
+        width = max([font.size(r)[0] for r in rows] + [240]) + 40
+        row_h = 28
+        height = row_h * len(rows) + 52
+        x = int(surface.get_width() / 2 - width / 2)
+        y = int(surface.get_height() / 2 - height / 2)
+
+        pygame.draw.rect(surface, t.menu_bg, (x, y, width, height))
+        pygame.draw.rect(surface, t.hud_accent, (x, y, width, height), 2)
+        surface.blit(title.render("Track  (up/down, Enter, Esc)", True, t.hud_text),
+                     (x + 16, y + 12))
+        for i, (idx, label) in enumerate(self._track_options):
+            row_y = y + 40 + i * row_h
+            if i == self._track_menu_cursor:
+                pygame.draw.rect(surface, t.menu_selected_bg,
+                                 (x + 8, row_y - 2, width - 16, row_h))
+            mark = "*" if idx == self._track_index else " "
+            surface.blit(font.render(f"{mark} {label}", True, t.hud_text),
+                         (x + 16, row_y))
 
     def _cycle_timing_window(self) -> None:
         """Step through how much timing slack a hit gets (G)."""
@@ -1046,7 +1133,7 @@ class PlayingScreen:
         # Backing offset HUD — only when shifted, but then always visible,
         # since a backing that disagrees with the notes is the hardest fault
         # to diagnose by ear
-        backing_off = getattr(self._config, "backing_offset_ms", 0.0)
+        backing_off = self._backing_offset()
         if abs(backing_off) > 0.5:
             back_surf = hint_font.render(
                 f"Backing: {int(backing_off):+d} ms (N/M)", True, t.hud_accent)
@@ -1406,7 +1493,7 @@ class PlayingScreen:
             "Shift+K: reset sync to 0 (use when the offset has run away)",
             "+/-: scroll faster / slower    G: hit window (timing slack)",
             "N/M: backing track earlier / later (if what you hear and see disagree)",
-            "TAB: next track (for tabs with more than one playable part)",
+            "TAB: choose track (for tabs with more than one playable part)",
         ]
         for line in controls:
             surf = hint_font.render(line, True, t.hud_text)
