@@ -165,6 +165,7 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap) -> list[NoteEven
                     if note.type.value not in (1, 3):
                         continue
                     to_next, slide_in, slide_out = _extract_slides(note)
+                    effect = getattr(note, "effect", None)
                     notes.append(
                         NoteEvent(
                             timestamp_ms=timestamp_ms,
@@ -177,6 +178,11 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap) -> list[NoteEven
                             slide_to_next=to_next,
                             slide_in=slide_in,
                             slide_out=slide_out,
+                            # GP flags the note the legato STARTS from, the
+                            # same way it flags a shift slide.
+                            hammer_to_next=bool(
+                                getattr(effect, "hammer", False)
+                            ),
                         )
                     )
     return notes

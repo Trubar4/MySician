@@ -589,3 +589,74 @@ class TestTechniqueTolerance:
         matcher = _make_matcher([note])
         results = matcher.process_detected_notes([_detected(62, 1000.0)], 1000.0)
         assert not results or results[0].match_type != MatchType.HIT
+
+
+class TestLegatoCredit:
+    """A hammered, pulled or slid-into note is never picked.
+
+    Waiting for a strike on one can only ever end in a miss, which would mark
+    every legato passage in a tab red for notes the player did play.
+    """
+
+    def _pair(self, lead_kw: dict, target_fret: int = 7) -> list[NoteEvent]:
+        return [
+            NoteEvent(timestamp_ms=1000.0, duration_ms=200.0, midi_note=64,
+                      string=1, fret=5, **lead_kw),
+            NoteEvent(timestamp_ms=1200.0, duration_ms=200.0, midi_note=66,
+                      string=1, fret=target_fret),
+        ]
+
+    def _play_lead_then_run_past(self, notes, midi=64):
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([_detected(midi, 1000.0)], 1000.0)
+        matcher.process_detected_notes([], 3000.0)
+        return matcher, notes
+
+    def test_hammered_note_inherits_the_hit(self):
+        matcher, notes = self._play_lead_then_run_past(
+            self._pair({"hammer_to_next": True})
+        )
+        assert matcher.get_note_state(notes[1]) == MatchType.HIT
+
+    def test_pulled_note_inherits_it_too(self):
+        matcher, notes = self._play_lead_then_run_past(
+            self._pair({"hammer_to_next": True}, target_fret=3)
+        )
+        assert matcher.get_note_state(notes[1]) == MatchType.HIT
+
+    def test_slide_target_inherits_the_hit(self):
+        matcher, notes = self._play_lead_then_run_past(
+            self._pair({"slide_to_next": True})
+        )
+        assert matcher.get_note_state(notes[1]) == MatchType.HIT
+
+    def test_nothing_is_inherited_when_the_lead_was_missed(self):
+        notes = self._pair({"hammer_to_next": True})
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([], 3000.0)   # never played
+        assert matcher.get_note_state(notes[0]) == MatchType.MISS
+        assert matcher.get_note_state(notes[1]) == MatchType.MISS
+
+    def test_a_close_lead_passes_on_close_not_hit(self):
+        notes = self._pair({"hammer_to_next": True})
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([_detected(65, 1000.0)], 1000.0)
+        matcher.process_detected_notes([], 3000.0)
+        assert matcher.get_note_state(notes[0]) == MatchType.CLOSE
+        assert matcher.get_note_state(notes[1]) == MatchType.CLOSE
+
+    def test_a_picked_note_still_has_to_be_played(self):
+        """Only the note AFTER a legato mark is exempt, not every note."""
+        notes = self._pair({})
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([_detected(64, 1000.0)], 1000.0)
+        matcher.process_detected_notes([], 3000.0)
+        assert matcher.get_note_state(notes[1]) == MatchType.MISS
+
+    def test_playing_the_legato_note_yourself_still_scores_it(self):
+        """Some players re-pick; that must not be punished either."""
+        notes = self._pair({"hammer_to_next": True})
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([_detected(64, 1000.0)], 1000.0)
+        matcher.process_detected_notes([_detected(66, 1200.0)], 1200.0)
+        assert matcher.get_note_state(notes[1]) == MatchType.HIT

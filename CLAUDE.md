@@ -80,18 +80,28 @@ tab as a prior. For each expected note it scores competing pitch hypotheses on t
   which the calibration needs. Current state on that set: 33 strings judged, 0 false alarms, 7/7 deliberate one-fret errors caught at the full
   window, and 0 false alarms at every window length down to 280 ms.
 
-## Bends and Slides
+## Techniques (bends, slides, legato)
 
-`NoteEvent` carries the technique the tab wrote: `bend` as ((position 0..1, semitones), ...), plus `slide_to_next`, `slide_in` and
-`slide_out`. Extracted in `tabs/loader.py` from pyguitarpro's already-normalised bend points; the hand-written GP7 XML path does not carry
+`NoteEvent` carries what the tab wrote: `bend` as ((position 0..1, semitones), ...), plus `slide_to_next`, `slide_in`, `slide_out` and
+`hammer_to_next`. Extracted in `tabs/loader.py` from pyguitarpro's already-normalised effects; the hand-written GP7 XML path does not carry
 them yet.
 
-- **Drawn, then scored leniently.** The arc's height and its ½ / full label both say how far to bend; a slanted connector spanning the gap
-  between two heads says which way the finger travels. Scoring accepts the whole region the technique covers (`_build_pitch_ranges`), because
-  a bend that leaves the written pitch is the point of a bend — judging how FAR it went needs a pitch contour the detector does not produce
-  yet, and being strict before then turns every bend in a tab red.
+- **Drawn inside the note, badge above it** — the way Yousician does it, and the only thing a six-lane layout allows: a curve arcing out of
+  its lane reads as a note on the neighbouring string. The white technique line always gets a dark shadow (`_draw_technique_line`), because
+  white on the amber string is invisible and an invisible technique will not be played.
+- **Scored so the drawing is not a lie.** A bend accepts the whole region it covers (`_build_pitch_ranges`) — judging how FAR it went needs a
+  pitch contour the detector does not produce. A hammered, pulled or slid-into note is never picked, so it inherits its source's verdict
+  (`_legato_credit`); waiting for a strike on it could only ever end in a miss.
 - **A sliding note gives up part of its sustain** so the connector has somewhere to be; back-to-back notes otherwise leave a few pixels.
-- `tools/make_technique_test.py` writes a GP5 that states exactly which bend and slide is where, so a wrong drawing is the app's fault.
+- `tools/make_technique_test.py` writes a GP5 stating exactly which technique is where, so a wrong drawing is the app's fault.
+
+## Colour
+
+Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain
+Rocksmith palette collided with all three feedback colours at once — green on "correct", red on "missed", yellow on "close" — so the A string
+looked like a note played right. Strings are now pulled off those hues (A is teal, high E crimson, B amber) and the feedback colours are far
+brighter than any string, so the two read as different KINDS of colour even where the hue is nearest. Keep that separation when adding
+anything new.
 
 ## pyguitarpro Data Extraction
 

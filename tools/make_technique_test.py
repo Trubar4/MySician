@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gp_builder import (  # noqa: E402
-    HALF, QUARTER, REST, WHOLE, bend, build_song, slide, write,
+    HALF, QUARTER, REST, WHOLE, bend, build_song, legato, slide, write,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -76,10 +76,25 @@ def _sections():
         _bar((HALF, [(G_STRING, 7, slide("in_up"))]), (HALF, REST)),
         _bar((HALF, [(G_STRING, 7, slide("in_down"))]), (HALF, REST)),
     ]
+    hammer_ons = [
+        _bar((HALF, [(G_STRING, 5, legato())]), (HALF, [(G_STRING, 7)])),
+        _bar((WHOLE, REST)),
+        _bar((HALF, [(B_STRING, 8, legato())]), (HALF, [(B_STRING, 10)])),
+        _bar((WHOLE, REST)),
+    ]
+    pull_offs = [
+        _bar((HALF, [(G_STRING, 7, legato())]), (HALF, [(G_STRING, 5)])),
+        _bar((WHOLE, REST)),
+        _bar((HALF, [(B_STRING, 10, legato())]), (HALF, [(B_STRING, 8)])),
+        _bar((WHOLE, REST)),
+    ]
     mixed = [
         _bar((HALF, [(G_STRING, 5, slide("to"))]), (HALF, [(G_STRING, 7, bend(2))])),
         _bar((WHOLE, REST)),
         _bar((HALF, [(B_STRING, 8, bend(1))]), (HALF, [(B_STRING, 8, slide("down"))])),
+        _bar((WHOLE, REST)),
+        _bar((QUARTER, [(G_STRING, 5, legato())]), (QUARTER, [(G_STRING, 7, legato())]),
+             (QUARTER, [(G_STRING, 5)]), (QUARTER, REST)),
         _bar((WHOLE, REST)),
     ]
 
@@ -92,7 +107,9 @@ def _sections():
         ("Slides UP - connector rises to the right", slides_up),
         ("Slides DOWN - connector falls to the right", slides_down),
         ("Slides with no target - stub off the head, then into it", open_slides),
-        ("Mixed - slide into a bend, bend then slide off", mixed),
+        ("Hammer-ons - arc between the frets, badge H", hammer_ons),
+        ("Pull-offs - same arc, badge P", pull_offs),
+        ("Mixed - slide into a bend, bend then slide off, then H and P", mixed),
     ]
 
 

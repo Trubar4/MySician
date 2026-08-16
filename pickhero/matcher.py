@@ -107,6 +107,28 @@ class NoteMatcher:
         self.chord_strings_corrected = 0
 
         self._pitch_ranges = self._build_pitch_ranges(timeline)
+        self._legato_sources = self._build_legato_sources(timeline)
+
+    @staticmethod
+    def _build_legato_sources(
+        timeline: Timeline,
+    ) -> dict[tuple[float, int], tuple[float, int]]:
+        """Notes that are not picked, mapped to the note they follow from.
+
+        A hammer-on, a pull-off and both kinds of slide all continue a note
+        already ringing, so no onset ever arrives for the second one.
+        """
+        by_string: dict[int, list[NoteEvent]] = {}
+        for note in timeline.notes:
+            by_string.setdefault(note.string, []).append(note)
+
+        out: dict[tuple[float, int], tuple[float, int]] = {}
+        for string, group in by_string.items():
+            group.sort(key=lambda n: n.timestamp_ms)
+            for note, following in zip(group, group[1:]):
+                if note.leads_into_next and following.timestamp_ms > note.timestamp_ms:
+                    out[(following.timestamp_ms, string)] = (note.timestamp_ms, string)
+        return out
 
     @staticmethod
     def _build_pitch_ranges(timeline: Timeline) -> dict[tuple[float, int], tuple[int, int]]:
@@ -272,14 +294,38 @@ class NoteMatcher:
         for note in candidates:
             if self._is_filtered(note):
                 continue
-            if self._get_state(note) == MatchType.PENDING:
-                self._record_match(note, MatchType.MISS)
+            if self._get_state(note) != MatchType.PENDING:
+                continue
+            inherited = self._legato_credit(note)
+            if inherited is not None:
+                self._record_match(note, inherited)
                 results.append(MatchResult(
-                    match_type=MatchType.MISS,
+                    match_type=inherited,
                     matched_events=[note],
                     semitone_distance=None,
                 ))
+                continue
+            self._record_match(note, MatchType.MISS)
+            results.append(MatchResult(
+                match_type=MatchType.MISS,
+                matched_events=[note],
+                semitone_distance=None,
+            ))
         return results
+
+    def _legato_credit(self, note: NoteEvent) -> MatchType | None:
+        """The state a hammered, pulled or slid-into note inherits, if any.
+
+        Such a note is never picked -- that is what the technique means -- so
+        waiting for a strike on it can only ever end in a miss. It stands or
+        falls with the note it came from: if that one was played, this one
+        was too, and if it was not, this one is missed on its own account.
+        """
+        source_key = self._legato_sources.get((note.timestamp_ms, note.string))
+        if source_key is None:
+            return None
+        state = self._note_states.get(source_key)
+        return state if state in (MatchType.HIT, MatchType.CLOSE) else None
 
     def process_detected_notes(
         self, detected: list[TimestampedNote], playback_ms: float

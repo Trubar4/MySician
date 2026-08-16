@@ -48,17 +48,25 @@ STRING_THICKNESS = (1, 1, 2, 2, 3, 4)
 # without this, a run of eighths renders as one unbroken bar.
 SUSTAIN_GAP_FRACTION = 0.18
 
-# -- Bends and slides ------------------------------------------------------
-# How far a full bend (two semitones) lifts the curve, in lane heights. The
-# arc has to leave its own lane to read as a rise at all, so it overlaps the
-# lane above -- as it does in Yousician. Not a whole lane, though: landing
-# exactly on the neighbouring string's centre makes the arc look like a note
-# over there. Deeper bends are capped for the same reason.
-BEND_RISE_LANES = 0.72
-BEND_MAX_RISE_LANES = 1.15
-# A bend on a staccato note still needs somewhere to draw the arc, as a
-# multiple of head width.
-BEND_MIN_WIDTH_HEADS = 1.8
+# -- Technique marks -------------------------------------------------------
+# Bends, slides and legato are drawn the way Yousician draws them: a white
+# line inside the note showing what the pitch does, and a small dark disc
+# above the note's leading edge naming the technique. Both stay within the
+# note's own lane, which a six-lane layout requires -- a curve arcing out of
+# the lane reads as a note on the neighbouring string.
+TECHNIQUE_WIDTH_PX = 4
+BADGE_RADIUS_HEADS = 0.3
+BADGE_LIFT_HEADS = 0.75   # as a fraction of the badge radius
+# Where inside the note the bend curve starts and how deep it goes, as
+# fractions of the head.
+BEND_BASE_FRACTION = 0.42       # below centre, so a rise has room
+BEND_DEPTH_FRACTION = 0.42
+BEND_INSET_FRACTION = 0.5       # keeps the curve off the rounded ends
+BEND_MIN_WIDTH_HEADS = 0.9      # a bend on a staccato note still needs room
+BEND_DEPTH_HEADS = 0.62
+# A "full" bend in guitar notation is a whole step, i.e. two semitones. The
+# drawn depth is measured against that, so 1/2 looks half as deep.
+FULL_BEND_SEMITONES = 2.0
 # Segments drawn between two written bend points, to smooth the pull.
 BEND_CURVE_STEPS = 8
 # Slides slant within their own lane: the target is on the same string, so
@@ -75,6 +83,11 @@ SLIDE_GAP_FRACTION = 0.85
 # Length of the stub drawn for a slide that has no note at the other end,
 # as a multiple of head width.
 SLIDE_STUB_HEADS = 0.7
+# The hammer-on / pull-off arc bows up between the two fret numbers, the way
+# tab notation ties them.
+LEGATO_ARC_HEADS = 0.34
+LEGATO_BASE_FRACTION = 0.3
+LEGATO_ARC_STEPS = 12
 
 # Left margin for notes that already passed the hit zone (ms)
 LEFT_MARGIN_MS = 2000
@@ -883,44 +896,48 @@ class PlayingScreen:
 
     @staticmethod
     def bend_label(semitones: float) -> str:
-        """Bend depth the way tab notation writes it, in WHOLE steps.
+        """Bend depth in WHOLE steps: ½, 1, 1½, 2 ...
 
-        Guitar notation counts steps, not semitones: one semitone is a half
-        bend, two is 'full'. Writing '1' where a player expects 'full' is the
-        kind of small wrongness that makes a display feel untrustworthy.
+        Guitar notation counts steps, not semitones -- one semitone is a half
+        bend, two is a whole one. Paper tab writes that whole bend as 'full',
+        but it goes in a badge the size of a fingertip, and Yousician writes
+        the number there for the same reason. ½ and 1 fit; 'full' does not.
         """
         halves = int(round(semitones))
         if halves <= 0:
             return ""
-        if halves == 1:
-            return "½"
-        if halves == 2:
-            return "full"
         whole, rest = divmod(halves, 2)
+        if not whole:
+            return "½"
         return f"{whole}½" if rest else str(whole)
 
     @staticmethod
     def _bend_points(
-        note: NoteEvent, x: float, cy: float, width: float, lane_height: float,
+        note: NoteEvent, x: float, cy: float, width: float, height: float,
     ) -> list[tuple[float, float]]:
         """Screen points of the bend curve, left to right.
+
+        `height` is how far a FULL bend (two semitones) rises above `cy`, so
+        a half bend really does look half as deep. A deeper bend than that is
+        squeezed to fit rather than drawn outside the note.
 
         Each written point is joined to the next by a smoothstep rather than a
         straight line: a bend is a continuous pull, and a polyline with visible
         kinks reads as a staircase of separate pitches.
         """
-        rise_per_step = lane_height * BEND_RISE_LANES / 2.0
-        deepest = max((v for _, v in note.bend), default=0.0)
-        cap = lane_height * BEND_MAX_RISE_LANES
-        if deepest * rise_per_step > cap:
-            rise_per_step = cap / deepest
         curve = list(note.bend)
         # GP files routinely omit the starting point at (0, 0); without it the
-        # curve begins in mid-air beside the note head.
+        # curve begins in mid-air instead of at the fretted pitch.
         if curve and curve[0][0] > 0.0:
             curve.insert(0, (0.0, 0.0))
         if len(curve) < 2:
             return []
+        deepest = max((v for _, v in curve), default=0.0)
+        if deepest <= 0:
+            return []
+        rise = height / FULL_BEND_SEMITONES
+        if deepest * rise > height:
+            rise = height / deepest
 
         points: list[tuple[float, float]] = []
         for (p0, v0), (p1, v1) in zip(curve, curve[1:]):
@@ -929,62 +946,102 @@ class PlayingScreen:
                 eased = f * f * (3 - 2 * f)
                 pos = p0 + (p1 - p0) * f
                 val = v0 + (v1 - v0) * eased
-                points.append((x + pos * width, cy - val * rise_per_step))
+                points.append((x + pos * width, cy - val * rise))
         last_pos, last_val = curve[-1]
-        points.append((x + last_pos * width, cy - last_val * rise_per_step))
+        points.append((x + last_pos * width, cy - last_val * rise))
         return points
+
+    def _draw_technique_line(
+        self, surface: pygame.Surface, points: list[tuple[float, float]],
+        width: int, dim: bool,
+    ) -> None:
+        """A white technique line with a dark shadow under it.
+
+        The shadow is not decoration. A white curve on a white-ish or yellow
+        note is invisible, which is exactly what happened to the bend line on
+        the amber string -- and a technique you cannot see is one you will not
+        play.
+        """
+        pts = [(int(px), int(py)) for px, py in points]
+        if len(pts) < 2:
+            return
+        t = get_theme()
+        shadow = [(px + 1, py + 2) for px, py in pts]
+        pygame.draw.lines(surface, t.note_border, False, shadow, width + 2)
+        line = (190, 190, 200) if dim else (255, 255, 255)
+        pygame.draw.lines(surface, line, False, pts, width)
+
+    @staticmethod
+    def _badge_y(cy: float, head: float) -> float:
+        """Badge centre: clear of the note's top edge, not on the fret number."""
+        return cy - head / 2 - head * BADGE_RADIUS_HEADS * BADGE_LIFT_HEADS
+
+    def _draw_badge(
+        self, surface: pygame.Surface, label: str, cx: float, cy: float,
+        head: float, color: tuple[int, int, int], dim: bool,
+    ) -> None:
+        """The little dark disc naming a technique, as Yousician marks them.
+
+        Sits above the note's leading edge so the fret number underneath stays
+        whole, and takes its colour from the string so it still reads as
+        belonging to that note.
+        """
+        radius = max(8, int(head * BADGE_RADIUS_HEADS))
+        fill = dimmed(color, 0.25 if dim else 0.45)
+        t = get_theme()
+        pygame.draw.circle(surface, t.note_border, (int(cx), int(cy)), radius + 1)
+        pygame.draw.circle(surface, fill, (int(cx), int(cy)), radius)
+        ink = (170, 170, 180) if dim else (255, 255, 255)
+        # Shrink to fit rather than spill: "SL" and "1½" are wider than "H",
+        # and a label hanging over the edge of its disc looks like a mistake.
+        for size in range(max(9, int(radius * 1.25)), 6, -1):
+            font = _get_font("arial", size)
+            text = font.render(label, True, ink)
+            if text.get_width() <= radius * 1.7:
+                break
+        surface.blit(text, (int(cx) - text.get_width() // 2,
+                            int(cy) - text.get_height() // 2))
 
     def _draw_bend(
         self, surface: pygame.Surface, note: NoteEvent, x: float, cy: float,
-        head: float, capsule_w: float, lane_height: float,
-        color: tuple[int, int, int], dim: bool,
+        head: float, capsule_w: float, color: tuple[int, int, int], dim: bool,
     ) -> None:
-        """An arc rising off the note head, with the depth written at its top.
+        """The bend curve, drawn INSIDE the note, plus a badge saying how far.
 
-        Drawn OVER the head rather than under it: the arc is the instruction,
-        and half of it disappeared behind the sustain when it went below. It
-        starts at the head's right edge so it reads as leaving the note, and
-        the fret number stays clear at the head's left.
+        Inside rather than above, which is how Yousician draws it and what
+        this six-lane layout actually allows: an arc rising out of the note
+        reaches into the neighbouring string's lane, where it reads as a note
+        over there. Kept within the note body it cannot be misread, and the
+        depth is carried by the badge -- 1/2, full, 1 1/2 -- which is the
+        number a player looks for anyway.
         """
+        radius = head / 2
+        body = max(capsule_w, head)
+        # Starts past the fret number rather than under it: the digit is what
+        # tells you where to put the finger, and a line through it wins an
+        # argument it should not be having.
         start = x + head
-        width = max(capsule_w - head, head * BEND_MIN_WIDTH_HEADS)
-        points = self._bend_points(note, start, cy, width, lane_height)
+        width = max(body - head - radius * BEND_INSET_FRACTION,
+                    head * BEND_MIN_WIDTH_HEADS)
+        points = self._bend_points(
+            note, start, cy + radius * BEND_BASE_FRACTION,
+            width, head * BEND_DEPTH_HEADS,
+        )
         if len(points) < 2:
             return
-
-        t = get_theme()
-        line = dimmed(color) if dim else lightened(color)
-        pygame.draw.lines(surface, line, False,
-                          [(int(px), int(py)) for px, py in points], 3)
-
-        top = min(points, key=lambda p: p[1])
-        barb = max(3, int(head * 0.16))
-        # Arrowhead only where the curve actually rises, so a release-only
-        # curve (bend already held, coming back down) does not sprout one.
-        if top[1] < cy - 2:
-            tip = int(top[0]), int(top[1])
-            pygame.draw.polygon(surface, line, [
-                (tip[0], tip[1] - barb),
-                (tip[0] - barb, tip[1] + barb),
-                (tip[0] + barb, tip[1] + barb),
-            ])
+        self._draw_technique_line(surface, points, TECHNIQUE_WIDTH_PX, dim)
 
         label = self.bend_label(note.bend_semitones)
-        if not label:
-            return
-        font = _get_font("arial", max(11, int(head * 0.42)))
-        text = font.render(label, True, dimmed(t.hud_text) if dim else t.hud_text)
-        # Beside the top of the arc, not above it: above collides with the
-        # next string up as soon as the bend is a full step or more.
-        surface.blit(text, (int(top[0]) + barb + 2,
-                            int(top[1]) - text.get_height() // 2))
+        if label:
+            self._draw_badge(surface, label, x + head, self._badge_y(cy, head),
+                             head, color, dim)
 
     def _draw_slide(
         self, surface: pygame.Surface, note: NoteEvent, x: float, cy: float,
         head: float, capsule_w: float, target: NoteEvent | None,
         target_x: float | None, color: tuple[int, int, int], dim: bool,
     ) -> None:
-        """A slanted connector to where the finger is going.
+        """A slanted connector to where the finger is going, plus an SL badge.
 
         The target of a slide sits on the SAME string, so the lane cannot show
         direction the way a staff would. The connector is slanted within the
@@ -995,7 +1052,6 @@ class PlayingScreen:
         """
         radius = head / 2
         slant = radius * SLIDE_SLANT_FRACTION
-        line = dimmed(color) if dim else lightened(color)
 
         if note.slide_to_next and target is not None and target_x is not None:
             # Ends just inside the target head and starts at the end of this
@@ -1009,21 +1065,60 @@ class PlayingScreen:
             # Up the neck is the higher fret. Comparing frets rather than
             # pitch keeps it right on tabs that slide across a string change.
             rise = slant if target.fret > note.fret else -slant
-            pygame.draw.line(surface, line, (int(start_x), int(cy + rise)),
-                             (int(end_x), int(cy - rise)), SLIDE_WIDTH_PX)
+            self._draw_technique_line(
+                surface, [(start_x, cy + rise), (end_x, cy - rise)],
+                TECHNIQUE_WIDTH_PX, dim,
+            )
+            self._draw_badge(surface, "SL", x + head,
+                             self._badge_y(cy, head), head, color, dim)
             return
 
         stub = head * SLIDE_STUB_HEADS
         if note.slide_out:
             start_x = x + max(capsule_w, head)
             rise = -slant if note.slide_out > 0 else slant
-            pygame.draw.line(surface, line, (int(start_x), int(cy)),
-                             (int(start_x + stub), int(cy + rise * 2)),
-                             SLIDE_WIDTH_PX)
+            self._draw_technique_line(
+                surface, [(start_x, cy), (start_x + stub, cy + rise * 2)],
+                TECHNIQUE_WIDTH_PX, dim,
+            )
         if note.slide_in:
             rise = slant if note.slide_in > 0 else -slant
-            pygame.draw.line(surface, line, (int(x - stub), int(cy + rise * 2)),
-                             (int(x + radius), int(cy)), SLIDE_WIDTH_PX)
+            self._draw_technique_line(
+                surface, [(x - stub, cy + rise * 2), (x + radius, cy)],
+                TECHNIQUE_WIDTH_PX, dim,
+            )
+
+    def _draw_legato(
+        self, surface: pygame.Surface, note: NoteEvent, x: float, cy: float,
+        head: float, capsule_w: float, target: NoteEvent,
+        target_x: float, color: tuple[int, int, int], dim: bool,
+    ) -> None:
+        """The hammer-on / pull-off arc, with an H or P badge over the target.
+
+        Which one it is follows from the frets: onto a higher fret is a
+        hammer-on, back to a lower one is a pull-off. The arc bows upward
+        between the two fret numbers, the way tab notation ties them.
+        """
+        radius = head / 2
+        # Between the two fret numbers, not across them: the arc ties the
+        # notes together, it does not have to cover them to say so.
+        start_x = x + head
+        end_x = target_x + radius * 0.4
+        span = end_x - start_x
+        if span < 4:
+            return
+
+        lift = min(head * LEGATO_ARC_HEADS, span * 0.35)
+        base = cy + radius * LEGATO_BASE_FRACTION
+        points = []
+        for step in range(LEGATO_ARC_STEPS + 1):
+            f = step / LEGATO_ARC_STEPS
+            points.append((start_x + span * f, base - lift * (4 * f * (1 - f))))
+        self._draw_technique_line(surface, points, TECHNIQUE_WIDTH_PX - 1, dim)
+
+        label = "H" if target.fret > note.fret else "P"
+        self._draw_badge(surface, label, end_x, self._badge_y(cy, head),
+                         head, color, dim)
 
     @staticmethod
     def sustain_width(duration_ms: float, pixels_per_ms: float) -> float:
@@ -1149,19 +1244,6 @@ class PlayingScreen:
             # at its own time, so the moment to play is when the start of the
             # shape reaches the hit line -- not its middle, which put the cue
             # half a note late.
-            # A slide connector goes UNDER the heads it runs between, so it
-            # cannot land on top of the target's fret number.
-            if note.slide_to_next or note.slide_in or note.slide_out:
-                following = next_on_string.get((note.timestamp_ms, note.string))
-                target_x = None
-                if following is not None:
-                    target_x = self.note_x(
-                        following.timestamp_ms, self._playback_ms,
-                        layout.hit_zone_x, layout.pixels_per_ms,
-                    )
-                self._draw_slide(surface, note, x, cy, head, capsule_w,
-                                 following, target_x, base_color, past_hit_zone)
-
             if capsule_w > 2 * radius:
                 rect = pygame.Rect(
                     int(x), int(cy - radius), int(capsule_w), int(2 * radius),
@@ -1174,12 +1256,28 @@ class PlayingScreen:
                 pygame.draw.circle(surface, color, centre, int(radius))
                 pygame.draw.circle(surface, t.note_border, centre, int(radius), 2)
 
-            # The bend arc goes OVER the head: it rises away from it, so it
-            # hides nothing, and half of it vanished behind the sustain when
-            # it was drawn underneath.
+            # Technique marks go OVER the head. They live inside the note now
+            # rather than arcing out of the lane, so drawing them underneath
+            # would simply hide them behind the note they describe.
+            following = None
+            target_x = None
+            if (note.slide_to_next or note.hammer_to_next
+                    or note.slide_in or note.slide_out):
+                following = next_on_string.get((note.timestamp_ms, note.string))
+                if following is not None:
+                    target_x = self.note_x(
+                        following.timestamp_ms, self._playback_ms,
+                        layout.hit_zone_x, layout.pixels_per_ms,
+                    )
+            if note.slide_to_next or note.slide_in or note.slide_out:
+                self._draw_slide(surface, note, x, cy, head, capsule_w,
+                                 following, target_x, base_color, past_hit_zone)
+            if note.hammer_to_next and following is not None and target_x is not None:
+                self._draw_legato(surface, note, x, cy, head, capsule_w,
+                                  following, target_x, base_color, past_hit_zone)
             if note.bend:
                 self._draw_bend(surface, note, x, cy, head, capsule_w,
-                                layout.lane_height, base_color, past_hit_zone)
+                                base_color, past_hit_zone)
 
             # Fret number centred in the head, sized to the head it sits in —
             # a fixed size spills out of the shrunken heads of a fast run
@@ -1697,15 +1795,20 @@ class PlayingScreen:
             )
         ])
 
-        block("Bends and Slides", [
-            "An arc curving up off a note is a BEND: fret it, then push",
-            "the string until the pitch rises. The label says how far \u2014",
-            "\u00bd is one fret, 'full' is two. The arc's height says the same.",
-            "A slanted bar between two notes is a SLIDE: strike only the",
-            "first and slide into the second. Rising to the right means",
-            "up the neck. A short stub is a slide off into nothing.",
-            "Both are scored leniently: the pitch has to land in the",
-            "right region, not exactly on the target.",
+        block("Techniques (badge above the note says which)", [
+            "\u00bd  1  1\u00bd   BEND. Fret the note, then push the string until",
+            "     the pitch rises. \u00bd is one fret, 1 is two. The white",
+            "     curve inside the note draws the same thing.",
+            "SL   SLIDE. Strike only the first note and slide into the",
+            "     second. The bar between them rises to the right for",
+            "     up the neck. A short stub is a slide off into nothing.",
+            "H    HAMMER-ON. Strike the first note, then hammer the",
+            "     finger down for the second without striking again.",
+            "P    PULL-OFF. The same in reverse, lifting the finger.",
+            "",
+            "H, P and SL notes are not struck, so they score with the",
+            "note they came from. Bends are scored leniently: the pitch",
+            "has to land in the right region, not on the target exactly.",
         ])
 
         block("Scoring (colours change after you play)", [

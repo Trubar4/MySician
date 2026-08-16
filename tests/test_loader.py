@@ -238,3 +238,21 @@ class TestTechniques:
             assert note.bend == ()
             assert not note.slide_to_next
             assert note.slide_in == 0 and note.slide_out == 0
+
+
+class TestLegato:
+    def test_hammer_marks_the_note_it_starts_from(self):
+        """GP flags the source, the same way it flags a shift slide."""
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        legato = [n for n in notes if n.hammer_to_next]
+        assert legato, "Effects.gp5 is the fixture that has a hammer-on"
+        assert legato[0].leads_into_next
+
+    def test_a_slide_also_leads_into_the_next_note(self):
+        notes = load_gp_file(FIXTURES / "Slides.gp5").notes
+        assert notes[0].leads_into_next
+
+    def test_a_plain_note_leads_into_nothing(self):
+        for note in load_gp_file(FIXTURES / "notes.gp5").notes:
+            assert not note.hammer_to_next
+            assert not note.leads_into_next

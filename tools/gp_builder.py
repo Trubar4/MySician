@@ -54,6 +54,15 @@ def bend(semitones: float):
     return ("bend", effect)
 
 
+def legato():
+    """Hammer-on / pull-off to the next note, for `beat`'s note specs.
+
+    Which of the two it is follows from the frets, so GP does not record it
+    separately and neither do we.
+    """
+    return ("hammer", True)
+
+
 def slide(kind: str):
     """A slide, as one of 'to' (to the next note), 'up' or 'down' (off it)."""
     return ("slide", {
@@ -84,6 +93,8 @@ def beat(voice, duration_value: int, notes):
         for kind, payload in effects:
             if kind == "bend":
                 note.effect.bend = payload
+            elif kind == "hammer":
+                note.effect.hammer = payload
             else:
                 note.effect.slides.append(payload)
         b.notes.append(note)

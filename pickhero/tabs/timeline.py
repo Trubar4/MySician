@@ -28,6 +28,9 @@ class NoteEvent:
     # Slid into the FOLLOWING note on this string (shift or legato slide).
     # The target is that note, so nothing needs storing here.
     slide_to_next: bool = False
+    # Hammered onto / pulled off to the following note, which is therefore
+    # not picked again. Which of the two it is follows from the frets.
+    hammer_to_next: bool = False
     # Slid into this note from below (+1) / above (-1), with no start note.
     slide_in: int = 0
     # Slid off this note upwards (+1) / downwards (-1), with no target note.
@@ -37,6 +40,11 @@ class NoteEvent:
     def bend_semitones(self) -> float:
         """How far the pitch rises at the top of the bend, 0 if unbent."""
         return max((v for _, v in self.bend), default=0.0)
+
+    @property
+    def leads_into_next(self) -> bool:
+        """True when the following note on this string is not picked again."""
+        return self.slide_to_next or self.hammer_to_next
 
     def __post_init__(self):
         if self.timestamp_ms < 0:

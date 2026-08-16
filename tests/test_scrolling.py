@@ -664,19 +664,20 @@ class TestTrackPicker:
 
 class TestBendDrawing:
     def test_label_counts_steps_not_semitones(self):
-        # Guitar notation: one semitone is a half bend, two is 'full'.
+        # Guitar notation: one semitone is a half bend, two is a whole one.
+        # Written as a number rather than 'full' so it fits the badge.
         assert PlayingScreen.bend_label(1) == "½"
-        assert PlayingScreen.bend_label(2) == "full"
+        assert PlayingScreen.bend_label(2) == "1"
         assert PlayingScreen.bend_label(3) == "1½"
         assert PlayingScreen.bend_label(4) == "2"
 
     def test_no_label_without_a_bend(self):
         assert PlayingScreen.bend_label(0) == ""
 
-    def _curve(self, bend, lane_height=50.0):
+    def _curve(self, bend, height=30.0):
         note = NoteEvent(timestamp_ms=0.0, duration_ms=500.0, midi_note=64,
                          string=1, fret=0, bend=bend)
-        return PlayingScreen._bend_points(note, 100.0, 200.0, 80.0, lane_height)
+        return PlayingScreen._bend_points(note, 100.0, 200.0, 80.0, height)
 
     def test_curve_starts_on_the_string_and_rises(self):
         points = self._curve(((0.0, 0.0), (0.5, 2.0), (1.0, 2.0)))
@@ -697,10 +698,18 @@ class TestBendDrawing:
         full = min(p[1] for p in self._curve(((0.0, 0.0), (1.0, 2.0))))
         assert full < half
 
-    def test_rise_is_capped_so_it_cannot_climb_two_strings(self):
-        lane = 50.0
-        deep = min(p[1] for p in self._curve(((0.0, 0.0), (1.0, 8.0)), lane))
-        assert 200.0 - deep <= lane * 2
+    def test_a_full_bend_reaches_the_depth_it_is_given(self):
+        top = min(p[1] for p in self._curve(((0.0, 0.0), (1.0, 2.0)), 30.0))
+        assert top == pytest.approx(170.0)
+
+    def test_a_half_bend_is_drawn_half_as_deep(self):
+        top = min(p[1] for p in self._curve(((0.0, 0.0), (1.0, 1.0)), 30.0))
+        assert top == pytest.approx(185.0)
+
+    def test_a_deeper_bend_is_squeezed_in_rather_than_drawn_outside(self):
+        """The curve lives inside the note, so it cannot overflow it."""
+        top = min(p[1] for p in self._curve(((0.0, 0.0), (1.0, 8.0)), 30.0))
+        assert top == pytest.approx(170.0)
 
 
 class TestSlideTargets:
