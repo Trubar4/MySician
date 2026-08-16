@@ -6,6 +6,7 @@ a running PyGame display.
 
 import pytest
 
+from pickhero.config import Config
 from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
 from pickhero.ui.scrolling import (
     MIN_NOTE_WIDTH_PX,
@@ -528,3 +529,53 @@ class TestScrollSpeed:
         screen = PlayingScreen(Timeline([], SongMetadata(tempo=120)))
         screen._recompute_scroll_speed(screen._layout(self._MockSurface(1280, 720)))
         assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS)
+
+
+class TestBackingOffset:
+    """What you hear and what you see are generated from one timeline but do
+    not necessarily arrive together."""
+
+    def _screen(self):
+        return PlayingScreen(_make_timeline(tempo=120), config=Config())
+
+    def test_no_offset_leaves_the_position_alone(self):
+        screen = self._screen()
+        assert screen._backing_ms(5000.0) == pytest.approx(5000.0)
+
+    def test_positive_offset_delays_the_backing(self):
+        screen = self._screen()
+        screen._config.backing_offset_ms = 120.0
+        assert screen._backing_ms(5000.0) == pytest.approx(4880.0)
+
+    def test_negative_offset_pulls_the_backing_forward(self):
+        screen = self._screen()
+        screen._config.backing_offset_ms = -80.0
+        assert screen._backing_ms(5000.0) == pytest.approx(5080.0)
+
+    def test_adjustment_accumulates(self):
+        screen = self._screen()
+        screen._adjust_backing_offset(30.0)
+        screen._adjust_backing_offset(20.0)
+        assert screen._config.backing_offset_ms == pytest.approx(50.0)
+
+    def test_adjustment_is_bounded_both_ways(self):
+        from pickhero.ui.scrolling import MAX_BACKING_OFFSET_MS
+        screen = self._screen()
+        for _ in range(200):
+            screen._adjust_backing_offset(50.0)
+        assert screen._config.backing_offset_ms == pytest.approx(MAX_BACKING_OFFSET_MS)
+        for _ in range(400):
+            screen._adjust_backing_offset(-50.0)
+        assert screen._config.backing_offset_ms == pytest.approx(-MAX_BACKING_OFFSET_MS)
+
+
+class TestTimingWindowCycle:
+    def test_cycles_through_the_presets_and_wraps(self):
+        from pickhero.ui.scrolling import TIMING_WINDOW_PRESETS
+        screen = PlayingScreen(_make_timeline(tempo=120), config=Config())
+        seen = []
+        for _ in range(len(TIMING_WINDOW_PRESETS) + 1):
+            screen._cycle_timing_window()
+            seen.append(screen._config.timing_window_ms)
+        assert set(seen) == set(TIMING_WINDOW_PRESETS)
+        assert seen[-1] == seen[len(TIMING_WINDOW_PRESETS) - 1 + 1 - len(TIMING_WINDOW_PRESETS)]

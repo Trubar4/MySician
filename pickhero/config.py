@@ -68,6 +68,10 @@ class Config:
     # Manual scroll speed trim, on top of the speed derived from the song.
     # Above 1.0 scrolls faster, below 1.0 slower.
     scroll_speed_factor: float = 1.0
+    # Shift the MIDI backing against the scrolling notes. Positive sounds
+    # LATER. The two are generated from the same timeline, but what you hear
+    # goes through a synth and a sound card while what you see does not.
+    backing_offset_ms: float = 0.0
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     calibration: dict = field(default_factory=dict)

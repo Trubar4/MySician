@@ -29,6 +29,11 @@ TUNING = [64, 59, 55, 50, 45, 40]
 # Duration values follow the GP convention: 1 = whole, 4 = quarter, 8 = eighth.
 WHOLE, HALF, QUARTER, EIGHTH = 1, 2, 4, 8
 
+# General MIDI percussion notes, on channel 10 (0-indexed 9).
+SIDE_STICK = 37     # beat 1: the accent that says where the bar starts
+CLOSED_HAT = 42     # beats 2-4
+PERCUSSION_CHANNEL = 9
+
 
 def _measure_header(number, start, tempo_marker=None):
     header = gp.MeasureHeader()
@@ -43,8 +48,11 @@ def _measure_header(number, start, tempo_marker=None):
     return header
 
 
-def _beat(voice, duration_value, notes):
-    """One beat. `notes` is a list of (string, fret); empty means a rest."""
+def _beat(voice, duration_value, notes, percussion=False):
+    """One beat. `notes` is a list of (string, fret); empty means a rest.
+
+    On a percussion track `fret` carries the GM drum note instead.
+    """
     beat = gp.Beat(voice=voice)
     beat.duration = gp.Duration(duration_value)
     beat.notes = []
@@ -96,6 +104,42 @@ def _sections():
     ]
 
 
+def _click_track(song: gp.Song, bars: int, number: int) -> gp.Track:
+    """A metronome track, so the player can HEAR where the beat is.
+
+    Without something audible the exercise only shows the beat, and a player
+    cannot tell being late from the tab being wrong. Side stick on one,
+    closed hat on the rest, so the start of each bar is unmistakable.
+    """
+    track = gp.Track(song=song)
+    track.number = number
+    track.name = "Click"
+    track.isPercussionTrack = True
+    track.channel.channel = PERCUSSION_CHANNEL
+    track.channel.effectChannel = PERCUSSION_CHANNEL
+    track.channel.instrument = 0
+    # Open-string value 0, so the "fret" IS the GM drum note. With a guitar
+    # tuning the extractor would add the string's pitch and turn a side stick
+    # into a wood block.
+    track.strings = [gp.GuitarString(number=i + 1, value=0) for i in range(6)]
+    track.measures = []
+
+    for bar in range(bars):
+        header = song.measureHeaders[bar]
+        measure = gp.Measure(track=track, header=header)
+        voice = gp.Voice(measure=measure)
+        voice.beats = [
+            _beat(voice, QUARTER,
+                  [(6, SIDE_STICK if i == 0 else CLOSED_HAT)], percussion=True)
+            for i in range(4)
+        ]
+        second = gp.Voice(measure=measure)
+        second.beats = []
+        measure.voices = [voice, second]
+        track.measures.append(measure)
+    return track
+
+
 def build_song(tempo: int) -> gp.Song:
     song = gp.Song()
     song.title = f"Timing Test {tempo} BPM"
@@ -138,6 +182,8 @@ def build_song(tempo: int) -> gp.Song:
             start += gp.Duration.quarterTime * 4
 
     song.tracks.append(track)
+    # A click on every beat of every bar, count-in included
+    song.tracks.append(_click_track(song, len(track.measures), number=2))
     return song
 
 
@@ -159,6 +205,7 @@ def main():
     seconds = bars * 4 * 60 / args.tempo
     print(f"Written: {out}")
     print(f"  {bars} bars at {args.tempo} BPM  (~{seconds:.0f} s)")
+    print("  Track 1 'Timing Test' = play this;  Track 2 'Click' = metronome")
     print("\nSections:")
     for label, count, _ in _sections():
         print(f"  {count:2d} bars  {label}")

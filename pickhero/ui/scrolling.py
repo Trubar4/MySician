@@ -82,6 +82,10 @@ SCROLL_FACTOR_STEP = 0.1
 # choice about how the app should feel, not a constant.
 TIMING_WINDOW_PRESETS = (100.0, 150.0, 200.0, 250.0)
 
+# How far the backing track can be shifted against the notes, and its step.
+MAX_BACKING_OFFSET_MS = 400.0
+BACKING_OFFSET_STEP_MS = 10.0
+
 # Auto-sync confidence. Scatter does not invalidate the median — a player is
 # simply not a metronome — it only means more strikes are needed before the
 # median is trustworthy. Refuse outright only when the scatter is so wide that
@@ -252,7 +256,7 @@ class PlayingScreen:
                 self._start_audio()
             if self._midi_player is not None:
                 if self._playback_ms >= 0:
-                    self._midi_player.seek(self._playback_ms)
+                    self._midi_player.seek(self._backing_ms(self._playback_ms))
         else:
             self._last_tick = None
             self._stop_audio()
@@ -266,7 +270,7 @@ class PlayingScreen:
             self._matcher.reset()
         self._feedback.reset()
         if self._midi_player is not None:
-            self._midi_player.seek(self._playback_ms)
+            self._midi_player.seek(self._backing_ms(self._playback_ms))
         # Restart audio with new offset if active
         if self._audio_enabled and self._playing:
             self._stop_audio()
@@ -357,7 +361,7 @@ class PlayingScreen:
             elif self._wait_mode_frozen:
                 self._wait_mode_frozen = False
                 if self._midi_player is not None and not self._backing_muted:
-                    self._midi_player.seek(self._playback_ms)
+                    self._midi_player.seek(self._backing_ms(self._playback_ms))
 
         # Count-in: play metronome clicks and start audio/midi when crossing 0
         if prev_ms < 0:
@@ -404,7 +408,7 @@ class PlayingScreen:
 
         # Advance MIDI backing track (only during actual song)
         if self._playback_ms >= 0 and self._midi_player is not None:
-            self._midi_player.update(self._playback_ms)
+            self._midi_player.update(self._backing_ms(self._playback_ms))
 
         # Loop check — jump back to start marker when reaching end marker
         # (no count-in on loop)
@@ -419,7 +423,7 @@ class PlayingScreen:
                 self._matcher.reset()
             self._feedback.reset()
             if self._midi_player is not None:
-                self._midi_player.seek(self._loop_start_ms)
+                self._midi_player.seek(self._backing_ms(self._loop_start_ms))
             if self._audio_enabled and self._playing:
                 self._stop_audio()
                 self._start_audio()
@@ -511,6 +515,12 @@ class PlayingScreen:
             self._toggle_chord_verify()
         elif event.key == pygame.K_g:
             self._cycle_timing_window()
+        elif event.key == pygame.K_TAB:
+            return "next_track"
+        elif event.key == pygame.K_n:
+            self._adjust_backing_offset(-BACKING_OFFSET_STEP_MS)
+        elif event.key == pygame.K_m:
+            self._adjust_backing_offset(BACKING_OFFSET_STEP_MS)
         elif event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
             self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
         elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
@@ -675,6 +685,24 @@ class PlayingScreen:
         self._head_px = head
         self._scroll_speed_signature = self._filter_signature()
 
+    def _backing_ms(self, playback_ms: float) -> float:
+        """Playback position as the backing track should hear it.
+
+        A positive offset delays the backing, so it is subtracted from the
+        position the player feeds it.
+        """
+        return playback_ms - getattr(self._config, "backing_offset_ms", 0.0)
+
+    def _adjust_backing_offset(self, delta_ms: float) -> None:
+        """Shift the backing against the notes (N earlier, M later)."""
+        current = getattr(self._config, "backing_offset_ms", 0.0)
+        self._config.backing_offset_ms = max(
+            -MAX_BACKING_OFFSET_MS, min(MAX_BACKING_OFFSET_MS, current + delta_ms)
+        )
+        self._config.save()
+        if self._midi_player is not None:
+            self._midi_player.seek(self._backing_ms(self._playback_ms))
+
     def _cycle_timing_window(self) -> None:
         """Step through how much timing slack a hit gets (G)."""
         current = self._config.timing_window_ms
@@ -754,10 +782,12 @@ class PlayingScreen:
                 surface, string_color, (0, y), (layout.screen_w, y),
                 STRING_THICKNESS[i],
             )
-        # Edges of the board
+        # Edges of the board, deliberately DARKER than the strings. Drawn in
+        # the string colour they read as a seventh and a zeroth string.
+        edge_color = dimmed(t.lane_line, 0.45)
         for edge_y in (layout.lane_top, layout.lane_top + board_h):
             pygame.draw.line(
-                surface, t.lane_line,
+                surface, edge_color,
                 (0, int(edge_y)), (layout.screen_w, int(edge_y)), 2,
             )
 
@@ -1012,6 +1042,16 @@ class PlayingScreen:
             True, t.hud_text)
         surface.blit(window_surf, (12, info_y))
         info_y += 16
+
+        # Backing offset HUD — only when shifted, but then always visible,
+        # since a backing that disagrees with the notes is the hardest fault
+        # to diagnose by ear
+        backing_off = getattr(self._config, "backing_offset_ms", 0.0)
+        if abs(backing_off) > 0.5:
+            back_surf = hint_font.render(
+                f"Backing: {int(backing_off):+d} ms (N/M)", True, t.hud_accent)
+            surface.blit(back_surf, (12, info_y))
+            info_y += 16
 
         # Scroll speed HUD — only when trimmed away from the derived speed
         if abs(self._scroll_factor() - 1.0) > 0.01:
@@ -1361,6 +1401,8 @@ class PlayingScreen:
             "K: auto-sync timing (fixes 'I must play early/late to score')    ,/.: sync by hand",
             "Shift+K: reset sync to 0 (use when the offset has run away)",
             "+/-: scroll faster / slower    G: hit window (timing slack)",
+            "N/M: backing track earlier / later (if what you hear and see disagree)",
+            "TAB: next track (for tabs with more than one playable part)",
         ]
         for line in controls:
             surf = hint_font.render(line, True, t.hud_text)

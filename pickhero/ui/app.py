@@ -30,6 +30,8 @@ class App:
         self._running = False
         self._state = "menu"
         self._load_error: str | None = None
+        self._current_song_path: Path | None = None
+        self._current_track_index: int | None = None
         self._menu: MenuScreen | None = None
         self._playing_screen: PlayingScreen | None = None
         self._device_menu: DeviceMenuScreen | None = None
@@ -120,6 +122,9 @@ class App:
 
     def _handle_playing_event(self, event: pygame.event.Event) -> None:
         result = self._playing_screen.handle_event(event)
+        if result == "next_track":
+            self._load_next_track()
+            return
         if result == "menu":
             self._playing_screen.stop_audio()
             self._playing_screen = None
@@ -158,6 +163,33 @@ class App:
             self._calibration_menu = None
             self._state = "menu"
 
+    def _playable_track_indices(self, path: Path) -> list[int]:
+        """Tracks worth offering: the guitar ones, or everything if none."""
+        from pickhero.tabs.loader import list_tracks
+        try:
+            tracks = list_tracks(path)
+        except Exception:
+            return []
+        guitars = [t["index"] for t in tracks
+                   if t.get("is_guitar") and not t.get("is_percussion")]
+        return guitars or [t["index"] for t in tracks]
+
+    def _load_next_track(self) -> None:
+        """Reload the current song on its next playable track (TAB).
+
+        Multi-track tabs pick a track automatically and there was no way to
+        say otherwise, so the wrong part was simply what you got.
+        """
+        path = getattr(self, "_current_song_path", None)
+        if path is None:
+            return
+        indices = self._playable_track_indices(path)
+        if len(indices) < 2:
+            return
+        current = getattr(self, "_current_track_index", None)
+        pos = indices.index(current) if current in indices else 0
+        self._load_song(path, indices[(pos + 1) % len(indices)])
+
     def _render_load_error(self, surface: pygame.Surface) -> None:
         """Say why the last song refused to load, on the menu it fell back to."""
         if not getattr(self, "_load_error", None):
@@ -171,10 +203,10 @@ class App:
                       (0, y - 4, surface.get_width(), surf.get_height() + 8))
         surface.blit(surf, (12, y))
 
-    def _load_song(self, path: Path) -> None:
+    def _load_song(self, path: Path, track_index: int | None = None) -> None:
         """Load a GP file and switch to playing state."""
         try:
-            timeline = load_gp_file(path)
+            timeline = load_gp_file(path, track_index)
         except Exception as e:
             # Show it, do not just log it: returning to the menu in silence
             # looks like the song was ignored rather than that it failed.
@@ -206,6 +238,8 @@ class App:
             song_key=path.stem,
         )
         self._state = "playing"
+        self._current_song_path = path
+        self._current_track_index = timeline.metadata.track_index
 
         # Skip ahead so the first note is just entering the visible window
         if timeline.notes:
