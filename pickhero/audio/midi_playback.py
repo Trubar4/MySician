@@ -142,6 +142,53 @@ def _pick_output_device() -> int:
 
 
 _MIDI_READY = False
+# One process, one backing track, one output. Opening a second one competes
+# with the first for a device that only allows a single handle, and the loser
+# gets an object that reports success and then refuses every write.
+_SHARED_OUTPUT = None
+_SHARED_OUTPUT_NAME = ""
+
+
+def _open_shared_output():
+    """Open the MIDI output once, verifying it actually works.
+
+    pygame.midi.Output() does NOT raise when the device refuses to open: it
+    prints "Unable to open Midi OutputDevice" and hands back an object whose
+    every write throws "midi Output not open". So the handle is proven with a
+    real message before it is accepted.
+    """
+    global _SHARED_OUTPUT, _SHARED_OUTPUT_NAME
+    if _SHARED_OUTPUT is not None:
+        return _SHARED_OUTPUT
+    if not _init_midi_once():
+        return None
+
+    import pygame.midi
+    outputs = list_midi_outputs()
+    if not outputs:
+        print("No MIDI output device found - backing track will be silent")
+        return None
+
+    preferred = _pick_output_device()
+    order = [preferred] + [d for d, _ in outputs if d != preferred]
+    names = dict(outputs)
+    for device_id in order:
+        try:
+            candidate = pygame.midi.Output(device_id)
+            # Prove it: an all-notes-off on channel 0 is inaudible and fails
+            # loudly on a handle that only pretended to open.
+            candidate.write_short(0xB0, 123, 0)
+        except Exception as e:
+            print(f"  MIDI device {device_id} ({names.get(device_id, '?')}) "
+                  f"unusable: {e}")
+            continue
+        _SHARED_OUTPUT = candidate
+        _SHARED_OUTPUT_NAME = names.get(device_id, str(device_id))
+        print(f"MIDI output: {_SHARED_OUTPUT_NAME}")
+        return _SHARED_OUTPUT
+
+    print("No MIDI output could be opened - backing track will be silent")
+    return None
 
 
 class MidiPlayer:
@@ -159,44 +206,16 @@ class MidiPlayer:
 
         Returns True on success, False if MIDI is unavailable.
         """
-        if not _init_midi_once():
-            return False
-        import pygame.midi
-
-        outputs = list_midi_outputs()
-        if not outputs:
-            print("No MIDI output device found - backing track will be silent")
-            return False
-
-        # Try the preferred device, then every other one: an id can be listed
-        # and still refuse to open, and giving up on the first failure leaves
-        # a working synth further down the list unused.
-        preferred = _pick_output_device()
-        order = [preferred] + [d for d, _ in outputs if d != preferred]
-        names = dict(outputs)
-        for device_id in order:
-            try:
-                self._output = pygame.midi.Output(device_id)
-                self._opened = True
-                print(f"MIDI output: {names.get(device_id, device_id)}")
-                return True
-            except Exception as e:
-                print(f"  MIDI device {device_id} "
-                      f"({names.get(device_id, '?')}) failed: {e}")
-        print("No MIDI output could be opened - backing track will be silent")
-        return False
+        self._output = _open_shared_output()
+        self._opened = self._output is not None
+        return self._opened
 
     def play_click(self, velocity: int = 100) -> None:
         """Play a single metronome click on the MIDI percussion channel.
 
         Uses channel 9 (percussion), note 76 (hi wood block).
         """
-        if self._output is None or self._muted:
-            return
-        try:
-            self._output.write_short(NOTE_ON | 9, 76, velocity)
-        except Exception:
-            pass
+        self._send(NOTE_ON | 9, 76, velocity)
 
     def update(self, playback_ms: float) -> None:
         """Fire all events up to playback_ms. Called each frame."""
@@ -213,9 +232,7 @@ class MidiPlayer:
         # Re-send instrument assignments so the right sounds play
         if self._output is not None and not self._muted:
             for pc in self._track.get_program_changes_before(time_ms):
-                self._output.write_short(
-                    PROGRAM_CHANGE | pc.channel, pc.data1, 0
-                )
+                self._send(PROGRAM_CHANGE | pc.channel, pc.data1, 0)
 
     def pause(self) -> None:
         """Silence all active notes."""
@@ -234,35 +251,40 @@ class MidiPlayer:
     def close(self) -> None:
         """Silence notes and close MIDI output."""
         self._all_notes_off()
-        if self._output is not None:
-            try:
-                self._output.close()
-            except Exception:
-                pass
-            self._output = None
+        # The output is shared and stays open for the next song; closing it
+        # here is what made every song after the first one silent.
+        self._output = None
         # Deliberately NOT calling pygame.midi.quit(): it invalidates the
         # device ids for everything opened afterwards in this process.
         self._opened = False
+
+    def _send(self, status: int, data1: int, data2: int) -> None:
+        """Send one MIDI message, and never let it take the app down.
+
+        A device can go away mid-song (unplugged, grabbed by another program),
+        and pygame surfaces that as an exception from write_short. A backing
+        track falling silent is a nuisance; the app dying is not.
+        """
+        if self._output is None or self._muted:
+            return
+        try:
+            self._output.write_short(status, data1, data2)
+        except Exception as e:
+            print(f"MIDI output lost ({e}) - backing track is now silent")
+            global _SHARED_OUTPUT
+            _SHARED_OUTPUT = None
+            self._output = None
 
     def _dispatch(self, event: MidiEvent) -> None:
         """Send a single MIDI event to the output."""
         if event.event_type == NOTE_ON:
             self._active_notes.add((event.channel, event.data1))
-            if not self._muted and self._output is not None:
-                self._output.write_short(
-                    NOTE_ON | event.channel, event.data1, event.data2
-                )
+            self._send(NOTE_ON | event.channel, event.data1, event.data2)
         elif event.event_type == NOTE_OFF:
             self._active_notes.discard((event.channel, event.data1))
-            if not self._muted and self._output is not None:
-                self._output.write_short(
-                    NOTE_OFF | event.channel, event.data1, event.data2
-                )
+            self._send(NOTE_OFF | event.channel, event.data1, event.data2)
         elif event.event_type == PROGRAM_CHANGE:
-            if not self._muted and self._output is not None:
-                self._output.write_short(
-                    PROGRAM_CHANGE | event.channel, event.data1, 0
-                )
+            self._send(PROGRAM_CHANGE | event.channel, event.data1, 0)
 
     def _all_notes_off(self) -> None:
         """Send note-off for all tracked active notes, then CC123 on all channels."""
