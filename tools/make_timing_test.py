@@ -1,4 +1,4 @@
-"""Generate a metronomic GP5 for diagnosing timing.
+"""Generate a GP5 for diagnosing timing and syncing the backing track.
 
 A downloaded tab cannot tell you whether bad timing is the app's fault: it may
 itself be sloppily transcribed, have a wrong tempo, or start half a beat off.
@@ -6,9 +6,16 @@ This writes a file where every note lands exactly on a beat by construction,
 so if timing still feels wrong here, the cause is latency or the app -- and if
 it feels right here but wrong on your own tabs, the tabs are the problem.
 
-Deliberately plain: open strings and one power-chord shape, nothing that needs
-technique, so what you are testing is when a note registers, not whether you
-played it well.
+It carries a second, percussion track that clicks EXACTLY where the guitar
+track has a note and stays silent on rests. That is what makes it usable for
+lining the backing up with the display (N/M in the app): a click on every beat
+gives you nothing to compare against, because you cannot tell which click
+belongs to which note. A click that only sounds where a note is due can be
+matched to that note by ear, and any offset between the two is audible at once.
+
+The first section is a plain scale with a rest after every note, which is the
+easiest possible case for that comparison. The sections after it get harder,
+to find where fast strikes stop registering.
 
     python tools/make_timing_test.py                 # 100 BPM -> songs/
     python tools/make_timing_test.py --tempo 80
@@ -29,30 +36,36 @@ TUNING = [64, 59, 55, 50, 45, 40]
 # Duration values follow the GP convention: 1 = whole, 4 = quarter, 8 = eighth.
 WHOLE, HALF, QUARTER, EIGHTH = 1, 2, 4, 8
 
-# General MIDI percussion notes, on channel 10 (0-indexed 9).
-SIDE_STICK = 37     # beat 1: the accent that says where the bar starts
-CLOSED_HAT = 42     # beats 2-4
+# General MIDI percussion, channel 10 (0-indexed 9).
+SIDE_STICK = 37
 PERCUSSION_CHANNEL = 9
 
+REST: list = []
+LOW_E = [(6, 0)]
+E5 = [(6, 0), (5, 2)]
 
-def _measure_header(number, start, tempo_marker=None):
+# One octave of E natural minor in open position, (string, fret).
+E_MINOR_SCALE = [
+    [(6, 0)], [(6, 2)], [(6, 3)], [(5, 0)],
+    [(5, 2)], [(5, 3)], [(4, 0)], [(4, 2)],
+]
+
+
+def _measure_header(number, start, marker=None):
     header = gp.MeasureHeader()
     header.number = number
     header.start = start
     header.timeSignature = gp.TimeSignature()
     header.timeSignature.numerator = 4
     header.timeSignature.denominator = gp.Duration(QUARTER)
-    if tempo_marker:
+    if marker:
         header.marker = gp.Marker()
-        header.marker.title = tempo_marker
+        header.marker.title = marker
     return header
 
 
-def _beat(voice, duration_value, notes, percussion=False):
-    """One beat. `notes` is a list of (string, fret); empty means a rest.
-
-    On a percussion track `fret` carries the GM drum note instead.
-    """
+def _beat(voice, duration_value, notes):
+    """One beat. `notes` is a list of (string, fret); empty means a rest."""
     beat = gp.Beat(voice=voice)
     beat.duration = gp.Duration(duration_value)
     beat.notes = []
@@ -69,47 +82,76 @@ def _beat(voice, duration_value, notes, percussion=False):
     return beat
 
 
-# Each section is (label, bars, beats-per-bar pattern) where the pattern is a
-# list of (duration, notes) filling exactly one 4/4 bar.
-LOW_E = [(6, 0)]
-E5 = [(6, 0), (5, 2)]
-
-
 def _sections():
-    """The exercise, in order of increasing demand on timing."""
+    """(label, bars) where bars is a list of one bar each.
+
+    A bar is a list of (duration, notes) filling exactly 4/4.
+    """
+    scale_bars = [
+        [(QUARTER, E_MINOR_SCALE[i]), (QUARTER, REST),
+         (QUARTER, E_MINOR_SCALE[i + 1]), (QUARTER, REST)]
+        for i in range(0, len(E_MINOR_SCALE), 2)
+    ]
+    quarter_bar = [(QUARTER, LOW_E)] * 4
+    chord_bar = [(QUARTER, E5)] * 4
+    eighth_bar = [(EIGHTH, LOW_E)] * 8
+    eighth_chord_bar = [(EIGHTH, E5)] * 8
+
     return [
-        ("Count-in - one silent bar", 1,
-         [(QUARTER, []) for _ in range(4)]),
+        ("Count-in", [[(QUARTER, REST)] * 4]),
 
-        ("Whole notes - is the very first note in the right place", 2,
-         [(WHOLE, LOW_E)]),
+        ("Scale, note then rest - line the click up with the note here",
+         scale_bars),
+        ("Scale again, so there is time to adjust", scale_bars),
 
-        ("Half notes", 2,
-         [(HALF, LOW_E), (HALF, LOW_E)]),
-
-        ("Quarter notes - the main timing reference", 8,
-         [(QUARTER, LOW_E) for _ in range(4)]),
-
-        ("Quarter-note power chords", 8,
-         [(QUARTER, E5) for _ in range(4)]),
-
-        ("Eighth notes - tests whether fast strikes still register", 8,
-         [(EIGHTH, LOW_E) for _ in range(8)]),
-
-        ("Eighth-note power chords - the metal case", 8,
-         [(EIGHTH, E5) for _ in range(8)]),
-
-        ("Off-beat quarters - rest, note, rest, note", 4,
-         [(QUARTER, []), (QUARTER, LOW_E), (QUARTER, []), (QUARTER, LOW_E)]),
+        ("Quarter notes - the main timing reference", [quarter_bar] * 8),
+        ("Quarter-note power chords", [chord_bar] * 8),
+        ("Eighth notes - do fast strikes still register", [eighth_bar] * 8),
+        ("Eighth-note power chords - the metal case", [eighth_chord_bar] * 8),
+        ("Off-beat quarters",
+         [[(QUARTER, REST), (QUARTER, LOW_E), (QUARTER, REST), (QUARTER, LOW_E)]] * 4),
     ]
 
 
-def _click_track(song: gp.Song, bars: int, number: int) -> gp.Track:
-    """A metronome track, so the player can HEAR where the beat is.
+def _guitar_track(song: gp.Song) -> gp.Track:
+    """The part to play, and the measure headers the whole song hangs off."""
+    track = gp.Track(song=song)
+    track.number = 1
+    track.name = "Play this"
+    track.fretCount = 24
+    track.channel.instrument = 30  # distortion guitar
+    track.strings = [
+        gp.GuitarString(number=i + 1, value=v) for i, v in enumerate(TUNING)
+    ]
+    track.measures = []
 
-    Without something audible the exercise only shows the beat, and a player
-    cannot tell being late from the tab being wrong. Side stick on one,
-    closed hat on the rest, so the start of each bar is unmistakable.
+    number = 1
+    start = gp.Duration.quarterTime * 1  # GP measures start at 960
+    for label, bars in _sections():
+        for i, bar in enumerate(bars):
+            header = _measure_header(number, start, marker=label if i == 0 else None)
+            song.measureHeaders.append(header)
+
+            measure = gp.Measure(track=track, header=header)
+            voice = gp.Voice(measure=measure)
+            voice.beats = [_beat(voice, dur, notes) for dur, notes in bar]
+            second = gp.Voice(measure=measure)
+            second.beats = []
+            measure.voices = [voice, second]
+            track.measures.append(measure)
+
+            number += 1
+            start += gp.Duration.quarterTime * 4
+    return track
+
+
+def _click_track(song: gp.Song, guitar: gp.Track, number: int) -> gp.Track:
+    """A click exactly where the guitar has a note, silent on its rests.
+
+    Mirrors the guitar bar for bar and beat for beat, so the two cannot drift
+    apart no matter what the sections contain. The count-in is the exception:
+    it clicks all four beats, because a count-in with nothing to count is not
+    a count-in.
     """
     track = gp.Track(song=song)
     track.number = number
@@ -119,20 +161,22 @@ def _click_track(song: gp.Song, bars: int, number: int) -> gp.Track:
     track.channel.effectChannel = PERCUSSION_CHANNEL
     track.channel.instrument = 0
     # Open-string value 0, so the "fret" IS the GM drum note. With a guitar
-    # tuning the extractor would add the string's pitch and turn a side stick
-    # into a wood block.
+    # tuning the extractor adds the string's pitch and a side stick becomes a
+    # wood block.
     track.strings = [gp.GuitarString(number=i + 1, value=0) for i in range(6)]
     track.measures = []
 
-    for bar in range(bars):
-        header = song.measureHeaders[bar]
-        measure = gp.Measure(track=track, header=header)
+    for bar_idx, guitar_measure in enumerate(guitar.measures):
+        measure = gp.Measure(track=track, header=guitar_measure.header)
         voice = gp.Voice(measure=measure)
-        voice.beats = [
-            _beat(voice, QUARTER,
-                  [(6, SIDE_STICK if i == 0 else CLOSED_HAT)], percussion=True)
-            for i in range(4)
-        ]
+        beats = []
+        for gbeat in guitar_measure.voices[0].beats:
+            sounds = bar_idx == 0 or bool(gbeat.notes)
+            beats.append(_beat(
+                voice, gbeat.duration.value,
+                [(6, SIDE_STICK)] if sounds else REST,
+            ))
+        voice.beats = beats
         second = gp.Voice(measure=measure)
         second.beats = []
         measure.voices = [voice, second]
@@ -150,40 +194,9 @@ def build_song(tempo: int) -> gp.Song:
     song.measureHeaders = []
     song.tracks = []
 
-    track = gp.Track(song=song)
-    track.number = 1
-    track.name = "Timing Test"
-    track.fretCount = 24
-    track.channel.instrument = 30  # distortion guitar
-    track.strings = [
-        gp.GuitarString(number=i + 1, value=v) for i, v in enumerate(TUNING)
-    ]
-    track.measures = []
-
-    number = 1
-    start = gp.Duration.quarterTime * 1  # GP measures start at 960
-    for label, bars, pattern in _sections():
-        for bar in range(bars):
-            header = _measure_header(
-                number, start, tempo_marker=label if bar == 0 else None
-            )
-            song.measureHeaders.append(header)
-
-            measure = gp.Measure(track=track, header=header)
-            voice = gp.Voice(measure=measure)
-            voice.beats = [_beat(voice, dur, notes) for dur, notes in pattern]
-            # GP files always carry two voices; the second stays empty
-            second = gp.Voice(measure=measure)
-            second.beats = []
-            measure.voices = [voice, second]
-            track.measures.append(measure)
-
-            number += 1
-            start += gp.Duration.quarterTime * 4
-
-    song.tracks.append(track)
-    # A click on every beat of every bar, count-in included
-    song.tracks.append(_click_track(song, len(track.measures), number=2))
+    guitar = _guitar_track(song)
+    song.tracks.append(guitar)
+    song.tracks.append(_click_track(song, guitar, number=2))
     return song
 
 
@@ -202,13 +215,13 @@ def main():
     guitarpro.write(song, str(out), version=(5, 1, 0))
 
     bars = len(song.tracks[0].measures)
-    seconds = bars * 4 * 60 / args.tempo
     print(f"Written: {out}")
-    print(f"  {bars} bars at {args.tempo} BPM  (~{seconds:.0f} s)")
-    print("  Track 1 'Timing Test' = play this;  Track 2 'Click' = metronome")
+    print(f"  {bars} bars at {args.tempo} BPM  "
+          f"(~{bars * 4 * 60 / args.tempo:.0f} s)")
+    print("  Track 1 'Play this'  |  Track 2 'Click' sounds only where a note is")
     print("\nSections:")
-    for label, count, _ in _sections():
-        print(f"  {count:2d} bars  {label}")
+    for label, bars_in in _sections():
+        print(f"  {len(bars_in):2d} bars  {label}")
     return 0
 
 

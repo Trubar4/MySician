@@ -63,7 +63,12 @@ class BackingTrack:
 
         Used to re-send instrument assignments after seeking.
         """
-        end = bisect.bisect_left(self._timestamps, time_ms)
+        # bisect_RIGHT, and never before zero: program changes sit at t=0, and
+        # bisect_left excluded them, so seeking to the start of a song (or to
+        # a count-in, which is negative) sent no instrument assignments at all
+        # and every melodic backing track played on whatever the synth
+        # happened to have on that channel.
+        end = bisect.bisect_right(self._timestamps, max(0.0, time_ms))
         latest: dict[int, MidiEvent] = {}
         for event in self._events[:end]:
             if event.event_type == PROGRAM_CHANGE:

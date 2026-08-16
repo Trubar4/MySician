@@ -36,7 +36,7 @@ NOTE_CORNER_RADIUS = 4
 # The six lanes form a fretboard band rather than filling the window: a lane
 # stretched to 100 px reads as a spreadsheet row, not a string. Capped as a
 # fraction of window height so it still scales with the display.
-MAX_LANE_HEIGHT_FRACTION = 0.082
+MAX_LANE_HEIGHT_FRACTION = 0.072
 
 # Wound strings are visibly thicker than plain ones; drawing them at one
 # weight loses the strongest cue for which lane is which. Index 0 = high e.
@@ -671,17 +671,17 @@ class PlayingScreen:
         if spacing and spacing > 0:
             window = spacing * layout.usable_width / (head * (1.0 + SUSTAIN_GAP_FRACTION))
 
+        # Largest window in which every note still gets its full size. Slowing
+        # past it would fit more time on screen at the cost of note size, and
+        # notes changing size is the one thing this display must not do -- so
+        # the trim stops there instead. Speeding up is always allowed: it only
+        # ever gives the notes more room.
+        fit_window = window
         window = max(MIN_VISIBLE_WINDOW_MS, min(BASE_VISIBLE_WINDOW_MS, window))
-
-        # The manual trim is a trade, not a free wish: slowing the tab down
-        # fits more time on screen, which leaves each note less room. So the
-        # head is taken from the window AFTER the trim -- otherwise turning
-        # the speed down simply made the notes overlap.
         window = window / self._scroll_factor()
+        window = max(MIN_VISIBLE_WINDOW_MS, min(fit_window, window))
+
         self._visible_window_ms = window
-        if spacing and spacing > 0:
-            room = spacing * layout.usable_width / window
-            head = min(head, room / (1.0 + SUSTAIN_GAP_FRACTION))
         self._head_px = head
         self._scroll_speed_signature = self._filter_signature()
 
@@ -1053,12 +1053,16 @@ class PlayingScreen:
             surface.blit(back_surf, (12, info_y))
             info_y += 16
 
-        # Scroll speed HUD — only when trimmed away from the derived speed
-        if abs(self._scroll_factor() - 1.0) > 0.01:
-            speed_surf = hint_font.render(
-                f"Scroll: {self._scroll_factor():.1f}x (+/-)", True, t.hud_accent)
-            surface.blit(speed_surf, (12, info_y))
-            info_y += 16
+        # Scroll speed HUD — shows the seconds of song on screen, not just the
+        # trim factor: turning the speed down stops once notes would have to
+        # shrink, and a factor that changes nothing visible is a puzzle
+        ahead = self._visible_window_ms / 1000.0
+        trimmed = abs(self._scroll_factor() - 1.0) > 0.01
+        speed_surf = hint_font.render(
+            f"Scroll: {ahead:.1f} s ahead ({self._scroll_factor():.1f}x, +/-)",
+            True, t.hud_accent if trimmed else t.hud_text)
+        surface.blit(speed_surf, (12, info_y))
+        info_y += 16
 
         # Per-string chord check HUD — only when switched off, so the default
         # costs no screen space but a disabled check is never a silent surprise

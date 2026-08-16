@@ -96,10 +96,25 @@ class TestBackingTrack:
         assert pcs[0].event_type == PROGRAM_CHANGE
         assert pcs[0].data1 == 33
 
-    def test_get_program_changes_before_zero(self):
+    def test_program_change_at_zero_counts_at_zero(self):
+        """Seeking to the start must still set the instruments.
+
+        This used to assert the opposite. "Before" was implemented strictly,
+        so a program change sitting at t=0 -- which is where every one of them
+        sits -- was skipped whenever the song was seeked to its beginning, and
+        melodic backing tracks played on whatever the synth already had. The
+        question the caller is asking is which instruments apply AT this
+        position, and one starting exactly here does.
+        """
         track = self._make_track()
         pcs = track.get_program_changes_before(0.0)
-        assert len(pcs) == 0
+        assert len(pcs) == 1
+        assert pcs[0].data1 == 33
+
+    def test_negative_position_still_sets_instruments(self):
+        """A count-in puts playback before zero; instruments still apply."""
+        track = self._make_track()
+        assert len(track.get_program_changes_before(-2400.0)) == 1
 
 
 class TestExtractBackingTrack:

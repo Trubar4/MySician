@@ -426,20 +426,27 @@ class TestScrollSpeed:
                  for sp in (1000.0, 280.0, 125.0)}
         assert len(sizes) == 1
 
-    def test_below_the_speed_floor_the_head_gives_way_instead(self):
-        """Once the tab cannot scroll faster, shrinking beats overlapping."""
-        full = self._screen(spacing_ms=1000.0)
-        extreme = self._screen(spacing_ms=40.0)
-        assert extreme._head_px < full._head_px
-        layout = extreme._layout(self._MockSurface(1280, 720))
-        assert 40.0 * layout.pixels_per_ms >= extreme._head_px
-
-    def test_slowing_the_scroll_shrinks_notes_rather_than_overlapping(self):
-        """The manual trim is a trade: more time on screen, less room each."""
+    def test_the_trim_never_changes_note_size(self):
+        """Notes changing size is the one thing this display must not do, so
+        the trim moves the speed and nothing else."""
         screen = self._screen(spacing_ms=600.0)
-        before = screen._head_px
+        sizes = set()
+        for factor in (0.4, 0.7, 1.0, 1.5, 2.5):
+            screen._config.scroll_speed_factor = factor
+            screen._recompute_scroll_speed()
+            sizes.add(round(screen._head_px, 3))
+        assert len(sizes) == 1
+
+    def test_speeding_up_always_gives_notes_more_room(self):
+        screen = self._screen(spacing_ms=600.0)
+        before = screen._visible_window_ms
+        screen._adjust_scroll_factor(1.0)
+        assert screen._visible_window_ms < before
+
+    def test_slowing_down_stops_where_notes_would_have_to_shrink(self):
+        """Rather than overlapping or shrinking, the trim simply refuses."""
+        screen = self._screen(spacing_ms=600.0)
         screen._adjust_scroll_factor(-0.6)
-        assert screen._head_px < before
         layout = screen._layout(self._MockSurface(1280, 720))
         assert 600.0 * layout.pixels_per_ms >= screen._head_px
 
