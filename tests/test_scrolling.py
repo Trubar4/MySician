@@ -419,10 +419,28 @@ class TestScrollSpeed:
         assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS)
 
     def test_notes_are_the_same_size_whatever_the_song(self):
-        """Notes are always full size; the window is what gives way."""
+        """The window gives way first, so notes keep their size across songs
+        of very different density."""
         sizes = {round(self._screen(spacing_ms=sp)._head_px, 3)
-                 for sp in (1000.0, 280.0, 125.0, 60.0)}
+                 for sp in (1000.0, 280.0, 125.0)}
         assert len(sizes) == 1
+
+    def test_below_the_speed_floor_the_head_gives_way_instead(self):
+        """Once the tab cannot scroll faster, shrinking beats overlapping."""
+        full = self._screen(spacing_ms=1000.0)
+        extreme = self._screen(spacing_ms=40.0)
+        assert extreme._head_px < full._head_px
+        layout = extreme._layout(self._MockSurface(1280, 720))
+        assert 40.0 * layout.pixels_per_ms >= extreme._head_px
+
+    def test_slowing_the_scroll_shrinks_notes_rather_than_overlapping(self):
+        """The manual trim is a trade: more time on screen, less room each."""
+        screen = self._screen(spacing_ms=600.0)
+        before = screen._head_px
+        screen._adjust_scroll_factor(-0.6)
+        assert screen._head_px < before
+        layout = screen._layout(self._MockSurface(1280, 720))
+        assert 600.0 * layout.pixels_per_ms >= screen._head_px
 
     def test_very_dense_song_finally_scrolls_faster(self):
         from pickhero.ui.scrolling import BASE_VISIBLE_WINDOW_MS

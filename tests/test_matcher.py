@@ -498,3 +498,24 @@ class TestTimingSampleAmbiguity:
         m = NoteMatcher(self._repeating(spacing_ms=4000.0), timing_window_ms=150.0)
         m._record_timing_sample(4200.0, 40)
         assert m.timing_errors_ms == [pytest.approx(200.0)]
+
+
+class TestTimingWindowSetter:
+    """The hit window is adjustable while playing, so it must take effect."""
+
+    def test_widening_lets_a_late_strike_score(self):
+        timeline = Timeline([_note_event(1000.0, midi_note=64, string=1)])
+        m = NoteMatcher(timeline, timing_window_ms=100.0)
+        m.timing_window_ms = 250.0
+        results = m.process_detected_notes([_detected(64, 1180.0)], 1200.0)
+        assert results and results[0].match_type == MatchType.HIT
+
+    def test_narrowing_is_applied_too(self):
+        """The same strike that scored at 250 ms must not score at 50 ms.
+        It comes back as a miss, not as nothing, since the note has by then
+        passed its window."""
+        timeline = Timeline([_note_event(1000.0, midi_note=64, string=1)])
+        m = NoteMatcher(timeline, timing_window_ms=250.0)
+        m.timing_window_ms = 50.0
+        results = m.process_detected_notes([_detected(64, 1180.0)], 1200.0)
+        assert not any(r.match_type == MatchType.HIT for r in results)

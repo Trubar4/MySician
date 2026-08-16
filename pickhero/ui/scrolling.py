@@ -77,6 +77,11 @@ SPACING_PERCENTILE = 10.0
 SCROLL_FACTOR_RANGE = (0.4, 2.5)
 SCROLL_FACTOR_STEP = 0.1
 
+# Hit-window presets cycled by G. Strikes scatter by more than the default
+# window even on a metronomic exercise, so how strict this should be is a
+# choice about how the app should feel, not a constant.
+TIMING_WINDOW_PRESETS = (100.0, 150.0, 200.0, 250.0)
+
 # Auto-sync confidence. Scatter does not invalidate the median — a player is
 # simply not a metronome — it only means more strikes are needed before the
 # median is trustworthy. Refuse outright only when the scatter is so wide that
@@ -504,6 +509,8 @@ class PlayingScreen:
             self._toggle_chord_mode()
         elif event.key == pygame.K_j:
             self._toggle_chord_verify()
+        elif event.key == pygame.K_g:
+            self._cycle_timing_window()
         elif event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
             self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
         elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
@@ -655,9 +662,28 @@ class PlayingScreen:
             window = spacing * layout.usable_width / (head * (1.0 + SUSTAIN_GAP_FRACTION))
 
         window = max(MIN_VISIBLE_WINDOW_MS, min(BASE_VISIBLE_WINDOW_MS, window))
-        self._visible_window_ms = window / self._scroll_factor()
+
+        # The manual trim is a trade, not a free wish: slowing the tab down
+        # fits more time on screen, which leaves each note less room. So the
+        # head is taken from the window AFTER the trim -- otherwise turning
+        # the speed down simply made the notes overlap.
+        window = window / self._scroll_factor()
+        self._visible_window_ms = window
+        if spacing and spacing > 0:
+            room = spacing * layout.usable_width / window
+            head = min(head, room / (1.0 + SUSTAIN_GAP_FRACTION))
         self._head_px = head
         self._scroll_speed_signature = self._filter_signature()
+
+    def _cycle_timing_window(self) -> None:
+        """Step through how much timing slack a hit gets (G)."""
+        current = self._config.timing_window_ms
+        nearest = min(TIMING_WINDOW_PRESETS, key=lambda p: abs(p - current))
+        idx = (TIMING_WINDOW_PRESETS.index(nearest) + 1) % len(TIMING_WINDOW_PRESETS)
+        self._config.timing_window_ms = TIMING_WINDOW_PRESETS[idx]
+        self._config.save()
+        if self._matcher is not None:
+            self._matcher.timing_window_ms = self._config.timing_window_ms
 
     def _scroll_factor(self) -> float:
         lo, hi = SCROLL_FACTOR_RANGE
@@ -979,6 +1005,13 @@ class PlayingScreen:
             chord_surf = hint_font.render(chord_text, True, t.hud_accent)
             surface.blit(chord_surf, (12, info_y))
             info_y += 16
+
+        # Hit-window HUD — always shown, since it decides what counts as a hit
+        window_surf = hint_font.render(
+            f"Hit window: +/-{int(self._config.timing_window_ms)} ms (G)",
+            True, t.hud_text)
+        surface.blit(window_surf, (12, info_y))
+        info_y += 16
 
         # Scroll speed HUD — only when trimmed away from the derived speed
         if abs(self._scroll_factor() - 1.0) > 0.01:
@@ -1327,7 +1360,7 @@ class PlayingScreen:
             "J: per-string chord check (marks the one string on the wrong fret)",
             "K: auto-sync timing (fixes 'I must play early/late to score')    ,/.: sync by hand",
             "Shift+K: reset sync to 0 (use when the offset has run away)",
-            "+/-: scroll faster / slower",
+            "+/-: scroll faster / slower    G: hit window (timing slack)",
         ]
         for line in controls:
             surf = hint_font.render(line, True, t.hud_text)

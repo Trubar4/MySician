@@ -110,6 +110,14 @@ class NoteMatcher:
         self._audio_offset_ms = value
 
     @property
+    def timing_window_ms(self) -> float:
+        return self._timing_window_ms
+
+    @timing_window_ms.setter
+    def timing_window_ms(self, value: float) -> None:
+        self._timing_window_ms = value
+
+    @property
     def chord_verifier(self) -> ChordVerifier | None:
         return self._chord_verifier
 
