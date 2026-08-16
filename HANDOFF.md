@@ -1,13 +1,16 @@
 # MySician — Session Handoff Notes
 
-Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-07-12.
+Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-16.
+
+`CLAUDE.md` says how the app is built and why. This file says where it stands,
+what the user's setup is, and what is still open.
 
 ## What this is
 
 Private Yousician-style guitar practice app for one user (Philipp). Forked from
 [PickHero](https://github.com/Artemarius/PickHero) (MIT, see LICENSE) into
-`Trubar4/MySician`. Working branch: `claude/yousician-alternative-vshoiv`
-(also the repo's default branch — all work happens here).
+`Trubar4/MySician`. Working branch: **`claude/handoff-claude-md-review-va3ph4`** —
+all work is pushed there.
 
 ## User's setup (important for debugging)
 
@@ -18,98 +21,130 @@ Private Yousician-style guitar practice app for one user (Philipp). Forked from
   ("No module named pygame" = venv not activated)
 - Guitar → **Focusrite Scarlett** USB interface (native 48 kHz) → PC.
   No Jam Origin / MIDI input — pitch detection straight from audio (aubio).
-- GitHub Actions builds `MySician.exe` on every push (user no longer needs it,
-  they run from source; workflow: `.github/workflows/release.yml`)
-- Plays metal: power chords and riffs matter more than melody lines
-- User is non-technical ("vibecoding") — give copy-paste commands, explain simply,
-  **answer in German**
+- Plays metal, and practises on Yousician at Pro level — that is the bar the
+  display is measured against.
+- User is non-technical ("vibecoding"): give **copy-paste commands**, explain
+  simply, and **answer in German**.
+- Songs folder: `songs/` next to the repo, or `python -m pickhero --songs <path>`.
 
-## State as of this handoff
+## State
 
-Working: GP5 loading, scrolling tabs, MIDI backing, pitch detection incl.
-power chords, wait mode (fluid), latency auto-sync. **~50 % accuracy without
-wait mode** and climbing after each fix (was 10 %). 239 tests green
-(`python -m pytest tests -q`).
+406 tests (`python -m pytest tests -q`). Everything below is implemented,
+calibrated where it needed calibrating, and pushed.
 
-## What was changed vs upstream PickHero (chronological)
+**Working:** GP3–GP5 loading, track picker, scrolling display with per-song
+scroll speed, MIDI backing with per-song offset, pitch detection incl. power
+chords, per-string chord verification, wait mode, latency auto-sync, bends,
+slides, hammer-ons and pull-offs (drawn and scored), progress tracking.
 
-1. **Rebrand + exe rename** (PickHero.exe → MySician.exe in spec/build.bat/workflow);
-   workflow also builds on branch pushes and uploads an artifact.
-2. **Device sample-rate probing** (`audio/input.py`): Focusrite rejects 44100 in
-   Windows shared mode → `_resolve_input_settings()` probes configured rate,
-   device default, then common rates (mono, then stereo); detectors rebuilt at
-   the resolved rate; stereo input downmixed (guitar can be on input 1 or 2).
-   Calibration wizard shows an error screen instead of crashing (state "error").
-3. **Pitch detection fixed** (`audio/detector.py`): upstream passed the 0.8
-   confidence threshold as aubio YIN *tolerance* (dip threshold, belongs at
-   0.15) → harmonics instead of fundamentals, low E almost never right.
-   Now: `yinfast`, buf 4096 (was 2048; too short for 82 Hz), separate
-   `yin_tolerance=0.15` config field, onset detector kept at 2048 window.
-   Config migrations in `config.py::load` (buf_size 2048→4096).
-4. **OnsetPitchCollector** (`audio/input.py`): matcher only scores `is_onset`
-   detections, but the onset frame is the attack transient (fails confidence
-   filter; large window still contains previous note's decay). Collector:
-   on onset skip 3 frames, collect ≤12, median of last 4 confident samples,
-   emit ONE strike note stamped with the strike time. Sustained per-frame
-   notes still flow (tuner/console) but with `is_onset=False`.
-   Matcher got `late_window_ms` grace so late-arriving strikes still claim
-   their note.
-5. **Power chords** (the big one): strummed chords make YIN report the
-   *subharmonic* (common period of root+fifth, e.g. E5 chord → 41 Hz E1) —
-   below guitar range, was discarded → chords never scored. Now the collector
-   folds below-range pitches up by octaves (max 2) and flags
-   `DetectedNote.subharmonic=True`; a subharmonic proves multiple strings
-   sounded, so the matcher credits the WHOLE chord on such a strike.
-   Single-string picking still uses the majority model. V toggles lenient
-   chord mode. Detector's octave-jump correction leaves below-range
-   frequencies alone; calibration-based halving only fires at confidence <0.9.
-6. **Latency sync**: `K` auto-syncs (applies inverse of measured median timing
-   error to `config.audio_latency_offset_ms`, persisted), `,`/`.` adjust
-   ±10 ms manually. Measurement (`matcher._record_timing_sample`) samples
-   EVERY strike against the nearest pitch-matching tab note in an asymmetric
-   window (early ≤ timing window, late ≤ 500 ms — latency is never negative;
-   prevents aliasing on repeated-note riffs), independent of match outcome,
-   disabled while wait mode pins timestamps. HUD (top-left) shows offset +
-   measured error. Miss-marking grace grows with the compensated latency
-   (`scrolling._late_window_ms`). Timing window default 100→150 ms (migrated).
+**Known-imperfect:** timing spread of roughly ±80–104 ms remains (see Open
+Topics 1). Chord verification abstains on chords closer than ~335 ms. GP7
+files load but carry no techniques.
 
-## Architecture facts the next session must know
+## The three subsystems worth knowing before touching anything
 
-- Pitch detection is **monophonic** (aubio YIN family) by design — no ML, no
-  polyphony (CLAUDE.md "What NOT to do"). Chord scoring works via octave
-  equivalence (`dist % 12`) + subharmonic evidence + majority model.
-- Wait mode **pins detected timestamps** to the frozen playback position
-  (`ui/scrolling.py` ~line 328) — timing is bypassed there; only pitch counts.
-  If wait works but normal mode doesn't → timing problem, not pitch.
-- Strike notes arrive ~130 ms after the physical strike (collector) — anything
-  consuming detections must tolerate that (see `late_window_ms`).
-- User config JSON: `~/.pickhero/settings.json`. New fields need defaults for
-  old files; changed defaults need a migration in `Config.load` (there is no
-  settings UI for most values). Existing migrations: buf_size, timing_window_ms.
-- Tests must not need audio hardware. venv on Linux dev box needs
-  `libportaudio2` and aubio built with `numpy<2`, `setuptools<74`,
-  `--no-build-isolation`.
+### 1. Detection (`audio/`)
 
-## Likely next steps (user will report where it stands)
+Monophonic aubio YIN by design — no ML, no blind polyphony (`CLAUDE.md`,
+"What NOT To Do"). Two things sit on top of it:
 
-1. **Accuracy tuning toward Yousician feel** — user was at ~50 % and rising.
-   Ask for current number + whether misses feel unfair (timing) or wrong-pitch.
-2. **Backing track ↔ tab alignment**: if K-measured latency was large (>200 ms),
-   part of it is probably the MIDI backing lagging the visual timeline (user
-   plays what they hear). Consider shifting MIDI playback earlier by a
-   configurable amount instead of folding it all into input latency.
-3. Possible: per-song latency offset, count-in feel, feedback polish
-   (hit flash timing now ~130 ms after strike), more songs via Songsterr
-   downloader, difficulty progression.
-4. Upstream PickHero gets updates occasionally — `git remote add upstream
-   https://github.com/Artemarius/PickHero` and cherry-pick if useful.
+- `OnsetPitchCollector` waits for the pitch to settle after the attack and
+  emits ONE strike note per pick, stamped from the **sample clock**, not the
+  wall clock. Strikes therefore arrive ~130 ms after the physical strike;
+  anything consuming detections must tolerate that (`late_window_ms`).
+- `chord_verify.py` answers "was this string on the right fret", which the
+  monophonic detector cannot. Score-informed, calibrated on real recordings.
+  Its rules and thresholds are documented in `CLAUDE.md` — **re-fit with
+  `tools/sweep_chord_window.py` and `tools/analyze_reference.py` rather than
+  tuning by feel**; the reference takes in `reference_recordings/20260814_160019`
+  are the ground truth, and every threshold in that file was fitted on them.
+
+### 2. Matching (`matcher.py`)
+
+Scores strikes against the timeline. Three tolerances that are deliberate and
+must not be tightened without a way to measure what they cover:
+
+- **Bends and slides** accept the whole pitch region the technique covers
+  (`_build_pitch_ranges`).
+- **Legato targets** (hammer-on, pull-off, both slide kinds) are never picked,
+  so they inherit their source note's verdict (`_legato_credit`).
+- **Chord verdicts** only ever downgrade, and only on positive evidence
+  (`process_strike_windows`).
+
+### 3. Display (`ui/scrolling.py`)
+
+One scroll speed and one note-head size per song, chosen so the song's
+tightest passage still fits full-size notes — notes must never visibly resize
+while scrolling, which is the thing that made the display feel wrong before.
+Technique marks live inside the note with a badge above it; the two colour
+palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
+"Colour".
+
+## What this session changed (newest first)
+
+1. **Techniques drawn Yousician-style** (`00f3a13`). Bend curve inside the note
+   with a dark shadow (white on the amber string was invisible), badge above
+   the leading edge naming the technique: `½ 1 1½` for bends, `SL`, `H`, `P`.
+   Hammer-ons and pull-offs added. Legato notes inherit their source's verdict.
+   String palette pulled off the feedback hues (A is teal now, not green).
+2. **Bends and slides** (`ff3d2bb`). `NoteEvent` carries `bend`,
+   `slide_to_next`, `slide_in`, `slide_out`, `hammer_to_next`. Matcher accepts
+   the region a technique covers. Footer rewritten to carry **every** shortcut,
+   two lines, shrink-to-fit; help overlay split into two columns.
+3. **Chord window ends at the next strike** (`7bea460`). Fast chord changes were
+   convicting correctly played strings, because the 341 ms window contained the
+   NEXT chord. Now trimmed at the following onset, with the analysis floor
+   rising as it shortens and the intruder tier withheld below full length;
+   under 280 ms usable audio the chord gets no verdict at all.
+4. Before that: MIDI robustness, per-song backing offset, track picker, chord
+   test file, config protection from the test suite, scroll pacing, note
+   sizing, latency auto-sync bounds. See `git log`.
+
+## Diagnostic tools (all in `tools/`)
+
+| Tool | What it answers |
+|---|---|
+| `make_timing_test.py` | Is my timing off, or is the tab sloppy? Click only where a note is. |
+| `make_chord_test.py` | Are chords recognised? C/Am/G/D from isolated to strummed eighths. |
+| `make_technique_test.py` | Are bends/slides/H/P drawn right? States what each bar contains. |
+| `record_reference.py` | Records a labelled take set, including deliberate wrong notes. |
+| `analyze_reference.py` | Per-string verdict table over a take set; counts false alarms. |
+| `sweep_chord_window.py` | How short may the chord window get before it lies? |
+
+Generate the test songs with `python tools/make_*_test.py`; they land in `songs/`.
+
+## Open topics
+
+Ordered by what would help the user most. Details, including what has already
+been ruled out, are in the handoff prompt at the bottom of this file.
+
+1. **Timing spread (±80–104 ms).** The oldest open complaint. Needs a diagnostic
+   that separates latency (shifts everything one way) from human scatter
+   (spreads both ways) before anything is "fixed".
+2. **Bend evaluation.** The visual exists; scoring is deliberately lenient
+   because the detector produces no pitch contour. The user's target is
+   "roughly a quarter-tone accurate on the target pitch".
+3. **Chords at eighth-note speed.** Currently abstains below ~335 ms spacing.
+   Would need analysis before the next strike rather than after it — research,
+   not refactoring.
+4. **Palm mutes and dead notes.** In the GP files, currently drawn as ordinary
+   notes. Smallest of the four.
+5. **GP7 techniques.** The hand-written GP7 XML path carries no bends or slides.
 
 ## Conventions
 
-- Commit style: imperative subject + explanatory body, no model names in
-  commits/PRs. Always push to `claude/yousician-alternative-vshoiv`.
-- Run the full test suite before pushing; add tests for every behavior fix
-  (see tests/test_onset_collector.py, tests/test_matcher.py for patterns).
-- Verify signal-processing changes with synthetic audio (see the pluck/chord
-  simulations in git history commit messages) — sine waves are too kind,
-  add harmonics + decay + attack noise.
+- Commit style: imperative subject + explanatory body saying *why*, not what.
+  No model names anywhere in commits, PRs or code.
+- Always push to `claude/handoff-claude-md-review-va3ph4`.
+- Run the full suite before pushing; add tests for every behaviour change.
+- **Verify signal-processing changes against the reference recordings**, not
+  against intuition. Synthetic tones are a trap unless they carry the property
+  under test — the test fixture in `tests/test_chord_verify.py` documents two
+  that matter (harmonic roll-off, uneven partials from the pluck point).
+- User config: `~/.pickhero/settings.json`. New fields need defaults for old
+  files; changed defaults need a migration in `Config.load`. `tests/conftest.py`
+  redirects the config path — never remove it, the suite used to overwrite the
+  user's real settings.
+- Dev box needs `libportaudio2` and aubio built with `numpy<2`,
+  `setuptools<74`, `--no-build-isolation`. Where aubio cannot be built, the
+  seven `tests/test_detector.py` tests are the only ones that fail.
