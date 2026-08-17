@@ -117,35 +117,78 @@ pip install pyinstaller
 ## Project Structure
 
 ```
-PickHero/
-├── pickhero/
-│   ├── main.py              # Entry point
+MySician/
+├── pickhero/                # internal package name, inherited from upstream
+│   ├── main.py              # Entry point (--songs <path> to set the song folder)
 │   ├── audio/
-│   │   ├── input.py         # sounddevice audio capture
+│   │   ├── input.py         # sounddevice capture, strike collector, ring buffer
 │   │   ├── detector.py      # aubio pitch + onset detection
+│   │   ├── chord_verify.py  # per-string chord checking (score-informed)
 │   │   ├── midi_playback.py # MIDI backing track playback
 │   │   └── note_utils.py    # frequency → note/string/fret mapping
 │   ├── tabs/
-│   │   ├── loader.py        # pyguitarpro file reader
+│   │   ├── loader.py        # pyguitarpro file reader, incl. bends and slides
 │   │   ├── timeline.py      # song timeline data structure
 │   │   └── downloader.py    # Songsterr tab fetcher
 │   ├── ui/
 │   │   ├── app.py           # main game loop / window
 │   │   ├── scrolling.py     # scrolling note highway renderer
-│   │   ├── colors.py        # color constants, string palette
+│   │   ├── colors.py        # theme system, string palette
 │   │   ├── calibration_menu.py # guitar calibration wizard
 │   │   ├── device_menu.py   # audio input device selector
+│   │   ├── download_menu.py # Songsterr search and download
 │   │   ├── feedback.py      # hit/miss visual effects
 │   │   └── menu.py          # song selection, settings
 │   ├── config.py            # user settings, audio device config
 │   ├── matcher.py           # note matching engine (hit/close/miss)
 │   ├── progress.py          # per-song score tracking + section history
 │   └── recommendations.py   # practice suggestion engine
-├── assets/
-│   └── fonts/
+├── tools/                   # diagnostics: test-song generators, calibration
+├── reference_recordings/    # labelled takes the chord thresholds were fitted on
+├── assets/fonts/
 ├── songs/                   # local GP5 tab storage
 └── tests/
 ```
+
+## Keyboard
+
+Every key is also listed in the app's own footer, and explained under **H**.
+
+| Key | Does |
+|---|---|
+| `SPACE` | play / pause |
+| `←` `→` | seek one beat |
+| `HOME` | restart |
+| `PgDn` `PgUp` | tempo down / up |
+| `A` | audio input on / off |
+| `B` | backing track on / off |
+| `W` | wait mode — holds until you play the right note |
+| `I` `O` | set loop start / end |
+| `P` | loop on / off |
+| `L` | loop the weakest section |
+| `+` `-` | scroll faster / slower |
+| `G` | hit window (timing slack) |
+| `K` | auto-sync timing · `Shift+K` reset · `,` `.` nudge ±10 ms |
+| `N` `M` | backing track earlier / later (stored per song) |
+| `X` `C` | noise gate down / up |
+| `Y` | timing report · `Shift+Y` save the measurements as CSV |
+| `TAB` | choose track |
+| `V` | chord mode (strict / easy) |
+| `J` | per-string chord check on / off |
+| `F` | fret limit · `F1`–`F6` mute a string |
+| `T` | theme · `H` help · `ESC` song list |
+
+## Reading the display
+
+- Six lanes, one per string, high E on top. A note's colour is its string.
+- The number is the fret. Play it when the note's **leading edge** reaches the
+  hit line, not its middle.
+- After it passes, the colour says how it went: green correct, yellow off by a
+  semitone, red missed. Feedback colours are deliberately brighter than any
+  string colour so the two cannot be confused.
+- A badge above a note names a technique: `½` `1` `1½` bend depth, `SL` slide,
+  `H` hammer-on, `P` pull-off. The white line inside the note draws the same
+  thing.
 
 ## Status
 
@@ -159,6 +202,11 @@ PickHero/
 4. ~~**Live Matching & Feedback** — pitch comparison, hit/miss visuals, accuracy scoring~~ **Done**
 5. ~~**Polish** — tempo control, section looping, device selector, backing tracks, count-in, progress tracking, song browser, difficulty filter, themes, practice recommendations, `.exe` packaging~~ **Done**
 6. ~~**Wait Mode** — beginner-friendly practice mode that pauses playback when you haven't played the correct note, resumes instantly when you do. Toggle with **W** during playback.~~ **Done**
+7. ~~**Per-string chord verification** — monophonic detection cannot say which string of a chord was mis-fretted, so each expected note is checked against the partials no other chord tone produces. Thresholds fitted on real recordings, not guessed. Toggle with **J**.~~ **Done**
+8. ~~**Techniques** — bends, slides, hammer-ons and pull-offs read from the tab, drawn inside the note with a badge naming them, and scored so that playing them correctly counts.~~ **Done**
+
+Open: timing-spread diagnostics, bend depth evaluation, chord verification at
+eighth-note speed, palm mutes and dead notes. See `NEXT_SESSION.md`.
 
 ## Troubleshooting
 
@@ -179,6 +227,29 @@ Run `python -m pickhero --console` to see detected notes printed live in the ter
 
 **Beginner tip — Wait Mode:**
 - Press **W** during playback to enable wait mode. The tab will pause whenever you haven't played the correct note yet and resume the moment you do. Great for learning new songs at your own pace without accumulating misses.
+
+**No songs in the list:**
+- Songs are read from `songs/` next to the repo. Drop `.gp3/.gp4/.gp5` files there.
+- Or point the app somewhere else: `python -m pickhero --songs "C:\path\to\tabs"`.
+  The resolved folder is printed at startup.
+- Generate diagnostic songs with `python tools/make_timing_test.py`,
+  `make_chord_test.py`, `make_technique_test.py`.
+
+**"I have to play early (or late) to score":**
+1. Load `songs/timing_test_100bpm.gp5` — every note is exactly on the beat by
+   construction, so anything wrong there is the app or the latency, not the tab.
+2. Play a while, then press **K**. It measures the median offset of your strikes
+   and compensates for it. `,` and `.` nudge it by 10 ms; **Shift+K** resets it.
+3. Press **Y** for the timing report. It shows the distribution of your strikes
+   and says which problem you have: constant lateness (latency — K fixes it),
+   scatter (no setting fixes it), or strings registering at different delays.
+   **Shift+Y** saves the raw measurements as a CSV next to your settings.
+4. The offset is bounded to ±300 ms on purpose — a larger apparent latency is a
+   measurement going wrong, not a real one.
+
+**What I hear and what I see disagree:**
+- **N** / **M** shift the MIDI backing earlier / later. The value is remembered
+  per song, because how far the backing lags depends on the arrangement.
 
 **High latency or missed notes:**
 - Lower the noise gate with **X** during playback (default is -60 dB)

@@ -74,9 +74,9 @@ DARK_THEME = Theme(
     menu_check=(50, 220, 80),
     hud_text=(200, 200, 220),
     hud_accent=(100, 180, 255),
-    feedback_hit=(50, 255, 50),
-    feedback_close=(255, 220, 50),
-    feedback_miss=(255, 50, 50),
+    feedback_hit=(120, 255, 140),
+    feedback_close=(255, 240, 130),
+    feedback_miss=(255, 105, 115),
     feedback_streak=(255, 180, 50),
     loop_marker=(0, 200, 255),
     loop_marker_disabled=(0, 80, 110),
@@ -105,9 +105,9 @@ LIGHT_THEME = Theme(
     menu_check=(30, 160, 60),
     hud_text=(60, 60, 80),
     hud_accent=(30, 100, 200),
-    feedback_hit=(30, 200, 30),
-    feedback_close=(200, 170, 20),
-    feedback_miss=(220, 40, 40),
+    feedback_hit=(60, 190, 80),
+    feedback_close=(215, 185, 45),
+    feedback_miss=(230, 70, 85),
     feedback_streak=(200, 140, 30),
     loop_marker=(0, 150, 200),
     loop_marker_disabled=(100, 140, 160),
@@ -154,13 +154,23 @@ def cycle_theme() -> str:
 
 # String colors (Rocksmith palette, keyed 1-6: 1=high E, 6=low E)
 # These don't change with theme — they're gameplay identifiers.
+#
+# Two palettes share this screen and they must not be confusable: a string
+# colour says WHICH STRING, a feedback colour says HOW IT WENT. The plain
+# Rocksmith palette collided with all three feedback colours at once -- its
+# green sat on top of "correct", its red on "missed", its yellow on "close" --
+# so a note on the A string looked like a note played right. These are pulled
+# off those three hues: A is teal rather than green, high E leans crimson
+# rather than pure red, B leans amber. The feedback colours in turn are far
+# brighter and lighter than any string, so the two read as different kinds of
+# colour even where the hue is nearest.
 STRING_COLORS: dict[int, tuple[int, int, int]] = {
-    1: (200, 50, 50),    # red
-    2: (220, 200, 40),   # yellow
+    1: (215, 65, 100),   # crimson
+    2: (215, 170, 40),   # amber
     3: (50, 120, 220),   # blue
-    4: (220, 140, 30),   # orange
-    5: (50, 180, 70),    # green
-    6: (140, 60, 200),   # purple
+    4: (225, 120, 35),   # orange
+    5: (35, 175, 165),   # teal
+    6: (150, 70, 210),   # purple
 }
 
 
@@ -171,3 +181,9 @@ def dimmed(color: tuple[int, int, int], factor: float = 0.4) -> tuple[int, int, 
         int(color[1] * factor),
         int(color[2] * factor),
     )
+
+
+def lightened(color: tuple[int, int, int], amount: float = 0.4) -> tuple[int, int, int]:
+    """Blend a color toward white. Works on dark and light themes alike,
+    where multiplying by a factor > 1 would clip on already-bright colors."""
+    return tuple(int(c + (255 - c) * amount) for c in color)

@@ -59,6 +59,67 @@ onset_detector.set_threshold(0.3)  # adjust based on testing
   rebuilt at the resolved rate
 - Noise gate: ignore buffers below configurable dB level
 
+## Chord Verification
+
+Monophonic pitch detection cannot say which string of a chord was mis-fretted, so `audio/chord_verify.py` answers that separately, using the
+tab as a prior. For each expected note it scores competing pitch hypotheses on the partials no other expected note produces.
+
+- **Presumption of innocence.** A string is marked wrong only on positive evidence of a wrong pitch, never on absence of evidence for the right
+  one. A string whose expected note is an octave or fifth of a lower string in the same chord can never be confirmed (its partials are a strict
+  subset of one already sounding); judging it anyway means ranking noise, which is exactly how the first calibration produced false alarms.
+  This also reproduces the familiar behaviour that omitting a string from an open chord still passes.
+- **Wants 341 ms of audio after the strike**, so chord verdicts trail the pitch path by ~380 ms and can only downgrade what it already credited.
+  `AudioCapture` keeps a ring buffer and emits one `StrikeWindow` per strike; the matcher applies verdicts in `process_strike_windows`.
+- **The window ends at the next strike.** A window running into the following chord contains pitches the tab never expected there, and convicts
+  strings that were played right — that is what made fast chord changes light up red. `_limit_pending_windows` trims to the gap actually
+  available; under `MIN_WINDOW_MS` (280 ms, so chords closer than ~335 ms) the strike is dropped and gets no verdict at all. Two things keep a
+  trimmed window honest: the analysis floor rises with `MIN_HZ_SECONDS / T`, since a short window cannot separate a semitone low down; and the
+  intruder tier — the one that convicts a string whose expected note is masked — is allowed only at the full length, having been fitted there.
+- **Thresholds are calibrated, not guessed** — see `tools/analyze_reference.py`, `tools/sweep_chord_window.py` and `reference_recordings/`.
+  Re-fit them with real takes rather than tuning by feel; `tools/record_reference.py` records a labelled set including deliberately wrong takes,
+  which the calibration needs. Current state on that set: 33 strings judged, 0 false alarms, 7/7 deliberate one-fret errors caught at the full
+  window, and 0 false alarms at every window length down to 280 ms.
+
+## Timing Diagnosis
+
+Two numbers cannot say which timing problem a player has, so `matcher.timing_report()` (shown by **Y**) keeps the samples apart and names
+one of five answers: `fine`, `latency`, `scatter`, `mixed`, `per_string`.
+
+- **The histogram is the diagnosis.** One narrow hill away from zero is latency and K removes it; one wide hill over zero is the playing and
+  no offset touches it; a split between strings is the detector, and one global offset cannot fix that either. The axis always contains zero,
+  because how far the group sits FROM the beat is the thing being shown.
+- **Nothing is claimed inside its own noise.** A median built from loose strikes lands twenty-odd ms off the beat by chance, and two per-string
+  medians of a couple of dozen samples differ by tens of ms the same way. Both are tested against the standard error of a median
+  (`MEDIAN_SE_FACTOR`) before being called an effect — the same presumption of innocence the chord verifier runs on.
+- **The search radius narrows as the offset becomes known** (`_search_radius_ms`). A wide search over a riff repeating one pitch finds two
+  equally good candidates and rightly refuses, which cost 61 % of all strikes; narrowing brings them back (39 % → 98 % on the timing test).
+  A song with no pitch variety at all still measures nothing, and that is the honest answer, not a bug.
+- **Verified against injected faults** — `tools/simulate_timing.py` plays a song with a known latency, jitter or per-string delay and checks
+  the report names it. Change any threshold and re-run it.
+
+## Techniques (bends, slides, legato)
+
+`NoteEvent` carries what the tab wrote: `bend` as ((position 0..1, semitones), ...), plus `slide_to_next`, `slide_in`, `slide_out` and
+`hammer_to_next`. Extracted in `tabs/loader.py` from pyguitarpro's already-normalised effects; the hand-written GP7 XML path does not carry
+them yet.
+
+- **Drawn inside the note, badge above it** — the way Yousician does it, and the only thing a six-lane layout allows: a curve arcing out of
+  its lane reads as a note on the neighbouring string. The white technique line always gets a dark shadow (`_draw_technique_line`), because
+  white on the amber string is invisible and an invisible technique will not be played.
+- **Scored so the drawing is not a lie.** A bend accepts the whole region it covers (`_build_pitch_ranges`) — judging how FAR it went needs a
+  pitch contour the detector does not produce. A hammered, pulled or slid-into note is never picked, so it inherits its source's verdict
+  (`_legato_credit`); waiting for a strike on it could only ever end in a miss.
+- **A sliding note gives up part of its sustain** so the connector has somewhere to be; back-to-back notes otherwise leave a few pixels.
+- `tools/make_technique_test.py` writes a GP5 stating exactly which technique is where, so a wrong drawing is the app's fault.
+
+## Colour
+
+Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain
+Rocksmith palette collided with all three feedback colours at once — green on "correct", red on "missed", yellow on "close" — so the A string
+looked like a note played right. Strings are now pulled off those hues (A is teal, high E crimson, B amber) and the feedback colours are far
+brighter than any string, so the two read as different KINDS of colour even where the hue is nearest. Keep that separation when adding
+anything new.
+
 ## pyguitarpro Data Extraction
 
 GP file → iterate tracks → find guitar track(s) → iterate measures → beats → notes:
@@ -93,6 +154,7 @@ pickhero/
 │   ├── __init__.py
 │   ├── input.py
 │   ├── detector.py
+│   ├── chord_verify.py  # per-string chord checking (score-informed)
 │   ├── midi_playback.py
 │   └── note_utils.py
 ├── tabs/
@@ -138,4 +200,7 @@ pyinstaller pickhero.spec --noconfirm
 - Don't create a web UI or Electron wrapper. This is a desktop app.
 - Don't add online features, accounts, or cloud sync. Offline-first, local files only.
 - Don't over-abstract. Simple classes, no deep inheritance hierarchies. This is a ~3K LOC app, not a framework.
-- Don't add polyphonic pitch detection. aubio YIN is monophonic. Chord scoring uses a majority-match model instead.
+- Don't add **blind** polyphonic transcription ("here is audio, name every note") and don't add ML. aubio YIN is monophonic and stays the note detector.
+  Verifying the notes the tab already predicts is a different problem and is allowed: `audio/chord_verify.py` checks each expected string against
+  the partials no other chord tone can produce. That is signal processing against a known answer, costs ~1 ms per strike, and is what makes
+  per-string right/wrong feedback possible.

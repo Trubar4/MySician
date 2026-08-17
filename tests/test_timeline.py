@@ -220,3 +220,31 @@ class TestTimeline:
         notes = [self._make_note(i * 100) for i in range(10)]
         tl = Timeline(notes)
         assert len(tl) == 10
+
+
+class TestTechniqueFields:
+    def test_a_note_is_plain_by_default(self):
+        note = NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,
+                         string=1, fret=0)
+        assert note.bend == ()
+        assert note.bend_semitones == 0.0
+        assert not note.slide_to_next
+        assert note.slide_in == 0 and note.slide_out == 0
+
+    def test_bend_semitones_is_the_top_of_the_curve(self):
+        note = NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,
+                         string=1, fret=0,
+                         bend=((0.0, 0.0), (0.5, 2.0), (1.0, 1.0)))
+        assert note.bend_semitones == 2.0
+
+    def test_bend_positions_outside_the_note_are_rejected(self):
+        """Positions are a fraction of the note, so 1.5 is a bug upstream."""
+        with pytest.raises(ValueError):
+            NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,
+                      string=1, fret=0, bend=((0.0, 0.0), (1.5, 2.0)))
+
+    def test_notes_with_techniques_stay_hashable(self):
+        """The matcher and the feedback renderer both key on notes."""
+        note = NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,
+                         string=1, fret=0, bend=((0.0, 0.0), (1.0, 2.0)))
+        assert len({note, note}) == 1

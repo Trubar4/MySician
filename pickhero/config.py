@@ -10,6 +10,10 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".pickhero"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 
+# Plausible bound for latency compensation. Kept here rather than in the UI so
+# a stored runaway can be repaired on load, before any screen exists.
+MAX_LATENCY_OFFSET_MS = 300.0
+
 
 @dataclass
 class StringCalibration:
@@ -57,12 +61,40 @@ class Config:
     max_fret: int = 24
     active_strings: list[bool] = field(default_factory=lambda: [True] * 6)
     chord_partial_credit: bool = True
+    # Check each string of a chord against the raw audio and mark the ones
+    # proven to be on the wrong fret. Costs ~380 ms before a chord's verdict
+    # settles, so it can be turned off for pure latency.
+    chord_verify: bool = True
+    # Manual scroll speed trim, on top of the speed derived from the song.
+    # Above 1.0 scrolls faster, below 1.0 slower.
+    scroll_speed_factor: float = 1.0
+    # Shift the MIDI backing against the scrolling notes. Positive sounds
+    # LATER. The two are generated from the same timeline, but what you hear
+    # goes through a synth and a sound card while what you see does not.
+    backing_offset_ms: float = 0.0
+    # Per-song overrides for the above, keyed by song. How far the backing
+    # lags depends on how busy the arrangement is, so one global value never
+    # fits everything.
+    song_backing_offsets: dict = field(default_factory=dict)
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     calibration: dict = field(default_factory=dict)
 
     # Store default for HUD comparison (not serialized)
     _default_chord_partial_credit: bool = field(default=True, repr=False)
+
+    def backing_offset_for(self, song_key: str) -> float:
+        """This song's backing offset, or the global one if it has none."""
+        if song_key and song_key in self.song_backing_offsets:
+            return float(self.song_backing_offsets[song_key])
+        return float(self.backing_offset_ms)
+
+    def set_backing_offset_for(self, song_key: str, offset_ms: float) -> None:
+        """Remember an offset for one song; without a key set the global one."""
+        if song_key:
+            self.song_backing_offsets[song_key] = float(offset_ms)
+        else:
+            self.backing_offset_ms = float(offset_ms)
 
     def get_string_calibration(self, string: int) -> StringCalibration | None:
         """Return calibration for a string (1-6), or None if not calibrated."""
@@ -109,6 +141,13 @@ class Config:
             # Migration: same for the old 100 ms timing window default
             if data.get("timing_window_ms") == 100.0:
                 data["timing_window_ms"] = 150.0
+            # Repair: auto-sync used to be unbounded and could measure against
+            # the wrong note in a repeating riff, walking the offset out to
+            # values no real latency can explain. Anything past a plausible
+            # range is a runaway, not a measurement — start over from zero.
+            offset = data.get("audio_latency_offset_ms")
+            if offset is not None and abs(offset) > MAX_LATENCY_OFFSET_MS:
+                data["audio_latency_offset_ms"] = 0.0
             return cls(
                 audio=AudioConfig(**audio_data),
                 display=DisplayConfig(**display_data),

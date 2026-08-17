@@ -96,10 +96,25 @@ class TestBackingTrack:
         assert pcs[0].event_type == PROGRAM_CHANGE
         assert pcs[0].data1 == 33
 
-    def test_get_program_changes_before_zero(self):
+    def test_program_change_at_zero_counts_at_zero(self):
+        """Seeking to the start must still set the instruments.
+
+        This used to assert the opposite. "Before" was implemented strictly,
+        so a program change sitting at t=0 -- which is where every one of them
+        sits -- was skipped whenever the song was seeked to its beginning, and
+        melodic backing tracks played on whatever the synth already had. The
+        question the caller is asking is which instruments apply AT this
+        position, and one starting exactly here does.
+        """
         track = self._make_track()
         pcs = track.get_program_changes_before(0.0)
-        assert len(pcs) == 0
+        assert len(pcs) == 1
+        assert pcs[0].data1 == 33
+
+    def test_negative_position_still_sets_instruments(self):
+        """A count-in puts playback before zero; instruments still apply."""
+        track = self._make_track()
+        assert len(track.get_program_changes_before(-2400.0)) == 1
 
 
 class TestExtractBackingTrack:
@@ -157,3 +172,83 @@ class TestExtractBackingTrack:
 
         tl2 = load_gp_file(FIXTURES / "Demo_v5.gp5", track_index=1)
         assert tl2.metadata.track_index == 1
+
+
+class _DeadOutput:
+    """What pygame hands back when a device refuses to open: an object that
+    looks fine and throws on every write."""
+
+    def __init__(self):
+        self.writes = 0
+
+    def write_short(self, *args):
+        self.writes += 1
+        raise Exception("midi Output not open.")
+
+
+class _LiveOutput:
+    def __init__(self):
+        self.messages = []
+
+    def write_short(self, status, data1, data2):
+        self.messages.append((status, data1, data2))
+
+
+class TestMidiPlayerSurvivesABadDevice:
+    """A backing track falling silent is a nuisance; the app dying is not."""
+
+    def _player(self, output):
+        from pickhero.audio.midi_playback import MidiPlayer
+        player = MidiPlayer(self._track())
+        player._output = output
+        return player
+
+    def _track(self):
+        return BackingTrack([
+            MidiEvent(0.0, 0, PROGRAM_CHANGE, 33, 0),
+            MidiEvent(100.0, 0, NOTE_ON, 40, 80),
+            MidiEvent(300.0, 0, NOTE_OFF, 40, 0),
+        ])
+
+    def test_update_does_not_raise_on_a_dead_output(self):
+        player = self._player(_DeadOutput())
+        player.update(500.0)          # used to crash the whole app
+
+    def test_seek_does_not_raise_on_a_dead_output(self):
+        self._player(_DeadOutput()).seek(0.0)
+
+    def test_click_does_not_raise_on_a_dead_output(self):
+        self._player(_DeadOutput()).play_click()
+
+    def test_a_dead_output_is_dropped_rather_than_retried_forever(self):
+        dead = _DeadOutput()
+        player = self._player(dead)
+        player.update(500.0)
+        player.update(1000.0)
+        assert dead.writes == 1
+        assert player._output is None
+
+    def test_a_working_output_still_gets_its_events(self):
+        live = _LiveOutput()
+        player = self._player(live)
+        player.update(500.0)
+        assert len(live.messages) == 3
+
+    def test_muting_stops_the_notes(self):
+        """Silencing still sends all-notes-off, so only NOTE_ON is checked."""
+        live = _LiveOutput()
+        player = self._player(live)
+        player.set_muted(True)
+        live.messages.clear()
+        player.update(500.0)
+        assert not any(status & 0xF0 == NOTE_ON for status, _, _ in live.messages)
+
+    def test_close_leaves_the_shared_output_open_for_the_next_song(self):
+        """Closing it is what made every song after the first one silent."""
+        import pickhero.audio.midi_playback as mp
+        live = _LiveOutput()
+        mp._SHARED_OUTPUT = live
+        player = self._player(live)
+        player.close()
+        assert mp._SHARED_OUTPUT is live
+        mp._SHARED_OUTPUT = None
