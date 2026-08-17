@@ -1,6 +1,6 @@
 # MySician — Session Handoff Notes
 
-Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-16.
+Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-17.
 
 `CLAUDE.md` says how the app is built and why. This file says where it stands,
 what the user's setup is, and what is still open.
@@ -122,15 +122,24 @@ Generate the test songs with `python tools/make_*_test.py`; they land in `songs/
 
 ## Open topics
 
-Ordered by what would help the user most. Details, including what has already
-been ruled out, are in the handoff prompt at the bottom of this file.
+Ordered by what would help the user most. `NEXT_SESSION.md` holds the same
+list as a paste-ready prompt, with what has already been ruled out on each.
 
-1. **Timing spread — diagnosis built, cause not yet known.** `Y` now shows the
-   distribution and names the problem (`fine`/`latency`/`scatter`/`mixed`/
-   `per_string`); `Shift+Y` writes the raw samples as CSV. What is still open
-   is the ANSWER: the user has to play a while and report what it says. If it
-   says `per_string`, the fix is per-string offsets and the data to fit them
-   is in the CSV. If it says `scatter`, the fix is not in the app.
+1. **Timing spread — the instrument is built, the reading is not in yet.**
+   This is where the next session starts, and it starts by ASKING, not by
+   building: the user was going to play the timing test and press `Y`.
+   Do not guess what it said and do not start fixing before it is known —
+   the whole point of the report was to stop guessing.
+
+   What each answer means for the next move:
+
+   | Verdict | What it means | Next move |
+   |---|---|---|
+   | `latency` | one constant offset | `K` already fixes it; nothing to build |
+   | `scatter` | the playing, or the passage | not an app problem — say so plainly |
+   | `mixed` | both | `K` first, then re-measure before anything else |
+   | `per_string` | the detector reacts at different speeds per string | build per-string offsets; the CSV from `Shift+Y` is the data to fit them on |
+   | too few samples | the song has too little pitch variety | check `ambiguous` in the report before blaming anything |
 2. **Bend evaluation.** The visual exists; scoring is deliberately lenient
    because the detector produces no pitch contour. The user's target is
    "roughly a quarter-tone accurate on the target pitch".

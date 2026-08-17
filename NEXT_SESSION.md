@@ -14,21 +14,36 @@ antworten**, Befehle zum Kopieren geben, und erklären, was eine Änderung für
 mich als Spieler bedeutet. Ich spiele Metal und übe bei Yousician auf
 Pro-Level — daran messe ich die App.
 
-Die App funktioniert. Offen sind fünf Themen, nach meinem Nutzen sortiert:
+**Fang mit Thema 1 an, aber frag mich zuerst nach dem Messergebnis — bau
+nichts, bevor du es kennst.** Genau dafür wurde der Bericht gebaut: damit wir
+nicht mehr raten.
 
-**1. Timing-Streuung (±80–104 ms) — das wichtigste**
+**1. Timing — das Messgerät steht, das Ergebnis fehlt**
 
-Mein ältester Kritikpunkt. Die Streuung ist teils menschlich, teils Latenz,
-und wir haben sie nie getrennt gemessen. Bereits ausgeschlossen: es liegt
-nicht an schlechten GP-Dateien (`songs/timing_test_100bpm.gp5` ist exakt auf
-dem Raster gebaut, mit Klick nur auf den Noten), nicht an Wall-Clock-Jitter
-(Strikes werden aus dem Sample-Zähler gestempelt) und nicht an einem
-weglaufenden Auto-Sync (auf ±300 ms begrenzt, Shift+K setzt zurück).
+Letzte Sitzung haben wir den Timing-Bericht gebaut (Taste **Y**,
+`Shift+Y` schreibt die Rohwerte als CSV). Er zeigt die Verteilung meiner
+Anschläge und benennt das Problem: `fine`, `latency`, `scatter`, `mixed` oder
+`per_string`.
 
-Was ich mir vorstelle: ein Diagnose-Bildschirm, der die Verteilung meiner
-Anschläge relativ zum Raster zeigt — eine Verschiebung aller Werte in eine
-Richtung ist Latenz, eine breite Streuung um Null bin ich. Ohne diese
-Trennung raten wir. Schlag mir vor, wie du es messen würdest, bevor du baust.
+Ich wollte `songs/timing_test_100bpm.gp5` einmal durchspielen und **Y**
+drücken. Frag mich nach dem Befund (oder nach dem Screenshot / der CSV),
+bevor du irgendetwas änderst. Was er sagt, entscheidet, was zu tun ist:
+
+- `latency` → **K** erledigt es bereits, es gibt nichts zu bauen.
+- `scatter` → liegt nicht an der App. Sag mir das bitte klar, statt etwas
+  zu erfinden.
+- `mixed` → erst **K**, dann neu messen, dann weiterreden.
+- `per_string` → **das ist der Fall, in dem gebaut wird**: Offsets pro Saite.
+  Die Daten dafür stecken in der CSV von `Shift+Y`.
+- Zu wenige Messwerte → im Bericht steht, wie viele Anschläge nicht
+  zuordenbar waren; das zuerst anschauen.
+
+Schon ausgeschlossen und nicht nochmal herzuleiten: es liegt nicht an
+schlechten GP-Dateien (die Testdatei ist exakt auf dem Raster gebaut), nicht
+an Wall-Clock-Jitter (Anschläge werden aus dem Sample-Zähler gestempelt) und
+nicht an einem weglaufenden Auto-Sync (auf ±300 ms begrenzt, Shift+K setzt
+zurück). Die Datenausbeute ist ebenfalls schon behoben — sie lag bei 39 % und
+liegt jetzt bei 98 %.
 
 **2. Bend-Auswertung**
 
@@ -57,6 +72,3 @@ kleinste Brocken von den fünf.
 
 GP7-Dateien laden, tragen aber keine Bends und Slides — dieser Pfad parst das
 XML von Hand. GP3–GP5 laufen über pyguitarpro und sind vollständig.
-
-Fang mit **1** an, wenn du nichts anderes empfiehlst. Sag mir vorher, was du
-vorhast und was ich testen soll.
