@@ -44,6 +44,15 @@ AMBIGUITY_RATIO = 2.0
 # destination in the tab, so the only honest bound is a generous one.
 OPEN_SLIDE_SEMITONES = 2
 
+# How many strings a chord needs before a strike carrying no pitch at all is
+# accepted as having played it. Fitted on the reference recordings rather than
+# chosen: strikes that produce no confident pitch run at 16-17 % on one and two
+# strings, where the detector nearly always manages, and at 38-55 % from four
+# strings up, where a six-note strum gives monophonic YIN no single period to
+# lock onto. The jump sits between two strings and four, so three is the line.
+# Below it, accepting a pitchless strike would be leniency bought with nothing.
+MIN_UNPITCHED_CHORD_STRINGS = 3
+
 # Timing report. Bins are wide enough that a handful of samples still forms a
 # visible shape, narrow enough to separate latency from scatter by eye.
 TIMING_BIN_MS = 10.0
@@ -422,6 +431,51 @@ class NoteMatcher:
             semitone_distance=None,
         )
 
+    def _unpitched_chord_credit(
+        self, adjusted_ms: float, sample_pos: int | None,
+    ) -> MatchResult | None:
+        """Credit a written chord for a strum that produced no pitch at all.
+
+        A full chord gives monophonic YIN no single period to lock onto, so a
+        correctly played strum routinely arrives carrying no note whatsoever.
+        Measured on the reference recordings: 38-55 % of strikes on chords of
+        four strings and up produce no pitch, against 16 % on one or two.
+        Scored on pitch alone, those strums go red however well they were
+        fretted -- which is exactly what the player reports, and it is the
+        detector's limitation being charged to them.
+
+        This does not guess at the fretting, and it does not have to. The
+        strike still goes to the chord verifier, which reads the raw audio and
+        convicts any string it can positively show to be wrong. So the strum
+        is credited and the fingers are still checked -- the presumption of
+        innocence the verifier already runs on, applied one level up.
+        """
+        candidates = self._timeline.get_active_notes_at_time(
+            adjusted_ms, self._timing_window_ms
+        )
+        pending = [
+            n for n in candidates
+            if self._get_state(n) == MatchType.PENDING
+            and not self._is_filtered(n) and not n.dead
+        ]
+        if not pending:
+            return None
+        nearest = min(pending, key=lambda n: abs(n.timestamp_ms - adjusted_ms))
+        struck = [
+            n for n in pending
+            if abs(n.timestamp_ms - nearest.timestamp_ms) <= self._chord_threshold_ms
+        ]
+        if len(struck) < MIN_UNPITCHED_CHORD_STRINGS:
+            return None
+        for note in struck:
+            self._record_match(note, MatchType.HIT)
+        if self._chord_verifier is not None and sample_pos is not None:
+            self._pending_verifications[sample_pos] = struck
+        return MatchResult(
+            match_type=MatchType.HIT, matched_events=struck,
+            semitone_distance=None,
+        )
+
     def process_detected_notes(
         self, detected: list[TimestampedNote], playback_ms: float
     ) -> list[MatchResult]:
@@ -449,11 +503,16 @@ class NoteMatcher:
 
             if ts_note.note.unpitched:
                 # Nothing here to compare against a pitch or to measure a
-                # timing offset with. The one thing such a strike can honestly
-                # answer for is a dead note the tab actually wrote.
-                dead_result = self._dead_note_credit(adjusted_ms)
-                if dead_result is not None:
-                    results.append(dead_result)
+                # timing offset with. Two things in a tab can still account
+                # for such a strike: a written dead note, which has no pitch
+                # by definition, and a full chord, which regularly defeats a
+                # monophonic detector however well it was played. A dead note
+                # is checked first, being the more specific intent.
+                credit = (self._dead_note_credit(adjusted_ms)
+                          or self._unpitched_chord_credit(
+                              adjusted_ms, ts_note.sample_pos))
+                if credit is not None:
+                    results.append(credit)
                 continue
 
             self._record_timing_sample(adjusted_ms, detected_midi)

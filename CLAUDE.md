@@ -80,6 +80,27 @@ tab as a prior. For each expected note it scores competing pitch hypotheses on t
   which the calibration needs. Current state on that set: 33 strings judged, 0 false alarms, 7/7 deliberate one-fret errors caught at the full
   window, and 0 false alarms at every window length down to 280 ms.
 
+## Chords That Produce No Pitch
+
+A strummed chord regularly gives monophonic YIN no single period to lock onto, so a correctly played strum arrives carrying no pitch at
+all. Measured over `reference_recordings/`: strikes with no confident pitch run at **16-17 % on one or two strings** and **38-55 % from four
+strings up** — an open A minor produced none in five strikes. Scored on pitch alone those strums are red however well they were fretted,
+which is the "chords are not recognised" the player reports. It is not a speed problem: a fast single-note riff detects 47 of 49 and fast
+power chords 38 of 39.
+
+- **An unpitched strike credits a written chord of `MIN_UNPITCHED_CHORD_STRINGS` (3) strings or more.** The threshold is where the data
+  breaks, not a feel: below three the detector nearly always does produce a pitch, so accepting a pitchless strike there would be leniency
+  bought with nothing. Single notes and power chords therefore keep the behaviour they had.
+- **This credits the strum, not the fretting.** The strike still goes to `chord_verify.py`, which reads the raw audio and convicts any string
+  it can positively show wrong. That is what makes crediting safe, and it is the same presumption of innocence run one level up: the strum
+  is assumed played until a partial says otherwise.
+- **Verified end to end on the reference takes** by `tools/check_chord_credit.py` — real audio through `AudioCapture`, scored by the matcher,
+  verdicts applied by the verifier. Correct chords go from 54 % credited to 100 %, while all three deliberate one-fret errors are still
+  caught (3, 9 and 6 string verdicts) and a chord with a string left out still passes. Re-run it after touching either the credit or the
+  verifier's thresholds; it exits non-zero when a correct take loses a string or an error slips through.
+- For an error take the tab must be the CORRECT shape: the manifest records what was **played**, so telling the verifier to expect the wrong
+  note asks it whether the error is the error it was given, and it rightly says no.
+
 ## Timing Diagnosis
 
 Two numbers cannot say which timing problem a player has, so `matcher.timing_report()` (shown by **Y**) keeps the samples apart and names

@@ -761,6 +761,96 @@ class TestDeadNotes:
         assert len(expected) == 2
 
 
+class TestUnpitchedChordCredit:
+    """A strummed chord regularly produces no pitch at all, and is still played.
+
+    Monophonic YIN finds no single period in a six-string strum: on the
+    reference recordings 38-55 % of strikes on chords of four strings and up
+    carry no note, against 16 % on one or two. Scored on pitch alone, those
+    strums go red however well they were fretted.
+    """
+
+    def _unpitched(self, timestamp_ms: float,
+                   sample_pos: int | None = None) -> TimestampedNote:
+        return TimestampedNote(
+            note=DetectedNote(midi_note=0, frequency=0.0, confidence=0.0,
+                              name="", is_onset=True, unpitched=True),
+            timestamp_ms=timestamp_ms, sample_pos=sample_pos,
+        )
+
+    def _chord(self, size: int, timestamp_ms: float = 1000.0) -> list[NoteEvent]:
+        strings = [(6, 40), (5, 47), (4, 52), (3, 56), (2, 59), (1, 64)]
+        return [
+            NoteEvent(timestamp_ms=timestamp_ms, duration_ms=400.0,
+                      midi_note=midi, string=s, fret=2)
+            for s, midi in strings[:size]
+        ]
+
+    def test_a_three_string_chord_is_credited(self):
+        notes = self._chord(3)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+
+    def test_a_six_string_chord_is_credited(self):
+        notes = self._chord(6)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+
+    def test_a_power_chord_is_not(self):
+        """Two strings nearly always do produce a pitch, so accepting a
+        pitchless strike there would be leniency bought with nothing."""
+        notes = self._chord(2)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.PENDING for n in notes)
+
+    def test_a_single_note_is_not(self):
+        notes = self._chord(1)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert matcher.get_note_state(notes[0]) == MatchType.PENDING
+
+    def test_nothing_is_credited_where_no_chord_is_written(self):
+        """Silence, a knock, a muffled accident: none of them is a chord."""
+        matcher = _make_matcher(self._chord(3, timestamp_ms=9000.0))
+        results = matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert results == []
+
+    def test_the_strum_still_goes_to_the_chord_verifier(self):
+        """Crediting the strum must not stop the fingers being checked --
+        that is the whole reason it is safe to credit it."""
+        notes = self._chord(4)
+        matcher = _make_matcher(notes)
+        matcher.chord_verifier = object()   # only its presence matters here
+        matcher.process_detected_notes(
+            [self._unpitched(1000.0, sample_pos=8192)], 1000.0)
+        assert set(matcher._pending_verifications[8192]) == set(notes)
+
+    def test_a_verdict_can_still_take_a_string_back(self):
+        """The credit is a starting position, not a promise."""
+        notes = self._chord(3)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        matcher._rerecord_match(notes[1], MatchType.MISS)
+        assert matcher.get_note_state(notes[1]) == MatchType.MISS
+        assert matcher.get_statistics()["hits"] == 2
+
+    def test_dead_notes_are_not_counted_toward_the_chord(self):
+        """A dead note has its own rule and sounds no pitch, so it must not
+        push a two-string shape over the line."""
+        notes = self._chord(2) + [
+            NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=52,
+                      string=4, fret=0, dead=True)
+        ]
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert matcher.get_note_state(notes[2]) == MatchType.HIT      # the dead one
+        assert matcher.get_note_state(notes[0]) == MatchType.PENDING
+        assert matcher.get_note_state(notes[1]) == MatchType.PENDING
+
+
 class TestTimingReport:
     """The report exists to say WHICH timing problem this is.
 

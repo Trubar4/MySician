@@ -147,6 +147,7 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 | `record_reference.py` | Records a labelled take set, including deliberate wrong notes. |
 | `analyze_reference.py` | Per-string verdict table over a take set; counts false alarms. |
 | `sweep_chord_window.py` | How short may the chord window get before it lies? |
+| `check_chord_credit.py` | Does crediting a pitchless strum still catch a wrong finger? Exits non-zero if not. |
 | `simulate_timing.py` | Does the timing report name a fault that was injected on purpose? |
 
 Generate the test songs with `python tools/make_*_test.py`; they land in `songs/`.
@@ -170,28 +171,22 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    itself repeated one pitch for eighty seconds, so 127 of its samples were
    refused as ambiguous. Keep diagnostic files pitch-varied and inside the
    fret filter's default range.
-2. **Chords come up RED because a strummed chord produces no pitch at all.**
-   **Root cause measured, on the user's own reference recordings** — run the
-   detector over `reference_recordings/20260814_160019/` and count how many
-   strikes yield a confident pitch:
+2. ~~**Chords come up RED.**~~ **DIAGNOSED AND FIXED — 2026-08-17.** A strummed
+   chord gives monophonic YIN no period to lock onto, so a correctly played
+   strum carried no pitch and was scored red: 38-55 % of strikes on chords of
+   four strings and up, against 16 % on one or two, and an open A minor
+   produced none at all in five strikes. Never a speed problem — a fast
+   single-note riff detects 47 of 49 and fast power chords 38 of 39, so the
+   verifier's 335 ms abstention was never the cause either.
+   An unpitched strike now credits a written chord of three strings or more
+   (`MIN_UNPITCHED_CHORD_STRINGS`), and the strum still goes to the verifier,
+   which catches a wrong finger afterwards. Correct chords went from 54 % to
+   100 % credited with every deliberate error still caught — see `CLAUDE.md`,
+   "Chords That Produce No Pitch", and `tools/check_chord_credit.py`.
 
-   | take | strikes | with a pitch |
-   |---|---|---|
-   | `41_riff` (single notes, fast) | 49 | 47 |
-   | `40_E5_fast` (power chords, fast) | 39 | 38 |
-   | `30_Emaj_ok` (open E major) | 4 | 3 |
-   | `36_Dmaj_ok` (open D) | 6 | 3 |
-   | `34_Amin_ok` (open A minor) | 5 | **0** |
-
-   Single notes and power chords are near-perfect at speed, so speed is NOT the
-   problem and the 335 ms verifier abstention is NOT the problem. Full open
-   chords are: YIN is monophonic and finds no single period in a six-string
-   strum, confidence never clears 0.8, and the strike carries no note. Those
-   strikes now arrive as `unpitched` (the dead-note work) instead of being
-   dropped, which means **the evidence needed to fix this is already reaching
-   the matcher** — an unpitched strike where the tab writes a chord is exactly
-   the case the user asked to be tolerant about. That is the next thing to
-   build, and `chord_verify.py` can confirm the strings afterwards.
+   Still open underneath it: **chords closer than ~335 ms get no per-string
+   verdict at all**, so at eighth-note speed the credit above stands
+   unchecked. That is the original topic 3 and it is now the whole of it.
 3. **Bend evaluation.** The visual exists; scoring is deliberately lenient
    because nothing keeps the pitch contour — though the detector DOES produce
    one, at one frame per ~11.6 ms, which `OnsetPitchCollector` discards. The
