@@ -27,6 +27,11 @@ class DetectedNote:
     # by multiple strings sounding at once — it is evidence of a strummed
     # chord, not a single note.
     subharmonic: bool = False
+    # True for a strike loud enough to be real that never produced a pitch at
+    # all: a dead note, or one choked so hard YIN finds no period. midi_note
+    # and frequency carry nothing in that case — the tab is the only thing
+    # that can say whether such a strike was what the music asked for.
+    unpitched: bool = False
 
 
 class PitchDetector:

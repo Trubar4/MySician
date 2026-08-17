@@ -713,6 +713,61 @@ class TestBendDrawing:
         assert top == pytest.approx(170.0)
 
 
+class TestPalmMuteMarking:
+    """"PM" goes on the note that OPENS a run, the way paper tab writes it.
+
+    A muted metal riff flags every note it contains. A badge over each of them
+    is a row of discs covering the music it is supposed to describe, so the
+    label goes on the first note and the choked note bodies carry it onward.
+    """
+
+    def _n(self, ts, string=6, palm_mute=False):
+        return NoteEvent(timestamp_ms=ts, duration_ms=200.0, midi_note=40,
+                         string=string, fret=0, palm_mute=palm_mute)
+
+    def test_only_the_first_note_of_a_run_is_marked(self):
+        notes = [self._n(ts, palm_mute=True) for ts in (0.0, 300.0, 600.0)]
+        starts = PlayingScreen._palm_mute_run_starts(notes)
+        assert starts == {(0.0, 6)}
+
+    def test_an_unmuted_note_ends_the_run(self):
+        notes = [self._n(0.0, palm_mute=True), self._n(300.0),
+                 self._n(600.0, palm_mute=True)]
+        starts = PlayingScreen._palm_mute_run_starts(notes)
+        assert starts == {(0.0, 6), (600.0, 6)}
+
+    def test_a_long_silence_starts_a_new_run(self):
+        """The badge has to come back when the riff does, a chorus later."""
+        notes = [self._n(0.0, palm_mute=True), self._n(60_000.0, palm_mute=True)]
+        starts = PlayingScreen._palm_mute_run_starts(notes)
+        assert starts == {(0.0, 6), (60_000.0, 6)}
+
+    def test_a_muted_chord_is_marked_once_on_its_lowest_string(self):
+        """Palm muting is the picking hand resting on the strings: it applies
+        to the whole stroke, so three stacked badges only crowd the lanes."""
+        notes = [self._n(0.0, string=s, palm_mute=True) for s in (6, 5, 4)]
+        starts = PlayingScreen._palm_mute_run_starts(notes)
+        assert starts == {(0.0, 6)}
+
+    def test_nothing_is_marked_without_a_palm_mute(self):
+        assert PlayingScreen._palm_mute_run_starts(
+            [self._n(0.0), self._n(300.0)]
+        ) == set()
+
+    def test_a_dead_stroke_does_not_break_the_run(self):
+        """Chug, chug, muted stroke, chug is the commonest metal rhythm there
+        is. The picking hand never leaves the strings, so the run continues --
+        counted as a break, it re-badges every second note of the riff."""
+        notes = [
+            self._n(0.0, palm_mute=True),
+            NoteEvent(timestamp_ms=300.0, duration_ms=200.0, midi_note=40,
+                      string=6, fret=0, dead=True),
+            self._n(600.0, palm_mute=True),
+        ]
+        starts = PlayingScreen._palm_mute_run_starts(notes)
+        assert starts == {(0.0, 6)}
+
+
 class TestSlideTargets:
     def test_finds_the_next_note_on_the_same_string(self):
         first = NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,

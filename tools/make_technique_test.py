@@ -1,13 +1,15 @@
-"""Generate a GP5 for checking how bends and slides are DRAWN.
+"""Generate a GP5 for checking how techniques are DRAWN and scored.
 
-Neither technique can be judged from a downloaded tab: if a bend looks wrong
+No technique can be judged from a downloaded tab: if a bend looks wrong
 there, it may be the tab that is wrong, or the transcription that put the
 bend on the wrong beat. This file states exactly what it contains, so
 anything the display gets wrong is the display's fault.
 
-Every note is long and followed by a rest. That is deliberate -- a bend needs
-room for its arc and a slide needs room for its connector, and the point here
-is to look at them, not to play a passage.
+Bends and slides come first, each note long and followed by a rest -- a bend
+needs room for its arc and a slide needs room for its connector, and the point
+there is to look at them, not to play a passage. The muting sections at the
+end are the opposite on purpose: palm mutes and dead notes only exist in fast
+riffs, so they are written as the eighth-note chugs they actually appear in.
 
 Scoring is lenient for both: a bent note counts as played when the pitch is
 anywhere between the written fret and the top of the bend, and a slide counts
@@ -25,7 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gp_builder import (  # noqa: E402
-    HALF, QUARTER, REST, WHOLE, bend, build_song, legato, slide, write,
+    EIGHTH, HALF, QUARTER, REST, WHOLE, bend, build_song, dead, legato,
+    palm_mute, slide, write,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -33,6 +36,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # String 3 (G) around the 7th fret: where bends actually get played.
 G_STRING = 3
 B_STRING = 2
+# The muting sections live where metal lives: the bottom three strings.
+D_STRING = 4
+A_STRING = 5
+E_STRING = 6
 
 
 def _bar(*beats):
@@ -98,6 +105,42 @@ def _sections():
         _bar((WHOLE, REST)),
     ]
 
+    # Muting, written as the riffs it belongs to. A palm mute is still the
+    # written pitch, so these score exactly like open notes; a dead note has
+    # no pitch at all and counts as played on the strike alone.
+    def chug(*specs):
+        return _bar(*[(EIGHTH, list(s)) for s in specs])
+
+    pm_open = [(E_STRING, 0, palm_mute())]
+    e5 = [(E_STRING, 0, palm_mute()), (A_STRING, 2, palm_mute()),
+          (D_STRING, 2, palm_mute())]
+    x_open = [(E_STRING, 0, dead())]
+    x_chord = [(E_STRING, 0, dead()), (A_STRING, 0, dead()),
+               (D_STRING, 0, dead())]
+
+    palm_mutes = [
+        chug(*([pm_open] * 8)),
+        chug(*([pm_open] * 8)),
+        _bar((WHOLE, REST)),
+        chug(*([e5] * 8)),
+        chug(*([e5] * 8)),
+        _bar((WHOLE, REST)),
+    ]
+    dead_notes = [
+        _bar((QUARTER, x_open), (QUARTER, REST),
+             (QUARTER, x_open), (QUARTER, REST)),
+        _bar((QUARTER, x_chord), (QUARTER, REST),
+             (QUARTER, x_chord), (QUARTER, REST)),
+        _bar((WHOLE, REST)),
+    ]
+    # The everyday metal case: chugs with a muted stroke used as rhythm.
+    muted_riff = [
+        chug(pm_open, pm_open, x_open, pm_open,
+             pm_open, x_open, pm_open, pm_open),
+        chug(e5, e5, x_chord, e5, e5, x_chord, e5, e5),
+        _bar((WHOLE, REST)),
+    ]
+
     return [
         ("Count-in", [_bar((QUARTER, REST), (QUARTER, REST),
                            (QUARTER, REST), (QUARTER, REST))]),
@@ -110,6 +153,11 @@ def _sections():
         ("Hammer-ons - arc between the frets, badge H", hammer_ons),
         ("Pull-offs - same arc, badge P", pull_offs),
         ("Mixed - slide into a bend, bend then slide off, then H and P", mixed),
+        ("Palm mute - short stubs, PM badge once at the start of each run",
+         palm_mutes),
+        ("Dead notes - X instead of a fret, single then muted strum",
+         dead_notes),
+        ("Muted riff - chugs with dead strokes between them", muted_riff),
     ]
 
 

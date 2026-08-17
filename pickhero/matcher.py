@@ -388,6 +388,40 @@ class NoteMatcher:
         state = self._note_states.get(source_key)
         return state if state in (MatchType.HIT, MatchType.CLOSE) else None
 
+    def _dead_note_credit(self, adjusted_ms: float) -> MatchResult | None:
+        """Credit a written dead note for a strike no pitch accounts for.
+
+        A dead note is the fretting hand damping the string. The tab writes a
+        fret to say where the hand sits, but the sound is a click, and there
+        is no pitch in it to check -- so the only honest test is that
+        something was struck where one was written, which is also the whole
+        of what the player was asked to do. Left unhandled, every dead note in
+        a tab times out as a miss no matter how well it was played.
+        """
+        candidates = self._timeline.get_active_notes_at_time(
+            adjusted_ms, self._timing_window_ms
+        )
+        pending = [
+            n for n in candidates
+            if n.dead and self._get_state(n) == MatchType.PENDING
+            and not self._is_filtered(n)
+        ]
+        if not pending:
+            return None
+        nearest = min(pending, key=lambda n: abs(n.timestamp_ms - adjusted_ms))
+        # A muted strum writes a dead note on several strings at once, and one
+        # stroke is all of them -- there is no second click to wait for.
+        struck = [
+            n for n in pending
+            if abs(n.timestamp_ms - nearest.timestamp_ms) <= self._chord_threshold_ms
+        ]
+        for note in struck:
+            self._record_match(note, MatchType.HIT)
+        return MatchResult(
+            match_type=MatchType.HIT, matched_events=struck,
+            semitone_distance=None,
+        )
+
     def process_detected_notes(
         self, detected: list[TimestampedNote], playback_ms: float
     ) -> list[MatchResult]:
@@ -413,6 +447,15 @@ class NoteMatcher:
             adjusted_ms = ts_note.timestamp_ms + self._audio_offset_ms
             detected_midi = ts_note.note.midi_note
 
+            if ts_note.note.unpitched:
+                # Nothing here to compare against a pitch or to measure a
+                # timing offset with. The one thing such a strike can honestly
+                # answer for is a dead note the tab actually wrote.
+                dead_result = self._dead_note_credit(adjusted_ms)
+                if dead_result is not None:
+                    results.append(dead_result)
+                continue
+
             self._record_timing_sample(adjusted_ms, detected_midi)
 
             # Find tab notes active near this time
@@ -420,13 +463,16 @@ class NoteMatcher:
                 adjusted_ms, self._timing_window_ms
             )
 
-            # Filter to PENDING and non-filtered only
+            # Filter to PENDING and non-filtered only. Dead notes are held
+            # back: they have no pitch to compare, so letting one compete for
+            # a pitched strike would let it swallow the strike meant for the
+            # real note beside it. They get their chance below, on strikes
+            # nothing else can explain.
             pending = [
                 n for n in candidates
-                if self._get_state(n) == MatchType.PENDING and not self._is_filtered(n)
+                if self._get_state(n) == MatchType.PENDING
+                and not self._is_filtered(n) and not n.dead
             ]
-            if not pending:
-                continue
 
             # Find closest match by semitone distance (with octave equivalence)
             best = None
@@ -440,16 +486,19 @@ class NoteMatcher:
                     best = note
                     best_dist = effective
 
-            if best is None or best_dist is None:
-                continue
-
             # Classify match
             if best_dist == 0:
                 match_type = MatchType.HIT
             elif best_dist == 1:
                 match_type = MatchType.CLOSE
             else:
-                # Too far off — ignore this detection, no penalty
+                # No written pitch explains this strike. A dead note might:
+                # damping the string still lets some pitch through, and which
+                # pitch that is says nothing about whether the mute was right.
+                dead_result = self._dead_note_credit(adjusted_ms)
+                if dead_result is not None:
+                    results.append(dead_result)
+                # Too far off otherwise — ignore this detection, no penalty
                 continue
 
             # Chord handling
@@ -507,9 +556,14 @@ class NoteMatcher:
             # arrives later, can be checked string by string. Keyed by sample
             # position: timestamps are rescaled by tempo and rewritten in wait
             # mode, the sample index is not.
-            if (self._chord_verifier is not None and len(siblings) > 1
+            # Dead notes are left out: the verifier is told which pitches to
+            # expect, and a damped string sounds none of the one written for
+            # it. Handing it that pitch would have it hunt for partials that
+            # were never there and convict a neighbour for their absence.
+            verifiable = [s for s in siblings if not s.dead]
+            if (self._chord_verifier is not None and len(verifiable) > 1
                     and ts_note.sample_pos is not None):
-                self._pending_verifications[ts_note.sample_pos] = siblings
+                self._pending_verifications[ts_note.sample_pos] = verifiable
 
             results.append(MatchResult(
                 match_type=match_type,
@@ -614,6 +668,10 @@ class NoteMatcher:
         found: list[tuple[float, NoteEvent]] = []
         for note in candidates:
             if self._is_filtered(note):
+                continue
+            # A dead note's written pitch never sounds, so measuring a strike
+            # against it would put a made-up number into the timing report.
+            if note.dead:
                 continue
             dist = semitone_distance(detected_midi, note.midi_note)
             octave_dist = dist % 12 if dist >= 12 else dist

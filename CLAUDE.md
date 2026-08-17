@@ -112,6 +112,28 @@ them yet.
 - **A sliding note gives up part of its sustain** so the connector has somewhere to be; back-to-back notes otherwise leave a few pixels.
 - `tools/make_technique_test.py` writes a GP5 stating exactly which technique is where, so a wrong drawing is the app's fault.
 
+## Muting (palm mutes, dead notes)
+
+`NoteEvent.palm_mute` and `NoteEvent.dead` carry what the tab wrote; both come out of pyguitarpro AND out of the GP7 XML path, where they are
+plain flags rather than a curve to reconstruct. They are separate axes — a chug riff mixes them — and neither implies the other.
+
+- **A dead note has no pitch to check, so the strike IS the evidence.** Its written fret says where the fretting hand damps the string, not
+  what will sound; scored against that pitch, every dead note in a tab was a miss however well it was played. `OnsetPitchCollector` now reports
+  a strike that produced no pitch as `unpitched` instead of dropping it, and `_dead_note_credit` accepts any strike — pitched or not — for a
+  written dead note. A muted strum across three strings is one stroke, not three.
+- **A dead note never competes for a pitched strike.** It accepts any pitch, so left in the ordinary candidate list it swallows the strike meant
+  for the real note beside it. It is held back and only catches strikes nothing else explains. It is also kept out of the timing report (its
+  pitch never sounded, so the offset would be invented) and out of chord verification (the verifier would hunt for partials that were never
+  there and convict a neighbour for their absence).
+- **A palm mute does not change the pitch**, so scoring is untouched — the picking hand chokes the note, it does not transpose it. What changes
+  is the drawing: the note is capped at `PALM_MUTE_MAX_HEADS` rather than ringing for its written length, because promising a ring that will not
+  happen is how a chug gets read as a held note.
+- **"PM" is badged once per run, not per note**, the way paper tab writes it and dashes it onward — a disc over every note of a muted riff buries
+  the music under its own labelling. A dead stroke inside the run does not break it (the hand never leaves the strings); a silence longer than
+  `PALM_MUTE_RUN_GAP_MS` does, so the badge comes back when the riff does.
+- Still unmeasured: whether a heavy chug that returns NO pitch should credit its palm-muted note. That is leniency, and it needs reference
+  recordings before it is granted, not a feel for how it ought to behave.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain

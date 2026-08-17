@@ -190,7 +190,18 @@ class OnsetPitchCollector:
         freqs, confs, folded = self._freqs, self._confs, self._folded
         self.reset()
         if not freqs:
-            return None  # strike never produced a confident pitch
+            # A strike that passed the noise gate but never produced a pitch.
+            # Dropping it silently is what made dead notes unhittable: the tab
+            # asks for a percussive click, the detector had nothing to report,
+            # and the note timed out as a miss however well it was played.
+            # Reported as unpitched instead, for the matcher to accept only
+            # where the tab actually wrote a dead note.
+            note = DetectedNote(
+                midi_note=0, frequency=0.0, confidence=0.0, name="",
+                is_onset=True, unpitched=True,
+            )
+            return TimestampedNote(note=note, timestamp_ms=t_ms,
+                                   sample_pos=sample_pos)
         used = freqs[-self.MEDIAN_LAST:]
         used_folded = folded[-self.MEDIAN_LAST:]
         freq = statistics.median(used)

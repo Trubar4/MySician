@@ -238,6 +238,53 @@ class TestTechniques:
             assert note.bend == ()
             assert not note.slide_to_next
             assert note.slide_in == 0 and note.slide_out == 0
+            assert not note.dead
+            assert not note.palm_mute
+
+
+class TestMuting:
+    """Palm mutes and dead notes come out of the file at all.
+
+    Both were being dropped: a palm mute was drawn as a note that rings for
+    its full written length, and a dead note as an ordinary note on the fret
+    the tab uses to say where the hand damps -- which the player then could
+    not hit, because damping a string produces no such pitch.
+    """
+
+    def test_a_dead_note_is_flagged_as_dead(self):
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        assert [n for n in notes if n.dead], "Effects.gp5 has a dead note"
+
+    def test_a_dead_note_is_still_an_event(self):
+        """It is played, so it has to be in the timeline to be drawn and
+        scored -- skipping it would silently drop notes from a riff."""
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        dead = [n for n in notes if n.dead][0]
+        assert dead.duration_ms > 0
+        assert 1 <= dead.string <= 6
+
+    def test_palm_mute_is_flagged(self):
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        assert [n for n in notes if n.palm_mute], "Effects.gp5 has a palm mute"
+
+    def test_palm_mute_does_not_change_the_pitch(self):
+        """The picking hand chokes the note; it does not transpose it. Scoring
+        therefore stays exactly as it is for an open note."""
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        muted = [n for n in notes if n.palm_mute][0]
+        open_same_fret = [
+            n for n in notes
+            if not n.palm_mute and n.string == muted.string
+            and n.fret == muted.fret
+        ]
+        for note in open_same_fret:
+            assert note.midi_note == muted.midi_note
+
+    def test_the_two_are_independent(self):
+        """A muted riff mixes them, so neither may imply the other."""
+        notes = load_gp_file(FIXTURES / "Demo_v5.gp5").notes
+        assert [n for n in notes if n.dead and not n.palm_mute]
+        assert [n for n in notes if n.palm_mute and not n.dead]
 
 
 class TestLegato:

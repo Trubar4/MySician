@@ -90,6 +90,18 @@ LEGATO_ARC_HEADS = 0.34
 LEGATO_BASE_FRACTION = 0.3
 LEGATO_ARC_STEPS = 12
 
+# -- Muting ----------------------------------------------------------------
+# A palm-muted note is choked short of whatever length the tab wrote for it,
+# so drawing its full sustain promises a ring that will not happen. Capped at
+# this many heads instead: long enough to tell a chug from a dead note, short
+# enough that a muted riff reads as the stubs it sounds like.
+PALM_MUTE_MAX_HEADS = 1.3
+# A palm-muted run is marked once, at its start, the way paper tab writes
+# "P.M." and dashes it onward -- a disc over every note of a muted riff hides
+# the music behind its own labelling. A silence longer than this starts a new
+# run, so the badge comes back when the riff does.
+PALM_MUTE_RUN_GAP_MS = 1200.0
+
 # Left margin for notes that already passed the hit zone (ms)
 LEFT_MARGIN_MS = 2000
 # Right margin for notes not yet visible (ms)
@@ -198,6 +210,10 @@ class PlayingScreen:
         self._scroll_speed_signature: tuple | None = None
         # One head size for the whole song, set with the scroll speed
         self._head_px: float | None = None
+        # Where the "PM" badges go. Computed from the whole song, not from the
+        # notes currently on screen: a run crossing the edge of the view would
+        # otherwise be re-labelled every time its first note scrolled off.
+        self._palm_mute_starts = self._palm_mute_run_starts(self._timeline.notes)
 
         # Count-in state
         count_in_beats = max(0, self._config.count_in_beats)
@@ -905,6 +921,49 @@ class PlayingScreen:
         return out
 
     @staticmethod
+    def _palm_mute_run_starts(notes) -> set[tuple[float, int]]:
+        """Keys of the notes that OPEN a palm-muted run.
+
+        One badge per run, not per note: a muted metal riff flags every note
+        it contains, and a disc over each of them buries the music under its
+        own labelling. Paper tab writes "P.M." once and dashes it onward for
+        exactly that reason -- here the choked note bodies carry the run on
+        from the badge.
+
+        Marked on the lowest string of the stroke that starts the run. Palm
+        muting is the picking hand resting on the strings, so it applies to
+        the whole stroke rather than to one string of it, and one badge says
+        that where three stacked ones only crowd the lanes.
+        """
+        by_string: dict[int, list] = {}
+        for note in notes:
+            by_string.setdefault(note.string, []).append(note)
+
+        opening: dict[float, int] = {}
+        for group in by_string.values():
+            group.sort(key=lambda n: n.timestamp_ms)
+            last_muted_ms: float | None = None
+            for note in group:
+                if note.dead:
+                    # A dead stroke in the middle of a chug riff does not lift
+                    # the picking hand off the strings, so it does not end the
+                    # run -- treating it as a break re-badged every second note
+                    # of the commonest metal rhythm there is.
+                    continue
+                if not note.palm_mute:
+                    last_muted_ms = None
+                    continue
+                if (last_muted_ms is None
+                        or note.timestamp_ms - last_muted_ms > PALM_MUTE_RUN_GAP_MS):
+                    # Lowest string = highest number, and a chord's strings
+                    # share one timestamp.
+                    opening[note.timestamp_ms] = max(
+                        opening.get(note.timestamp_ms, 0), note.string
+                    )
+                last_muted_ms = note.timestamp_ms
+        return {(ts, string) for ts, string in opening.items()}
+
+    @staticmethod
     def bend_label(semitones: float) -> str:
         """Bend depth in WHOLE steps: ½, 1, 1½, 2 ...
 
@@ -1232,6 +1291,16 @@ class PlayingScreen:
             body = self.sustain_width(note.duration_ms, layout.pixels_per_ms)
             capsule_w = min(body, gap_px) - visual_gap
 
+            # Muted notes do not ring for the length the tab wrote. A dead
+            # note is a click with no sustain at all, and a palm-muted one is
+            # choked; drawing either at full length promises a ring that never
+            # comes, and reading a chug as a held note is how a muted riff
+            # ends up played wrong.
+            if note.dead:
+                capsule_w = min(capsule_w, 2 * radius)
+            elif note.palm_mute:
+                capsule_w = min(capsule_w, head * PALM_MUTE_MAX_HEADS)
+
             # Skip notes fully off-screen
             if x + max(capsule_w, 2 * radius) < 0 or x > layout.screen_w:
                 continue
@@ -1289,10 +1358,26 @@ class PlayingScreen:
                 self._draw_bend(surface, note, x, cy, head, capsule_w,
                                 base_color, past_hit_zone)
 
+            # "PM" over the note that opens a muted run, unless that note is
+            # already wearing a technique badge -- two discs in one place read
+            # as neither, and which pitch the note does is the more urgent of
+            # the two.
+            has_technique_badge = bool(
+                note.bend or note.slide_to_next or note.slide_in or note.slide_out
+            )
+            if ((note.timestamp_ms, note.string) in self._palm_mute_starts
+                    and not has_technique_badge):
+                self._draw_badge(surface, "PM", x + head,
+                                 self._badge_y(cy, head), head,
+                                 base_color, past_hit_zone)
+
             # Fret number centred in the head, sized to the head it sits in —
-            # a fixed size spills out of the shrunken heads of a fast run
+            # a fixed size spills out of the shrunken heads of a fast run.
+            # A dead note shows the X the tab shows: its fret says where the
+            # hand goes, not which note comes out, and printing the digit
+            # invites the player to actually fret it.
             fret_font = self._fret_font(radius)
-            fret_label = str(note.fret)
+            fret_label = "X" if note.dead else str(note.fret)
             fret_text = fret_font.render(fret_label, True, t.note_text)
             if fret_text.get_width() <= 2 * radius:
                 tx = int(x + radius) - fret_text.get_width() // 2
@@ -2039,6 +2124,12 @@ class PlayingScreen:
             "H    HAMMER-ON. Strike the first note, then hammer the",
             "     finger down for the second without striking again.",
             "P    PULL-OFF. The same in reverse, lifting the finger.",
+            "PM   PALM MUTE starts here and runs on until the notes",
+            "     stop being drawn as short stubs. Rest the picking",
+            "     hand on the strings; the pitch stays the written one.",
+            "X    DEAD NOTE. Damp the string with the fretting hand and",
+            "     strike it: a click, no pitch. Counts as played as long",
+            "     as you strike it in time — there is no pitch to check.",
             "",
             "H, P and SL notes are not struck, so they score with the",
             "note they came from. Bends are scored leniently: the pitch",

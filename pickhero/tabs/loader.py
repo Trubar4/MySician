@@ -183,6 +183,13 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap) -> list[NoteEven
                             hammer_to_next=bool(
                                 getattr(effect, "hammer", False)
                             ),
+                            # Type 3 is a dead note: kept as an event because
+                            # it is played, flagged because its written fret
+                            # names a hand position, not a pitch.
+                            dead=note.type.value == 3,
+                            palm_mute=bool(
+                                getattr(effect, "palmMute", False)
+                            ),
                         )
                     )
     return notes
@@ -287,16 +294,25 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                     base = base * den / num
             rhythms[rid] = base
 
-    # Notes: id → (fret, gp7_string)  (gp7_string is 0-indexed, 0=low E)
-    notes_map: dict[str, tuple[int, int]] = {}
+    # Notes: id → (fret, gp7_string, dead, palm_mute)
+    # (gp7_string is 0-indexed, 0=low E)
+    notes_map: dict[str, tuple[int, int, bool, bool]] = {}
     notes_el = root.find("Notes")
     if notes_el is not None:
         for n in notes_el.findall("Note"):
             nid = n.get("id", "")
             fret = None
             string_val = None
+            dead = False
+            palm_mute = False
             for prop in n.findall(".//Property"):
                 pname = prop.get("name", "")
+                # Flags rather than values: GP7 writes them as an empty
+                # <Enable/> child, so the property being present IS the answer.
+                if pname == "Muted":
+                    dead = prop.find("Enable") is not None
+                elif pname == "PalmMuted":
+                    palm_mute = prop.find("Enable") is not None
                 if pname == "Fret":
                     try:
                         fret = int(prop.findtext("Fret", "0"))
@@ -312,7 +328,7 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                     except ValueError:
                         pass
             if fret is not None and string_val is not None:
-                notes_map[nid] = (fret, string_val)
+                notes_map[nid] = (fret, string_val, dead, palm_mute)
 
     # Beats: id → (rhythm_ref, [note_ids])
     beats_map: dict[str, tuple[str, list[str]]] = {}
@@ -453,7 +469,7 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                     for nid in note_ids:
                         if nid not in notes_map:
                             continue
-                        fret, gp7_string = notes_map[nid]
+                        fret, gp7_string, dead, palm_mute = notes_map[nid]
                         our_string = num_strings - gp7_string
                         if not 1 <= our_string <= 6:
                             continue
@@ -466,9 +482,11 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                             continue
 
                         # No bend or slide here: this path parses GP7's own XML
-                        # by hand, where techniques live in a separate
-                        # <Properties> block per note. Left for when a GP7 tab
+                        # by hand, and a bend needs its whole curve read out of
+                        # the <Properties> block. Left for when a GP7 tab
                         # actually needs them -- GP3-5 go through pyguitarpro.
+                        # Muting is different: both are plain flags, so they
+                        # cost nothing to carry and a metal tab is full of them.
                         note_events.append(NoteEvent(
                             timestamp_ms=beat_pos_ms,
                             duration_ms=dur_ms,
@@ -476,6 +494,8 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                             string=our_string,
                             fret=fret,
                             measure=mb_idx,
+                            dead=dead,
+                            palm_mute=palm_mute,
                         ))
 
                     beat_pos_ms += dur_ms

@@ -1,6 +1,7 @@
 # MySician — Session Handoff Notes
 
-Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-17.
+Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-17
+(muting session).
 
 `CLAUDE.md` says how the app is built and why. This file says where it stands,
 what the user's setup is, and what is still open.
@@ -9,8 +10,9 @@ what the user's setup is, and what is still open.
 
 Private Yousician-style guitar practice app for one user (Philipp). Forked from
 [PickHero](https://github.com/Artemarius/PickHero) (MIT, see LICENSE) into
-`Trubar4/MySician`. Working branch: **`claude/handoff-claude-md-review-va3ph4`** —
-all work is pushed there.
+`Trubar4/MySician`. Working branch: **`claude/mysician-timing-measurement-au2v0m`** —
+all work is pushed there. The previous branch
+(`claude/handoff-claude-md-review-va3ph4`) is merged into `main`; do not add to it.
 
 ## User's setup (important for debugging)
 
@@ -26,20 +28,38 @@ all work is pushed there.
 - User is non-technical ("vibecoding"): give **copy-paste commands**, explain
   simply, and **answer in German**.
 - Songs folder: `songs/` next to the repo, or `python -m pickhero --songs <path>`.
+- Plays rock and metal, and also pop and country.
+
+## Rulings from the user (do not re-litigate these)
+
+- **Where a note is fretted never matters.** The same pitch on a lower string in
+  a high position and on a higher string in a low position must score
+  identically. Already true: matching compares MIDI pitch and never the string.
+- **An octave error stays green.** The matcher's octave equivalence
+  (`dist % 12`) exists to absorb the detector's octave slips on wound strings,
+  and the user has decided it may keep crediting a genuinely wrong octave too.
+- **A dead note counts as played on the strike alone** — "something came, that's
+  good". There is no pitch in one to check.
+- **A bend that does not reach its target scores yellow, not red**, and the
+  target has to be held for as long as it is written.
+- **On six-string chords, err toward tolerance** rather than convicting strings.
 
 ## State
 
-437 tests (`python -m pytest tests -q`). Everything below is implemented,
+456 tests (`python -m pytest tests -q`). Everything below is implemented,
 calibrated where it needed calibrating, and pushed.
 
 **Working:** GP3–GP5 loading, track picker, scrolling display with per-song
 scroll speed, MIDI backing with per-song offset, pitch detection incl. power
 chords, per-string chord verification, wait mode, latency auto-sync, bends,
-slides, hammer-ons and pull-offs (drawn and scored), progress tracking.
+slides, hammer-ons and pull-offs (drawn and scored), palm mutes and dead notes
+(drawn and scored), progress tracking.
 
 **Known-imperfect:** chord verification abstains on chords closer than
-~335 ms. GP7 files load but carry no techniques. The timing spread the user
-reported is now measurable rather than guessed — see below.
+~335 ms, and the user reports fast chords coming up red — that is the next real
+bug, not a missing feature. GP7 files load with muting but no bends or slides.
+The timing spread the user reported is now measurable rather than guessed —
+see below.
 
 ## The three subsystems worth knowing before touching anything
 
@@ -82,6 +102,17 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 
 ## What this session changed (newest first)
 
+-1. **Palm mutes and dead notes.** Both were in the GP files and neither reached
+   the app. A dead note was loaded as an ordinary note on the fret the tab uses
+   to say where the hand DAMPS, so it could not be hit at all and timed out as
+   a miss — and a muted metal riff is full of them. The collector now reports a
+   pitchless strike as `unpitched` instead of dropping it, and a written dead
+   note is credited by any strike; it never competes for a pitched one, and is
+   kept out of the timing report and chord verification. Palm mutes score
+   exactly as before (the pitch is unchanged) and are drawn as the short stubs
+   they sound like, with "PM" badged once per run. Both flags also come out of
+   the GP7 XML path, which still carries no bends. `make_technique_test.py` got
+   three muting sections.
 0. **Timing report** (`Y`). The distribution of your strikes against the beat,
    with the verdict named and the raw samples exportable (`Shift+Y`). Two
    fixes came out of building it: the search radius now narrows as the offset
@@ -112,7 +143,7 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 |---|---|
 | `make_timing_test.py` | Is my timing off, or is the tab sloppy? Click only where a note is. |
 | `make_chord_test.py` | Are chords recognised? C/Am/G/D from isolated to strummed eighths. |
-| `make_technique_test.py` | Are bends/slides/H/P drawn right? States what each bar contains. |
+| `make_technique_test.py` | Are bends/slides/H/P and muting drawn right? States what each bar contains. |
 | `record_reference.py` | Records a labelled take set, including deliberate wrong notes. |
 | `analyze_reference.py` | Per-string verdict table over a take set; counts false alarms. |
 | `sweep_chord_window.py` | How short may the chord window get before it lies? |
@@ -140,21 +171,30 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    | `mixed` | both | `K` first, then re-measure before anything else |
    | `per_string` | the detector reacts at different speeds per string | build per-string offsets; the CSV from `Shift+Y` is the data to fit them on |
    | too few samples | the song has too little pitch variety | check `ambiguous` in the report before blaming anything |
-2. **Bend evaluation.** The visual exists; scoring is deliberately lenient
-   because the detector produces no pitch contour. The user's target is
-   "roughly a quarter-tone accurate on the target pitch".
-3. **Chords at eighth-note speed.** Currently abstains below ~335 ms spacing.
-   Would need analysis before the next strike rather than after it — research,
-   not refactoring.
-4. **Palm mutes and dead notes.** In the GP files, currently drawn as ordinary
-   notes. Smallest of the four.
-5. **GP7 techniques.** The hand-written GP7 XML path carries no bends or slides.
+2. **Chords are not recognised at speed — and come up RED, not merely
+   unverified.** The user's report: fast chords fail outright, slow ones lose
+   individual notes. That is the pitch path, not the verifier abstaining, so it
+   is a bug to be found before anything is designed. Both cases matter to the
+   user, power chords (2–3 strings, downpicked) and full open chords in
+   eighths; on six-string chords they asked to err on the side of tolerance.
+   The 335 ms abstention is a separate, second-order question.
+3. **Bend evaluation.** The visual exists; scoring is deliberately lenient
+   because nothing keeps the pitch contour — though the detector DOES produce
+   one, at one frame per ~11.6 ms, which `OnsetPitchCollector` discards. The
+   user's decisions: reaching the target too shallowly should score yellow (not
+   red), and the target has to be held for the note's written length, roughly a
+   quarter-tone accurate.
+4. **GP7 techniques.** The hand-written GP7 XML path carries muting but no bends
+   or slides.
+5. **Palm-mute leniency (unmeasured).** Whether a chug that returns no pitch at
+   all should credit its palm-muted note. Needs reference recordings, not a
+   guess — see `CLAUDE.md`, "Muting".
 
 ## Conventions
 
 - Commit style: imperative subject + explanatory body saying *why*, not what.
   No model names anywhere in commits, PRs or code.
-- Always push to `claude/handoff-claude-md-review-va3ph4`.
+- Always push to `claude/mysician-timing-measurement-au2v0m`.
 - Run the full suite before pushing; add tests for every behaviour change.
 - **Verify signal-processing changes against the reference recordings**, not
   against intuition. Synthetic tones are a trap unless they carry the property

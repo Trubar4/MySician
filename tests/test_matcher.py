@@ -662,6 +662,105 @@ class TestLegatoCredit:
         assert matcher.get_note_state(notes[1]) == MatchType.HIT
 
 
+class TestDeadNotes:
+    """A dead note is a click, so the strike is the whole of the evidence.
+
+    Its written fret says where the fretting hand damps the string, not which
+    pitch comes out. Scored against that pitch, every dead note in a tab is a
+    miss no matter how well it was played -- and a heavily muted riff is most
+    of a metal tab.
+    """
+
+    def _unpitched(self, timestamp_ms: float) -> TimestampedNote:
+        return TimestampedNote(
+            note=DetectedNote(midi_note=0, frequency=0.0, confidence=0.0,
+                              name="", is_onset=True, unpitched=True),
+            timestamp_ms=timestamp_ms,
+        )
+
+    def _dead(self, timestamp_ms: float, string: int = 6,
+              midi_note: int = 40) -> NoteEvent:
+        return NoteEvent(timestamp_ms=timestamp_ms, duration_ms=200.0,
+                         midi_note=midi_note, string=string, fret=0, dead=True)
+
+    def test_a_pitchless_strike_plays_a_dead_note(self):
+        note = self._dead(1000.0)
+        matcher = _make_matcher([note])
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert matcher.get_note_state(note) == MatchType.HIT
+
+    def test_a_pitched_strike_plays_one_too(self):
+        """Damping a string still lets some pitch through, and which pitch it
+        is says nothing about whether the mute was right."""
+        note = self._dead(1000.0)
+        matcher = _make_matcher([note])
+        matcher.process_detected_notes([_detected(52, 1000.0)], 1000.0)
+        assert matcher.get_note_state(note) == MatchType.HIT
+
+    def test_a_dead_note_nobody_struck_is_still_missed(self):
+        note = self._dead(1000.0)
+        matcher = _make_matcher([note])
+        matcher.process_detected_notes([], 3000.0)
+        assert matcher.get_note_state(note) == MatchType.MISS
+
+    def test_a_muted_strum_is_one_stroke(self):
+        """A dead note on three strings at once has one click, not three."""
+        notes = [self._dead(1000.0, string=s, midi_note=m)
+                 for s, m in ((6, 40), (5, 45), (4, 50))]
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+
+    def test_a_dead_note_does_not_swallow_its_neighbour_s_strike(self):
+        """The written note beside it must still get the strike it needs.
+
+        A dead note accepts any pitch, so letting it compete on equal terms
+        would have it eat the strike meant for the real note next to it and
+        leave that one to time out as a miss.
+        """
+        real = _note_event(1000.0, midi_note=64, string=1, fret=12)
+        dead = self._dead(1000.0)
+        matcher = _make_matcher([real, dead])
+        matcher.process_detected_notes([_detected(64, 1000.0)], 1000.0)
+        assert matcher.get_note_state(real) == MatchType.HIT
+
+    def test_a_dead_note_is_never_measured_for_timing(self):
+        """Its written pitch never sounds, so an offset measured against it
+        would be a made-up number in the timing report."""
+        matcher = _make_matcher([self._dead(1000.0, midi_note=64, string=1)])
+        matcher.process_detected_notes([_detected(64, 1080.0)], 1080.0)
+        assert matcher.timing_samples == []
+
+    def test_an_unpitched_strike_credits_nothing_when_no_dead_note_is_written(self):
+        """Rustle, a hand knock, a choked accident: none of them is a note."""
+        note = _note_event(1000.0, midi_note=64)
+        matcher = _make_matcher([note])
+        results = matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert results == []
+        assert matcher.get_note_state(note) == MatchType.PENDING
+
+    def test_a_dead_note_is_kept_out_of_chord_verification(self):
+        """The verifier is told which pitches to expect, and a damped string
+        sounds none of the one written for it."""
+        notes = [
+            _note_event(1000.0, midi_note=40, string=6, fret=0),
+            _note_event(1000.0, midi_note=47, string=5, fret=2),
+            self._dead(1000.0, string=4, midi_note=52),
+        ]
+        matcher = _make_matcher(notes)
+        matcher.chord_verifier = object()   # only its presence matters here
+        matcher.process_detected_notes(
+            [TimestampedNote(
+                note=DetectedNote(midi_note=40, frequency=82.4, confidence=0.9,
+                                  name="E2", is_onset=True),
+                timestamp_ms=1000.0, sample_pos=4096)],
+            1000.0,
+        )
+        expected = matcher._pending_verifications[4096]
+        assert notes[2] not in expected
+        assert len(expected) == 2
+
+
 class TestTimingReport:
     """The report exists to say WHICH timing problem this is.
 

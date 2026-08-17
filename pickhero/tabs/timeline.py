@@ -35,6 +35,15 @@ class NoteEvent:
     slide_in: int = 0
     # Slid off this note upwards (+1) / downwards (-1), with no target note.
     slide_out: int = 0
+    # Written as a dead note (X in the tab): the fretting hand only damps the
+    # string, so the strike is a click and `fret` says where the hand sits
+    # rather than which pitch will sound. Nothing about the audio can confirm
+    # a pitch here, which is why the matcher accepts any strike for one.
+    dead: bool = False
+    # Palm-muted. Still the written pitch -- the picking hand shortens and
+    # chokes it, it does not change it -- so scoring is unaffected; the flag
+    # exists so the display can show what the tab asked for.
+    palm_mute: bool = False
 
     @property
     def bend_semitones(self) -> float:
