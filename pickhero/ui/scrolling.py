@@ -12,8 +12,9 @@ from dataclasses import dataclass
 import pygame
 
 from pickhero.audio.midi_playback import BackingTrack, MidiPlayer
+from pickhero import config as config_module
 from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
-from pickhero.matcher import NoteMatcher
+from pickhero.matcher import STRING_MIN_SAMPLES, NoteMatcher
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.timeline import NoteEvent, Timeline
 from pickhero.audio.note_utils import freq_to_cents_deviation, midi_to_name
@@ -251,6 +252,8 @@ class PlayingScreen:
 
         # Help overlay
         self._show_help: bool = False
+        self._show_timing: bool = False
+        self._timing_export_note: str = ""
 
         # Track picker: [(index, label)], filled in by the app on load
         self._track_options: list[tuple[int, str]] = []
@@ -585,6 +588,11 @@ class PlayingScreen:
             self._loop_weakest_section()
         elif event.key == pygame.K_h:
             self._show_help = not self._show_help
+        elif event.key == pygame.K_y:
+            if event.mod & pygame.KMOD_SHIFT:
+                self._export_timing_samples()
+            else:
+                self._show_timing = not self._show_timing
         elif event.key == pygame.K_w:
             self._toggle_wait_mode()
         elif event.key == pygame.K_k:
@@ -619,6 +627,8 @@ class PlayingScreen:
         self._draw_notes(surface, layout)
         self._draw_hud(surface, layout)
 
+        if self._show_timing:
+            self._draw_timing_overlay(surface, layout)
         if self._show_help:
             self._draw_help_overlay(surface, layout)
         if self._track_menu_open:
@@ -1338,7 +1348,8 @@ class PlayingScreen:
             "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
             "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
-            "|  F1-F6: mute string  |  L: weakest part  |  T: theme  |  H: help"
+            "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
+            "|  Y: timing report  |  H: help"
         )
         return transport, tools
 
@@ -1717,6 +1728,229 @@ class PlayingScreen:
             hint_surf = hint_font.render(hint_text, True, t.hud_text)
             surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, center_y + 70))
 
+    # -- Timing report (Y) --
+
+    TIMING_VERDICTS = {
+        "fine": ("Your timing is fine.",
+                 "Nothing here needs fixing. The rest is the music."),
+        "latency": ("Most of your error is LATENCY.",
+                    "Every strike is late by about the same amount, which one "
+                    "offset removes. Press K."),
+        "mixed": ("You have BOTH latency and scatter.",
+                  "Press K to take out the constant part; what is left is "
+                  "spread, and that needs slower practice, not a setting."),
+        "scatter": ("Most of your error is SCATTER.",
+                    "Your strikes disagree with each other, so no offset can "
+                    "fix it. Slow the song down (PgDn) or widen the hit "
+                    "window (G) while you learn the part."),
+        "per_string": ("Your strings register at DIFFERENT delays.",
+                       "That is neither latency nor playing, and one global "
+                       "offset cannot remove it. See the per-string list."),
+    }
+
+    def _draw_timing_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:
+        """Show WHICH timing problem this is, not just that there is one.
+
+        A median and a spread are two numbers; the shape of the distribution
+        is the diagnosis. One narrow hill away from zero is latency and K
+        removes it. One wide hill over zero is the playing. Two hills, or a
+        split between strings, is something structural that neither fixes.
+        """
+        t = get_theme()
+        w, h = layout.screen_w, layout.screen_h
+        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 248))
+        surface.blit(overlay, (0, 0))
+
+        title_font = _get_font("arial", 26)
+        body_font = _get_font("arial", 16)
+        small_font = _get_font("arial", 13)
+        cx = w // 2
+
+        surface.blit(title_font.render("Timing report", True, t.hud_accent),
+                     (cx - title_font.size("Timing report")[0] // 2, 14))
+
+        report = self._matcher.timing_report() if self._matcher is not None else None
+        if report is None:
+            lines = [
+                "Not enough measurements yet.",
+                "",
+                "Play a while with audio on (A), then press Y again.",
+                "Strikes are only measured where exactly one tab note can",
+                "explain them, so a riff repeating one pitch contributes",
+                "nothing until the offset is close enough to be unambiguous.",
+            ]
+            y = h // 2 - len(lines) * 11
+            for line in lines:
+                surf = body_font.render(line, True, t.hud_text)
+                surface.blit(surf, (cx - surf.get_width() // 2, y))
+                y += 22
+            self._draw_timing_footer(surface, layout, small_font)
+            return
+
+        headline, advice = self.TIMING_VERDICTS[report["verdict"]]
+        colour = t.feedback_hit if report["verdict"] == "fine" else t.feedback_close
+        surf = body_font.render(headline, True, colour)
+        surface.blit(surf, (cx - surf.get_width() // 2, 50))
+        surf = small_font.render(advice, True, t.hud_text)
+        surface.blit(surf, (cx - surf.get_width() // 2, 72))
+
+        self._draw_timing_histogram(surface, report, 60, 108, w - 120, 200)
+        self._draw_timing_numbers(surface, report, 60, 356, body_font, small_font)
+        self._draw_timing_strings(surface, report, cx + 100, 356, body_font, small_font)
+        self._draw_timing_footer(surface, layout, small_font)
+
+    def _draw_timing_footer(self, surface, layout, font) -> None:
+        t = get_theme()
+        note = self._timing_export_note or "Y to close   |   Shift+Y to save the measurements to a file"
+        surf = font.render(note, True, t.hud_accent)
+        surface.blit(surf, (layout.screen_w // 2 - surf.get_width() // 2,
+                            layout.screen_h - 26))
+
+    def _draw_timing_histogram(self, surface, report, x, y, width, height) -> None:
+        """Bars over the error axis, with zero and the median marked.
+
+        Drawn against the ACTUAL range of the samples rather than a fixed
+        axis, because the interesting cases differ by an order of magnitude:
+        a well-synced player sits inside +-40 ms, an unsynced one is a
+        hundred milliseconds away and would be a single bar at the edge.
+        """
+        t = get_theme()
+        bars = report["histogram"]
+        if not bars:
+            return
+        font = _get_font("arial", 12)
+        peak = max(count for _, count in bars) or 1
+        step = max(2.0, width / max(1, len(bars)))
+        baseline = y + height
+
+        for i, (low, count) in enumerate(bars):
+            bx = x + i * step
+            bh = (count / peak) * (height - 18)
+            late = low >= 0
+            colour = t.feedback_miss if late else t.hud_accent
+            pygame.draw.rect(surface, colour,
+                             (int(bx), int(baseline - bh), max(1, int(step - 2)), int(bh)))
+
+        pygame.draw.line(surface, t.hud_text, (x, baseline), (x + width, baseline), 1)
+
+        bin_ms = self._matcher.timing_bin_ms()
+        lows = [low for low, _ in bars]
+        axis_lo, axis_hi = lows[0], lows[-1] + bin_ms
+
+        def position(value_ms: float) -> int | None:
+            if not axis_lo <= value_ms <= axis_hi:
+                return None
+            frac = (value_ms - axis_lo) / max(1e-6, axis_hi - axis_lo)
+            return int(x + frac * (len(bars) * step))
+
+        def mark(value_ms: float, colour, label: str, row: int) -> None:
+            mx = position(value_ms)
+            if mx is None:
+                return
+            pygame.draw.line(surface, colour, (mx, y), (mx, baseline + 5), 2)
+            surf = font.render(label, True, colour)
+            surface.blit(surf, (mx - surf.get_width() // 2, y - 15 - row * 15))
+
+        # A well-synced player has both marks in nearly the same place, and
+        # their labels then print on top of each other -- exactly the case
+        # where the picture is supposed to be reassuring.
+        zero_x, median_x = position(0.0), position(report["median_ms"])
+        crowded = (zero_x is not None and median_x is not None
+                   and abs(zero_x - median_x) < 110)
+        mark(0.0, t.hud_text, "on the beat", 0)
+        mark(report["median_ms"], t.feedback_close,
+             f"your middle {report['median_ms']:+.0f} ms", 1 if crowded else 0)
+
+        left = font.render(f"{axis_lo:+.0f} ms (early)", True, t.hud_text)
+        right = font.render(f"{axis_hi:+.0f} ms (late)", True, t.hud_text)
+        surface.blit(left, (x, baseline + 8))
+        surface.blit(right, (x + width - right.get_width(), baseline + 8))
+
+    def _draw_timing_numbers(self, surface, report, x, y, font, small) -> None:
+        t = get_theme()
+        surface.blit(font.render("What the numbers say", True, t.hud_accent), (x, y))
+        y += 26
+        rows = [
+            (f"{report['count']} strikes measured",
+             f"{report['ambiguous']} more could not be told apart from a neighbour"),
+            (f"Middle error {report['median_ms']:+.0f} ms",
+             "positive = you register late, so you feel forced to play early"),
+            (f"Scatter +/-{report['spread_ms']:.0f} ms",
+             "how far a typical strike sits from your own middle"),
+            (f"Typical error {report['mean_error_ms']:.0f} ms",
+             f"would drop to {report['residual_ms']:.0f} ms if the middle were "
+             f"compensated (K)"),
+            (f"K removes {100 * report['explained_fraction']:.0f}% of it",
+             "the rest is scatter, which no offset can touch"),
+        ]
+        for headline, detail in rows:
+            surface.blit(font.render(headline, True, t.hud_text), (x, y))
+            y += 19
+            surface.blit(small.render(detail, True, dimmed(t.hud_text, 0.75)), (x + 12, y))
+            y += 22
+
+    def _draw_timing_strings(self, surface, report, x, y, font, small) -> None:
+        t = get_theme()
+        surface.blit(font.render("Per string", True, t.hud_accent), (x, y))
+        y += 26
+        by_string = report["by_string"]
+        if not by_string:
+            surface.blit(small.render("no measurements yet", True, t.hud_text), (x, y))
+            return
+
+        names = {1: "high E", 2: "B", 3: "G", 4: "D", 5: "A", 6: "low E"}
+        for string, (median, count) in by_string.items():
+            colour = STRING_COLORS.get(string, (180, 180, 180))
+            pygame.draw.rect(surface, colour, (x, y + 4, 12, 12), border_radius=2)
+            thin = count < STRING_MIN_SAMPLES
+            ink = dimmed(t.hud_text, 0.6) if thin else t.hud_text
+            label = f"{names.get(string, string):>6}  {median:+6.0f} ms   ({count})"
+            surface.blit(font.render(label, True, ink), (x + 20, y))
+            y += 22
+
+        y += 6
+        gap = report["string_gap_ms"]
+        if gap > 0:
+            if report["string_gap_real"]:
+                note = f"Spread between strings: {gap:.0f} ms — more than chance"
+                colour = t.feedback_close
+            else:
+                note = f"Spread between strings: {gap:.0f} ms — within chance"
+                colour = dimmed(t.hud_text, 0.8)
+            surface.blit(small.render(note, True, colour), (x, y))
+            y += 18
+        surface.blit(small.render(
+            f"(a string needs {STRING_MIN_SAMPLES} strikes to count, and the gap "
+            "has to beat the scatter)", True, dimmed(t.hud_text, 0.7)), (x, y))
+
+    def _export_timing_samples(self) -> None:
+        """Write the raw measurements next to the settings, as CSV.
+
+        The report answers the common questions; a file answers the ones
+        nobody thought to ask yet, and can be looked at away from the app.
+        """
+        if self._matcher is None or not self._matcher.timing_samples:
+            self._timing_export_note = "Nothing measured yet — play a while first."
+            return
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        song = "".join(c if c.isalnum() else "_" for c in (self._song_key or "song"))[:40]
+        # Read through the module, not a name bound at import: the test suite
+        # redirects the config directory, and a name captured at import time
+        # would sail past that straight into the user's real home folder.
+        directory = config_module.CONFIG_DIR
+        path = directory / f"timing_{song}_{stamp}.csv"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("delta_ms,string,midi_note,note_ms\n")
+                for s in self._matcher.timing_samples:
+                    fh.write(f"{s.delta_ms:.1f},{s.string},{s.midi_note},{s.note_ms:.1f}\n")
+        except OSError as exc:
+            self._timing_export_note = f"Could not write the file: {exc}"
+            return
+        self._timing_export_note = f"Saved {len(self._matcher.timing_samples)} measurements to {path}"
+
     def _draw_help_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:
         """Explain the track, the note colours, the techniques and the keys.
 
@@ -1827,6 +2061,8 @@ class PlayingScreen:
             "J: per-string chord check (finds the wrong-fret string)",
             "K: auto-sync timing     ,/.: nudge sync by 10 ms",
             "Shift+K: reset sync to 0, if it has run away",
+            "Y: timing report — which timing problem you actually have",
+            "Shift+Y: save the raw measurements as a CSV file",
             "+/-: scroll faster / slower     G: hit window",
             "N/M: backing track earlier / later",
             "TAB: choose track     H: this help     ESC: song list",
@@ -1948,7 +2184,7 @@ class PlayingScreen:
             self._matcher.audio_offset_ms += delta_ms
             self._matcher.late_window_ms = self._late_window_ms()
             # Old measurements no longer reflect the new offset
-            self._matcher.timing_errors_ms.clear()
+            self._matcher.reset_timing_samples()
 
     def _auto_sync_timing(self) -> None:
         """Cancel out the measured input latency (K key).

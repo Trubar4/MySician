@@ -29,7 +29,7 @@ all work is pushed there.
 
 ## State
 
-406 tests (`python -m pytest tests -q`). Everything below is implemented,
+437 tests (`python -m pytest tests -q`). Everything below is implemented,
 calibrated where it needed calibrating, and pushed.
 
 **Working:** GP3–GP5 loading, track picker, scrolling display with per-song
@@ -37,9 +37,9 @@ scroll speed, MIDI backing with per-song offset, pitch detection incl. power
 chords, per-string chord verification, wait mode, latency auto-sync, bends,
 slides, hammer-ons and pull-offs (drawn and scored), progress tracking.
 
-**Known-imperfect:** timing spread of roughly ±80–104 ms remains (see Open
-Topics 1). Chord verification abstains on chords closer than ~335 ms. GP7
-files load but carry no techniques.
+**Known-imperfect:** chord verification abstains on chords closer than
+~335 ms. GP7 files load but carry no techniques. The timing spread the user
+reported is now measurable rather than guessed — see below.
 
 ## The three subsystems worth knowing before touching anything
 
@@ -82,6 +82,12 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 
 ## What this session changed (newest first)
 
+0. **Timing report** (`Y`). The distribution of your strikes against the beat,
+   with the verdict named and the raw samples exportable (`Shift+Y`). Two
+   fixes came out of building it: the search radius now narrows as the offset
+   becomes known, which took the measured share of strikes from 39 % to 98 %
+   on the timing test, and neither the median nor a per-string difference is
+   called an effect until it clears its own standard error.
 1. **Techniques drawn Yousician-style** (`00f3a13`). Bend curve inside the note
    with a dark shadow (white on the amber string was invisible), badge above
    the leading edge naming the technique: `½ 1 1½` for bends, `SL`, `H`, `P`.
@@ -110,6 +116,7 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 | `record_reference.py` | Records a labelled take set, including deliberate wrong notes. |
 | `analyze_reference.py` | Per-string verdict table over a take set; counts false alarms. |
 | `sweep_chord_window.py` | How short may the chord window get before it lies? |
+| `simulate_timing.py` | Does the timing report name a fault that was injected on purpose? |
 
 Generate the test songs with `python tools/make_*_test.py`; they land in `songs/`.
 
@@ -118,9 +125,12 @@ Generate the test songs with `python tools/make_*_test.py`; they land in `songs/
 Ordered by what would help the user most. Details, including what has already
 been ruled out, are in the handoff prompt at the bottom of this file.
 
-1. **Timing spread (±80–104 ms).** The oldest open complaint. Needs a diagnostic
-   that separates latency (shifts everything one way) from human scatter
-   (spreads both ways) before anything is "fixed".
+1. **Timing spread — diagnosis built, cause not yet known.** `Y` now shows the
+   distribution and names the problem (`fine`/`latency`/`scatter`/`mixed`/
+   `per_string`); `Shift+Y` writes the raw samples as CSV. What is still open
+   is the ANSWER: the user has to play a while and report what it says. If it
+   says `per_string`, the fix is per-string offsets and the data to fit them
+   is in the CSV. If it says `scatter`, the fix is not in the app.
 2. **Bend evaluation.** The visual exists; scoring is deliberately lenient
    because the detector produces no pitch contour. The user's target is
    "roughly a quarter-tone accurate on the target pitch".

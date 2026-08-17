@@ -171,6 +171,7 @@ Every key is also listed in the app's own footer, and explained under **H**.
 | `K` | auto-sync timing · `Shift+K` reset · `,` `.` nudge ±10 ms |
 | `N` `M` | backing track earlier / later (stored per song) |
 | `X` `C` | noise gate down / up |
+| `Y` | timing report · `Shift+Y` save the measurements as CSV |
 | `TAB` | choose track |
 | `V` | chord mode (strict / easy) |
 | `J` | per-string chord check on / off |
@@ -239,8 +240,12 @@ Run `python -m pickhero --console` to see detected notes printed live in the ter
    construction, so anything wrong there is the app or the latency, not the tab.
 2. Play a while, then press **K**. It measures the median offset of your strikes
    and compensates for it. `,` and `.` nudge it by 10 ms; **Shift+K** resets it.
-3. If it still feels off, the offset is bounded to ±300 ms on purpose — a larger
-   apparent latency is a measurement going wrong, not a real one.
+3. Press **Y** for the timing report. It shows the distribution of your strikes
+   and says which problem you have: constant lateness (latency — K fixes it),
+   scatter (no setting fixes it), or strings registering at different delays.
+   **Shift+Y** saves the raw measurements as a CSV next to your settings.
+4. The offset is bounded to ±300 ms on purpose — a larger apparent latency is a
+   measurement going wrong, not a real one.
 
 **What I hear and what I see disagree:**
 - **N** / **M** shift the MIDI backing earlier / later. The value is remembered

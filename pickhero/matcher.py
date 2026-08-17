@@ -26,10 +26,48 @@ from pickhero.tabs.timeline import NoteEvent, Timeline
 # window by definition).
 LATENCY_SEARCH_MS = 500.0
 
+# The wide search above is what a riff repeating one pitch trips over: two
+# equally good candidates land in it, the measurement refuses (rightly, see
+# _record_timing_sample), and repetitive passages contribute almost nothing.
+# On the timing test only 39 % of strikes were measured. Once enough samples
+# exist to say roughly where the strikes sit, the search narrows to the range
+# they actually occupy, which makes those same passages unambiguous.
+TIGHTEN_SEARCH_AFTER = 12       # samples before narrowing is trusted
+SEARCH_SPREAD_MULTIPLE = 4.0    # how many MADs of headroom to keep
+MIN_SEARCH_MS = 120.0           # never narrower than plain human earliness
+# How much nearer the best candidate must be than the runner-up before a
+# strike counts as belonging to it rather than to its neighbour.
+AMBIGUITY_RATIO = 2.0
+
 # How far a slide with no written target is allowed to travel before the
 # pitch counts as a different note. Slides off the end of a phrase have no
 # destination in the tab, so the only honest bound is a generous one.
 OPEN_SLIDE_SEMITONES = 2
+
+# Timing report. Bins are wide enough that a handful of samples still forms a
+# visible shape, narrow enough to separate latency from scatter by eye.
+TIMING_BIN_MS = 10.0
+TIMING_MIN_SAMPLES = 8
+# The axis always reaches at least this far either side of the beat, so a
+# tight group is seen at its distance from zero rather than filling the frame.
+HISTOGRAM_MIN_SPAN_MS = 120.0
+HISTOGRAM_MAX_BINS = 34
+HISTOGRAM_BIN_LADDER = (10.0, 20.0, 25.0, 50.0, 100.0)
+# A string needs this many strikes before its median is worth believing.
+STRING_MIN_SAMPLES = 5
+# Below this a difference between strings is not worth mentioning at all.
+MIN_STRING_GAP_MS = 25.0
+# Turning a MAD into the standard error of a difference of two medians; see
+# _string_gap. The multiple is how many of those a gap must clear to count.
+MEDIAN_SE_FACTOR = 1.85
+STRING_GAP_SIGMAS = 2.5
+# The same test applied to the overall median before calling it latency.
+MEDIAN_SIGMAS = 2.0
+# Scatter above this is what a player notices as "the timing is off" even
+# when the average is right. Roughly a 32nd note at 120 BPM.
+SCATTER_MS = 30.0
+# Latency this small is not worth chasing; it is inside what a strum spans.
+FINE_MS = 20.0
 
 
 class MatchType(Enum):
@@ -45,6 +83,24 @@ class MatchResult:
     match_type: MatchType
     matched_events: list[NoteEvent] = field(default_factory=list)
     semitone_distance: int | None = None
+
+
+@dataclass(frozen=True)
+class TimingSample:
+    """One strike measured against the tab note it belongs to.
+
+    Carries more than the error itself because two numbers cannot say which
+    timing problem you have. A median error of 90 ms with everything tightly
+    around it is latency and one offset fixes it; the same 90 ms spread
+    evenly is the player, and no offset touches it; the same 90 ms split by
+    string is the detector reacting slower to a wound low E than to a plain
+    high one, which is neither, and which only shows up when the samples are
+    kept apart.
+    """
+    delta_ms: float     # signed, positive = the strike registered late
+    string: int
+    midi_note: int
+    note_ms: float      # where the note sits in the song
 
 
 class NoteMatcher:
@@ -89,6 +145,11 @@ class NoteMatcher:
         # Recording is disabled while wait mode pins timestamps, which would
         # otherwise contribute meaningless zero errors.
         self.timing_errors_ms: list[float] = []
+        # The same measurements with their context kept, for the report.
+        self.timing_samples: list[TimingSample] = []
+        # Strikes that could have belonged to two notes at once. A high count
+        # next to a low sample count is the report's own health warning.
+        self.timing_ambiguous = 0
         self.record_timing_samples = True
 
         # Per-measure statistics: {measure_idx: {"hits": n, "close": n, "misses": n}}
@@ -515,24 +576,42 @@ class NoteMatcher:
         for stamp in sorted(self._pending_verifications)[:-keep]:
             del self._pending_verifications[stamp]
 
+    def _search_radius_ms(self) -> float:
+        """How far back to look for the note a strike belongs to.
+
+        Wide while nothing is known, because a latency larger than the timing
+        window would otherwise be unmeasurable. Narrow once the samples say
+        where the strikes actually sit: a wide search over a riff that repeats
+        one pitch finds two equally good candidates and then refuses to
+        measure at all, which is why repetitive passages -- most of a metal
+        song -- contributed barely a third of their strikes.
+        """
+        if len(self.timing_errors_ms) < TIGHTEN_SEARCH_AFTER:
+            return LATENCY_SEARCH_MS
+        median = statistics.median(self.timing_errors_ms)
+        spread = statistics.median([abs(e - median) for e in self.timing_errors_ms])
+        needed = abs(median) + SEARCH_SPREAD_MULTIPLE * spread
+        return min(LATENCY_SEARCH_MS, max(MIN_SEARCH_MS, needed))
+
     def _record_timing_sample(self, adjusted_ms: float, detected_midi: int) -> None:
         """Measure the strike's offset from the nearest pitch-matching tab note.
 
-        Independent of match outcome and searched over a much wider range
-        than the timing window, so K (auto-sync) can measure latency even
-        when it is so large that nothing scores.
+        Independent of match outcome and searched over a wider range than the
+        timing window, so K (auto-sync) can measure latency even when it is so
+        large that nothing scores.
         """
         if not self.record_timing_samples:
             return
         # Asymmetric search: input latency is always positive (a strike can
         # never be detected before it was played), so a strike may trail its
-        # note by up to LATENCY_SEARCH_MS but can only precede it by normal
+        # note by up to the search radius but can only precede it by normal
         # human earliness (the timing window). Without this, repeated
         # same-pitch riffs alias the measurement onto the NEXT note.
+        radius = self._search_radius_ms()
         candidates = self._timeline.get_notes_in_range(
-            adjusted_ms - LATENCY_SEARCH_MS, adjusted_ms + self._timing_window_ms
+            adjusted_ms - radius, adjusted_ms + self._timing_window_ms
         )
-        deltas: list[float] = []
+        found: list[tuple[float, NoteEvent]] = []
         for note in candidates:
             if self._is_filtered(note):
                 continue
@@ -541,23 +620,49 @@ class NoteMatcher:
             if min(dist, octave_dist) > 1:
                 continue
             delta = adjusted_ms - note.timestamp_ms
-            if delta < -self._timing_window_ms or delta > LATENCY_SEARCH_MS:
+            if delta < -self._timing_window_ms or delta > radius:
                 continue
-            deltas.append(delta)
-        if not deltas:
+            found.append((delta, note))
+        if not found:
             return
 
-        # Only measure when exactly one note can explain the strike. A riff
-        # repeating one pitch puts two identical candidates in the search
-        # window as soon as the offset drifts, and there is then no way to
-        # tell "late against this note" from "early against the next" —
-        # picking the nearer one measures against the wrong note and walks
-        # the offset further out on every auto-sync instead of converging.
-        # Refusing to measure keeps a bad offset from getting worse; samples
-        # come back by themselves once it is close enough to be unambiguous.
-        if len(deltas) > 1:
+        chosen = self._unambiguous(found)
+        if chosen is None:
+            self.timing_ambiguous += 1
             return
-        self.timing_errors_ms.append(deltas[0])
+        delta, note = chosen
+        self.timing_errors_ms.append(delta)
+        self.timing_samples.append(
+            TimingSample(delta_ms=delta, string=note.string,
+                         midi_note=note.midi_note, note_ms=note.timestamp_ms)
+        )
+
+    def _unambiguous(
+        self, found: list[tuple[float, NoteEvent]],
+    ) -> tuple[float, NoteEvent] | None:
+        """The one note a strike belongs to, or None when it cannot be told.
+
+        A riff repeating one pitch puts two equally good candidates in the
+        search window, and there is then no way to tell "late against this
+        note" from "early against the next". Picking the nearer one measures
+        against the wrong note, which is what walked the offset out to
+        nonsense on every auto-sync instead of converging.
+
+        No cleverness is available here, only refusal: a prior about what a
+        plausible latency looks like still gets the 490-late / 110-early case
+        backwards, and both readings are things a human really does. What
+        DOES resolve it is evidence rather than assumption -- once enough
+        unambiguous strikes exist elsewhere in the song, _search_radius_ms
+        narrows the window until the second candidate falls outside it, and
+        these same strikes start counting by themselves.
+        """
+        return found[0] if len(found) == 1 else None
+
+    def reset_timing_samples(self) -> None:
+        """Forget every measurement, so the next one starts from scratch."""
+        self.timing_errors_ms.clear()
+        self.timing_samples.clear()
+        self.timing_ambiguous = 0
 
     def median_timing_error_ms(self, min_samples: int = 5) -> float | None:
         """Median signed timing error of matched strikes, or None if too few.
@@ -586,6 +691,151 @@ class NoteMatcher:
             return None
         median = statistics.median(self.timing_errors_ms)
         return statistics.median([abs(e - median) for e in self.timing_errors_ms])
+
+    def timing_histogram(self) -> list[tuple[float, int]]:
+        """(bin start in ms, count) over an axis that always contains zero.
+
+        The shape is the diagnosis. One narrow hill away from zero is
+        latency. One wide hill centred on zero is the player. Two hills is
+        something structural -- two kinds of note detected at two different
+        delays.
+
+        The axis deliberately reaches past the data to zero and a little
+        beyond. Fitted to the samples alone, a tightly grouped player gets
+        four fat bars with no reference point, and the one thing the picture
+        exists to show -- how far from the beat that group sits -- is exactly
+        what falls off the edge.
+        """
+        if not self.timing_samples:
+            return []
+        deltas = [s.delta_ms for s in self.timing_samples]
+        low_ms = min(min(deltas), -HISTOGRAM_MIN_SPAN_MS)
+        high_ms = max(max(deltas), HISTOGRAM_MIN_SPAN_MS)
+        bin_ms = TIMING_BIN_MS
+        for candidate in HISTOGRAM_BIN_LADDER:
+            bin_ms = candidate
+            if (high_ms - low_ms) / bin_ms <= HISTOGRAM_MAX_BINS:
+                break
+
+        low = math.floor(low_ms / bin_ms) * bin_ms
+        high = math.floor(high_ms / bin_ms) * bin_ms
+        bins = {low + i * bin_ms: 0
+                for i in range(int(round((high - low) / bin_ms)) + 1)}
+        for d in deltas:
+            bins[min(max(math.floor(d / bin_ms) * bin_ms, low), high)] += 1
+        return sorted(bins.items())
+
+    def timing_bin_ms(self) -> float:
+        """Bin width the histogram settled on, for labelling its axis."""
+        bars = self.timing_histogram()
+        if len(bars) < 2:
+            return TIMING_BIN_MS
+        return bars[1][0] - bars[0][0]
+
+    def timing_by_string(self) -> dict[int, tuple[float, int]]:
+        """{string: (median error, sample count)}.
+
+        A per-string difference is neither latency nor playing: it is the
+        detector reacting at different speeds to different strings, and one
+        global offset cannot fix it. Worth knowing before blaming either.
+        """
+        grouped: dict[int, list[float]] = defaultdict(list)
+        for sample in self.timing_samples:
+            grouped[sample.string].append(sample.delta_ms)
+        return {s: (statistics.median(v), len(v)) for s, v in sorted(grouped.items())}
+
+    def timing_report(self, min_samples: int = TIMING_MIN_SAMPLES) -> dict | None:
+        """Everything needed to say WHICH timing problem this is, or None.
+
+        `residual_ms` is the number that settles the argument: the scatter
+        that would still be there after the median was compensated away. If
+        it is small, the problem is latency and K fixes it. If it is most of
+        the original error, no offset will help and the answer lies in the
+        playing, the passage, or the per-string breakdown.
+        """
+        deltas = [s.delta_ms for s in self.timing_samples]
+        if len(deltas) < min_samples:
+            return None
+        ordered = sorted(deltas)
+        median = statistics.median(ordered)
+        spread = statistics.median([abs(d - median) for d in ordered])
+        before = statistics.mean([abs(d) for d in ordered])
+        after = statistics.mean([abs(d - median) for d in ordered])
+        by_string = self.timing_by_string()
+        string_gap, gap_is_real = self._string_gap(by_string, spread)
+        return {
+            "verdict": self._timing_verdict(median, spread, gap_is_real,
+                                            len(ordered)),
+            "string_gap_real": gap_is_real,
+            "count": len(ordered),
+            "ambiguous": self.timing_ambiguous,
+            "median_ms": median,
+            "spread_ms": spread,
+            "p10_ms": ordered[max(0, int(len(ordered) * 0.10) - 1)],
+            "p90_ms": ordered[min(len(ordered) - 1, int(len(ordered) * 0.90))],
+            "mean_error_ms": before,
+            "residual_ms": after,
+            "explained_fraction": 0.0 if before <= 0 else max(0.0, 1.0 - after / before),
+            "by_string": by_string,
+            "string_gap_ms": string_gap,
+            "histogram": self.timing_histogram(),
+        }
+
+    @staticmethod
+    def _string_gap(
+        by_string: dict[int, tuple[float, int]], spread: float,
+    ) -> tuple[float, bool]:
+        """(spread between string medians, is it more than chance).
+
+        Two medians built from a couple of dozen loose strikes each differ by
+        tens of milliseconds through pure chance, and blaming the detector for
+        that would be the same mistake the chord verifier was taught not to
+        make. The standard error of a median is about 1.25 sigma / sqrt(n),
+        and the MAD reported here is about 0.675 sigma, so the error of the
+        DIFFERENCE of two medians comes to roughly the factor below. Only a
+        gap clearing several of those counts as evidence.
+        """
+        usable = {s: v for s, v in by_string.items() if v[1] >= STRING_MIN_SAMPLES}
+        if len(usable) < 2:
+            return 0.0, False
+        lowest = min(usable, key=lambda s: usable[s][0])
+        highest = max(usable, key=lambda s: usable[s][0])
+        gap = usable[highest][0] - usable[lowest][0]
+        error = MEDIAN_SE_FACTOR * spread * math.sqrt(
+            1.0 / usable[lowest][1] + 1.0 / usable[highest][1]
+        )
+        return gap, gap > max(MIN_STRING_GAP_MS, STRING_GAP_SIGMAS * error)
+
+    @staticmethod
+    def _timing_verdict(
+        median: float, spread: float, gap_is_real: bool, count: int = 0,
+    ) -> str:
+        """Which of the timing problems this is.
+
+        Order matters. A per-string difference is checked first because it
+        masquerades as both of the others: it shifts the median like latency
+        and widens the spread like bad playing, while being neither, and one
+        global offset cannot remove it.
+
+        The median is measured against its own uncertainty rather than a flat
+        threshold. Loose playing centred on the beat still lands its median
+        twenty-odd milliseconds off by chance, and calling that latency sends
+        the player to press K over nothing.
+        """
+        if gap_is_real:
+            return "per_string"
+        error = MEDIAN_SE_FACTOR * spread / math.sqrt(count) if count else 0.0
+        late = abs(median) > max(FINE_MS, MEDIAN_SIGMAS * error)
+        loose = spread > SCATTER_MS
+        if late and loose:
+            # Both at once, and saying only "latency" would send the player
+            # off to press K and find most of the problem still there.
+            return "mixed"
+        if late:
+            return "latency"
+        if loose:
+            return "scatter"
+        return "fine"
 
     def get_statistics(self) -> dict:
         """Return current match statistics."""
@@ -670,7 +920,7 @@ class NoteMatcher:
         self.close = 0
         self.misses = 0
         self._measure_stats.clear()
-        self.timing_errors_ms.clear()
+        self.reset_timing_samples()
         # Chords awaiting their audio window belong to the abandoned position
         self._pending_verifications.clear()
         self.chord_verifications = 0

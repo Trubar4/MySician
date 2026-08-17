@@ -4,6 +4,7 @@ Tests the pure computation functions in PlayingScreen without needing
 a running PyGame display.
 """
 
+import pygame
 import pytest
 
 from pickhero.config import Config
@@ -753,7 +754,7 @@ class TestFooterCompleteness:
         "g": "G: hit window", "h": "H: help", "i": "I/O", "j": "J: strings",
         "k": "K: sync", "l": "L: weakest", "m": "N/M", "n": "N/M",
         "o": "I/O", "p": "P: toggle", "t": "T: theme", "v": "V: chords",
-        "w": "W: wait", "x": "X/C",
+        "w": "W: wait", "x": "X/C", "y": "Y: timing",
         "COMMA": ",/.", "PERIOD": ",/.",
         "PLUS": "+/-", "EQUALS": "+/-", "MINUS": "+/-",
         "KP_PLUS": "+/-", "KP_MINUS": "+/-",
@@ -789,3 +790,82 @@ class TestFooterCompleteness:
         assert "Paused" in screen._footer_lines()[0]
         screen.toggle_play()
         assert "Paused" not in screen._footer_lines()[0]
+
+
+class TestTimingOverlay:
+    def _screen_with_samples(self, deltas, tmp_path, monkeypatch):
+        import pickhero.config as config_module
+        from pickhero.matcher import NoteMatcher, TimingSample
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / ".pickhero")
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=200.0,
+                           midi_note=64, string=1, fret=0)]
+        screen = PlayingScreen(_make_timeline(notes=notes))
+        screen._matcher = NoteMatcher(_make_timeline(notes=notes))
+        for d in deltas:
+            screen._matcher.timing_errors_ms.append(d)
+            screen._matcher.timing_samples.append(
+                TimingSample(delta_ms=d, string=1, midi_note=64, note_ms=1000.0))
+        return screen
+
+    def test_y_opens_and_closes_the_report(self):
+        screen = PlayingScreen(_make_timeline())
+        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_y, mod=0)
+        screen.handle_event(event)
+        assert screen._show_timing
+        screen.handle_event(event)
+        assert not screen._show_timing
+
+    def test_shift_y_exports_instead_of_toggling(self, tmp_path, monkeypatch):
+        screen = self._screen_with_samples([40.0, 45.0], tmp_path, monkeypatch)
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_y, mod=pygame.KMOD_SHIFT))
+        assert not screen._show_timing
+        written = list((tmp_path / ".pickhero").glob("timing_*.csv"))
+        assert len(written) == 1
+        lines = written[0].read_text().strip().split("\n")
+        assert lines[0] == "delta_ms,string,midi_note,note_ms"
+        assert len(lines) == 3
+
+    def test_export_writes_where_the_config_lives_not_the_real_home(
+        self, tmp_path, monkeypatch
+    ):
+        """A name bound at import time would sail past the test redirect."""
+        screen = self._screen_with_samples([10.0], tmp_path, monkeypatch)
+        screen._export_timing_samples()
+        assert (tmp_path / ".pickhero").exists()
+        assert "Saved" in screen._timing_export_note
+
+    def test_export_says_so_when_there_is_nothing_to_export(self, tmp_path, monkeypatch):
+        screen = self._screen_with_samples([], tmp_path, monkeypatch)
+        screen._export_timing_samples()
+        assert "Nothing measured" in screen._timing_export_note
+        assert not (tmp_path / ".pickhero").exists()
+
+    def test_every_verdict_has_something_to_say(self):
+        """The overlay indexes this by verdict, so a new one must not KeyError."""
+        from pickhero.matcher import NoteMatcher
+        verdicts = {NoteMatcher._timing_verdict(m, s, g)
+                    for m in (0.0, 5.0, 90.0)
+                    for s in (5.0, 60.0)
+                    for g in (False, True)}
+        assert verdicts <= set(PlayingScreen.TIMING_VERDICTS)
+
+    @pytest.fixture
+    def fonts(self):
+        """Rendering needs the font module; the maths tests do not."""
+        pygame.init()
+        yield
+        pygame.quit()
+
+    def test_report_renders_without_measurements(self, fonts):
+        surface = pygame.Surface((1280, 720))
+        screen = PlayingScreen(_make_timeline())
+        screen._show_timing = True
+        screen.render(surface)      # must not raise: the empty state is normal
+
+    def test_report_renders_with_measurements(self, fonts, tmp_path, monkeypatch):
+        surface = pygame.Surface((1280, 720))
+        screen = self._screen_with_samples(
+            [80.0 + i for i in range(20)], tmp_path, monkeypatch)
+        screen._show_timing = True
+        screen.render(surface)

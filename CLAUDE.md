@@ -80,6 +80,23 @@ tab as a prior. For each expected note it scores competing pitch hypotheses on t
   which the calibration needs. Current state on that set: 33 strings judged, 0 false alarms, 7/7 deliberate one-fret errors caught at the full
   window, and 0 false alarms at every window length down to 280 ms.
 
+## Timing Diagnosis
+
+Two numbers cannot say which timing problem a player has, so `matcher.timing_report()` (shown by **Y**) keeps the samples apart and names
+one of five answers: `fine`, `latency`, `scatter`, `mixed`, `per_string`.
+
+- **The histogram is the diagnosis.** One narrow hill away from zero is latency and K removes it; one wide hill over zero is the playing and
+  no offset touches it; a split between strings is the detector, and one global offset cannot fix that either. The axis always contains zero,
+  because how far the group sits FROM the beat is the thing being shown.
+- **Nothing is claimed inside its own noise.** A median built from loose strikes lands twenty-odd ms off the beat by chance, and two per-string
+  medians of a couple of dozen samples differ by tens of ms the same way. Both are tested against the standard error of a median
+  (`MEDIAN_SE_FACTOR`) before being called an effect — the same presumption of innocence the chord verifier runs on.
+- **The search radius narrows as the offset becomes known** (`_search_radius_ms`). A wide search over a riff repeating one pitch finds two
+  equally good candidates and rightly refuses, which cost 61 % of all strikes; narrowing brings them back (39 % → 98 % on the timing test).
+  A song with no pitch variety at all still measures nothing, and that is the honest answer, not a bug.
+- **Verified against injected faults** — `tools/simulate_timing.py` plays a song with a known latency, jitter or per-string delay and checks
+  the report names it. Change any threshold and re-run it.
+
 ## Techniques (bends, slides, legato)
 
 `NoteEvent` carries what the tab wrote: `bend` as ((position 0..1, semitones), ...), plus `slide_to_next`, `slide_in`, `slide_out` and

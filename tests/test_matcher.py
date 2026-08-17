@@ -660,3 +660,221 @@ class TestLegatoCredit:
         matcher.process_detected_notes([_detected(64, 1000.0)], 1000.0)
         matcher.process_detected_notes([_detected(66, 1200.0)], 1200.0)
         assert matcher.get_note_state(notes[1]) == MatchType.HIT
+
+
+class TestTimingReport:
+    """The report exists to say WHICH timing problem this is.
+
+    Two numbers cannot: a 90 ms error can be latency (one offset fixes it),
+    the player (no offset touches it), or the detector reacting at different
+    speeds to different strings (neither). Each has to come out named.
+    """
+
+    def _with(self, samples) -> NoteMatcher:
+        from pickhero.matcher import TimingSample
+        m = _make_matcher([_note_event(1000.0)])
+        for delta, string in samples:
+            m.timing_errors_ms.append(delta)
+            m.timing_samples.append(
+                TimingSample(delta_ms=delta, string=string,
+                             midi_note=64, note_ms=1000.0)
+            )
+        return m
+
+    @staticmethod
+    def _spread(centre, width, count, string=1):
+        """`count` samples evenly across centre +/- width."""
+        if count == 1:
+            return [(centre, string)]
+        step = 2 * width / (count - 1)
+        return [(centre - width + i * step, string) for i in range(count)]
+
+    def test_no_report_below_the_minimum(self):
+        assert self._with(self._spread(0, 10, 4)).timing_report() is None
+
+    def test_tight_group_away_from_zero_is_latency(self):
+        m = self._with(self._spread(90, 8, 30))
+        assert m.timing_report()["verdict"] == "latency"
+
+    def test_wide_group_over_zero_is_scatter(self):
+        m = self._with(self._spread(0, 110, 30))
+        assert m.timing_report()["verdict"] == "scatter"
+
+    def test_both_at_once_is_named_as_both(self):
+        """Saying only "latency" would send the player to press K and find
+        most of the problem still sitting there."""
+        m = self._with(self._spread(80, 110, 60))
+        assert m.timing_report()["verdict"] == "mixed"
+
+    def test_a_median_inside_its_own_noise_is_not_latency(self):
+        """Loose playing centred on the beat still lands its median twenty-odd
+        milliseconds off by chance. That is not something K should chase."""
+        import random
+        rng = random.Random(4)
+        m = self._with([(rng.gauss(0, 90), 1) for _ in range(40)])
+        report = m.timing_report()
+        assert abs(report["median_ms"]) < 40      # the chance offset
+        assert report["verdict"] in ("scatter", "mixed")
+
+    def test_tight_group_on_zero_is_fine(self):
+        m = self._with(self._spread(3, 8, 30))
+        assert m.timing_report()["verdict"] == "fine"
+
+    def test_strings_at_different_delays_are_named(self):
+        samples = (self._spread(10, 6, 20, string=1)
+                   + self._spread(90, 6, 20, string=6))
+        assert self._with(samples).timing_report()["verdict"] == "per_string"
+
+    def test_loose_playing_is_not_blamed_on_the_strings(self):
+        """Two medians of a few dozen loose strikes differ by chance alone.
+
+        This is the case that must NOT be called a per-string problem, or the
+        report sends the user hunting a detector bug that is not there.
+        """
+        samples = (self._spread(0, 120, 20, string=1)
+                   + self._spread(40, 120, 20, string=6))
+        report = self._with(samples).timing_report()
+        assert report["verdict"] == "scatter"
+        assert not report["string_gap_real"]
+
+    def test_a_string_played_twice_is_not_evidence(self):
+        samples = self._spread(10, 6, 30, string=1) + [(200.0, 6), (210.0, 6)]
+        assert not self._with(samples).timing_report()["string_gap_real"]
+
+    def test_residual_is_what_survives_compensation(self):
+        m = self._with(self._spread(100, 10, 30))
+        report = m.timing_report()
+        assert report["mean_error_ms"] == pytest.approx(100.0, abs=1)
+        assert report["residual_ms"] < 10
+        assert report["explained_fraction"] > 0.85
+
+    def test_scatter_cannot_be_compensated_away(self):
+        m = self._with(self._spread(0, 100, 30))
+        assert m.timing_report()["explained_fraction"] < 0.1
+
+
+class TestTimingHistogram:
+    def _with(self, deltas) -> NoteMatcher:
+        from pickhero.matcher import TimingSample
+        m = _make_matcher([_note_event(1000.0)])
+        for d in deltas:
+            m.timing_errors_ms.append(d)
+            m.timing_samples.append(
+                TimingSample(delta_ms=d, string=1, midi_note=64, note_ms=1000.0))
+        return m
+
+    def test_empty_without_samples(self):
+        assert _make_matcher([_note_event(1000.0)]).timing_histogram() == []
+
+    def test_axis_always_contains_the_beat(self):
+        """A tight group far from zero must be seen at its distance from it."""
+        bars = self._with([95.0, 97.0, 99.0, 101.0]).timing_histogram()
+        lows = [low for low, _ in bars]
+        assert min(lows) <= 0 <= max(lows)
+
+    def test_every_sample_lands_in_a_bin(self):
+        deltas = [-40.0, -5.0, 0.0, 12.0, 88.0, 88.0]
+        bars = self._with(deltas).timing_histogram()
+        assert sum(count for _, count in bars) == len(deltas)
+
+    def test_bins_widen_rather_than_multiply(self):
+        """A wild take must not produce a hundred one-pixel bars."""
+        from pickhero.matcher import HISTOGRAM_MAX_BINS
+        m = self._with([-900.0, 0.0, 900.0])
+        assert len(m.timing_histogram()) <= HISTOGRAM_MAX_BINS + 1
+        assert m.timing_bin_ms() > 10.0
+
+    def test_bins_are_evenly_spaced(self):
+        bars = self._with([-30.0, 10.0, 50.0]).timing_histogram()
+        steps = {round(b[0] - a[0], 6) for a, b in zip(bars, bars[1:])}
+        assert len(steps) == 1
+
+
+class TestTimingSampleYield:
+    """Repeated pitches used to contribute almost nothing.
+
+    A wide search over a riff that repeats one note finds two equally good
+    candidates, and the measurement rightly refuses. Narrowing the search
+    once the offset is roughly known is what brings those strikes back.
+    """
+
+    def _riff(self, count=40, gap_ms=300.0):
+        """A run of one pitch, opened by a few distinct ones.
+
+        Real songs start somewhere before the riff, and those first notes are
+        what the measurement bootstraps on: nothing can disambiguate a
+        repeated pitch until the offset is roughly known.
+        """
+        # Spaced by more than a semitone: the pitch match accepts +/-1, so a
+        # chromatic run is as ambiguous as a repeated note.
+        intro = [_note_event(400.0 + i * 300.0, midi_note=45 + 3 * (i % 5),
+                             string=5)
+                 for i in range(14)]
+        start = intro[-1].timestamp_ms + 600.0
+        return intro + [_note_event(start + i * gap_ms, midi_note=40, string=6)
+                        for i in range(count)]
+
+    def _play(self, notes, latency=60.0):
+        matcher = _make_matcher(notes, timing_window_ms=150.0)
+        for note in notes:
+            t = note.timestamp_ms + latency
+            matcher.process_detected_notes([_detected(note.midi_note, t)], t)
+        return matcher
+
+    def test_repeated_pitches_are_measured_once_the_offset_is_known(self):
+        notes = self._riff()
+        matcher = self._play(notes)
+        assert len(matcher.timing_errors_ms) > len(notes) * 0.6
+
+    def test_a_song_of_nothing_but_one_pitch_measures_almost_nothing(self):
+        """The honest answer, not a bug.
+
+        With no note of a different pitch anywhere, "late on this one" and
+        "early on the next" never separate, so nothing bootstraps and the
+        search never narrows. Only the very first strike counts, having no
+        predecessor to be confused with.
+        """
+        notes = [_note_event(1000.0 + i * 300.0, midi_note=40, string=6)
+                 for i in range(30)]
+        matcher = self._play(notes)
+        assert len(matcher.timing_errors_ms) <= 2
+        assert matcher.timing_ambiguous > 20
+        assert matcher.timing_report() is None
+
+    def test_the_search_starts_wide(self):
+        from pickhero.matcher import LATENCY_SEARCH_MS
+        matcher = _make_matcher(self._riff())
+        assert matcher._search_radius_ms() == LATENCY_SEARCH_MS
+
+    def test_and_narrows_once_there_is_something_to_narrow_to(self):
+        from pickhero.matcher import LATENCY_SEARCH_MS
+        matcher = self._play(self._riff())
+        assert matcher._search_radius_ms() < LATENCY_SEARCH_MS
+
+    def test_it_never_narrows_below_human_earliness(self):
+        from pickhero.matcher import MIN_SEARCH_MS
+        matcher = self._play(self._riff(), latency=0.0)
+        assert matcher._search_radius_ms() >= MIN_SEARCH_MS
+
+    def test_ambiguous_strikes_are_counted_not_silently_dropped(self):
+        notes = [_note_event(1000.0, midi_note=40, string=6),
+                 _note_event(1400.0, midi_note=40, string=6)]
+        matcher = _make_matcher(notes, timing_window_ms=150.0)
+        matcher.process_detected_notes([_detected(40, 1450.0)], 1450.0)
+        assert matcher.timing_errors_ms == []
+        assert matcher.timing_ambiguous == 1
+
+    def test_samples_carry_the_string_they_were_measured_on(self):
+        notes = [_note_event(1000.0, midi_note=45, string=5)]
+        matcher = _make_matcher(notes, timing_window_ms=150.0)
+        matcher.process_detected_notes([_detected(45, 1040.0)], 1040.0)
+        assert matcher.timing_samples[0].string == 5
+        assert matcher.timing_samples[0].delta_ms == pytest.approx(40.0)
+
+    def test_reset_forgets_everything(self):
+        matcher = self._play(self._riff())
+        matcher.reset_timing_samples()
+        assert matcher.timing_errors_ms == []
+        assert matcher.timing_samples == []
+        assert matcher.timing_ambiguous == 0
+        assert matcher.timing_report() is None
