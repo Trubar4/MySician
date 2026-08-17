@@ -156,28 +156,42 @@ Generate the test songs with `python tools/make_*_test.py`; they land in `songs/
 Ordered by what would help the user most. `NEXT_SESSION.md` holds the same
 list as a paste-ready prompt, with what has already been ruled out on each.
 
-1. **Timing spread — the instrument is built, the reading is not in yet.**
-   This is where the next session starts, and it starts by ASKING, not by
-   building: the user was going to play the timing test and press `Y`.
-   Do not guess what it said and do not start fixing before it is known —
-   the whole point of the report was to stop guessing.
+1. ~~**Timing spread.**~~ **MEASURED AND CLOSED — 2026-08-17.** Two runs of the
+   shortened timing test came back `latency`, +120 ms and +128 ms, with a
+   scatter of only ±20 and ±16 ms and a between-string spread of 9 ms (within
+   chance). One constant offset, which is what `K` exists for: it removes 60 %
+   and 67 % of the total error respectively. **Nothing to build here.** Per-string
+   offsets are NOT called for and must not be built on this evidence.
+   The user plays tightly; the error is the input path, not the playing.
 
-   What each answer means for the next move:
+   Two things that made the earlier attempts unreadable, both now fixed:
+   the first export came from the technique test (17 of 24 samples sat on
+   bend/slide/legato notes, which cannot be measured), and the timing test
+   itself repeated one pitch for eighty seconds, so 127 of its samples were
+   refused as ambiguous. Keep diagnostic files pitch-varied and inside the
+   fret filter's default range.
+2. **Chords come up RED because a strummed chord produces no pitch at all.**
+   **Root cause measured, on the user's own reference recordings** — run the
+   detector over `reference_recordings/20260814_160019/` and count how many
+   strikes yield a confident pitch:
 
-   | Verdict | What it means | Next move |
+   | take | strikes | with a pitch |
    |---|---|---|
-   | `latency` | one constant offset | `K` already fixes it; nothing to build |
-   | `scatter` | the playing, or the passage | not an app problem — say so plainly |
-   | `mixed` | both | `K` first, then re-measure before anything else |
-   | `per_string` | the detector reacts at different speeds per string | build per-string offsets; the CSV from `Shift+Y` is the data to fit them on |
-   | too few samples | the song has too little pitch variety | check `ambiguous` in the report before blaming anything |
-2. **Chords are not recognised at speed — and come up RED, not merely
-   unverified.** The user's report: fast chords fail outright, slow ones lose
-   individual notes. That is the pitch path, not the verifier abstaining, so it
-   is a bug to be found before anything is designed. Both cases matter to the
-   user, power chords (2–3 strings, downpicked) and full open chords in
-   eighths; on six-string chords they asked to err on the side of tolerance.
-   The 335 ms abstention is a separate, second-order question.
+   | `41_riff` (single notes, fast) | 49 | 47 |
+   | `40_E5_fast` (power chords, fast) | 39 | 38 |
+   | `30_Emaj_ok` (open E major) | 4 | 3 |
+   | `36_Dmaj_ok` (open D) | 6 | 3 |
+   | `34_Amin_ok` (open A minor) | 5 | **0** |
+
+   Single notes and power chords are near-perfect at speed, so speed is NOT the
+   problem and the 335 ms verifier abstention is NOT the problem. Full open
+   chords are: YIN is monophonic and finds no single period in a six-string
+   strum, confidence never clears 0.8, and the strike carries no note. Those
+   strikes now arrive as `unpitched` (the dead-note work) instead of being
+   dropped, which means **the evidence needed to fix this is already reaching
+   the matcher** — an unpitched strike where the tab writes a chord is exactly
+   the case the user asked to be tolerant about. That is the next thing to
+   build, and `chord_verify.py` can confirm the strings afterwards.
 3. **Bend evaluation.** The visual exists; scoring is deliberately lenient
    because nothing keeps the pitch contour — though the detector DOES produce
    one, at one frame per ~11.6 ms, which `OnsetPitchCollector` discards. The

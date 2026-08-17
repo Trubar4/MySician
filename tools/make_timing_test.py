@@ -54,13 +54,18 @@ QUARTER_LINE = [[(6, 0)], [(6, 3)], [(5, 2)], [(5, 5)],
                 [(4, 2)], [(4, 5)], [(5, 5)], [(6, 3)]]
 
 # Power chords with a moving root -- the metal case, and still measurable.
+#
+# Nothing here goes above the 7th fret, and that is not a musical choice: the
+# app's fret filter defaults to a range, and a diagnostic file whose notes the
+# filter silently removes measures the filter instead of the timing. The
+# user's first run lost a sixth of its notes exactly that way.
 POWER_CHORDS = [[(6, 0), (5, 2)], [(6, 3), (5, 5)],
-                [(6, 5), (5, 7)], [(6, 8), (5, 10)]]
+                [(6, 5), (5, 7)], [(5, 5), (4, 7)]]
 
 # Eighth-note pedal riff: open E alternating with a climbing note. The pedal
 # repeats, but never within the half second that would make it ambiguous.
 PEDAL_RIFF = [[(6, 0)], [(6, 5)], [(6, 0)], [(6, 7)],
-              [(6, 0)], [(6, 8)], [(6, 0)], [(6, 10)]]
+              [(6, 0)], [(6, 3)], [(6, 0)], [(6, 6)]]
 
 
 def _sections():
