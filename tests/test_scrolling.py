@@ -1055,3 +1055,35 @@ class TestSyncAdviceMatchesWhatKDoes:
     def test_nothing_is_offered_before_there_is_anything_to_measure(self):
         assert "still measuring" in self._screen_with([]).\
             _sync_advice()
+
+
+class TestSyncLineIsAlwaysThere:
+    """Shift+K must visibly do something.
+
+    The line used to be hidden whenever the offset was zero and nothing had
+    been measured -- which is precisely the state Shift+K creates. The one key
+    whose whole job is to put the offset back to zero therefore looked like it
+    had done nothing, and the player pressed it again and again.
+    """
+
+    def _screen(self):
+        from pickhero.matcher import NoteMatcher
+        from pickhero.tabs.timeline import SongMetadata, Timeline
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._matcher = NoteMatcher(
+            Timeline([], SongMetadata(title="x", tempo=100))
+        )
+        screen._audio_enabled = True
+        return screen
+
+    def test_advice_exists_with_nothing_measured_yet(self):
+        assert self._screen()._sync_advice() != ""
+
+    def test_resetting_to_zero_leaves_something_to_show(self):
+        screen = self._screen()
+        screen._adjust_latency_offset(-135.0)
+        assert screen._config.audio_latency_offset_ms == -135.0
+        screen._reset_latency_offset()
+        assert screen._config.audio_latency_offset_ms == 0.0
+        # The state Shift+K produces still has a line to render.
+        assert screen._sync_advice() != ""

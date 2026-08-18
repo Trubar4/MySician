@@ -1640,11 +1640,13 @@ class PlayingScreen:
                 sync_text = (f"Sync: {int(offset):+d} ms  |  strikes {int(abs(err)):d} ms "
                              f"{direction}{spread_text} {verdict}")
                 sync_color = t.hud_accent if abs(err) > 20 else t.hud_text
-            elif offset != 0:
-                sync_text = f"Sync: {int(offset):+d} ms"
-                sync_color = t.hud_text
             else:
-                sync_text = None
+                # Shown even at zero with nothing measured yet. It used to
+                # vanish in exactly that state, which is the state Shift+K
+                # produces -- so the one key whose whole job is to put the
+                # offset back to zero looked like it had done nothing at all.
+                sync_text = f"Sync: {int(offset):+d} ms  {self._sync_advice()}"
+                sync_color = t.hud_text
             if sync_text:
                 sync_surf = hint_font.render(sync_text, True, sync_color)
                 surface.blit(sync_surf, (12, info_y))

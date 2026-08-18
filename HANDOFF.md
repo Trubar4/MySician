@@ -46,7 +46,7 @@ all work is pushed there. The previous branch
 
 ## State
 
-497 tests (`python -m pytest tests -q`). Everything below is implemented,
+499 tests (`python -m pytest tests -q`). Everything below is implemented,
 calibrated where it needed calibrating, and pushed.
 
 **Working:** GP3–GP5 loading, track picker, scrolling display with per-song
