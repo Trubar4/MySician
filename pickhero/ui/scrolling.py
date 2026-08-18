@@ -148,9 +148,10 @@ BACKING_OFFSET_STEP_MS = 10.0
 # median is trustworthy. Refuse outright only when the scatter is so wide that
 # no systematic offset is visible in it at all.
 AUTO_SYNC_MIN_SAMPLES = 8
-AUTO_SYNC_WIDE_SPREAD_MS = 40.0
-AUTO_SYNC_WIDE_MIN_SAMPLES = 24
-AUTO_SYNC_HOPELESS_SPREAD_MS = 150.0
+# The spread thresholds that used to live here are gone on purpose. They were
+# a second opinion on the samples the timing report already judges, and a
+# second opinion is only ever a chance for the two to disagree. Both K and the
+# HUD line now ask the report.
 
 
 def _get_font(name: str, size: int) -> pygame.font.Font:
@@ -1635,25 +1636,7 @@ class PlayingScreen:
                 # the strikes disagree with each other and no offset can help
                 spread = self._matcher.timing_spread_ms()
                 spread_text = f"  ±{int(spread):d} ms" if spread is not None else ""
-                verdict = ""
-                if spread is not None:
-                    samples = len(self._matcher.timing_errors_ms)
-                    if spread > AUTO_SYNC_HOPELESS_SPREAD_MS:
-                        verdict = "— too scattered to sync"
-                    elif (spread > AUTO_SYNC_WIDE_SPREAD_MS
-                            and samples < AUTO_SYNC_WIDE_MIN_SAMPLES):
-                        verdict = f"— play on ({samples}/{AUTO_SYNC_WIDE_MIN_SAMPLES}) then K"
-                    elif not self._sync_applied:
-                        verdict = "— K to auto-sync"
-                    elif abs(err) > FINE_MS:
-                        # One press removes the median it could see at the
-                        # time. Anything left over shows up in the samples
-                        # taken since, and saying so is the difference between
-                        # a tool that converges and one the player abandons
-                        # halfway, thinking it did all it could.
-                        verdict = f"— {int(abs(err)):d} ms still left, K again"
-                    else:
-                        verdict = "— synced"
+                verdict = self._sync_advice()
                 sync_text = (f"Sync: {int(offset):+d} ms  |  strikes {int(abs(err)):d} ms "
                              f"{direction}{spread_text} {verdict}")
                 sync_color = t.hud_accent if abs(err) > 20 else t.hud_text
@@ -2311,6 +2294,35 @@ class PlayingScreen:
             self._matcher.late_window_ms = self._late_window_ms()
             # Old measurements no longer reflect the new offset
             self._matcher.reset_timing_samples()
+
+    def _sync_advice(self) -> str:
+        """What the HUD says about K, decided the way K itself decides.
+
+        Both read the same report and act on the same verdict, so the line can
+        never offer a key that then does nothing -- which is what it did while
+        the HUD kept its own spread thresholds and K had moved on to the
+        report's. A player who presses an advertised key and sees no change
+        learns to distrust the whole panel, not just that line.
+        """
+        if self._matcher is None:
+            return ""
+        report = self._matcher.timing_report(AUTO_SYNC_MIN_SAMPLES)
+        if report is None:
+            return "— play on, still measuring"
+        if report["verdict"] == "scatter":
+            return "— too scattered to sync"
+        if report["verdict"] == "per_string":
+            return "— strings differ, no one offset fixes it"
+        if report["verdict"] == "fine":
+            return "— synced" if self._sync_applied else "— nothing to sync"
+        # latency or mixed: K can take the constant part off.
+        if not self._sync_applied:
+            return "— K to auto-sync"
+        # One press removes the median it could see at the time. Whatever is
+        # left shows up in the samples taken since, and saying so is the
+        # difference between a tool that converges and one the player abandons
+        # halfway, thinking it did all it could.
+        return f"— {int(abs(report['median_ms'])):d} ms still left, K again"
 
     def _auto_sync_timing(self) -> None:
         """Cancel out the measured input latency (K key).

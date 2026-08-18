@@ -996,3 +996,62 @@ class TestAutoSync:
         screen._reset_latency_offset()
         assert not screen._sync_applied
         assert self._offset(screen) == 0.0
+
+
+class TestSyncAdviceMatchesWhatKDoes:
+    """The HUD line and the key must never disagree.
+
+    A line that offers K while K refuses teaches the player that the panel
+    lies -- and it is not a hypothetical: the HUD kept its own spread
+    thresholds for a while after K had moved to the report's verdict.
+    """
+
+    def _screen_with(self, deltas):
+        from pickhero.matcher import NoteMatcher, TimingSample
+        from pickhero.tabs.timeline import SongMetadata, Timeline
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        matcher = NoteMatcher(Timeline([], SongMetadata(title="x", tempo=100)))
+        for i, d in enumerate(deltas):
+            matcher.timing_errors_ms.append(d)
+            matcher.timing_samples.append(
+                TimingSample(delta_ms=d, string=6, midi_note=40,
+                             note_ms=1000.0 * i)
+            )
+        screen._matcher = matcher
+        return screen
+
+    CASES = [
+        ("plain latency", [118, 122, 120, 125, 119, 121, 123, 120, 124, 119]),
+        ("scattered", [-90, 80, -70, 95, -85, 75, -60, 88, -95, 70, 82, -78]),
+        ("already fine", [2, -3, 1, 4, -2, 0, 3, -1, 2, -4]),
+        ("too few", [120, 118, 122]),
+    ]
+
+    @pytest.mark.parametrize("label,deltas", CASES)
+    def test_the_line_offers_k_exactly_when_k_would_act(self, label, deltas):
+        screen = self._screen_with(deltas)
+        advice = screen._sync_advice()
+        offers_k = "K to auto-sync" in advice or "K again" in advice
+
+        before = screen._config.audio_latency_offset_ms
+        screen._auto_sync_timing()
+        acted = screen._config.audio_latency_offset_ms != before
+
+        assert offers_k == acted, f"{label}: line said {advice!r}, K acted={acted}"
+
+    def test_a_residual_is_named_rather_than_re_offered_as_a_first_sync(self):
+        screen = self._screen_with([120] * 10)
+        screen._auto_sync_timing()
+        # Fresh samples showing what the press did not take.
+        screen._matcher.reset_timing_samples()
+        for i, d in enumerate([49] * 10):
+            screen._matcher.timing_errors_ms.append(d)
+            from pickhero.matcher import TimingSample
+            screen._matcher.timing_samples.append(
+                TimingSample(delta_ms=d, string=6, midi_note=40, note_ms=1000.0 * i)
+            )
+        assert "still left, K again" in screen._sync_advice()
+
+    def test_nothing_is_offered_before_there_is_anything_to_measure(self):
+        assert "still measuring" in self._screen_with([]).\
+            _sync_advice()
