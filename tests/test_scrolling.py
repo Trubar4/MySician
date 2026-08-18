@@ -924,3 +924,75 @@ class TestTimingOverlay:
             [80.0 + i for i in range(20)], tmp_path, monkeypatch)
         screen._show_timing = True
         screen.render(surface)
+
+
+class TestAutoSync:
+    """K applies exactly what the timing report calls latency, and no more.
+
+    Deciding it a second time here by a looser rule only produces the two
+    answers disagreeing. That really happened: a measurement taken over notes
+    carrying bends and slides scattered by +-75 ms, passed the old check
+    because it had enough samples, and left an offset built out of noise
+    sitting in the config for days.
+    """
+
+    def _screen_with(self, deltas):
+        from pickhero.matcher import NoteMatcher, TimingSample
+        from pickhero.tabs.timeline import SongMetadata, Timeline
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        matcher = NoteMatcher(Timeline([], SongMetadata(title="x", tempo=100)))
+        for i, d in enumerate(deltas):
+            matcher.timing_errors_ms.append(d)
+            matcher.timing_samples.append(
+                TimingSample(delta_ms=d, string=6, midi_note=40,
+                             note_ms=1000.0 * i)
+            )
+        screen._matcher = matcher
+        return screen
+
+    def _offset(self, screen):
+        return screen._config.audio_latency_offset_ms
+
+    def test_plain_latency_is_removed(self):
+        screen = self._screen_with([118, 122, 120, 125, 119, 121, 123, 120,
+                                    124, 119])
+        screen._auto_sync_timing()
+        assert self._offset(screen) == pytest.approx(-120, abs=4)
+
+    def test_scattered_timing_is_refused(self):
+        """No single offset fixes strikes that disagree with each other, and
+        applying one anyway is a guess dressed up as a measurement."""
+        screen = self._screen_with([-90, 80, -70, 95, -85, 75, -60, 88,
+                                    -95, 70, 82, -78])
+        screen._auto_sync_timing()
+        assert self._offset(screen) == 0.0
+
+    def test_timing_already_fine_is_left_alone(self):
+        screen = self._screen_with([2, -3, 1, 4, -2, 0, 3, -1, 2, -4])
+        screen._auto_sync_timing()
+        assert self._offset(screen) == 0.0
+
+    def test_too_few_samples_does_nothing(self):
+        screen = self._screen_with([120, 118, 122])
+        screen._auto_sync_timing()
+        assert self._offset(screen) == 0.0
+
+    def test_applying_clears_the_measurements_it_used(self):
+        """Otherwise a second press would count the same error twice instead
+        of measuring what is left."""
+        screen = self._screen_with([120] * 10)
+        screen._auto_sync_timing()
+        assert screen._matcher.timing_samples == []
+
+    def test_a_press_is_remembered_so_a_residual_can_be_named(self):
+        screen = self._screen_with([120] * 10)
+        assert not screen._sync_applied
+        screen._auto_sync_timing()
+        assert screen._sync_applied
+
+    def test_resetting_the_sync_forgets_that_too(self):
+        screen = self._screen_with([120] * 10)
+        screen._auto_sync_timing()
+        screen._reset_latency_offset()
+        assert not screen._sync_applied
+        assert self._offset(screen) == 0.0

@@ -14,7 +14,7 @@ import pygame
 from pickhero.audio.midi_playback import BackingTrack, MidiPlayer
 from pickhero import config as config_module
 from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
-from pickhero.matcher import STRING_MIN_SAMPLES, NoteMatcher
+from pickhero.matcher import FINE_MS, STRING_MIN_SAMPLES, NoteMatcher
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.timeline import NoteEvent, Timeline
 from pickhero.audio.note_utils import (
@@ -273,6 +273,10 @@ class PlayingScreen:
         self._show_help: bool = False
         self._show_timing: bool = False
         self._timing_export_note: str = ""
+        # Whether K has already been applied in this run. A residual after a
+        # sync means something different to the player than an unmeasured one:
+        # the first says "press K", the second says "press it again".
+        self._sync_applied: bool = False
 
         # Track picker: [(index, label)], filled in by the app on load
         self._track_options: list[tuple[int, str]] = []
@@ -1639,8 +1643,17 @@ class PlayingScreen:
                     elif (spread > AUTO_SYNC_WIDE_SPREAD_MS
                             and samples < AUTO_SYNC_WIDE_MIN_SAMPLES):
                         verdict = f"— play on ({samples}/{AUTO_SYNC_WIDE_MIN_SAMPLES}) then K"
-                    else:
+                    elif not self._sync_applied:
                         verdict = "— K to auto-sync"
+                    elif abs(err) > FINE_MS:
+                        # One press removes the median it could see at the
+                        # time. Anything left over shows up in the samples
+                        # taken since, and saying so is the difference between
+                        # a tool that converges and one the player abandons
+                        # halfway, thinking it did all it could.
+                        verdict = f"— {int(abs(err)):d} ms still left, K again"
+                    else:
+                        verdict = "— synced"
                 sync_text = (f"Sync: {int(offset):+d} ms  |  strikes {int(abs(err)):d} ms "
                              f"{direction}{spread_text} {verdict}")
                 sync_color = t.hud_accent if abs(err) > 20 else t.hud_text
@@ -2302,25 +2315,34 @@ class PlayingScreen:
     def _auto_sync_timing(self) -> None:
         """Cancel out the measured input latency (K key).
 
-        Uses the median timing error of the strikes matched so far in this
-        run; needs a handful of scored notes before it can do anything.
-        Refuses when the strikes disagree too much among themselves — there
-        is no single offset that fixes scattered timing, and applying one
-        anyway is how the offset used to walk away from any sane value.
+        Applies exactly what the timing report calls latency, and refuses
+        everything else. The report already decides whether a median is an
+        effect or a coincidence, and whether one offset could fix it at all,
+        so deciding it a second time here by a looser rule can only produce
+        the two answers disagreeing -- which is what happened: a measurement
+        the report called scattered (a spread of +-75 ms, taken over notes
+        carrying bends and slides) still passed this check because it had
+        enough samples, and set an offset out of noise that then sat in the
+        config for days, silently swallowing a third of the real latency.
+
+        Whatever remains after a press is measurable in the samples that
+        follow, because _adjust_latency_offset clears the old ones -- so K
+        pressed again converges rather than double-counting.
         """
         if self._matcher is None:
             return
-        err = self._matcher.median_timing_error_ms(AUTO_SYNC_MIN_SAMPLES)
-        if err is None:
+        report = self._matcher.timing_report(AUTO_SYNC_MIN_SAMPLES)
+        if report is None:
             return
-        spread = self._matcher.timing_spread_ms()
-        samples = len(self._matcher.timing_errors_ms)
-        if spread is not None:
-            if spread > AUTO_SYNC_HOPELESS_SPREAD_MS:
-                return
-            if spread > AUTO_SYNC_WIDE_SPREAD_MS and samples < AUTO_SYNC_WIDE_MIN_SAMPLES:
-                return
-        self._adjust_latency_offset(-err)
+        # "mixed" is latency with loose playing on top: the offset still
+        # removes the constant part, which is exactly what K is for. The rest
+        # -- scatter, a per-string split, or a median inside its own noise --
+        # is not something one offset can fix, and applying one anyway is a
+        # guess dressed up as a measurement.
+        if report["verdict"] not in ("latency", "mixed"):
+            return
+        self._adjust_latency_offset(-report["median_ms"])
+        self._sync_applied = True
 
     def _reset_latency_offset(self) -> None:
         """Put latency compensation back to zero (Shift+K).
@@ -2329,6 +2351,7 @@ class PlayingScreen:
         every fresh measurement is taken against the wrong note.
         """
         self._adjust_latency_offset(-self._config.audio_latency_offset_ms)
+        self._sync_applied = False
 
     # -- Loop weakest section --
 
