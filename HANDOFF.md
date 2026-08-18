@@ -46,7 +46,7 @@ all work is pushed there. The previous branch
 
 ## State
 
-473 tests (`python -m pytest tests -q`). Everything below is implemented,
+497 tests (`python -m pytest tests -q`). Everything below is implemented,
 calibrated where it needed calibrating, and pushed.
 
 **Working:** GP3–GP5 loading, track picker, scrolling display with per-song
@@ -101,6 +101,15 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 
 ## What this session changed (newest first)
 
+-4. **Only honest notes are timed, and K says what it left.** Technique notes
+   no longer contribute timing samples (`_times_its_own_strike`): a bend leaves
+   its pitch on purpose and a legato target is never picked. This was the root
+   cause of a bad offset that sat in the config for days — replayed against the
+   real export, 18 of its 24 samples drop and K would have stayed silent.
+   K itself now applies exactly what the report calls latency, the HUD line
+   reads the same verdict so it can never offer a key that does nothing, and it
+   names a residual ("49 ms still left, K again") instead of repeating the
+   first-time prompt.
 -3. **Chord verdicts at speed, and the tuning on screen.** `MIN_WINDOW_MS`
    turned out to be stale rather than physical — fitted at 280 ms when the
    analysis floor was a fixed 150 Hz, and never lowered after `MIN_HZ_SECONDS`
