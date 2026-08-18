@@ -10,6 +10,9 @@ from pickhero.audio.note_utils import (
     midi_to_fret_options,
     semitone_distance,
     is_in_guitar_range,
+    is_standard_tuning,
+    tuning_name,
+    tuning_notes,
     STANDARD_TUNING,
 )
 
@@ -179,3 +182,45 @@ class TestGuitarRange:
         assert is_in_guitar_range(39) is False
         assert is_in_guitar_range(89) is False
         assert is_in_guitar_range(0) is False
+
+
+class TestTuningNames:
+    """The tab knows how the guitar has to be tuned; the player has to be told.
+
+    A tab in Drop C played on a standard-tuned guitar is wrong on every single
+    note, and nothing else on screen says so -- the notes scroll by looking
+    perfectly ordinary while every one of them scores red.
+    """
+
+    def test_standard_is_recognised(self):
+        assert tuning_name(STANDARD_TUNING) == "Standard"
+        assert is_standard_tuning(STANDARD_TUNING)
+
+    def test_drop_d_is_recognised(self):
+        drop_d = {**STANDARD_TUNING, 6: 38}
+        assert tuning_name(drop_d) == "Drop D"
+        assert not is_standard_tuning(drop_d)
+
+    def test_a_whole_step_down_is_recognised(self):
+        assert tuning_name({s: v - 2 for s, v in STANDARD_TUNING.items()}) \
+            == "D Standard"
+
+    def test_an_unusual_tuning_gets_no_name_but_still_its_notes(self):
+        """Plenty of tabs use one, so this is not a failure to report."""
+        odd = {**STANDARD_TUNING, 3: 54}
+        assert tuning_name(odd) == ""
+        assert tuning_notes(odd) == ["E", "A", "D", "F#", "B", "E"]
+
+    def test_notes_read_from_the_lowest_string_up(self):
+        """The order a player tunes in, and the order the strings are named."""
+        assert tuning_notes(STANDARD_TUNING) == ["E", "A", "D", "G", "B", "E"]
+
+    def test_drop_d_shows_which_string_moved(self):
+        assert tuning_notes({**STANDARD_TUNING, 6: 38}) \
+            == ["D", "A", "D", "G", "B", "E"]
+
+    def test_a_tab_that_says_nothing_is_not_asking_for_anything(self):
+        """Warning about a missing tuning would cry wolf on most files."""
+        assert is_standard_tuning({})
+        assert is_standard_tuning(None)
+        assert tuning_notes(None) == []

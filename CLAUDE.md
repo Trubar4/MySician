@@ -72,13 +72,19 @@ tab as a prior. For each expected note it scores competing pitch hypotheses on t
   `AudioCapture` keeps a ring buffer and emits one `StrikeWindow` per strike; the matcher applies verdicts in `process_strike_windows`.
 - **The window ends at the next strike.** A window running into the following chord contains pitches the tab never expected there, and convicts
   strings that were played right — that is what made fast chord changes light up red. `_limit_pending_windows` trims to the gap actually
-  available; under `MIN_WINDOW_MS` (280 ms, so chords closer than ~335 ms) the strike is dropped and gets no verdict at all. Two things keep a
-  trimmed window honest: the analysis floor rises with `MIN_HZ_SECONDS / T`, since a short window cannot separate a semitone low down; and the
-  intruder tier — the one that convicts a string whose expected note is masked — is allowed only at the full length, having been fitted there.
+  available; under `MIN_WINDOW_MS` (200 ms, so chords closer than ~255 ms — eighths past about 118 BPM) the strike is dropped and gets no
+  verdict at all. Two things keep a trimmed window honest: the analysis floor rises with `MIN_HZ_SECONDS / T`, since a short window cannot
+  separate a semitone low down; and the intruder tier — the one that convicts a string whose expected note is masked — is allowed only at the
+  full length, having been fitted there.
+- **`MIN_WINDOW_MS` was stale for a whole cycle, and the sweep is what hid it.** It was fitted at 280 ms back when the analysis floor was a
+  fixed 150 Hz. `MIN_HZ_SECONDS` then made shorter windows honest, but nobody lowered the constant — and `sweep_chord_window.py` could not
+  report the winnings because it gated on the very value it was meant to test, printing "below floor" with nothing judged. The sweep now lifts
+  the floor for the duration of its run and reaches well below it. Re-measured: no false alarm anywhere from 190 ms up, the first at 180 ms.
+  **Any constant a tool is supposed to question must not also gate that tool.**
 - **Thresholds are calibrated, not guessed** — see `tools/analyze_reference.py`, `tools/sweep_chord_window.py` and `reference_recordings/`.
   Re-fit them with real takes rather than tuning by feel; `tools/record_reference.py` records a labelled set including deliberately wrong takes,
   which the calibration needs. Current state on that set: 33 strings judged, 0 false alarms, 7/7 deliberate one-fret errors caught at the full
-  window, and 0 false alarms at every window length down to 280 ms.
+  window, and 0 false alarms at every window length down to 190 ms.
 
 ## Chords That Produce No Pitch
 

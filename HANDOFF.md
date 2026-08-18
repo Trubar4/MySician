@@ -46,7 +46,7 @@ all work is pushed there. The previous branch
 
 ## State
 
-456 tests (`python -m pytest tests -q`). Everything below is implemented,
+473 tests (`python -m pytest tests -q`). Everything below is implemented,
 calibrated where it needed calibrating, and pushed.
 
 **Working:** GP3–GP5 loading, track picker, scrolling display with per-song
@@ -55,11 +55,10 @@ chords, per-string chord verification, wait mode, latency auto-sync, bends,
 slides, hammer-ons and pull-offs (drawn and scored), palm mutes and dead notes
 (drawn and scored), progress tracking.
 
-**Known-imperfect:** chord verification abstains on chords closer than
-~335 ms, and the user reports fast chords coming up red — that is the next real
-bug, not a missing feature. GP7 files load with muting but no bends or slides.
-The timing spread the user reported is now measurable rather than guessed —
-see below.
+**Known-imperfect:** chord verification abstains on chords closer than ~255 ms
+(eighths past about 118 BPM). GP7 files load with muting but no bends or
+slides. Timing is measured and answered: plain input latency, which `K`
+removes.
 
 ## The three subsystems worth knowing before touching anything
 
@@ -102,6 +101,16 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 
 ## What this session changed (newest first)
 
+-3. **Chord verdicts at speed, and the tuning on screen.** `MIN_WINDOW_MS`
+   turned out to be stale rather than physical — fitted at 280 ms when the
+   analysis floor was a fixed 150 Hz, and never lowered after `MIN_HZ_SECONDS`
+   made short windows honest. Re-swept: no false alarm from 190 ms up, so the
+   floor is 200 ms and chords are judged down to ~255 ms apart. The sweep now
+   lifts the floor while it runs, because gating it on the constant it was
+   meant to question is what hid this. Separately, `metadata.tuning` was loaded
+   and never shown; the HUD now names it (`tuning_name`, `tuning_notes`) and
+   flags anything but standard with "← retune".
+-2. **Chord credit for pitchless strums.** See topic 2 below.
 -1. **Palm mutes and dead notes.** Both were in the GP files and neither reached
    the app. A dead note was loaded as an ordinary note on the fret the tab uses
    to say where the hand DAMPS, so it could not be hit at all and timed out as
@@ -184,9 +193,12 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    100 % credited with every deliberate error still caught — see `CLAUDE.md`,
    "Chords That Produce No Pitch", and `tools/check_chord_credit.py`.
 
-   Still open underneath it: **chords closer than ~335 ms get no per-string
-   verdict at all**, so at eighth-note speed the credit above stands
-   unchecked. That is the original topic 3 and it is now the whole of it.
+   The follow-on — chords too fast to get a per-string verdict — went with it:
+   the 335 ms floor turned out to be **stale, not physical**. Re-swept, the
+   reference takes show no false alarm from 190 ms up, so `MIN_WINDOW_MS` is
+   200 ms and the required spacing is ~255 ms, i.e. eighths to about 118 BPM
+   instead of 90. Faster than that still gets no verdict, which is the honest
+   answer at that speed.
 3. **Bend evaluation.** The visual exists; scoring is deliberately lenient
    because nothing keeps the pitch contour — though the detector DOES produce
    one, at one frame per ~11.6 ms, which `OnsetPitchCollector` discards. The

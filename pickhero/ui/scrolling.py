@@ -17,7 +17,10 @@ from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
 from pickhero.matcher import STRING_MIN_SAMPLES, NoteMatcher
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.timeline import NoteEvent, Timeline
-from pickhero.audio.note_utils import freq_to_cents_deviation, midi_to_name
+from pickhero.audio.note_utils import (
+    freq_to_cents_deviation, is_standard_tuning, midi_to_name, tuning_name,
+    tuning_notes,
+)
 from pickhero.ui.colors import (
     STRING_COLORS,
     cycle_theme,
@@ -1560,6 +1563,25 @@ class PlayingScreen:
             chord_text = "Chords: strict" if self._chord_partial_credit else "Chords: easy"
             chord_surf = hint_font.render(chord_text, True, t.hud_accent)
             surface.blit(chord_surf, (12, info_y))
+            info_y += 16
+
+        # Tuning HUD — always shown, because a tab in Drop C played on a
+        # standard-tuned guitar is wrong on every single note, and nothing
+        # else on screen says so: the notes scroll by looking perfectly
+        # ordinary while every one of them scores red. Highlighted when it
+        # differs from standard, since that is the case that needs an action
+        # from the player (and, after retuning, a fresh calibration).
+        tuning = meta.tuning
+        standard = is_standard_tuning(tuning)
+        notes = tuning_notes(tuning)
+        if notes:
+            name = tuning_name(tuning)
+            label = f"Tuning: {name or 'custom'} — {' '.join(notes)}"
+            if not standard:
+                label += "   ← retune"
+            tune_surf = hint_font.render(
+                label, True, t.hud_text if standard else t.feedback_close)
+            surface.blit(tune_surf, (12, info_y))
             info_y += 16
 
         # Hit-window HUD — always shown, since it decides what counts as a hit

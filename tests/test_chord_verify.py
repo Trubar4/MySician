@@ -86,6 +86,31 @@ class TestWindowSizing:
         # Only has to keep the next attack out, not the note after it.
         assert 0 < guard_samples(SR) < skip_samples(SR)
 
+    def test_the_floor_is_where_the_sweep_said_it_could_be(self):
+        """The floor decides how fast a chord may be played and still be
+        checked, so it must track what the reference takes actually allow.
+
+        It went stale once: fitted at 280 ms when the analysis floor was a
+        fixed 150 Hz, then left there after MIN_HZ_SECONDS made shorter
+        windows honest. tools/sweep_chord_window.py finds no false alarm from
+        190 ms up and the first at 180 ms, so 200 ms keeps two steps of
+        margin -- and anything at or above 190 would be defensible. A value
+        below that is not, and one far above it is leaving verdicts unclaimed.
+        """
+        assert 190.0 <= MIN_WINDOW_MS <= 240.0
+
+    def test_chords_an_eighth_apart_can_still_be_judged(self):
+        """The point of the floor, stated as the music it allows.
+
+        Eighth notes at 110 BPM are 273 ms apart, which is ordinary rhythm
+        playing rather than a metal tempo -- the previous floor refused
+        anything faster than about 90 BPM.
+        """
+        needed_ms = 1000.0 * (skip_samples(SR) + min_window_samples(SR)
+                              + guard_samples(SR)) / SR
+        eighth_at_110bpm = 30_000.0 / 110.0
+        assert needed_ms < eighth_at_110bpm
+
 
 class TestAnalysisFloor:
     """A shortened window must judge on higher partials, not the same ones."""

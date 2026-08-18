@@ -147,3 +147,65 @@ def semitone_distance(midi_a: int, midi_b: int) -> int:
 def is_in_guitar_range(midi_note: int) -> bool:
     """Check if a MIDI note falls within standard guitar range."""
     return GUITAR_MIDI_MIN <= midi_note <= GUITAR_MIDI_MAX
+
+
+# Tunings worth naming, as {string: midi} the same way STANDARD_TUNING is
+# written. Named ones are what a player actually says out loud ("it's in Drop
+# C"); anything else is spelled out note by note instead of guessed at.
+# Ordered so the more specific shape wins where two would both match.
+NAMED_TUNINGS: list[tuple[str, dict[int, int]]] = [
+    ("Standard", STANDARD_TUNING),
+    ("Drop D", {1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 38}),
+    ("Eb Standard", {s: v - 1 for s, v in STANDARD_TUNING.items()}),
+    ("Drop C#", {1: 63, 2: 58, 3: 54, 4: 49, 5: 44, 6: 37}),
+    ("D Standard", {s: v - 2 for s, v in STANDARD_TUNING.items()}),
+    ("Drop C", {1: 62, 2: 57, 3: 53, 4: 48, 5: 43, 6: 36}),
+    ("C# Standard", {s: v - 3 for s, v in STANDARD_TUNING.items()}),
+    ("Drop B", {1: 61, 2: 56, 3: 52, 4: 47, 5: 42, 6: 35}),
+    ("C Standard", {s: v - 4 for s, v in STANDARD_TUNING.items()}),
+    ("Drop A#", {1: 60, 2: 55, 3: 51, 4: 46, 5: 41, 6: 34}),
+    ("B Standard", {s: v - 5 for s, v in STANDARD_TUNING.items()}),
+    ("Drop A", {1: 59, 2: 54, 3: 50, 4: 45, 5: 40, 6: 33}),
+    ("Open G", {1: 62, 2: 59, 3: 55, 4: 50, 5: 43, 6: 38}),
+    ("Open D", {1: 62, 2: 57, 3: 54, 4: 50, 5: 45, 6: 38}),
+    ("Open E", {1: 64, 2: 59, 3: 56, 4: 52, 5: 47, 6: 40}),
+    ("DADGAD", {1: 62, 2: 57, 3: 55, 4: 50, 5: 45, 6: 38}),
+]
+
+
+def tuning_name(tuning: dict[int, int] | None) -> str:
+    """What a player would call this tuning, or "" when it has no common name.
+
+    An unnamed tuning is not a failure -- plenty of tabs use one -- so the
+    caller shows the notes themselves either way and treats this as a label,
+    never as the whole answer.
+    """
+    if not tuning:
+        return ""
+    for name, shape in NAMED_TUNINGS:
+        if all(tuning.get(s) == v for s, v in shape.items()):
+            return name
+    return ""
+
+
+def tuning_notes(tuning: dict[int, int] | None) -> list[str]:
+    """Open-string note names from the LOWEST string up, as tab writes them.
+
+    Low to high because that is the order a player tunes in and the order the
+    strings are named ("E A D G B E"), even though string 1 is the high E.
+    """
+    if not tuning:
+        return []
+    return [midi_to_name(tuning[s]).rstrip("0123456789")
+            for s in sorted(tuning, reverse=True) if s in tuning]
+
+
+def is_standard_tuning(tuning: dict[int, int] | None) -> bool:
+    """True when nothing has to be retuned before playing.
+
+    An empty tuning counts as standard: a tab that says nothing is not asking
+    for anything, and warning about it would cry wolf on most files.
+    """
+    if not tuning:
+        return True
+    return all(tuning.get(s) == v for s, v in STANDARD_TUNING.items())

@@ -30,7 +30,7 @@ chord gets no verdict at all.
 Thresholds were fitted on reference_recordings/20260814_160019 (clean DI,
 Focusrite, 48 kHz): 7/7 deliberate one-fret errors caught, 0 false alarms
 over 33 confidently judged strings, and 0 false alarms at every window length
-down to 280 ms. See tools/analyze_reference.py and tools/sweep_chord_window.py.
+down to 190 ms. See tools/analyze_reference.py and tools/sweep_chord_window.py.
 
 Pure numpy: no aubio, no pygame, so it stays testable without audio hardware.
 """
@@ -52,12 +52,22 @@ WINDOW_MS = 341.0
 SKIP_MS = 40.0
 
 # Shortest window still worth judging, from tools/sweep_chord_window.py over
-# the reference takes: no false alarm at 280 ms or above, the first ones at
-# 270 and below. Under this floor a chord gets NO verdict rather than a guess
-# -- the same presumption of innocence that protects a masked string protects
-# a rushed one. It means chords struck less than ~335 ms apart (skip + window
-# + guard) simply are not judged, which is the honest answer at that speed.
-MIN_WINDOW_MS = 280.0
+# the reference takes: no false alarm anywhere from 190 ms up, the first one at
+# 180 ms (a palm-muted power chord, which by then is mostly decay). 200 ms
+# keeps two steps of that margin. Under this floor a chord gets NO verdict
+# rather than a guess -- the same presumption of innocence that protects a
+# masked string protects a rushed one. It means chords struck less than
+# ~255 ms apart (skip + window + guard) are not judged, which is eighth notes
+# past about 118 BPM.
+#
+# This was 280 ms, which was fitted when the analysis floor was a fixed 150 Hz
+# and short windows really did lie. MIN_HZ_SECONDS replaced that with a floor
+# that RISES as the window shortens, which is what made shorter windows honest
+# -- but nobody lowered this constant to collect the winnings, and the sweep
+# could not report it either: it gated on this value and printed "below floor"
+# with nothing judged, so the evidence that 280 was stale never appeared. The
+# sweep now runs below the floor for exactly that reason.
+MIN_WINDOW_MS = 200.0
 # Pulled back from the next strike so its attack transient stays out of the
 # window. One hop at 48 kHz is ~11 ms; 15 ms covers the detector's grid.
 NEXT_STRIKE_GUARD_MS = 15.0
