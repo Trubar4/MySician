@@ -421,6 +421,53 @@ def countdown(n=3):
 
 # -------------------------------------------------------------------- main
 
+def play_along(device, samplerate, channels, out_dir, seconds, song):
+    """Record while the player plays a song in the app, and save the raw take.
+
+    The 29 exercises are isolated notes with a rest after each -- which is the
+    case that already works. What no take in that set contains is the case
+    that fails: a passage played through, where the strings already struck go
+    on ringing under the next note. So this records exactly that, and leaves
+    the analysis to be aligned afterwards against the song's known onsets.
+
+    Nothing needs to be lined up while recording. Start this, then start the
+    song; tools/analyze_play_along.py finds the offset that best explains the
+    onsets it hears, so a few seconds of fumbling at either end cost nothing.
+    """
+    print("=" * 72)
+    print("MITSCHNITT beim Durchspielen")
+    print("=" * 72)
+    print(f"  Song:      {song}")
+    print(f"  Dauer:     {seconds:.0f}s")
+    print()
+    print("  1. Diese Aufnahme mit Enter starten")
+    print("  2. In MySician den Song starten und normal durchspielen")
+    print("  3. Spiel wie immer - NICHT extra sauber daempfen.")
+    print("     Genau das, was schiefgeht, soll drauf sein.")
+    input("\n  [Enter] startet die Aufnahme: ")
+    countdown(3)
+    audio = record(seconds, device, samplerate, channels)
+    peak = dbfs(audio)
+    rms_val = float(np.sqrt(np.mean(audio ** 2))) if audio.size else 0.0
+    rms_db = 20 * np.log10(rms_val) if rms_val > 0 else -120.0
+    print(f"  aufgenommen: Peak {peak:.1f} dBFS, RMS {rms_db:.1f} dBFS")
+    write_wav(out_dir / "play_along.wav", audio, samplerate)
+    return {
+        "id": "play_along",
+        "block": 99,
+        "title": f"Durchgespielt: {song}",
+        "file": "play_along.wav",
+        "technique": "free",
+        "intentional_error": "",
+        "shapes": [],
+        "expected_midi": [],
+        "song": song,
+        "seconds": seconds,
+        "peak_dbfs": round(peak, 1),
+        "rms_dbfs": round(rms_db, 1),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--list", action="store_true",
@@ -428,6 +475,12 @@ def main():
     ap.add_argument("--block", type=int, action="append",
                     help="nur diese Bloecke aufnehmen (mehrfach moeglich)")
     ap.add_argument("--out", default=None, help="Zielordner")
+    ap.add_argument("--play-along", metavar="SONG", nargs="?",
+                    const="timing_test_100bpm.gp5", default=None,
+                    help="statt der Uebungen einen Mitschnitt beim "
+                         "Durchspielen aufnehmen (Standard: der Timing-Test)")
+    ap.add_argument("--seconds", type=float, default=45.0,
+                    help="Dauer des Mitschnitts (Standard 45)")
     args = ap.parse_args()
 
     todo = [e for e in EXERCISES if not args.block or e.block in args.block]
@@ -446,9 +499,12 @@ def main():
     print("=" * 72)
     print("MySician - Referenzaufnahmen")
     print("=" * 72)
-    print("Wir nehmen ein paar kurze Uebungen auf, richtige und absichtlich")
-    print("falsche. Damit kalibrieren wir die Akkorderkennung an deiner")
-    print("echten Gitarre statt an simulierten Toenen.")
+    if args.play_along:
+        print("Ein einzelner Mitschnitt beim Durchspielen - kein Uebungssatz.")
+    else:
+        print("Wir nehmen ein paar kurze Uebungen auf, richtige und absichtlich")
+        print("falsche. Damit kalibrieren wir die Akkorderkennung an deiner")
+        print("echten Gitarre statt an simulierten Toenen.")
     print("\nWICHTIG: Das Signal muss CLEAN reinkommen - keine Verzerrung,")
     print("kein Amp-Sim vor der Aufnahme. Verzerrung zum Mithoeren ist egal.")
 
@@ -477,7 +533,18 @@ def main():
     }
 
     print(f"\n  Aufnahmen landen in: {out_dir}")
-    print("\nEnter startet jede Aufnahme. 's' ueberspringt, 'q' beendet.")
+
+    if args.play_along:
+        manifest["takes"].append(
+            play_along(device, samplerate, channels, out_dir,
+                       args.seconds, args.play_along)
+        )
+        with open(out_dir / "manifest.json", "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2, ensure_ascii=False)
+        todo = []
+
+    if todo:
+        print("\nEnter startet jede Aufnahme. 's' ueberspringt, 'q' beendet.")
 
     idx = 0
     while idx < len(todo):

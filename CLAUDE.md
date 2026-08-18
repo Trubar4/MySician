@@ -122,8 +122,14 @@ A line that walks across the neck while the strings it left keep sounding is pol
 string the problem cannot arise. The collector's `SKIP_FRAMES` is NOT the lever — sweeping it from 3 to 12 changes nothing, because the old
 note is still physically present however long you wait.
 
-This does not explain everything the player sees: their pedal-riff bars fail too, where the model says they should not. Treat the mechanism as
-established and the full account as open — the missing ground truth is a recording of the test file being **played**, not isolated takes.
+Confirmed at the instrument, not only in simulation: the player reports that muting after every note makes far more of it register, and that the
+first note registers reliably once the string is damped before the next one. Over the whole timing test the same split appears — **59 % with
+everything left ringing, 100 % with each string damped as it is left**.
+
+The share that remains unexplained is the size of the effect, not its direction: the player measures ~24 %, well below the 59 % the model
+gives, so a real guitar (sympathetic resonance, richer partials, longer sustain) is worse than the synthesis. Closing that gap needs the
+song **played**, which `record_reference.py --play-along` records and `tools/analyze_play_along.py` reads back per onset — the 29 isolated
+exercises cannot show it, because an isolated note with a rest after it is the case that already works.
 
 ## Timing Diagnosis
 
