@@ -115,6 +115,15 @@ one of five answers: `fine`, `latency`, `scatter`, `mixed`, `per_string`.
 - **The histogram is the diagnosis.** One narrow hill away from zero is latency and K removes it; one wide hill over zero is the playing and
   no offset touches it; a split between strings is the detector, and one global offset cannot fix that either. The axis always contains zero,
   because how far the group sits FROM the beat is the thing being shown.
+- **Only a note that really sounded its written pitch, on a pick of its own, may be timed** (`_times_its_own_strike`). A dead note has no pitch;
+  a bent or sliding one leaves its written pitch deliberately, and the collector reports the pitch it moved TO; a hammered, pulled or slid-into
+  one is never picked, so any strike credited to it belongs elsewhere. A hammer-on SOURCE is picked normally and still counts. This cost real
+  damage before it was enforced: a run over the technique test put 18 of its 24 samples on technique notes, scattered by ±75 ms, and `K` built
+  an offset out of it that then sat in the config for days swallowing a third of the real latency. Under the rule those 24 samples become 6 —
+  below the minimum — and `K` stays silent, which is the right answer. Real songs keep 88-92 % of their notes measurable.
+- **`K` and the HUD line that advertises it read the same verdict.** They used to apply different thresholds to the same samples, so the line
+  could offer a key that then did nothing — the failure that teaches a player the panel lies. One helper answers both, and the test asserts the
+  property rather than the wording: the line offers `K` exactly when pressing `K` changes the offset.
 - **Nothing is claimed inside its own noise.** A median built from loose strikes lands twenty-odd ms off the beat by chance, and two per-string
   medians of a couple of dozen samples differ by tens of ms the same way. Both are tested against the standard error of a median
   (`MEDIAN_SE_FACTOR`) before being called an effect — the same presumption of innocence the chord verifier runs on.

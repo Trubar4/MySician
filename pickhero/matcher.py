@@ -706,6 +706,35 @@ class NoteMatcher:
         needed = abs(median) + SEARCH_SPREAD_MULTIPLE * spread
         return min(LATENCY_SEARCH_MS, max(MIN_SEARCH_MS, needed))
 
+    def _times_its_own_strike(self, note: NoteEvent) -> bool:
+        """Whether this note can honestly say when it was played.
+
+        The timing report answers "how far from the beat do you pick", so a
+        note may only contribute if its written pitch really sounds at its
+        written moment, on a pick of its own. Three kinds cannot:
+
+        - a dead note has no pitch at all; its fret says where the hand damps
+        - a bent or sliding note leaves its written pitch on purpose, and the
+          collector reports the settled pitch, which is the one it moved TO
+        - a hammered, pulled or slid-into note is never picked at all, so any
+          strike credited to it belongs to something else
+
+        A hammer-on SOURCE is picked normally at its written pitch and keeps
+        contributing. This is the same rule the report already applied to dead
+        notes, carried through: measuring against a pitch that did not sound
+        when it was written invents the number it then reports. It cost real
+        damage once -- a run over a technique test scattered by +-75 ms, and
+        the offset built from it sat in the config for days.
+        """
+        if note.dead:
+            return False
+        key = (note.timestamp_ms, note.string)
+        if key in self._pitch_ranges:      # bend, or a slide in any direction
+            return False
+        if key in self._legato_sources:    # never picked; inherits its source
+            return False
+        return True
+
     def _record_timing_sample(self, adjusted_ms: float, detected_midi: int) -> None:
         """Measure the strike's offset from the nearest pitch-matching tab note.
 
@@ -728,9 +757,7 @@ class NoteMatcher:
         for note in candidates:
             if self._is_filtered(note):
                 continue
-            # A dead note's written pitch never sounds, so measuring a strike
-            # against it would put a made-up number into the timing report.
-            if note.dead:
+            if not self._times_its_own_strike(note):
                 continue
             dist = semitone_distance(detected_midi, note.midi_note)
             octave_dist = dist % 12 if dist >= 12 else dist

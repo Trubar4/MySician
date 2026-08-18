@@ -851,6 +851,84 @@ class TestUnpitchedChordCredit:
         assert matcher.get_note_state(notes[1]) == MatchType.PENDING
 
 
+class TestOnlyHonestNotesAreTimed:
+    """A note may only say when it was played if it really was.
+
+    The report answers "how far from the beat do you pick", so a note whose
+    written pitch does not sound at its written moment, or which is never
+    picked at all, can only invent the number it contributes. It did real
+    damage: a run over a technique test scattered by +-75 ms, K applied an
+    offset built from it, and that offset sat in the config for days quietly
+    swallowing a third of the real latency.
+    """
+
+    def _timed(self, **kw) -> bool:
+        note = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=64,
+                         string=1, fret=5, **kw)
+        following = NoteEvent(timestamp_ms=1400.0, duration_ms=400.0,
+                              midi_note=67, string=1, fret=8)
+        matcher = _make_matcher([note, following])
+        return matcher._times_its_own_strike(note)
+
+    def _target_timed(self, **lead_kw) -> bool:
+        lead = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=64,
+                         string=1, fret=5, **lead_kw)
+        target = NoteEvent(timestamp_ms=1400.0, duration_ms=400.0,
+                           midi_note=67, string=1, fret=8)
+        matcher = _make_matcher([lead, target])
+        return matcher._times_its_own_strike(target)
+
+    def test_a_plain_note_is_timed(self):
+        assert self._timed()
+
+    def test_a_bent_note_is_not(self):
+        """It leaves the written pitch on purpose, and the collector reports
+        the settled pitch -- the one it moved TO."""
+        assert not self._timed(bend=((0.0, 0.0), (1.0, 2.0)))
+
+    def test_a_sliding_note_is_not(self):
+        assert not self._timed(slide_to_next=True)
+
+    def test_a_note_slid_into_or_out_of_is_not(self):
+        assert not self._timed(slide_in=1)
+        assert not self._timed(slide_out=-1)
+
+    def test_a_dead_note_is_not(self):
+        assert not self._timed(dead=True)
+
+    def test_a_hammer_SOURCE_is_timed(self):
+        """It is picked normally, at its written pitch, on the beat. Only the
+        target is exempt -- excluding both would throw away half a legato
+        passage for nothing."""
+        assert self._timed(hammer_to_next=True)
+
+    def test_a_hammered_TARGET_is_not(self):
+        assert not self._target_timed(hammer_to_next=True)
+
+    def test_a_slide_target_is_not(self):
+        assert not self._target_timed(slide_to_next=True)
+
+    def test_a_palm_muted_note_is_still_timed(self):
+        """The picking hand shortens the note; it does not move the pitch or
+        the moment it was struck."""
+        assert self._timed(palm_mute=True)
+
+    def test_a_technique_note_contributes_no_sample(self):
+        """The rule where it actually bites: through the real code path."""
+        bent = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=64,
+                         string=1, fret=5, bend=((0.0, 0.0), (1.0, 2.0)))
+        matcher = _make_matcher([bent])
+        matcher.process_detected_notes([_detected(64, 1050.0)], 1050.0)
+        assert matcher.timing_samples == []
+
+    def test_a_plain_note_still_contributes_one(self):
+        plain = _note_event(1000.0, midi_note=64)
+        matcher = _make_matcher([plain])
+        matcher.process_detected_notes([_detected(64, 1050.0)], 1050.0)
+        assert len(matcher.timing_samples) == 1
+        assert matcher.timing_samples[0].delta_ms == pytest.approx(50.0)
+
+
 class TestTimingReport:
     """The report exists to say WHICH timing problem this is.
 
