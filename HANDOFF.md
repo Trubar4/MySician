@@ -46,7 +46,7 @@ all work is pushed there. The previous branch
 
 ## State
 
-497 tests (`python -m pytest tests -q`). Everything below is implemented,
+499 tests (`python -m pytest tests -q`). Everything below is implemented,
 calibrated where it needed calibrating, and pushed.
 
 **Working:** GP3–GP5 loading, track picker, scrolling display with per-song
@@ -166,6 +166,8 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 | `analyze_reference.py` | Per-string verdict table over a take set; counts false alarms. |
 | `sweep_chord_window.py` | How short may the chord window get before it lies? |
 | `check_chord_credit.py` | Does crediting a pitchless strum still catch a wrong finger? Exits non-zero if not. |
+| `record_reference.py --play-along` | Records the player playing a song through — the case the 29 isolated exercises do not contain. |
+| `analyze_play_along.py` | Per written onset: heard right, heard as the wrong note, or not heard at all. Aligns itself to the tab. |
 | `simulate_timing.py` | Does the timing report name a fault that was injected on purpose? |
 
 Generate the test songs with `python tools/make_*_test.py`; they land in `songs/`.

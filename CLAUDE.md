@@ -107,6 +107,30 @@ power chords 38 of 39.
 - For an error take the tab must be the CORRECT shape: the manifest records what was **played**, so telling the verifier to expect the wrong
   note asks it whether the error is the error it was given, and it rightly says no.
 
+## Ringing Strings Defeat Detection
+
+Measured with one note per string at a time (a new note on a string physically stops the old one — a summed test that lets both ring is
+the synthetic trap `CLAUDE.md` warns about, and it produced a wrong root cause before this was corrected):
+
+| passage | sustain | pitch detected correctly |
+|---|---|---|
+| quarters moving ACROSS strings | damped | 8/8 |
+| quarters moving ACROSS strings | left ringing | **3/8** |
+| pedal riff, all on one string | left ringing | 8/8 |
+
+A line that walks across the neck while the strings it left keep sounding is polyphony, and monophonic YIN reports one pitch for it. On one
+string the problem cannot arise. The collector's `SKIP_FRAMES` is NOT the lever — sweeping it from 3 to 12 changes nothing, because the old
+note is still physically present however long you wait.
+
+Confirmed at the instrument, not only in simulation: the player reports that muting after every note makes far more of it register, and that the
+first note registers reliably once the string is damped before the next one. Over the whole timing test the same split appears — **59 % with
+everything left ringing, 100 % with each string damped as it is left**.
+
+The share that remains unexplained is the size of the effect, not its direction: the player measures ~24 %, well below the 59 % the model
+gives, so a real guitar (sympathetic resonance, richer partials, longer sustain) is worse than the synthesis. Closing that gap needs the
+song **played**, which `record_reference.py --play-along` records and `tools/analyze_play_along.py` reads back per onset — the 29 isolated
+exercises cannot show it, because an isolated note with a rest after it is the case that already works.
+
 ## Timing Diagnosis
 
 Two numbers cannot say which timing problem a player has, so `matcher.timing_report()` (shown by **Y**) keeps the samples apart and names

@@ -80,7 +80,11 @@ def _sections():
                     [(QUARTER, n) for n in QUARTER_LINE[4:]]]
     chord_bar = [(QUARTER, c) for c in POWER_CHORDS]
     eighth_bar = [(EIGHTH, n) for n in PEDAL_RIFF]
-    chord_eighths = [(EIGHTH, c) for c in POWER_CHORDS] * 2
+    # Four chugs, then two beats to breathe. Sixteen power chords back to back
+    # is a stamina exercise, not a timing test, and a passage the player
+    # dreads is one that gets skipped -- which measures nothing at all.
+    chord_eighths = ([(EIGHTH, c) for c in POWER_CHORDS]
+                     + [(QUARTER, REST), (QUARTER, REST)])
     offbeat_bar = [
         item for note in QUARTER_LINE[:2]
         for item in ((QUARTER, REST), (QUARTER, note))
