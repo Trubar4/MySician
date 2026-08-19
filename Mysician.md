@@ -1,0 +1,38 @@
+Mein Rat: stell ihn per F auf 24,
+
+
+
+**Features:**
+○ Taste, um Midi zu muten
+○ Ich hätte gerne eine Möglichkeit auch echte MP3s Background mitlaufen zu lassen.
+Dafür brauche ich einen Datei-Auswähler zur Wahl des MP3s (Quelladresse wir gespeichert zum Song). Außerdem möchte ich es starten können (oder abschalten). Außerdem brauche ich eine Möglichkeit es zu Syncen, damit es mit den MIDI Klicks und der Visualisierung synchron läuft. Auch das muss gespeichert werden.
+
+
+
+**Prüfen:**
+○ Bending
+○ Sliding
+○ Hammer on / pull off
+○ Farbschema
+
+cd C:\\Users\\Admin.vscode\\MySician\\mysician\\mysician
+git pull origin claude/mysician-timing-measurement-au2v0m
+.venv\\Scripts\\Activate.ps1
+python -m pytest tests -q
+python tools\\make\_technique\_test.py
+
+Kopieren des Test-files
+python -m pickhero
+
+Bild	Bedeutung	Abhilfe
+Schmaler Hügel neben der Null	Latenz	K drücken
+Breiter Hügel über der Null	Streuung (du)	Langsamer üben (PgDn), Fenster weiten (G)
+Beides	Gemischt	K, danach bleibt Streuung übrig
+Saiten mit verschiedenen Medianen	der Detektor reagiert je Saite anders	Kein globaler Offset hilft
+
+○ Shift+Y schreibt die Rohmesswerte als CSV neben deine Einstellungen. Wenn der Befund unklar ist, schick mir die Datei.
+
+* timing\_test\_100bpm.gp5 laden, Audio an (A), einmal ganz durchspielen.
+* Y drücken.
+* Schick mir einen Screenshot — oder Shift+Y und die CSV.
+
