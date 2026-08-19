@@ -1,7 +1,6 @@
 # MySician — Session Handoff Notes
 
-Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-17
-(muting session).
+Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-19.
 
 `CLAUDE.md` says how the app is built and why. This file says where it stands,
 what the user's setup is, and what is still open.
@@ -228,23 +227,60 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    200 ms and the required spacing is ~255 ms, i.e. eighths to about 118 BPM
    instead of 90. Faster than that still gets no verdict, which is the honest
    answer at that speed.
-3. **Bend evaluation.** The visual exists; scoring is deliberately lenient
+3. **FIRST: re-measure detection now that the clock bug is gone, and finish
+   it.** Everything measured before 2026-08-19 was measured THROUGH a bug that
+   froze the sample clock on every dropped buffer, so every accuracy figure
+   from inside the app is suspect. The player's own take reads at 91 % through
+   the detector alone. **Step one of the next session is a fresh run of
+   `songs/timing_test_100bpm.gp5`** — accuracy, the `Audio dropouts` line, and
+   `Shift+Y`. Only what survives that is a real detection problem. Likely
+   candidates if anything remains: the confidence threshold (0.65 vs 0.80 was
+   measured as marginal — +2 power-chord and +4 chord strikes, but one extra
+   WRONG pitch on single notes, over only 150 strikes), and the doubled strikes
+   seen on isolated chord takes.
+4. **Ringing strings.** Real and measured (59 % everything ringing vs 100 %
+   damped over the whole timing test), confirmed by the player at the
+   instrument. Much smaller than the clock bug was, so re-measure before
+   designing anything. `CLAUDE.md`, "Ringing Strings Defeat Detection".
+5. **MP3 backing track.** The player's feature request, assessed as a
+   moderate, non-research job. Wanted: a file picker, per-song path, on/off,
+   and a per-song sync offset. Most of the machinery exists — `Config` already
+   stores a per-song backing offset and `N`/`M` shift it live; `pygame.mixer.music`
+   plays MP3 with position control. The only real question is the picker:
+   PyGame has no file dialog, so either `tkinter.filedialog` (ten lines, gives
+   the native Windows dialog) or a PyGame browser like `download_menu.py`.
+   Recommend tkinter. Two things to settle with the player first: MP3 and MIDI
+   backing as ALTERNATIVES (`B` cycling off → MIDI → MP3) rather than layered,
+   and the fact that MP3 encoder delay varies per file, which is why the manual
+   per-song sync is a requirement rather than a convenience.
+6. **Settings screen.** 41 keys are handled and the footer needs two lines.
+   Proposed split: shortcuts stay for everything used WHILE playing (space, K,
+   W, L, tempo — hands are on the guitar), a settings screen for everything set
+   once (device, noise gate, hit window, fret filter, muted strings, chord mode,
+   theme, backing offset). The menu infrastructure already exists
+   (`menu.py`, `device_menu.py`, `download_menu.py`, `calibration_menu.py`).
+   A screen showing current state would have caught the fret-filter incident.
+7. **Bend evaluation.** The visual exists; scoring is deliberately lenient
    because nothing keeps the pitch contour — though the detector DOES produce
    one, at one frame per ~11.6 ms, which `OnsetPitchCollector` discards. The
    user's decisions: reaching the target too shallowly should score yellow (not
    red), and the target has to be held for the note's written length, roughly a
    quarter-tone accurate.
-4. **GP7 techniques.** The hand-written GP7 XML path carries muting but no bends
-   or slides.
-5. **Palm-mute leniency (unmeasured).** Whether a chug that returns no pitch at
-   all should credit its palm-muted note. Needs reference recordings, not a
-   guess — see `CLAUDE.md`, "Muting".
+8. **GP7 techniques** (deprioritised by the player). The hand-written GP7 XML
+   path carries muting but no bends or slides.
+9. **Palm-mute leniency** (deprioritised by the player, and unmeasured).
+   Whether a chug that returns no pitch at all should credit its palm-muted
+   note. Needs reference recordings, not a guess — see `CLAUDE.md`, "Muting".
 
 ## Conventions
 
 - Commit style: imperative subject + explanatory body saying *why*, not what.
   No model names anywhere in commits, PRs or code.
 - Always push to `claude/mysician-timing-measurement-au2v0m`.
+- **The player's local checkout drifted onto the old branch once.** Their pulls
+  still brought this work in (a pull merges into whatever is checked out), but
+  their pushes landed elsewhere and one push failed outright. If they report a
+  push error, check which branch they are on before looking anywhere else.
 - Run the full suite before pushing; add tests for every behaviour change.
 - **Verify signal-processing changes against the reference recordings**, not
   against intuition. Synthetic tones are a trap unless they carry the property
