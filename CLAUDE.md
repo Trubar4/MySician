@@ -89,14 +89,22 @@ tab as a prior. For each expected note it scores competing pitch hypotheses on t
 ## Chords That Produce No Pitch
 
 A strummed chord regularly gives monophonic YIN no single period to lock onto, so a correctly played strum arrives carrying no pitch at
-all. Measured over `reference_recordings/`: strikes with no confident pitch run at **16-17 % on one or two strings** and **38-55 % from four
+all. Measured over `reference_recordings/`: strikes with no confident pitch run at **16-20 % on one or two strings** and **38-55 % from four
 strings up** — an open A minor produced none in five strikes. Scored on pitch alone those strums are red however well they were fretted,
 which is the "chords are not recognised" the player reports. It is not a speed problem: a fast single-note riff detects 47 of 49 and fast
 power chords 38 of 39.
 
-- **An unpitched strike credits a written chord of `MIN_UNPITCHED_CHORD_STRINGS` (3) strings or more.** The threshold is where the data
-  breaks, not a feel: below three the detector nearly always does produce a pitch, so accepting a pitchless strike there would be leniency
-  bought with nothing. Single notes and power chords therefore keep the behaviour they had.
+- **An unpitched strike credits a written chord of `MIN_UNPITCHED_CHORD_STRINGS` (2) strings or more.** It was 3 for one cycle, on the
+  argument that a pitchless strike is rare below three strings and crediting it would be leniency bought with nothing. The rate was right and
+  the conclusion was wrong: a two-string power chord goes pitchless on **16-20 %** of strikes, which is one in five of every chord in a metal
+  song, and the question was never the rate but whether a wrong finger still shows. Re-measured through the real path
+  (`tools/check_chord_credit.py`, power-chord takes now part of it): correct E5 **8/10 → 10/10**, G5 8/10 → 10/10, palm-muted E5
+  **16/20 → 20/20**, fast E5 76/78 → 78/78 — and every deliberate one-fret error still caught, the palm-muted wrong take convicting **more**
+  strings (6 → 10), not fewer. A single written note stays uncredited: a lone note with no pitch is what a dead note is for, and that path
+  already exists.
+- **The fifth of a power chord can never be confirmed, and that is not the same as never being checked.** Its partials are a subset of the
+  root's, so a correctly played fifth is unprovable — but a fifth on the wrong fret sounds a different pitch, whose own partials convict it
+  normally. That is why crediting a two-string shape is safe, and it is what the four error takes in `check_chord_credit.py` hold in place.
 - **This credits the strum, not the fretting.** The strike still goes to `chord_verify.py`, which reads the raw audio and convicts any string
   it can positively show wrong. That is what makes crediting safe, and it is the same presumption of innocence run one level up: the strum
   is assumed played until a partial says otherwise.
@@ -160,6 +168,35 @@ Two things now answer that without another guess:
   stamp, playback position, pitch, confidence, what became of it — plus every written note's final verdict, plus the header that explains a
   run: resolved sample rate, dropped buffers, gate, thresholds, tempo, offsets, filters. `matcher.strike_trace` is written only and never
   read back by the matcher.
+
+## What A Run Log Answered, First Time Out
+
+The instrument paid for itself on the first run: **91.9 % (57/62)**, against 34.6 % on the run before it, with the log naming everything
+that was previously a guess — gate -65 dB, 0 dropped buffers, 44100 Hz resolved, no fret filter, no muted string, 0 strings taken back by
+the verifier, the clock anchored at 5.4 ms. Every candidate on the list was cleared by reading, not by trying things.
+
+What it could NOT say is which change did it, because two things moved at once: the fixes, and the player regenerating the timing test
+(their copy was the older 78-note build). The one difference nobody had considered is that the 34.6 % run had `record_reference.py`
+capturing from the same interface at the same time. **A score taken while the reference recorder is running is not evidence** until that is
+ruled out — the offline replay of that very take reads 97.4 % through the identical code.
+
+The five notes still lost were all named by the log rather than inferred: a two-string power chord that arrived pitchless (fixed, see the
+chord credit above) and two one-semitone misreads.
+
+## Rushing Is Not Scatter
+
+The player's timing report says `mixed` with a ±46 ms spread, which reads as loose playing. The exported samples say something more
+specific: inside every fast passage the error **ramps** from late to early and resets at the next phrase.
+
+| passage | samples | first | last | drift |
+|---|---|---|---|---|
+| quarters, 7.8-16.2 s | 16 | +16 ms | -52 ms | 0.8 % fast |
+| eighths, 17.4-23.1 s | 21 | +141 ms | -98 ms | **4.2 % fast** |
+| eighth chords, 24.6-25.5 s | 4 | +18 ms | -64 ms | 9.2 % fast |
+
+A ramp that resets at each phrase cannot be a clock (a clock would accumulate over the song and never jump back) and is not scatter either
+— it has a direction. It is the oldest fault in the book, and `K` cannot touch it. The report does not name it yet; the samples are in the
+`Shift+Y` CSV for whoever builds that.
 
 ## Ringing Strings Defeat Detection
 

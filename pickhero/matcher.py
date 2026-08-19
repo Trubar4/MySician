@@ -45,13 +45,25 @@ AMBIGUITY_RATIO = 2.0
 OPEN_SLIDE_SEMITONES = 2
 
 # How many strings a chord needs before a strike carrying no pitch at all is
-# accepted as having played it. Fitted on the reference recordings rather than
-# chosen: strikes that produce no confident pitch run at 16-17 % on one and two
-# strings, where the detector nearly always manages, and at 38-55 % from four
-# strings up, where a six-note strum gives monophonic YIN no single period to
-# lock onto. The jump sits between two strings and four, so three is the line.
-# Below it, accepting a pitchless strike would be leniency bought with nothing.
-MIN_UNPITCHED_CHORD_STRINGS = 3
+# accepted as having played it. Two, and the second string is where it has to
+# sit: a power chord is two strings and is most of what this player plays.
+#
+# It was three for one cycle, on the argument that a pitchless strike is rare
+# below three strings and crediting it would therefore be leniency bought with
+# nothing. The rate was right (16-17 % on one and two strings, against 38-55 %
+# from four up) and the conclusion was wrong -- 17 % of every power chord in a
+# song is not nothing, and the reason to hold the line was never the rate but
+# whether a wrong finger still shows. It does. Run over the reference power
+# chords by tools/check_chord_credit.py, with the credit extended to two
+# strings:
+#
+#   correct E5 8/10 -> 10/10, G5 8/10 -> 10/10, palm-muted E5 16/20 -> 20/20,
+#   fast E5 76/78 -> 78/78, and every deliberate one-fret error still caught
+#   (the palm-muted wrong take goes from 6 strings convicted to 10).
+#
+# One string stays uncredited, because a single written note with no pitch is
+# what a dead note is for, and that path is already there.
+MIN_UNPITCHED_CHORD_STRINGS = 2
 
 # Timing report. Bins are wide enough that a handful of samples still forms a
 # visible shape, narrow enough to separate latency from scatter by eye.
@@ -468,10 +480,10 @@ class NoteMatcher:
         A full chord gives monophonic YIN no single period to lock onto, so a
         correctly played strum routinely arrives carrying no note whatsoever.
         Measured on the reference recordings: 38-55 % of strikes on chords of
-        four strings and up produce no pitch, against 16 % on one or two.
-        Scored on pitch alone, those strums go red however well they were
-        fretted -- which is exactly what the player reports, and it is the
-        detector's limitation being charged to them.
+        four strings and up produce no pitch, and 16-20 % on a two-string
+        power chord. Scored on pitch alone, those strums go red however well
+        they were fretted -- which is exactly what the player reports, and it
+        is the detector's limitation being charged to them.
 
         This does not guess at the fretting, and it does not have to. The
         strike still goes to the chord verifier, which reads the raw audio and

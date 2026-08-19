@@ -766,8 +766,8 @@ class TestUnpitchedChordCredit:
 
     Monophonic YIN finds no single period in a six-string strum: on the
     reference recordings 38-55 % of strikes on chords of four strings and up
-    carry no note, against 16 % on one or two. Scored on pitch alone, those
-    strums go red however well they were fretted.
+    carry no note, and 16-20 % on a two-string power chord. Scored on pitch
+    alone, those strums go red however well they were fretted.
     """
 
     def _unpitched(self, timestamp_ms: float,
@@ -798,13 +798,17 @@ class TestUnpitchedChordCredit:
         matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
         assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
 
-    def test_a_power_chord_is_not(self):
-        """Two strings nearly always do produce a pitch, so accepting a
-        pitchless strike there would be leniency bought with nothing."""
+    def test_a_power_chord_is_credited_too(self):
+        """Two strings was the line for one cycle, on the argument that a
+        pitchless strike is rare there. The rate was right and the conclusion
+        was wrong: 16-20 % of every power chord in a metal song is not
+        nothing, and the reference takes show a wrong finger is still caught
+        (correct palm-muted E5 goes 16/20 -> 20/20 credited, and the wrong one
+        has MORE strings convicted, not fewer)."""
         notes = self._chord(2)
         matcher = _make_matcher(notes)
         matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
-        assert all(matcher.get_note_state(n) == MatchType.PENDING for n in notes)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
 
     def test_a_single_note_is_not(self):
         notes = self._chord(1)
@@ -839,16 +843,15 @@ class TestUnpitchedChordCredit:
 
     def test_dead_notes_are_not_counted_toward_the_chord(self):
         """A dead note has its own rule and sounds no pitch, so it must not
-        push a two-string shape over the line."""
-        notes = self._chord(2) + [
+        push a one-string shape over the line."""
+        notes = self._chord(1) + [
             NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=52,
                       string=4, fret=0, dead=True)
         ]
         matcher = _make_matcher(notes)
         matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
-        assert matcher.get_note_state(notes[2]) == MatchType.HIT      # the dead one
+        assert matcher.get_note_state(notes[1]) == MatchType.HIT      # the dead one
         assert matcher.get_note_state(notes[0]) == MatchType.PENDING
-        assert matcher.get_note_state(notes[1]) == MatchType.PENDING
 
 
 class TestOnlyHonestNotesAreTimed:

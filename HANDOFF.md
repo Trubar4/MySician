@@ -56,7 +56,8 @@ chords, per-string chord verification, wait mode, latency auto-sync, bends,
 slides, hammer-ons and pull-offs (drawn and scored), palm mutes and dead notes
 (drawn and scored), progress tracking.
 
-**Known-imperfect:** chord verification abstains on chords closer than ~255 ms
+**Known-imperfect:** the timing report calls rushing "scatter" (topic 3a).
+Chord verification abstains on chords closer than ~255 ms
 (eighths past about 118 BPM). GP7 files load with muting but no bends or
 slides. Timing is measured and answered: plain input latency, which `K`
 removes.
@@ -102,6 +103,22 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 
 ## What this session changed (newest first)
 
+-11. **A pitchless power chord now counts.** `MIN_UNPITCHED_CHORD_STRINGS`
+   goes from 3 to 2. The old line was drawn on a rate (a pitchless strike is
+   rare below three strings) when the question was whether a wrong finger
+   still shows — and it does. Measured through the real path with the power
+   chords added to `check_chord_credit.py`: correct E5 8/10 → 10/10, G5
+   8/10 → 10/10, **palm-muted E5 16/20 → 20/20**, fast E5 76/78 → 78/78, and
+   every deliberate one-fret error still caught, the palm-muted wrong take
+   convicting 10 strings instead of 6. This is the metal case: one in five
+   power-chord strikes arrives with no pitch at all.
+-10. **The run log worked first time.** 91.9 % (57/62) against 34.6 %, with
+   every previous suspect cleared by reading the file instead of trying
+   things — see topic 3, and `CLAUDE.md`, "What A Run Log Answered, First
+   Time Out". Two findings came out of it that are not scoring bugs: the
+   player rushes 4 % inside fast passages (topic 3a), and the
+   `20260818_194323` reference set is silent and must not be calibrated
+   against (topic 3b).
 -9. **Detection is not the problem, and now there is proof.** The player's
    fresh take (`reference_recordings/20260819_195251`) scored 34.6 % in the
    app. The same WAV, through the same detector, the same `AudioCapture`
@@ -264,8 +281,32 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    200 ms and the required spacing is ~255 ms, i.e. eighths to about 118 BPM
    instead of 90. Faster than that still gets no verdict, which is the honest
    answer at that speed.
-3. **FIRST: find where the app loses notes the detector heard.** This is now
-   a narrow question with a measurement behind it, not an open one.
+3. ~~**Find where the app loses notes the detector heard.**~~ **LARGELY
+   CLOSED — 2026-08-19, second session.** The next run scored **91.9 %
+   (57/62)** with the run log attached, against 34.6 % before. What is left
+   of this topic is small and named:
+
+   - **The 34.6 % run has no confirmed cause, and one untested suspect.**
+     Two things changed between the runs: the fixes below, and the player
+     regenerating the timing test (their copy was the older 78-note build).
+     Neither explains it on its own — the offline replay of that take reads
+     97.4 % against the OLD file too. The one difference nobody weighed is
+     that `record_reference.py` was capturing from the same interface at the
+     same time. **Worth one experiment**: play the test once with the
+     recorder running. If the score collapses again, every in-app score taken
+     during a play-along recording is void, which matters for every future
+     measurement. If it does not, the fixes did it and this is finished.
+   - **Two one-semitone misreads** remain (a 47 read as 48, a 45 read as 44),
+     which is the detector's honest resolution, not a bug. Nothing to do
+     unless it grows.
+   - **The pitchless power chord is fixed** — see topic 2 below and
+     `CLAUDE.md`, "Chords That Produce No Pitch". That was the other two
+     notes.
+   - The old candidate list is dead: gate -65 dB, 0 dropped buffers, 44100 Hz
+     resolved, no fret filter, no muted string, 0 strings taken back, clock
+     anchored at 5.4 ms. All read off the log rather than tried.
+
+   The evidence that closed it, kept for reference:
 
    The player's 2026-08-19 take, scored by the app at **34.6 % (27/78)**,
    reads as follows when the recording is put through the same code offline:
@@ -285,26 +326,28 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    offline: its timing samples sit at the right places with a small median, so
    the strikes it did see were stamped correctly.
 
-   **Step one: one run with the run log.** `D`, or just play a song to the
-   end — the file lands in `~/.pickhero/run_<song>_<stamp>.txt`. It answers,
-   in order: how many strikes the audio thread produced at all; whether their
-   stamps agree with the playback clock; whether the gate, the confidence
-   threshold, a fret filter or a muted string was quietly eating them; and
-   whether the string check took anything back. Do not build before reading
-   one.
+   Still parked, and still not worth touching without more data: the
+   confidence threshold (0.65 vs 0.80 measured as marginal — +2 power-chord
+   and +4 chord strikes, but one extra WRONG pitch on single notes, over 150
+   strikes) and doubled strikes on isolated chords (one shows in the 91.9 %
+   log at 12.1 s, harmless to the score).
 
-   Candidates the log will confirm or kill: the noise gate (`X`/`C` — the same
-   take drops to 80 % at a -40 dB gate and to 52 % at -30 dB, against 96 % at
-   the -60 dB default), a mid-song speed change under the old, un-anchored
-   clock, and a second audio stream left open by `_start_audio`. The two
-   longer-standing candidates stay parked until then: the confidence threshold
-   (0.65 vs 0.80 measured as marginal — +2 power-chord and +4 chord strikes,
-   but one extra WRONG pitch on single notes, over 150 strikes) and doubled
-   strikes on isolated chords.
+3a. **Rushing, which the timing report calls scatter.** New, and the player's
+   own samples say it plainly: inside every fast passage the error ramps from
+   late to early and resets at the next phrase — 0.8 % fast on quarters,
+   **4.2 % on eighths**, 9.2 % on the eighth-note chords. A ramp that resets
+   cannot be a clock and is not scatter; it has a direction, and `K` cannot
+   touch it. The report says `mixed` and sends them to practise slower, which
+   is not wrong but is far less useful than "you speed up inside runs". A
+   per-passage slope, tested against its own standard error the way the median
+   and the per-string gap already are, would name it. See `CLAUDE.md`,
+   "Rushing Is Not Scatter". **The player has not asked for this** — it sits
+   behind their four priorities.
 
-   Housekeeping for the same run: the player's local timing test is the older
-   78-note build. `python tools/make_timing_test.py` regenerates the current
-   one, whose eighth-note chord section has room to breathe.
+3b. **`reference_recordings/20260818_194323` is unusable and should not be
+   calibrated against.** Every take peaks at -58 dBFS with an RMS of -70;
+   the detector finds zero strikes in the whole set. Use `20260814_160019`,
+   which is what every threshold in `chord_verify.py` was fitted on.
 4. **Ringing strings.** Real and measured (59 % everything ringing vs 100 %
    damped over the whole timing test), confirmed by the player at the
    instrument. Much smaller than the clock bug was, so re-measure before

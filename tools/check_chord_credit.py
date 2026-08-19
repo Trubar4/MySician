@@ -55,6 +55,20 @@ CASES = [
     ("34_Amin_ok", "34_Amin_ok", False),
     ("35_Amin_B_open", "34_Amin_ok", True),
     ("36_Dmaj_ok", "36_Dmaj_ok", False),
+    # Power chords. Two strings, and the shape this player spends most of a
+    # song on -- which is why the credit reaches down to two. The fifth of a
+    # power chord cannot be CONFIRMED (its partials are a subset of the
+    # root's), but a fifth on the wrong fret is a different pitch and is
+    # convicted normally, which is what these four takes are here to hold.
+    ("20_E5_ok", "20_E5_ok", False),
+    ("21_E5_sharp", "20_E5_ok", True),
+    ("22_E5_flat", "20_E5_ok", True),
+    ("24_G5_ok", "24_G5_ok", False),
+    ("25_G5_sharp", "24_G5_ok", True),
+    ("26_A5_ok", "26_A5_ok", False),
+    ("27_E5_palm", "27_E5_palm", False),
+    ("28_E5_palm_sharp", "27_E5_palm", True),
+    ("40_E5_fast", "20_E5_ok", False),
 ]
 
 
