@@ -1,0 +1,23 @@
+{
+  "created": "2026-08-19T19:49:31",
+  "samplerate": 48000,
+  "channels": 1,
+  "device": "Analogue 1 + 2 (Focusrite USB A",
+  "tuning_offset_semitones": 0,
+  "takes": [
+    {
+      "id": "play_along",
+      "block": 99,
+      "title": "Durchgespielt: timing_test_100bpm.gp5",
+      "file": "play_along.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [],
+      "expected_midi": [],
+      "song": "timing_test_100bpm.gp5",
+      "seconds": 45.0,
+      "peak_dbfs": -11.7,
+      "rms_dbfs": -32.2
+    }
+  ]
+}
