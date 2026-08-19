@@ -316,10 +316,19 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    plays MP3 with position control. The only real question is the picker:
    PyGame has no file dialog, so either `tkinter.filedialog` (ten lines, gives
    the native Windows dialog) or a PyGame browser like `download_menu.py`.
-   Recommend tkinter. Two things to settle with the player first: MP3 and MIDI
-   backing as ALTERNATIVES (`B` cycling off → MIDI → MP3) rather than layered,
-   and the fact that MP3 encoder delay varies per file, which is why the manual
-   per-song sync is a requirement rather than a convenience.
+   **Both questions are now settled by the player (2026-08-19):**
+
+   - **MP3 and MIDI must be switchable INDEPENDENTLY, not cycled.** Not a
+     preference — a workflow: he needs both sounding at once to line the MP3
+     up against the click, and switches one off once it is synced. A `B` that
+     cycles off → MIDI → MP3 makes exactly the state he needs unreachable. So:
+     one toggle each, either or both, and the per-song sync offset applies to
+     the MP3.
+   - **The file picker is the native Windows dialog** (`tkinter.filedialog`).
+
+   MP3 encoder delay varies per file, which is why the manual per-song sync is
+   a requirement rather than a convenience — and why the two-at-once state
+   above is what makes it usable at all.
 6. **Settings screen.** 41 keys are handled and the footer needs two lines.
    Proposed split: shortcuts stay for everything used WHILE playing (space, K,
    W, L, tempo — hands are on the guitar), a settings screen for everything set
