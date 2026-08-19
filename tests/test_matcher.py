@@ -1145,3 +1145,56 @@ class TestTimingSampleYield:
         assert matcher.timing_samples == []
         assert matcher.timing_ambiguous == 0
         assert matcher.timing_report() is None
+
+
+class TestStrikeTrace:
+    """One line per strike, so a bad run can be read instead of guessed at.
+
+    The same recording scored 35 % in the app and 97 % through the same
+    detector and matcher offline, and no number on screen could say which of
+    the steps in between lost the notes. These lines are what was missing.
+    """
+
+    def test_a_hit_is_recorded_with_the_note_it_was_credited_to(self):
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        matcher.process_detected_notes([_detected(64, 1010.0)], 1010.0)
+        trace = matcher.strike_trace
+        assert len(trace) == 1
+        assert trace[0].outcome == "hit"
+        assert trace[0].note_ms == 1000.0
+        assert trace[0].semitones == 0
+
+    def test_a_strike_nothing_explains_is_recorded_too(self):
+        """The interesting case: a strike that happened and scored nothing.
+        Without a line for it, such a run looks like silence."""
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        matcher.process_detected_notes([_detected(50, 1010.0)], 1010.0)
+        assert [t.outcome for t in matcher.strike_trace] == ["unmatched"]
+
+    def test_it_keeps_the_raw_stamp_next_to_the_adjusted_one(self):
+        """A run whose offset is wrong looks exactly like one whose detection
+        is bad, unless both numbers are kept."""
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)],
+                                audio_offset_ms=-60.0)
+        matcher.process_detected_notes([_detected(64, 1050.0)], 1050.0)
+        trace = matcher.strike_trace[0]
+        assert trace.strike_ms == 1050.0
+        assert trace.adjusted_ms == pytest.approx(990.0)
+
+    def test_a_close_match_says_how_far_off_it_was(self):
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        matcher.process_detected_notes([_detected(65, 1000.0)], 1000.0)
+        assert matcher.strike_trace[0].outcome == "close"
+        assert matcher.strike_trace[0].semitones == 1
+
+    def test_reset_clears_it(self):
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        matcher.process_detected_notes([_detected(64, 1000.0)], 1000.0)
+        matcher.reset()
+        assert matcher.strike_trace == []
+
+    def test_a_sustained_frame_is_not_a_strike(self):
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        matcher.process_detected_notes(
+            [_detected(64, 1000.0, is_onset=False)], 1000.0)
+        assert matcher.strike_trace == []

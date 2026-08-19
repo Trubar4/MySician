@@ -822,7 +822,8 @@ class TestFooterCompleteness:
     LABELS = {
         "SPACE": "SPACE", "ESCAPE": "ESC", "LEFT": "LEFT", "RIGHT": "RIGHT",
         "HOME": "HOME", "PAGEDOWN": "PgDn", "PAGEUP": "PgUp", "TAB": "TAB",
-        "a": "A: audio", "b": "B: backing", "c": "X/C", "f": "F: frets",
+        "a": "A: audio", "b": "B: backing", "c": "X/C", "d": "D: run log",
+        "f": "F: frets",
         "g": "G: hit window", "h": "H: help", "i": "I/O", "j": "J: strings",
         "k": "K: sync", "l": "L: weakest", "m": "N/M", "n": "N/M",
         "o": "I/O", "p": "P: toggle", "t": "T: theme", "v": "V: chords",
@@ -1104,3 +1105,189 @@ class TestSyncLineIsAlwaysThere:
         assert screen._config.audio_latency_offset_ms == 0.0
         # The state Shift+K produces still has a line to render.
         assert screen._sync_advice() != ""
+
+
+class TestAudioClockAnchor:
+    """Changing the practice speed must not move the strikes.
+
+    A strike is stamped in recorded time, which runs at real speed; the song
+    runs at a fraction of it. The product of the two is only a song position
+    when both are counted from the same moment, so touching the speed has to
+    move that moment -- otherwise every strike after the change is displaced
+    by (elapsed x change), which grows for the rest of the song and no sync
+    offset can take it back.
+    """
+
+    class _FakeCapture:
+        def __init__(self, elapsed_ms: float):
+            self._elapsed = elapsed_ms
+            self.drained = 0
+
+        def elapsed_ms(self) -> float:
+            return self._elapsed
+
+        def get_notes(self):
+            self.drained += 1
+            return []
+
+        def get_strike_windows(self):
+            return []
+
+    def _screen(self, *, elapsed_ms, playback_ms, tempo=1.0):
+        from pickhero.matcher import NoteMatcher
+        config = Config()
+        config.tempo_factor = tempo
+        screen = PlayingScreen(_make_timeline(), config=config)
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._audio_capture = self._FakeCapture(elapsed_ms)
+        screen._playback_ms = playback_ms
+        screen._audio_anchor_ms = 0.0
+        screen._audio_anchor_song_ms = 0.0
+        screen._matcher.audio_offset_ms = 0.0
+        return screen
+
+    def _song_position(self, screen, strike_ms):
+        """Where the app decides a strike stamped at strike_ms happened."""
+        return strike_ms * screen._tempo_factor + screen._matcher.audio_offset_ms
+
+    def test_a_strike_keeps_its_place_across_a_speed_change(self):
+        # 20 s of audio have gone by at full speed, so the song is at 20 s.
+        screen = self._screen(elapsed_ms=20_000.0, playback_ms=20_000.0)
+        screen.set_tempo_factor(0.8)
+        # The very next strike is stamped where the audio clock stands now,
+        # and must still read as the song position the player can see.
+        assert self._song_position(screen, 20_000.0) == pytest.approx(20_000.0)
+
+    def test_later_strikes_advance_at_the_new_speed(self):
+        screen = self._screen(elapsed_ms=20_000.0, playback_ms=20_000.0)
+        screen.set_tempo_factor(0.5)
+        # One further second of playing is half a second of song.
+        assert self._song_position(screen, 21_000.0) == pytest.approx(20_500.0)
+
+    def test_the_sync_offset_survives_the_change(self):
+        screen = self._screen(elapsed_ms=10_000.0, playback_ms=10_000.0)
+        screen._config.audio_latency_offset_ms = -60.0
+        screen.set_tempo_factor(0.75)
+        assert self._song_position(screen, 10_000.0) == pytest.approx(9_940.0)
+
+    def test_strikes_stamped_before_the_change_are_dropped(self):
+        """They were stamped under the old speed and would be read under the
+        new one, which puts them somewhere they never were."""
+        screen = self._screen(elapsed_ms=10_000.0, playback_ms=10_000.0)
+        screen.set_tempo_factor(0.9)
+        assert screen._audio_capture.drained == 1
+
+
+class TestRunLog:
+    """The file that says what the audio path actually did."""
+
+    def _played_screen(self):
+        from pickhero.audio.detector import DetectedNote
+        from pickhero.audio.input import TimestampedNote
+        from pickhero.matcher import NoteMatcher
+        notes = [
+            NoteEvent(timestamp_ms=1000.0, midi_note=40, string=6, fret=0,
+                      duration_ms=500.0, measure=0),
+            NoteEvent(timestamp_ms=2000.0, midi_note=45, string=5, fret=0,
+                      duration_ms=500.0, measure=0),
+        ]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "test.gp5"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        struck = TimestampedNote(
+            note=DetectedNote(40, 82.4, 0.95, "E2", True), timestamp_ms=1010.0)
+        screen._matcher.process_detected_notes([struck], 1010.0)
+        return screen
+
+    def _log_text(self, screen) -> str:
+        import io
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        return buffer.getvalue()
+
+    def test_it_names_the_practice_speed(self):
+        screen = self._played_screen()
+        screen._tempo_factor = 0.8
+        assert "tempo_percent\t80" in self._log_text(screen)
+
+    def test_every_strike_gets_a_line(self):
+        text = self._log_text(self._played_screen())
+        strikes = [line for line in text.splitlines() if "\thit\t" in line]
+        assert len(strikes) == 1
+
+    def test_a_strike_says_which_note_it_was_credited_to(self):
+        text = self._log_text(self._played_screen())
+        line = next(l for l in text.splitlines() if "\thit\t" in l)
+        assert line.split("\t")[8] == "1000.0"
+
+    def test_every_written_note_gets_a_verdict(self):
+        text = self._log_text(self._played_screen())
+        table = text.split("# every written note and how it ended up")[1]
+        rows = [r for r in table.splitlines() if r and not r.startswith("note_ms")]
+        assert len(rows) == 2
+
+    def test_a_note_never_struck_reads_as_pending_not_as_hit(self):
+        text = self._log_text(self._played_screen())
+        table = text.split("# every written note and how it ended up")[1]
+        assert "2000.0\t5\t45\tpending" in table
+
+    def test_the_counts_that_explain_a_bad_score_are_in_the_header(self):
+        text = self._log_text(self._played_screen())
+        for key in ("dropped_buffers", "sample_rate", "hit_window_ms",
+                    "sync_offset_ms", "strings_taken_back", "notes_written"):
+            assert f"{key}\t" in text
+
+    def test_writing_it_reports_where_it_went(self, tmp_path):
+        screen = self._played_screen()
+        screen._export_run_log()
+        assert "run_test_gp5_" in screen._run_log_note
+
+    def test_it_says_so_when_there_is_nothing_to_write(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._export_run_log()
+        assert "audio was off" in screen._run_log_note
+
+
+class TestHeardLine:
+    """A low score has two completely different causes and one number.
+
+    Notes never heard are a microphone problem; notes heard and not credited
+    are a matching problem. The completion screen has to say which, or the
+    next session is spent guessing again -- which is exactly what happened.
+    """
+
+    def _screen_with(self, outcomes, taken_back=0):
+        from pickhero.matcher import NoteMatcher, StrikeTrace
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._matcher.strike_trace = [
+            StrikeTrace(strike_ms=0.0, adjusted_ms=0.0, playback_ms=0.0,
+                        midi_note=40, confidence=0.9, unpitched=False,
+                        subharmonic=False, outcome=o, note_ms=None,
+                        semitones=None)
+            for o in outcomes
+        ]
+        screen._matcher.chord_strings_corrected = taken_back
+        return screen
+
+    def test_it_counts_the_strikes_that_were_heard(self):
+        screen = self._screen_with(["hit", "hit", "unmatched"])
+        assert "3 strikes heard" in screen._heard_line()
+
+    def test_it_counts_the_strikes_that_landed_separately(self):
+        screen = self._screen_with(["hit", "close", "unmatched"])
+        assert "2 of them landed" in screen._heard_line()
+
+    def test_a_taken_back_string_is_not_counted_as_a_strike(self):
+        """It is the same strike being judged again, not another one."""
+        screen = self._screen_with(["hit", "string_taken_back"], taken_back=1)
+        assert "1 strikes heard" in screen._heard_line()
+
+    def test_taken_back_strings_are_named_when_there_are_any(self):
+        screen = self._screen_with(["hit"], taken_back=2)
+        assert "2 strings taken back" in screen._heard_line()
+
+    def test_nothing_taken_back_says_nothing_about_it(self):
+        screen = self._screen_with(["hit"])
+        assert "taken back" not in screen._heard_line()

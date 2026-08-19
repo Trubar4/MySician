@@ -1,0 +1,8 @@
+# The branch recordings, logs and fixes belong on right now.
+#
+# Read by tools/record_reference.py so its upload hint names the branch that
+# is actually being read, not whatever happens to be checked out. A local
+# checkout drifts onto an old branch and stays there; a recording pushed to a
+# branch nobody reads has not been sent at all, which has already cost two
+# sessions. Whoever moves the work to a new branch updates this line.
+claude/mysician-timing-remeasure-uaj3t8

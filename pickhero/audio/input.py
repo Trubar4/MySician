@@ -490,6 +490,18 @@ class AudioCapture:
         """Return (frequency_hz, confidence) for tuner display. Thread-safe."""
         return (self._tuner_freq, self._tuner_confidence)
 
+    def elapsed_ms(self) -> float:
+        """Audio captured so far, in milliseconds, on the same clock as a
+        strike's timestamp.
+
+        The caller needs this to keep the mapping from recorded time to song
+        position anchored when the practice tempo changes mid-song: a strike
+        is stamped in real time, the song runs at a fraction of it, and
+        without a common reference point the two drift apart from the moment
+        the speed is touched.
+        """
+        return self._ring.written * 1000.0 / self._sample_rate
+
     def get_notes(self) -> list[TimestampedNote]:
         """Drain all pending detected notes from the queue (non-blocking)."""
         notes = []

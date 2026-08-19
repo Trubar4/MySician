@@ -6,86 +6,73 @@ Alles ab der Trennlinie in eine neue Unterhaltung kopieren.
 
 Wir arbeiten weiter an **MySician** (Repo `Trubar4/MySician`). Lies zuerst
 `HANDOFF.md` und `CLAUDE.md` — dort steht der Stand, mein Setup und warum die
-Dinge so gebaut sind, wie sie sind.
+Dinge so gebaut sind, wie sie sind. Der Branch, auf dem gearbeitet wird, steht
+in der Datei `UPLOAD_BRANCH` im Repo-Hauptverzeichnis.
 
 Kurz zu mir: ich bin nicht technisch ("vibecoding"). Bitte **auf Deutsch
 antworten**, Befehle zum Kopieren geben, und erklären, was eine Änderung für
 mich als Spieler bedeutet. Ich spiele vorwiegend Rock und Metal (auch Pop und
 Country) und übe bei Yousician auf Pro-Level — daran messe ich die App.
 
-**Branch:** Arbeite auf `claude/mysician-timing-measurement-au2v0m` bzw. auf
-dem, was in `HANDOFF.md` steht, falls der PR schon gemerged ist. Mein lokales
-Repo hing eine Weile auf einem alten Branch — falls `git push` bei mir
-fehlschlägt, ist das die Ursache.
+Meine Reihenfolge: **1. Erkennung fertig machen, 2. Klingende Saiten,
+3. MP3-Backing, 4. Einstellungsbildschirm.** GP7-Techniken und
+Palm-Mute-Nachsicht ganz hinten.
 
-## Reihenfolge, die ich will
+**Wichtig zum Einstieg: bau nichts, bevor du den Run-Log gelesen hast.**
 
-1. Erkennung fertig machen
-2. Klingende Saiten
-3. MP3-Backing
-4. Einstellungsbildschirm
+Stand der Messung (alles in `HANDOFF.md`, Punkt 3, mit Tabelle):
 
-**GP7-Techniken und Palm-Mute-Nachsicht bitte ganz hinten anstellen.**
+- Meine Aufnahme vom 19.08. wurde von der App mit **34,6 %** bewertet.
+- Dieselbe Aufnahme, durch denselben Detektor und denselben Matcher offline
+  laufen gelassen: **97,4 %**. Der Detektor allein hört 52 von 54 Anschlägen
+  richtig.
+- Es liegt also **nicht** an der Erkennung, nicht am Matching, nicht am
+  Akkord-Prüfer, nicht an verworfenen Puffern und nicht an der GP-Datei.
+- Wo genau die App die Noten verliert, ist noch offen. Genau dafür gibt es
+  jetzt den **Run-Log**.
 
-## Wichtig zum Einstieg: alle alten Messungen sind wertlos
+**Erster Schritt: ich spiele einmal `songs/timing_test_100bpm.gp5` durch.**
+Am Ende schreibt die App von selbst eine Datei nach
+`C:\Users\Admin\.pickhero\run_<song>_<zeit>.txt` (Taste **D** schreibt sie
+auch mitten im Song). Der Abschlussbildschirm sagt zusätzlich, wie viele
+Anschläge überhaupt **gehört** wurden — das trennt "gar nicht gehört" von
+"gehört, aber nicht gewertet". Frag mich nach dieser Datei und lies sie,
+bevor du irgendetwas änderst.
 
-In der letzten Sitzung kam heraus, dass die App bei jedem verworfenen
-Audio-Puffer ihre **Sample-Uhr angehalten** hat. Dadurch wurden alle folgenden
-Anschläge zu früh gestempelt, kumulativ, bis nichts mehr passte. An meiner
-echten Aufnahme gemessen: 42/46 Anschläge richtig gehört ohne Verluste,
-**17/46** mit 2 % Verlust nach altem Verhalten, 40/46 mit weiterlaufender Uhr.
-Der Fehler ist behoben.
+Was in `HANDOFF.md` als Verdächtige steht und der Log entscheidet: das
+Noise-Gate (dieselbe Aufnahme fällt bei -40 dB auf 80 %, bei -30 dB auf 52 %,
+gegen 96 % beim Standard -60 dB), ein Tempo-Wechsel mitten im Song unter der
+alten, nicht neu verankerten Uhr, und ein zweiter offener Audio-Stream. Die
+letzten beiden sind bereits repariert, aber ob sie im 34,6-%-Lauf beteiligt
+waren, sagt erst der Log.
 
-**Das heißt: jede Trefferquote, die vor dem 19.08. aus der laufenden App kam,
-ist durch diesen Fehler hindurch gemessen.** Die 24 %, die mich gestört haben,
-stammen von einer Aufnahme, die der Detektor selbst mit **91 %** liest.
+Kleinigkeit für denselben Lauf: meine `timing_test_100bpm.gp5` ist noch die
+alte Fassung mit 78 Noten. `python tools/make_timing_test.py` erzeugt die
+aktuelle, in der der Achtel-Akkord-Teil Luft bekommt.
 
-**Erster Schritt der Sitzung ist deshalb: frag mich nach einem frischen Lauf**
-von `songs/timing_test_100bpm.gp5` — Trefferquote, die Zeile `Audio dropouts`
-im HUD, und `Shift+Y`. Bau nichts an der Erkennung, bevor du weißt, was davon
-überhaupt noch übrig ist. Möglicherweise erledigt sich Punkt 1 von selbst.
+**Erledigt und nicht neu aufzurollen** (Details in `HANDOFF.md`):
 
-## Was zu Punkt 1 an Kandidaten offen ist
+- Timing: gemessen, Urteil `latency`, mit `K` erledigt. Per-Saiten-Offsets
+  sind ausgeschlossen.
+- Akkorde werden rot: Ursache gefunden und behoben, 54 % → 100 % bei null
+  Fehlalarmen.
+- Saiten-Urteile bei schnellen Akkorden: Grenze jetzt 255 ms.
+- Bundfilter überlebt keinen Neustart mehr; Notengröße/Vorschauzeit erledigt;
+  Stimmung steht im HUD.
+- Der Analyse-Fehler, der die letzte Sitzung gekostet hat: das Werkzeug las
+  eine bei 80 % gespielte Aufnahme gegen das 100-%-Raster und meldete 22 %
+  statt 96 %. Behoben, mit Test.
 
-Falls nach der Neumessung noch etwas fehlt, sind das die gemessenen
-Verdächtigen (Details in `HANDOFF.md`, Punkt 3):
-
-- **Konfidenzschwelle** 0,80 → 0,65: gemessen grenzwertig (+2 Powerchord- und
-  +4 Akkord-Anschläge, aber ein zusätzlicher **falscher** Ton bei Einzeltönen,
-  über nur 150 Anschläge Stichprobe). Nicht ohne mehr Daten ändern.
-- **Doppelte Anschläge** bei einzeln gespielten Akkorden (1 von 4, 2 von 4
-  Abständen unter 250 ms). Fürs Werten harmlos, verrauscht den Timing-Bericht.
-
-## Erledigt und nicht neu aufzurollen
-
-- **Timing**: gemessen, Urteil `latency`, mit `K` erledigt. Mittlerer Fehler
-  +4 ms bei ±13 ms Streuung, Status `synced`. **Per-Saiten-Offsets sind
-  ausgeschlossen** (9 ms Unterschied = Zufall), nicht offen.
-- **Akkorde werden rot**: Ursache war, dass ein Sechssaiten-Anschlag dem
-  monophonen YIN keine Periode gibt. Ein tonloser Anschlag schreibt jetzt einen
-  Akkord ab 3 Saiten gut, der Saitenprüfer kontrolliert weiterhin. 54 % → 100 %
-  bei null Fehlalarmen, alle absichtlichen Fehlgriffe weiter erkannt.
-- **Saiten-Urteile bei schnellen Akkorden**: die 335-ms-Grenze war veraltet,
-  nicht physikalisch. Jetzt 255 ms (Achtel bis ~118 BPM).
-- **Bundfilter**: überlebt keinen Neustart mehr.
-- **Notengröße/Vorschauzeit**: dichte Songs schrumpfen die Notenköpfe pro Song,
-  um auf 4 s Vorschau zu kommen. Die Bildrate war nie das Problem (74-106 FPS
-  gemessen).
-- **Stimmung** steht im HUD, gelb mit "← retune" wenn nicht Standard.
-
-## Meine Festlegungen (stehen auch in `HANDOFF.md`)
+**Meine Festlegungen** (stehen auch in `HANDOFF.md`):
 
 - Wo eine Note gegriffen wird, darf nie einen Unterschied machen.
 - Ein Oktavfehler darf grün bleiben.
 - Eine Dead Note zählt allein durch den Anschlag.
-- Ein zu flacher Bend ist gelb, nicht rot; die Zielhöhe muss so lange gehalten
-  werden wie geschrieben, etwa auf einen Viertelton genau.
+- Ein zu flacher Bend ist gelb, nicht rot; die Zielhöhe muss so lange
+  gehalten werden wie geschrieben, etwa auf einen Viertelton genau.
 - Bei Sechssaiten-Akkorden im Zweifel tolerant.
 
-## Zum MP3-Backing (Punkt 3)
-
-Ich will echte MP3s als Hintergrund mitlaufen lassen: Dateiauswahl, Pfad pro
-Song gespeichert, an/aus schaltbar, und ein Sync-Offset pro Song gespeichert,
-damit es zu Klick und Tab passt. Die Einschätzung steht in `HANDOFF.md`
-Punkt 5 — zwei Dinge sind vorab mit mir zu klären: ob MP3 und MIDI-Backing
+**Zum MP3-Backing (Punkt 3):** Dateiauswahl, Pfad pro Song gespeichert,
+an/aus schaltbar, Sync-Offset pro Song. Einschätzung in `HANDOFF.md`,
+Punkt 5. Zwei Dinge vorab mit mir klären: ob MP3 und MIDI-Backing
 Alternativen sein sollen statt übereinander, und der Dateidialog.

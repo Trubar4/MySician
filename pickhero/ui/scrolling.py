@@ -210,6 +210,16 @@ class PlayingScreen:
 
         self._tempo_factor = max(0.5, min(1.0, self._config.tempo_factor))
 
+        # Where the audio clock and the song clock were last agreed to be the
+        # same moment. A strike is stamped in recorded time, which runs at
+        # real speed; the song runs at a fraction of it. Multiplying one by
+        # the other is only correct from a common origin, so changing the
+        # practice speed has to move that origin -- otherwise every strike
+        # after the change is mis-stamped by (elapsed x change), which grows
+        # for the rest of the song and cannot be corrected by K.
+        self._audio_anchor_ms: float = 0.0       # audio clock at the anchor
+        self._audio_anchor_song_ms: float = 0.0  # song clock at the anchor
+
         self._playback_ms: float = 0.0
         self._playing = False
         self._last_tick: float | None = None
@@ -281,6 +291,7 @@ class PlayingScreen:
         self._show_help: bool = False
         self._show_timing: bool = False
         self._timing_export_note: str = ""
+        self._run_log_note: str = ""
         # Whether K has already been applied in this run. A residual after a
         # sync means something different to the player than an unmeasured one:
         # the first says "press K", the second says "press it again".
@@ -366,9 +377,32 @@ class PlayingScreen:
         factor = round(factor * 20) / 20  # round to nearest 0.05
         self._tempo_factor = factor
         self._config.tempo_factor = factor
+        # The song clock now runs at a different fraction of the audio clock,
+        # so the point where the two were last equal has to be moved to now.
+        self._reanchor_audio_clock()
         if self._matcher:
             self._matcher.reset()
         self._feedback.reset()
+
+    def _reanchor_audio_clock(self) -> None:
+        """Agree audio time and song time on the present moment.
+
+        Strikes already waiting in the queue were stamped before the change
+        and would be read with the new factor, so they are dropped: a handful
+        of strikes at the moment the speed is touched, against every strike
+        afterwards landing where it was played.
+        """
+        if self._audio_capture is None or self._matcher is None:
+            return
+        self._audio_capture.get_notes()
+        self._audio_capture.get_strike_windows()
+        self._audio_anchor_ms = self._audio_capture.elapsed_ms()
+        self._audio_anchor_song_ms = self._playback_ms
+        self._matcher.audio_offset_ms = (
+            self._audio_anchor_song_ms
+            - self._audio_anchor_ms * self._tempo_factor
+            + self._config.audio_latency_offset_ms
+        )
 
     def set_noise_gate_db(self, db: float) -> None:
         """Set noise gate threshold, clamped to [-80, -20] and rounded to int."""
@@ -535,6 +569,9 @@ class PlayingScreen:
                         )
                         self._weakest_sections = weakest
                         self._song_completed = True
+                    # Written whether or not anything scored: a run that
+                    # scored nothing is the one most worth reading.
+                    self._export_run_log()
                 elif not self._audio_enabled:
                     # Auto-scroll (passive) completion
                     self._weakest_sections = []
@@ -587,6 +624,8 @@ class PlayingScreen:
             self._cycle_theme()
         elif event.key == pygame.K_f:
             self._cycle_fret_limit()
+        elif event.key == pygame.K_d:
+            self._export_run_log()
         elif event.key == pygame.K_F1:
             self._toggle_string(1)
         elif event.key == pygame.K_F2:
@@ -1466,7 +1505,7 @@ class PlayingScreen:
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
             "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
-            "|  Y: timing report  |  H: help"
+            "|  Y: timing report  |  D: run log  |  H: help"
         )
         return transport, tools
 
@@ -1836,6 +1875,15 @@ class PlayingScreen:
             acc_surf = stat_font.render(accuracy_text, True, t.hud_text)
             surface.blit(acc_surf, (w // 2 - acc_surf.get_width() // 2, center_y + 60))
 
+            # How many strikes were HEARD at all, next to how many scored.
+            # Without it a low percentage says only that something is wrong;
+            # with it, it says which thing. Far fewer strikes than notes is
+            # the microphone path; as many strikes as notes and a low score
+            # is the matching, and they are fixed in different places.
+            heard_surf = hint_font.render(self._heard_line(), True, t.hud_text)
+            surface.blit(heard_surf,
+                         (w // 2 - heard_surf.get_width() // 2, center_y + 92))
+
             # "New Best!" indicator
             if self._is_new_best:
                 best_surf = stat_font.render("New Best!", True, (255, 220, 50))
@@ -1864,11 +1912,33 @@ class PlayingScreen:
             hint_text = "SPACE to replay  |  L to loop weak section  |  ESC to menu"
             hint_surf = hint_font.render(hint_text, True, t.hud_text)
             surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, hint_y))
+
+            # Where the run log went. A file written silently is a file
+            # nobody sends, and this one is the whole point of writing it.
+            if self._run_log_note:
+                log_surf = hint_font.render(self._run_log_note, True, t.hud_text)
+                surface.blit(log_surf,
+                             (w // 2 - log_surf.get_width() // 2, hint_y + 26))
         else:
             # Auto-scroll completion — no stats
             hint_text = "SPACE to replay  |  ESC to menu"
             hint_surf = hint_font.render(hint_text, True, t.hud_text)
             surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, center_y + 70))
+
+    def _heard_line(self) -> str:
+        """What the ear did, said apart from what the scoring did."""
+        if self._matcher is None:
+            return ""
+        trace = self._matcher.strike_trace
+        strikes = [t for t in trace if t.outcome != "string_taken_back"]
+        credited = sum(1 for t in strikes
+                       if t.outcome in ("hit", "close", "dead", "chord"))
+        taken_back = self._matcher.chord_strings_corrected
+        line = (f"{len(strikes)} strikes heard, {credited} of them landed on "
+                f"a written note")
+        if taken_back:
+            line += f"; {taken_back} strings taken back by the string check"
+        return line
 
     # -- Timing report (Y) --
 
@@ -2093,6 +2163,88 @@ class PlayingScreen:
             return
         self._timing_export_note = f"Saved {len(self._matcher.timing_samples)} measurements to {path}"
 
+    def _export_run_log(self) -> None:
+        """Write everything the audio path did this run, as one text file.
+
+        A percentage cannot be debugged. The same take that scored 35 % in
+        the app scored 97 % when the identical detector and matcher were run
+        over the recording offline, and nothing on screen could say which of
+        the two dozen steps in between lost the notes -- whether they were
+        never heard, heard as something else, heard at the wrong moment, or
+        heard and then taken back by the string check. This file says which,
+        strike by strike, so the next question is asked of evidence.
+        """
+        if self._matcher is None:
+            self._run_log_note = "Nothing to write — audio was off (A)."
+            return
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        song = "".join(c if c.isalnum() else "_" for c in (self._song_key or "song"))[:40]
+        # Read through the module, not a name bound at import: the test suite
+        # redirects the config directory.
+        directory = config_module.CONFIG_DIR
+        path = directory / f"run_{song}_{stamp}.txt"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                self._write_run_log(fh)
+        except OSError as exc:
+            self._run_log_note = f"Could not write the file: {exc}"
+            return
+        self._run_log_note = f"Run written to {path}"
+
+    def _write_run_log(self, fh) -> None:
+        """The body of the run log. Split out so a test can read it back."""
+        matcher = self._matcher
+        stats = matcher.get_statistics()
+        capture = self._audio_capture
+        ac = self._config.audio
+        fh.write("# MySician run log\n")
+        fh.write(f"song\t{self._song_key}\n")
+        fh.write(f"notes_written\t{len(self._timeline.notes)}\n")
+        fh.write(f"tempo_percent\t{int(self._tempo_factor * 100)}\n")
+        fh.write(f"hit_window_ms\t{self._config.timing_window_ms:.0f}\n")
+        fh.write(f"sync_offset_ms\t{self._config.audio_latency_offset_ms:.0f}\n")
+        fh.write(f"audio_offset_ms\t{matcher.audio_offset_ms:.1f}\n")
+        fh.write(f"late_window_ms\t{matcher.late_window_ms:.0f}\n")
+        fh.write(f"audio_anchor_ms\t{self._audio_anchor_ms:.1f}\n")
+        fh.write(f"audio_anchor_song_ms\t{self._audio_anchor_song_ms:.1f}\n")
+        fh.write(f"sample_rate\t{getattr(capture, '_sample_rate', ac.sample_rate)}\n")
+        fh.write(f"dropped_buffers\t{getattr(capture, 'dropped_buffers', 0)}\n")
+        fh.write(f"noise_gate_db\t{ac.noise_gate_db:.0f}\n")
+        fh.write(f"confidence_threshold\t{ac.confidence_threshold}\n")
+        fh.write(f"onset_threshold\t{ac.onset_threshold}\n")
+        fh.write(f"calibrated\t{bool(getattr(self._config, 'calibration', None))}\n")
+        fh.write(f"chord_verify\t{getattr(self._config, 'chord_verify', True)}\n")
+        fh.write(f"chord_partial_credit\t{self._chord_partial_credit}\n")
+        fh.write(f"max_fret\t{self._config.max_fret}\n")
+        fh.write(f"active_strings\t{self._config.active_strings}\n")
+        fh.write(f"wait_mode\t{self._wait_mode}\n")
+        fh.write(f"hits\t{stats['hits']}\n")
+        fh.write(f"close\t{stats['close']}\n")
+        fh.write(f"misses\t{stats['misses']}\n")
+        fh.write(f"strings_taken_back\t{matcher.chord_strings_corrected}\n")
+        fh.write(f"chord_windows_judged\t{matcher.chord_verifications}\n")
+        fh.write(f"timing_samples\t{len(matcher.timing_samples)}\n")
+        fh.write(f"timing_ambiguous\t{matcher.timing_ambiguous}\n")
+
+        fh.write("\n# every strike the audio thread produced\n")
+        fh.write("strike_ms\tadjusted_ms\tplayback_ms\tmidi\tconf"
+                 "\tunpitched\tsubharm\toutcome\tnote_ms\tsemitones\n")
+        for t in matcher.strike_trace:
+            fh.write(
+                f"{t.strike_ms:.1f}\t{t.adjusted_ms:.1f}\t{t.playback_ms:.1f}"
+                f"\t{t.midi_note}\t{t.confidence:.2f}\t{int(t.unpitched)}"
+                f"\t{int(t.subharmonic)}\t{t.outcome}"
+                f"\t{'' if t.note_ms is None else f'{t.note_ms:.1f}'}"
+                f"\t{'' if t.semitones is None else t.semitones}\n")
+
+        fh.write("\n# every written note and how it ended up\n")
+        fh.write("note_ms\tstring\tmidi\tverdict\n")
+        for note in sorted(self._timeline.notes,
+                           key=lambda n: (n.timestamp_ms, -n.string)):
+            fh.write(f"{note.timestamp_ms:.1f}\t{note.string}\t{note.midi_note}"
+                     f"\t{matcher.get_note_state(note).value}\n")
+
     def _draw_help_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:
         """Explain the track, the note colours, the techniques and the keys.
 
@@ -2211,6 +2363,7 @@ class PlayingScreen:
             "Shift+K: reset sync to 0, if it has run away",
             "Y: timing report — which timing problem you actually have",
             "Shift+Y: save the raw measurements as a CSV file",
+            "D: save a full run log (what every strike did)",
             "+/-: scroll faster / slower     G: hit window",
             "N/M: backing track earlier / later",
             "TAB: choose track     H: this help     ESC: song list",
@@ -2547,7 +2700,18 @@ class PlayingScreen:
             from pickhero.audio.input import AudioCapture
             if self._audio_capture is None:
                 self._audio_capture = AudioCapture(self._config)
+            # start() builds a NEW stream and a new ring every time. Called on
+            # a capture already running -- which is what happens when the
+            # signal meter was switched on before the count-in -- the old
+            # stream is never closed and goes on writing into the same ring,
+            # so the sample counter advances at twice real time and every
+            # strike after that is stamped further into the future.
+            self._audio_capture.stop()
             self._audio_capture.start()
+            # A fresh stream restarts the sample counter, so the two clocks
+            # agree here by construction.
+            self._audio_anchor_ms = 0.0
+            self._audio_anchor_song_ms = self._playback_ms
             self._matcher = NoteMatcher(
                 self._timeline,
                 timing_window_ms=self._config.timing_window_ms,

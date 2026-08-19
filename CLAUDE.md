@@ -128,6 +128,39 @@ notes at random — indistinguishable, without a number on screen, from bad dete
 This is also the warning the "detection is the problem" chapter below needs: the player's app scored 24 % on a take whose audio the detector
 reads at 91 %. Everything measured from inside the app is measured through this.
 
+## The Two Clocks, And The Speed Between Them
+
+A strike is stamped in **recorded time** (the sample counter, real speed). The song runs in **song time**, which at 80 % practice speed
+advances at 0.8 of it. `song = recorded x tempo` is only a position when both are counted from the same instant, so anything that changes
+`tempo`, or restarts the stream, has to move that instant: `_reanchor_audio_clock()` sets the anchor to now and rewrites
+`matcher.audio_offset_ms` to `anchor_song - anchor_recorded x tempo + sync`. Without it, pressing PgDn mid-song displaces every later strike
+by `elapsed x change` — growing for the rest of the song, and not something `K` can take back. Strikes already queued at the moment of the
+change were stamped under the old speed and are dropped rather than read under the new one.
+
+`AudioCapture.start()` builds a **new** stream and a new ring every time. Called on a capture that is already running — which is what the
+signal meter before the count-in does — the old stream is never closed and keeps writing into the same ring, so the counter advances at twice
+real time. `_start_audio()` therefore always stops first.
+
+**This is also why a diagnostic has to be told the practice speed.** A take played at 80 % is stretched against the written tab; read at
+100 %, the first bar lines up and everything after it walks away. The player's own take read 22 % that way and **96 %** at the speed it was
+played. `record_reference.py` now writes `tempo_percent` into the manifest (straight from the app's settings) and `analyze_play_along.py`
+measures it when the manifest does not say.
+
+## When The Score Is Low, Say Which Half Is Low
+
+A percentage cannot be debugged. The player's take scored **34.6 % in the app** and **97.4 %** through the identical detector and matcher run
+over the recording offline — same audio, same song file, same hit window. Nothing on screen could say which of the two dozen steps in between
+lost the notes, and the session before it was spent guessing at the wrong one.
+
+Two things now answer that without another guess:
+
+- **The completion screen names strikes heard next to notes credited** (`_heard_line`). Far fewer strikes than notes is the microphone path;
+  as many strikes as notes with a low score is the matching. They are fixed in different places.
+- **`D` writes a full run log** to `~/.pickhero/` (and every scored run writes one by itself). One line per strike — raw stamp, adjusted
+  stamp, playback position, pitch, confidence, what became of it — plus every written note's final verdict, plus the header that explains a
+  run: resolved sample rate, dropped buffers, gate, thresholds, tempo, offsets, filters. `matcher.strike_trace` is written only and never
+  read back by the matcher.
+
 ## Ringing Strings Defeat Detection
 
 Measured with one note per string at a time (a new note on a string physically stops the old one — a summed test that lets both ring is

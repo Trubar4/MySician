@@ -1,6 +1,6 @@
 # MySician — Session Handoff Notes
 
-Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-19.
+Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-19 (second session).
 
 `CLAUDE.md` says how the app is built and why. This file says where it stands,
 what the user's setup is, and what is still open.
@@ -9,9 +9,11 @@ what the user's setup is, and what is still open.
 
 Private Yousician-style guitar practice app for one user (Philipp). Forked from
 [PickHero](https://github.com/Artemarius/PickHero) (MIT, see LICENSE) into
-`Trubar4/MySician`. Working branch: **`claude/mysician-timing-measurement-au2v0m`** —
-all work is pushed there. The previous branch
-(`claude/handoff-claude-md-review-va3ph4`) is merged into `main`; do not add to it.
+`Trubar4/MySician`. Working branch: **the one named in `UPLOAD_BRANCH`** at the
+repo root — currently `claude/mysician-timing-remeasure-uaj3t8`. That file is
+the single place the branch is written down; `tools/record_reference.py` reads
+it so its upload hint can never send a recording to a branch nobody reads,
+which has now happened twice. When the work moves, update that file first.
 
 ## User's setup (important for debugging)
 
@@ -100,6 +102,40 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 
 ## What this session changed (newest first)
 
+-9. **Detection is not the problem, and now there is proof.** The player's
+   fresh take (`reference_recordings/20260819_195251`) scored 34.6 % in the
+   app. The same WAV, through the same detector, the same `AudioCapture`
+   callback path, the same song file, the same 200 ms window and the same
+   chord verifier, scores **97.4 %** offline; the detector alone hears
+   **52 of 54** written onsets with the right pitch. So the loss is somewhere
+   between the live audio thread and the score, not in detection and not in
+   matching. It has not been located yet — see topic 3 — and the run log
+   below is the instrument built to locate it.
+-8. **The play-along analyser was reading slowed-down takes at full speed.**
+   The player practises at 80 %; the tool assumed 100 %, so the first bar
+   lined up and everything after it walked away. It reported 22 % on a take
+   it now reports 96 % on, and the whole of the last session's "detection is
+   broken" reading came through that. The practice speed is now recorded into
+   the manifest by the recorder (read from the app's own settings) and
+   measured when it is not, over the eleven speeds the app can be in.
+   `tests/test_play_along_alignment.py` keeps it honest.
+-7. **A run log (`D`), and a completion screen that says which half failed.**
+   Every scored run writes `~/.pickhero/run_<song>_<stamp>.txt`: one line per
+   strike (raw stamp, adjusted stamp, playback position, pitch, confidence,
+   what became of it), every written note's final verdict, and the header that
+   explains a run — resolved sample rate, dropped buffers, gate, thresholds,
+   tempo, offsets, filters. The completion screen names strikes heard next to
+   notes credited, because "few strikes" and "many strikes, low score" are
+   different faults in different places and one percentage cannot tell them
+   apart. See `CLAUDE.md`, "When The Score Is Low, Say Which Half Is Low".
+-6a. **Two clock bugs found by reading, not yet by measurement.** Changing the
+   practice speed mid-song used to displace every later strike by
+   `elapsed x change`, growing for the rest of the song and beyond what `K`
+   can take back; the audio clock is now re-anchored on every speed change.
+   And `_start_audio()` on an already-running capture left the old stream
+   open, writing into the same ring — it stops first now. Whether either was
+   in play in the 34.6 % run is exactly what the run log will say.
+
 -6. **Reading time on dense songs, and the fret filter forgetting itself.**
    At full-size heads a dense tab gave 1.5 s of look-ahead at 683 px/s
    (canon.gp5) — faster than a fret number can be read. Heads now shrink per
@@ -184,7 +220,8 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 | `sweep_chord_window.py` | How short may the chord window get before it lies? |
 | `check_chord_credit.py` | Does crediting a pitchless strum still catch a wrong finger? Exits non-zero if not. |
 | `record_reference.py --play-along` | Records the player playing a song through — the case the 29 isolated exercises do not contain. |
-| `analyze_play_along.py` | Per written onset: heard right, heard as the wrong note, or not heard at all. Aligns itself to the tab. |
+| `analyze_play_along.py` | Per written onset: heard right, heard as the wrong note, or not heard at all. Finds both the start offset AND the practice speed. |
+| `D` in the app | The run log: what every strike did, and every note's verdict. The one place a live-only fault shows. |
 | `simulate_timing.py` | Does the timing report name a fault that was injected on purpose? |
 
 Generate the test songs with `python tools/make_*_test.py`; they land in `songs/`.
@@ -227,17 +264,47 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    200 ms and the required spacing is ~255 ms, i.e. eighths to about 118 BPM
    instead of 90. Faster than that still gets no verdict, which is the honest
    answer at that speed.
-3. **FIRST: re-measure detection now that the clock bug is gone, and finish
-   it.** Everything measured before 2026-08-19 was measured THROUGH a bug that
-   froze the sample clock on every dropped buffer, so every accuracy figure
-   from inside the app is suspect. The player's own take reads at 91 % through
-   the detector alone. **Step one of the next session is a fresh run of
-   `songs/timing_test_100bpm.gp5`** — accuracy, the `Audio dropouts` line, and
-   `Shift+Y`. Only what survives that is a real detection problem. Likely
-   candidates if anything remains: the confidence threshold (0.65 vs 0.80 was
-   measured as marginal — +2 power-chord and +4 chord strikes, but one extra
-   WRONG pitch on single notes, over only 150 strikes), and the doubled strikes
-   seen on isolated chord takes.
+3. **FIRST: find where the app loses notes the detector heard.** This is now
+   a narrow question with a measurement behind it, not an open one.
+
+   The player's 2026-08-19 take, scored by the app at **34.6 % (27/78)**,
+   reads as follows when the recording is put through the same code offline:
+
+   | read through | result |
+   |---|---|
+   | the detector alone (`analyze_play_along.py`, 80 %) | 52/54 onsets, right pitch |
+   | detector + matcher (`NoteMatcher`, 200 ms window) | 98.7 % |
+   | + the real `AudioCapture` callback and the chord verifier | **97.4 %** |
+   | the app, live, same take | **34.6 %** |
+
+   So: not detection, not matching, not the chord verifier, not the song file
+   (the player's `timing_test_100bpm.gp5` is the older 78-note version, which
+   is what the offline runs used too), and not dropped buffers (the HUD line
+   was absent, i.e. zero). Whatever it is, it is live-only, and the arithmetic
+   says the app saw far FEWER strikes than the 60 the same audio yields
+   offline: its timing samples sit at the right places with a small median, so
+   the strikes it did see were stamped correctly.
+
+   **Step one: one run with the run log.** `D`, or just play a song to the
+   end — the file lands in `~/.pickhero/run_<song>_<stamp>.txt`. It answers,
+   in order: how many strikes the audio thread produced at all; whether their
+   stamps agree with the playback clock; whether the gate, the confidence
+   threshold, a fret filter or a muted string was quietly eating them; and
+   whether the string check took anything back. Do not build before reading
+   one.
+
+   Candidates the log will confirm or kill: the noise gate (`X`/`C` — the same
+   take drops to 80 % at a -40 dB gate and to 52 % at -30 dB, against 96 % at
+   the -60 dB default), a mid-song speed change under the old, un-anchored
+   clock, and a second audio stream left open by `_start_audio`. The two
+   longer-standing candidates stay parked until then: the confidence threshold
+   (0.65 vs 0.80 measured as marginal — +2 power-chord and +4 chord strikes,
+   but one extra WRONG pitch on single notes, over 150 strikes) and doubled
+   strikes on isolated chords.
+
+   Housekeeping for the same run: the player's local timing test is the older
+   78-note build. `python tools/make_timing_test.py` regenerates the current
+   one, whose eighth-note chord section has room to breathe.
 4. **Ringing strings.** Real and measured (59 % everything ringing vs 100 %
    damped over the whole timing test), confirmed by the player at the
    instrument. Much smaller than the clock bug was, so re-measure before
@@ -276,7 +343,8 @@ list as a paste-ready prompt, with what has already been ruled out on each.
 
 - Commit style: imperative subject + explanatory body saying *why*, not what.
   No model names anywhere in commits, PRs or code.
-- Always push to `claude/mysician-timing-measurement-au2v0m`.
+- Always push to the branch named in `UPLOAD_BRANCH`, and update that file
+  when the branch changes.
 - **The player's local checkout drifted onto the old branch once.** Their pulls
   still brought this work in (a pull merges into whatever is checked out), but
   their pushes landed elsewhere and one push failed outright. If they report a

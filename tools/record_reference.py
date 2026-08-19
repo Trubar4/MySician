@@ -396,18 +396,57 @@ def midi_name(m):
     return f"{NOTE_NAMES[m % 12]}{m // 12 - 1}"
 
 
-def current_branch(default="<dein-branch>"):
-    """Branch name for the upload hint, so it is never a stale hard-coded one."""
+def _git(*args, timeout=20):
+    """Run a git command in the repo and return its stdout, or None."""
     try:
         import subprocess
         out = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=5,
+            ["git", *args], cwd=REPO_ROOT,
+            capture_output=True, text=True, timeout=timeout,
         )
-        name = out.stdout.strip()
-        return name if out.returncode == 0 and name and name != "HEAD" else default
+        return out.stdout.strip() if out.returncode == 0 else None
     except Exception:
-        return default
+        return None
+
+
+def current_branch(default="<dein-branch>"):
+    """Whatever is checked out right now."""
+    name = _git("rev-parse", "--abbrev-ref", "HEAD")
+    return name if name and name != "HEAD" else default
+
+
+def upload_branch():
+    """The branch these recordings belong on, which is not always this one.
+
+    The checkout drifts. A recording pushed to a branch nobody is reading is
+    a recording that does not exist, and it has happened twice: the hint used
+    to name whatever was checked out, which is exactly the thing that was
+    wrong. So the branch is read from the repo itself -- UPLOAD_BRANCH, kept
+    up to date by whoever is working on it -- and only falls back to the
+    checkout when the file is missing.
+
+    Returns (branch, switch_needed).
+    """
+    _git("fetch", "--quiet", "origin", timeout=60)
+    named = None
+    marker = REPO_ROOT / "UPLOAD_BRANCH"
+    if marker.exists():
+        for line in marker.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                named = line
+                break
+    if not named:
+        # No marker (an old checkout, which is the case this has to survive):
+        # the most recently updated work branch on the remote is the best
+        # guess available, and still better than the local one.
+        listing = _git("for-each-ref", "--sort=-committerdate", "--count=1",
+                       "--format=%(refname:strip=3)", "refs/remotes/origin/claude")
+        named = listing or None
+    here = current_branch(default="")
+    if not named:
+        return here or "<dein-branch>", False
+    return named, named != here
 
 
 def countdown(n=3):
@@ -420,6 +459,23 @@ def countdown(n=3):
 
 
 # -------------------------------------------------------------------- main
+
+def practice_tempo():
+    """The speed the app is set to play at, as a fraction, or None.
+
+    Read straight out of the app's settings rather than asked for: a take
+    played at 80 % is stretched against the written tab, and an analysis that
+    does not know that reports the detector hearing a quarter of what it
+    actually heard. The recorder is deliberately standalone, so this reads the
+    JSON rather than importing the app.
+    """
+    try:
+        path = Path.home() / ".pickhero" / "settings.json"
+        value = float(json.loads(path.read_text(encoding="utf-8"))["tempo_factor"])
+        return value if 0.4 < value <= 1.0 else None
+    except Exception:
+        return None
+
 
 def play_along(device, samplerate, channels, out_dir, seconds, song):
     """Record while the player plays a song in the app, and save the raw take.
@@ -437,8 +493,11 @@ def play_along(device, samplerate, channels, out_dir, seconds, song):
     print("=" * 72)
     print("MITSCHNITT beim Durchspielen")
     print("=" * 72)
+    tempo = practice_tempo()
     print(f"  Song:      {song}")
     print(f"  Dauer:     {seconds:.0f}s")
+    if tempo is not None:
+        print(f"  Tempo:     {tempo * 100:.0f} % (aus den App-Einstellungen)")
     print()
     print("  1. Diese Aufnahme mit Enter starten")
     print("  2. In MySician den Song starten und normal durchspielen")
@@ -462,6 +521,7 @@ def play_along(device, samplerate, channels, out_dir, seconds, song):
         "shapes": [],
         "expected_midi": [],
         "song": song,
+        "tempo_percent": None if tempo is None else round(tempo * 100),
         "seconds": seconds,
         "peak_dbfs": round(peak, 1),
         "rms_dbfs": round(rms_db, 1),
@@ -600,10 +660,17 @@ def main():
     print("=" * 72)
     if manifest["takes"]:
         rel = out_dir.relative_to(REPO_ROOT) if out_dir.is_relative_to(REPO_ROOT) else out_dir
+        branch, switch_needed = upload_branch()
         print("\nZum Hochladen, damit ich sie analysieren kann:\n")
+        if switch_needed:
+            print(f"  ! Du bist gerade auf '{current_branch()}',")
+            print(f"    die Aufnahmen gehoeren aber auf '{branch}'.")
+            print("    Der Wechsel unten nimmt die neuen Dateien mit.\n")
+        print("  git fetch origin")
+        print(f"  git switch {branch}")
         print(f'  git add "{rel}"')
         print('  git commit -m "Add reference recordings for detection calibration"')
-        print(f"  git push -u origin {current_branch()}")
+        print(f"  git push -u origin {branch}")
     return 0
 
 

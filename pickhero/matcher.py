@@ -112,6 +112,31 @@ class TimingSample:
     note_ms: float      # where the note sits in the song
 
 
+@dataclass
+class StrikeTrace:
+    """What became of one strike, kept so a bad run can be read afterwards.
+
+    A percentage at the end of a song says how much went wrong and nothing
+    about where. The same recording that scored 35 % in the app scored 97 %
+    when the same detector and the same matcher were run over it offline, and
+    no number on screen could say which of the two dozen things between the
+    two was responsible. This is that missing evidence: one line per strike,
+    written as it happened.
+
+    Recording only -- nothing here is read back by the matcher.
+    """
+    strike_ms: float        # timestamp as the audio thread stamped it
+    adjusted_ms: float      # after the offset, i.e. where the song thinks it was
+    playback_ms: float      # where the song actually was at that moment
+    midi_note: int
+    confidence: float
+    unpitched: bool
+    subharmonic: bool
+    outcome: str            # hit / close / dead / chord / unmatched / ignored
+    note_ms: float | None   # the tab note it was credited to, if any
+    semitones: int | None   # how far off that note it was
+
+
 class NoteMatcher:
     """Matches detected audio notes against tab timeline events.
 
@@ -175,6 +200,10 @@ class NoteMatcher:
         self._pending_verifications: dict[int, list[NoteEvent]] = {}
         self.chord_verifications = 0
         self.chord_strings_corrected = 0
+
+        # One line per strike, and one per string a chord verdict took back.
+        # Written only; see StrikeTrace for why it exists.
+        self.strike_trace: list[StrikeTrace] = []
 
         self._pitch_ranges = self._build_pitch_ranges(timeline)
         self._legato_sources = self._build_legato_sources(timeline)
@@ -508,11 +537,16 @@ class NoteMatcher:
                 # by definition, and a full chord, which regularly defeats a
                 # monophonic detector however well it was played. A dead note
                 # is checked first, being the more specific intent.
-                credit = (self._dead_note_credit(adjusted_ms)
-                          or self._unpitched_chord_credit(
-                              adjusted_ms, ts_note.sample_pos))
+                dead = self._dead_note_credit(adjusted_ms)
+                credit = dead or self._unpitched_chord_credit(
+                    adjusted_ms, ts_note.sample_pos)
                 if credit is not None:
                     results.append(credit)
+                self._trace(ts_note, adjusted_ms, playback_ms,
+                            "dead" if dead is not None else
+                            ("chord" if credit is not None else "unmatched"),
+                            credit.matched_events[0] if credit
+                            and credit.matched_events else None, None)
                 continue
 
             self._record_timing_sample(adjusted_ms, detected_midi)
@@ -557,6 +591,10 @@ class NoteMatcher:
                 dead_result = self._dead_note_credit(adjusted_ms)
                 if dead_result is not None:
                     results.append(dead_result)
+                self._trace(ts_note, adjusted_ms, playback_ms,
+                            "dead" if dead_result is not None else "unmatched",
+                            dead_result.matched_events[0] if dead_result
+                            and dead_result.matched_events else None, best_dist)
                 # Too far off otherwise — ignore this detection, no penalty
                 continue
 
@@ -624,6 +662,9 @@ class NoteMatcher:
                     and ts_note.sample_pos is not None):
                 self._pending_verifications[ts_note.sample_pos] = verifiable
 
+            self._trace(ts_note, adjusted_ms, playback_ms,
+                        match_type.value, best, best_dist)
+
             results.append(MatchResult(
                 match_type=match_type,
                 matched_events=matched_events,
@@ -631,6 +672,24 @@ class NoteMatcher:
             ))
 
         return results
+
+    def _trace(
+        self, ts_note: TimestampedNote, adjusted_ms: float, playback_ms: float,
+        outcome: str, note: NoteEvent | None, semitones: int | None,
+    ) -> None:
+        """Record what became of one strike. Never read back by the matcher."""
+        self.strike_trace.append(StrikeTrace(
+            strike_ms=ts_note.timestamp_ms,
+            adjusted_ms=adjusted_ms,
+            playback_ms=playback_ms,
+            midi_note=ts_note.note.midi_note,
+            confidence=ts_note.note.confidence,
+            unpitched=bool(ts_note.note.unpitched),
+            subharmonic=bool(getattr(ts_note.note, "subharmonic", False)),
+            outcome=outcome,
+            note_ms=note.timestamp_ms if note is not None else None,
+            semitones=semitones,
+        ))
 
     def process_strike_windows(
         self, windows: list[StrikeWindow]
@@ -673,6 +732,18 @@ class NoteMatcher:
                     continue
                 self._rerecord_match(note, MatchType.MISS)
                 self.chord_strings_corrected += 1
+                self.strike_trace.append(StrikeTrace(
+                    strike_ms=window.timestamp_ms,
+                    adjusted_ms=window.timestamp_ms,
+                    playback_ms=window.timestamp_ms,
+                    midi_note=note.midi_note,
+                    confidence=0.0,
+                    unpitched=False,
+                    subharmonic=False,
+                    outcome="string_taken_back",
+                    note_ms=note.timestamp_ms,
+                    semitones=None,
+                ))
                 results.append(MatchResult(
                     match_type=MatchType.MISS,
                     matched_events=[note],
@@ -1069,3 +1140,8 @@ class NoteMatcher:
         self._pending_verifications.clear()
         self.chord_verifications = 0
         self.chord_strings_corrected = 0
+        self.strike_trace.clear()
+
+        # One line per strike, and one per string a chord verdict took back.
+        # Written only; see StrikeTrace for why it exists.
+        self.strike_trace: list[StrikeTrace] = []
