@@ -1617,6 +1617,19 @@ class PlayingScreen:
         surface.blit(speed_surf, (12, info_y))
         info_y += 16
 
+        # Dropped audio HUD — silent while there is nothing to report, loud
+        # when there is. A machine that loses buffers loses notes at random,
+        # which looks exactly like bad detection or bad playing and is neither;
+        # without a number on screen there is no way to tell the three apart.
+        if (self._audio_enabled and self._audio_capture is not None
+                and getattr(self._audio_capture, "dropped_buffers", 0)):
+            drops = self._audio_capture.dropped_buffers
+            drop_surf = hint_font.render(
+                f"Audio dropouts: {drops}  — close other programs",
+                True, t.feedback_miss)
+            surface.blit(drop_surf, (12, info_y))
+            info_y += 16
+
         # Per-string chord check HUD — only when switched off, so the default
         # costs no screen space but a disabled check is never a silent surprise
         if not getattr(self._config, "chord_verify", True):

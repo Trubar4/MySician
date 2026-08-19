@@ -46,7 +46,7 @@ all work is pushed there. The previous branch
 
 ## State
 
-499 tests (`python -m pytest tests -q`). Everything below is implemented,
+502 tests (`python -m pytest tests -q`). Everything below is implemented,
 calibrated where it needed calibrating, and pushed.
 
 **Working:** GP3–GP5 loading, track picker, scrolling display with per-song
@@ -101,6 +101,15 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 
 ## What this session changed (newest first)
 
+-5. **A dropped audio buffer stopped the clock.** The single biggest cause of
+   "notes are not recognised". `_audio_callback` returned on any status flag,
+   discarding the buffer AND leaving the ring's sample counter frozen — so
+   every later strike was stamped early, cumulatively. On the player's own
+   play-along take: 42/46 strikes heard with nothing dropped, **17/46** with
+   2 % dropped the old way, 40/46 with the counter still advancing. The audio
+   is now always processed and overflows are counted and shown in the HUD.
+   **Detection was never the bottleneck it looked like** — the detector reads
+   that take at 91 % while the app scored it at 24 %.
 -4. **Only honest notes are timed, and K says what it left.** Technique notes
    no longer contribute timing samples (`_times_its_own_strike`): a bend leaves
    its pitch on purpose and a legato target is never picked. This was the root

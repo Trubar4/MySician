@@ -107,6 +107,27 @@ power chords 38 of 39.
 - For an error take the tab must be the CORRECT shape: the manifest records what was **played**, so telling the verifier to expect the wrong
   note asks it whether the error is the error it was given, and it rightly says no.
 
+## A Dropped Buffer Used To Stop The Clock
+
+Every strike is stamped from the ring buffer's sample counter, which is what keeps timestamps free of wall-clock jitter. `_audio_callback`
+used to `return` on any sounddevice status flag — so an overflowed buffer was discarded AND the counter stayed where it was. From then on
+every strike in the song was stamped 10.7 ms early per dropped buffer, and the error accumulated until nothing matched.
+
+Measured on a real play-along take (`reference_recordings/20260818_205930`), scored against the tab:
+
+| condition | strikes heard correctly |
+|---|---|
+| nothing dropped | 42 / 46 |
+| 2 % dropped, counter frozen (the bug) | 17 / 46 |
+| 2 % dropped, counter still advancing | 40 / 46 |
+
+**The lost audio was never the problem; the stopped clock was.** A status flag means samples were lost BEFORE the callback, so the buffer in
+hand is still good and is now processed like any other. Overflows are counted and shown in the HUD, because a machine that drops audio loses
+notes at random — indistinguishable, without a number on screen, from bad detection or bad playing.
+
+This is also the warning the "detection is the problem" chapter below needs: the player's app scored 24 % on a take whose audio the detector
+reads at 91 %. Everything measured from inside the app is measured through this.
+
 ## Ringing Strings Defeat Detection
 
 Measured with one note per string at a time (a new note on a string physically stops the old one — a summed test that lets both ring is
