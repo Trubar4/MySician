@@ -420,12 +420,29 @@ class TestScrollSpeed:
         screen = self._screen(spacing_ms=1000.0)
         assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS)
 
-    def test_notes_are_the_same_size_whatever_the_song(self):
-        """The window gives way first, so notes keep their size across songs
-        of very different density."""
+    def test_notes_keep_full_size_while_the_window_can_afford_it(self):
+        """The window gives way first. Only once shrinking it further would
+        leave too little warning to read a fret number does the note size
+        move at all."""
         sizes = {round(self._screen(spacing_ms=sp)._head_px, 3)
-                 for sp in (1000.0, 280.0, 125.0)}
+                 for sp in (1000.0, 600.0, 280.0)}
         assert len(sizes) == 1
+
+    def test_a_song_too_dense_to_read_buys_time_with_note_size(self):
+        """At full size a dense tab gave 1.5 s of warning at 683 px/s -- a
+        note crossing the screen faster than it can be read, never mind
+        fingered. Head size is the only currency available for that."""
+        from pickhero.ui.scrolling import READABLE_WINDOW_MS
+        roomy = self._screen(spacing_ms=1000.0)
+        dense = self._screen(spacing_ms=90.0)
+        assert dense._head_px < roomy._head_px
+        assert dense._visible_window_ms > 1500.0
+
+    def test_the_notes_never_shrink_past_a_readable_fret_number(self):
+        """Two digits still have to fit, or the trade buys nothing."""
+        from pickhero.ui.scrolling import MIN_HEAD_PX
+        for spacing in (90.0, 40.0, 10.0):
+            assert self._screen(spacing_ms=spacing)._head_px >= MIN_HEAD_PX
 
     def test_the_trim_never_changes_note_size(self):
         """Notes changing size is the one thing this display must not do, so

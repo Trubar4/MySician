@@ -46,7 +46,7 @@ all work is pushed there. The previous branch
 
 ## State
 
-502 tests (`python -m pytest tests -q`). Everything below is implemented,
+506 tests (`python -m pytest tests -q`). Everything below is implemented,
 calibrated where it needed calibrating, and pushed.
 
 **Working:** GP3–GP5 loading, track picker, scrolling display with per-song
@@ -101,6 +101,15 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 
 ## What this session changed (newest first)
 
+-6. **Reading time on dense songs, and the fret filter forgetting itself.**
+   At full-size heads a dense tab gave 1.5 s of look-ahead at 683 px/s
+   (canon.gp5) — faster than a fret number can be read. Heads now shrink per
+   song, down to `MIN_HEAD_PX`, to buy look-ahead up to `READABLE_WINDOW_MS`;
+   canon goes to 2.5 s at 409 px/s and easy songs are untouched. The
+   docstring had promised this behaviour for a while without the code doing
+   it. Rendering was never the problem: 74-106 FPS measured. Separately,
+   `max_fret` no longer survives a restart — a filter left on silently deletes
+   notes and shows a plausible accuracy for a fraction of the song.
 -5. **A dropped audio buffer stopped the clock.** The single biggest cause of
    "notes are not recognised". `_audio_callback` returned on any status flag,
    discarding the buffer AND leaving the ring's sample counter frozen — so
