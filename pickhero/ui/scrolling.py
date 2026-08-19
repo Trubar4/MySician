@@ -123,6 +123,13 @@ BASE_VISIBLE_WINDOW_MS = 8000.0
 # Bounds on the derived window. The lower one keeps a minimum of lookahead;
 # the upper one stops a sparse song from crawling.
 MIN_VISIBLE_WINDOW_MS = 1500.0
+# Look-ahead a player needs to read a fret number and get a finger there. Below
+# this the display shrinks its notes to buy more time rather than scrolling
+# faster; a dense tab otherwise arrives at several hundred pixels a second.
+READABLE_WINDOW_MS = 4000.0
+# Smallest note head to shrink to. The fret font is sized at radius * 1.1, so
+# this still renders a two-digit number at 14 px.
+MIN_HEAD_PX = 26.0
 
 # The window is set from a low percentile of the note spacing rather than its
 # minimum. Real tabs contain the odd near-simultaneous pair — grace notes,
@@ -746,7 +753,10 @@ class PlayingScreen:
         Speed comes first. A tab can only be read so fast no matter how dense
         the music is, so once the tightest passage would push past that limit
         the notes shrink toward the smallest head that still shows a two-digit
-        fret, instead of the tab scrolling faster and faster.
+        fret, instead of the tab scrolling faster and faster. That paragraph
+        described the intent for a while before the code did it: heads stayed
+        full size and dense songs simply scrolled quicker, down to 1.5 s of
+        warning.
         """
         layout = layout or self._last_layout
         if layout is None or layout.usable_width <= 0:
@@ -755,13 +765,27 @@ class PlayingScreen:
         head = layout.note_h
         spacing = self._spacing_percentile(SPACING_PERCENTILE)
 
-        # Notes are always full size. The window follows from that: however
-        # much time fits on screen once every note has its room is how much
-        # gets shown. A dense song therefore shows less of itself at once
-        # rather than drawing itself smaller.
+        # The window follows from the note size: however much time fits on
+        # screen once every note has its room is how much gets shown.
         window = BASE_VISIBLE_WINDOW_MS
         if spacing and spacing > 0:
-            window = spacing * layout.usable_width / (head * (1.0 + SUSTAIN_GAP_FRACTION))
+            per_head = head * (1.0 + SUSTAIN_GAP_FRACTION)
+            window = spacing * layout.usable_width / per_head
+
+            # Full-size notes on a dense song buy so little look-ahead that
+            # the fret numbers arrive unreadable -- canon.gp5 came out at
+            # 1.5 s of warning and 683 px/s, which is a note crossing the
+            # screen faster than it can be read, never mind fingered. Trading
+            # head size for time is the only currency available, and it is a
+            # trade the display is allowed to make: what it must never do is
+            # resize notes WHILE scrolling, and this is decided once per song.
+            # The floor is the smallest head a two-digit fret still fits in.
+            if window < READABLE_WINDOW_MS:
+                needed = (spacing * layout.usable_width
+                          / (READABLE_WINDOW_MS * (1.0 + SUSTAIN_GAP_FRACTION)))
+                head = max(MIN_HEAD_PX, min(head, needed))
+                window = (spacing * layout.usable_width
+                          / (head * (1.0 + SUSTAIN_GAP_FRACTION)))
 
         # Largest window in which every note still gets its full size. Slowing
         # past it would fit more time on screen at the cost of note size, and
@@ -1616,6 +1640,19 @@ class PlayingScreen:
             True, t.hud_accent if trimmed else t.hud_text)
         surface.blit(speed_surf, (12, info_y))
         info_y += 16
+
+        # Dropped audio HUD — silent while there is nothing to report, loud
+        # when there is. A machine that loses buffers loses notes at random,
+        # which looks exactly like bad detection or bad playing and is neither;
+        # without a number on screen there is no way to tell the three apart.
+        if (self._audio_enabled and self._audio_capture is not None
+                and getattr(self._audio_capture, "dropped_buffers", 0)):
+            drops = self._audio_capture.dropped_buffers
+            drop_surf = hint_font.render(
+                f"Audio dropouts: {drops}  — close other programs",
+                True, t.feedback_miss)
+            surface.blit(drop_surf, (12, info_y))
+            info_y += 16
 
         # Per-string chord check HUD — only when switched off, so the default
         # costs no screen space but a disabled check is never a silent surprise

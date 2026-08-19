@@ -148,6 +148,15 @@ class Config:
             offset = data.get("audio_latency_offset_ms")
             if offset is not None and abs(offset) > MAX_LATENCY_OFFSET_MS:
                 data["audio_latency_offset_ms"] = 0.0
+            # The fret filter never survives a restart. It removes notes from
+            # the song silently -- not drawn, not scored, not even counted as
+            # missed -- so a limit left on from a previous session shows a
+            # plausible-looking accuracy for a fraction of the music. It cost
+            # a whole diagnostic run that way: a limit of 7 quietly deleted a
+            # sixth of the test file and nothing on screen said the score was
+            # measuring a filter. It stays a per-session choice (F), which is
+            # the granularity a practice aid actually needs.
+            data.pop("max_fret", None)
             return cls(
                 audio=AudioConfig(**audio_data),
                 display=DisplayConfig(**display_data),
