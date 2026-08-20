@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import pygame
 
 from pickhero.audio.midi_playback import BackingTrack, MidiPlayer
+from pickhero.audio.mp3_playback import Mp3Player, pick_audio_file
 from pickhero import config as config_module
 from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
 from pickhero.matcher import FINE_MS, STRING_MIN_SAMPLES, NoteMatcher
@@ -280,8 +282,15 @@ class PlayingScreen:
         # MIDI backing track
         self._midi_player: MidiPlayer | None = None
         self._backing_muted = not self._config.backing_track_enabled
+        # A recording playing alongside the MIDI backing, not instead of it.
+        # Hearing both at once is how the recording gets lined up against the
+        # click, which is the only way its encoder padding can be found.
+        self._mp3_player: Mp3Player | None = None
+        self._mp3_muted = not getattr(self._config, "mp3_backing_enabled", True)
+        self._mp3_note: str = ""
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
+        self._load_mp3_for_song()
 
         # Difficulty filter
         self._max_fret: int = self._config.max_fret
@@ -370,11 +379,16 @@ class PlayingScreen:
             if self._midi_player is not None:
                 if self._playback_ms >= 0:
                     self._midi_player.seek(self._backing_ms(self._playback_ms))
+            if self._mp3_player is not None and self._playback_ms >= 0:
+                if self._mp3_plays():
+                    self._mp3_player.seek(self._mp3_ms(self._playback_ms))
         else:
             self._last_tick = None
             self._stop_audio()
             if self._midi_player is not None:
                 self._midi_player.pause()
+            if self._mp3_player is not None:
+                self._mp3_player.pause()
 
     def seek(self, ms: float) -> None:
         """Seek to an absolute position in ms, clamped to [0, duration]."""
@@ -384,6 +398,9 @@ class PlayingScreen:
         self._feedback.reset()
         if self._midi_player is not None:
             self._midi_player.seek(self._backing_ms(self._playback_ms))
+        if self._mp3_player is not None:
+            self._mp3_player.seek(self._mp3_ms(self._playback_ms)
+                                  if self._mp3_plays() else -1.0)
         # Restart audio with new offset if active
         if self._audio_enabled and self._playing:
             self._stop_audio()
@@ -401,6 +418,9 @@ class PlayingScreen:
         # The song clock now runs at a different fraction of the audio clock,
         # so the point where the two were last equal has to be moved to now.
         self._reanchor_audio_clock()
+        # A recording cannot follow a tempo change, so it stops rather than
+        # playing on against a song that has moved away from it.
+        self._update_mp3()
         if self._matcher:
             self._matcher.reset()
         self._feedback.reset()
@@ -546,6 +566,7 @@ class PlayingScreen:
         # Advance MIDI backing track (only during actual song)
         if self._playback_ms >= 0 and self._midi_player is not None:
             self._midi_player.update(self._backing_ms(self._playback_ms))
+        self._update_mp3()
 
         # Loop check — jump back to start marker when reaching end marker
         # (no count-in on loop)
@@ -561,6 +582,8 @@ class PlayingScreen:
             self._feedback.reset()
             if self._midi_player is not None:
                 self._midi_player.seek(self._backing_ms(self._loop_start_ms))
+            if self._mp3_player is not None and self._mp3_plays():
+                self._mp3_player.seek(self._mp3_ms(self._loop_start_ms))
             if self._audio_enabled and self._playing:
                 self._stop_audio()
                 self._start_audio()
@@ -572,6 +595,8 @@ class PlayingScreen:
             self._last_tick = None
             if self._midi_player is not None:
                 self._midi_player.pause()
+            if self._mp3_player is not None:
+                self._mp3_player.pause()
             self._stop_audio()
 
             if not self._song_completed:
@@ -669,9 +694,20 @@ class PlayingScreen:
         elif event.key == pygame.K_TAB:
             self._open_track_menu()
         elif event.key == pygame.K_n:
-            self._adjust_backing_offset(-BACKING_OFFSET_STEP_MS)
+            if event.mod & pygame.KMOD_SHIFT:
+                self._adjust_mp3_offset(-BACKING_OFFSET_STEP_MS)
+            else:
+                self._adjust_backing_offset(-BACKING_OFFSET_STEP_MS)
         elif event.key == pygame.K_m:
-            self._adjust_backing_offset(BACKING_OFFSET_STEP_MS)
+            if event.mod & pygame.KMOD_SHIFT:
+                self._adjust_mp3_offset(BACKING_OFFSET_STEP_MS)
+            else:
+                self._adjust_backing_offset(BACKING_OFFSET_STEP_MS)
+        elif event.key == pygame.K_u:
+            if event.mod & pygame.KMOD_SHIFT:
+                self._choose_mp3_backing()
+            else:
+                self._toggle_mp3_backing()
         elif event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
             self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
         elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
@@ -1525,6 +1561,7 @@ class PlayingScreen:
         tools = (
             "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
+            "|  U: audio track (Shift+U: pick, Shift+N/M: sync)  "
             "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
             "|  Y: timing report  |  D: run log  |  H: help"
@@ -1706,6 +1743,16 @@ class PlayingScreen:
             back_surf = hint_font.render(
                 f"Backing: {int(backing_off):+d} ms (N/M)", True, t.hud_accent)
             surface.blit(back_surf, (12, info_y))
+            info_y += 16
+
+        # Recorded backing HUD. Its own line, because it is a second thing
+        # that can be off: a recording lined up against the click is what the
+        # player is listening for while both are sounding, and a silent one
+        # has to say WHY it is silent or it reads as broken.
+        mp3_text = self._mp3_hud_text()
+        if mp3_text:
+            mp3_surf = hint_font.render(mp3_text, True, t.hud_accent)
+            surface.blit(mp3_surf, (12, info_y))
             info_y += 16
 
         # Scroll speed HUD — shows the seconds of song on screen, not just the
@@ -2440,6 +2487,8 @@ class PlayingScreen:
             "Y: timing report — which timing problem you actually have",
             "Shift+Y: save the raw measurements as a CSV file",
             "D: save a full run log (what every strike did)",
+            "U: recorded backing on/off, Shift+U picks the file",
+            "Shift+N / Shift+M: shift the recording against the notes",
             "+/-: scroll faster / slower     G: hit window",
             "N/M: backing track earlier / later",
             "TAB: choose track     H: this help     ESC: song list",
@@ -2826,8 +2875,138 @@ class PlayingScreen:
         if self._midi_player is not None:
             self._midi_player.close()
             self._midi_player = None
+        if self._mp3_player is not None:
+            self._mp3_player.close()
+            self._mp3_player = None
 
     # -- MIDI backing track --
+
+    # -- Recorded backing track (MP3) --
+
+    def _load_mp3_for_song(self) -> None:
+        """Open the recording this song was given, if it still exists."""
+        self._mp3_player = None
+        path = self._mp3_path()
+        if not path:
+            return
+        player = Mp3Player(path)
+        if player.open():
+            self._mp3_player = player
+            self._mp3_note = ""
+        else:
+            # Named rather than swallowed: a file that has been moved or
+            # renamed otherwise looks exactly like a feature that does not
+            # work, and the player would go looking in the wrong place.
+            self._mp3_note = player.error or "Could not open the backing track"
+
+    def _mp3_path(self) -> str:
+        getter = getattr(self._config, "mp3_path_for", None)
+        return getter(self._song_key) if getter else ""
+
+    def _mp3_offset(self) -> float:
+        getter = getattr(self._config, "mp3_offset_for", None)
+        return getter(self._song_key) if getter else 0.0
+
+    def _mp3_ms(self, playback_ms: float) -> float:
+        """Song position as the recording should hear it.
+
+        A positive offset makes the recording sound LATER, so it is
+        subtracted -- the same convention as the MIDI backing.
+        """
+        return playback_ms - self._mp3_offset()
+
+    def _mp3_plays(self) -> bool:
+        """Whether the recording may sound at all right now.
+
+        A recording cannot be slowed down. `pygame.mixer.music` plays a file
+        at the rate it was recorded at, and resampling it to practice speed
+        would drop the pitch with it -- a backing track four semitones flat is
+        worse than none. Below full speed it stays silent and the HUD says so;
+        the MIDI backing does follow the tempo and is the answer there.
+        """
+        return (self._mp3_player is not None
+                and self._mp3_player.ready
+                and not self._mp3_muted
+                and self._tempo_factor >= 1.0)
+
+    def _update_mp3(self) -> None:
+        """Keep the recording where the song is, or silent if it may not play."""
+        if self._mp3_player is None:
+            return
+        if not self._mp3_plays() or not self._playing:
+            self._mp3_player.pause()
+            return
+        self._mp3_player.update(self._mp3_ms(self._playback_ms))
+
+    def _toggle_mp3_backing(self) -> None:
+        """Turn the recorded backing on or off (key: U). Independent of B."""
+        self._mp3_muted = not self._mp3_muted
+        self._config.mp3_backing_enabled = not self._mp3_muted
+        self._config.save()
+        if self._mp3_player is not None:
+            self._mp3_player.set_muted(self._mp3_muted)
+        if not self._mp3_muted and not self._mp3_path():
+            self._mp3_note = "No backing track chosen yet — Shift+U to pick one"
+
+    def _choose_mp3_backing(self) -> None:
+        """Pick the recording for this song with the system file dialog."""
+        if not self._song_key:
+            self._mp3_note = "No song loaded"
+            return
+        current = self._mp3_path()
+        start_dir = str(Path(current).parent) if current else self._config.songs_dir
+        chosen = pick_audio_file(start_dir)
+        if not chosen:
+            # Cancelled, or no tkinter on this machine. The two look the same
+            # from here and neither is an error worth shouting about.
+            return
+        setter = getattr(self._config, "set_mp3_path_for", None)
+        if setter is not None:
+            setter(self._song_key, chosen)
+            self._config.save()
+        self._load_mp3_for_song()
+        if self._mp3_player is not None:
+            self._mp3_muted = False
+            self._config.mp3_backing_enabled = True
+            self._config.save()
+            self._mp3_note = f"Backing track: {Path(chosen).name}"
+
+    def _adjust_mp3_offset(self, delta_ms: float) -> None:
+        """Shift the recording against the notes (Shift+N earlier, Shift+M later).
+
+        Its own offset, not the MIDI one: an MP3 decoder emits encoder padding
+        before the music and how much depends on the encoder that made the
+        file, so nothing about the MIDI backing predicts it.
+        """
+        if not self._song_key:
+            return
+        new = max(-MAX_BACKING_OFFSET_MS,
+                  min(MAX_BACKING_OFFSET_MS, self._mp3_offset() + delta_ms))
+        setter = getattr(self._config, "set_mp3_offset_for", None)
+        if setter is None:
+            return
+        setter(self._song_key, new)
+        self._config.save()
+        if self._mp3_player is not None and self._mp3_plays():
+            self._mp3_player.seek(self._mp3_ms(self._playback_ms))
+
+    def _mp3_hud_text(self) -> str:
+        """What the HUD says about the recording, or "" when there is nothing."""
+        if self._mp3_player is not None and self._mp3_player.error:
+            # A failure while playing outranks whatever was said when the file
+            # was chosen -- that message is now stale news.
+            return f"Audio: {self._mp3_player.error}"
+        if self._mp3_note:
+            return self._mp3_note
+        if self._mp3_player is None:
+            return ""
+        name = Path(self._mp3_path()).name
+        if self._mp3_muted:
+            return f"Audio: off (U) — {name}"
+        if self._tempo_factor < 1.0:
+            return (f"Audio: silent below full speed — {name} "
+                    f"(the MIDI backing follows the tempo)")
+        return f"Audio: {int(self._mp3_offset()):+d} ms (Shift+N/M) — {name}"
 
     def _init_midi_player(self, backing_track: BackingTrack) -> None:
         """Create and open MidiPlayer. Silently continues if MIDI unavailable."""

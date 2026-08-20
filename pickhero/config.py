@@ -76,6 +76,18 @@ class Config:
     # lags depends on how busy the arrangement is, so one global value never
     # fits everything.
     song_backing_offsets: dict = field(default_factory=dict)
+    # Recorded audio as a backing track, alongside the MIDI one rather than
+    # instead of it: hearing both at once is how the recording gets lined up
+    # against the click in the first place, and either can then be switched
+    # off on its own.
+    mp3_backing_enabled: bool = True
+    # {song key: path to the recording}. Per song by nature -- there is no
+    # sensible global default for "the audio of this song".
+    song_mp3_paths: dict = field(default_factory=dict)
+    # {song key: offset ms}. Positive sounds LATER. Separate from the MIDI
+    # offset because an MP3 decoder emits encoder padding before the music
+    # and how much depends on the encoder, so this cannot be derived.
+    song_mp3_offsets: dict = field(default_factory=dict)
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     calibration: dict = field(default_factory=dict)
@@ -95,6 +107,32 @@ class Config:
             self.song_backing_offsets[song_key] = float(offset_ms)
         else:
             self.backing_offset_ms = float(offset_ms)
+
+    def mp3_path_for(self, song_key: str) -> str:
+        """The recording chosen for this song, or "" if there is none."""
+        if not song_key:
+            return ""
+        return str(self.song_mp3_paths.get(song_key, "") or "")
+
+    def set_mp3_path_for(self, song_key: str, path: str) -> None:
+        """Remember (or, with an empty path, forget) this song's recording."""
+        if not song_key:
+            return
+        if path:
+            self.song_mp3_paths[song_key] = str(path)
+        else:
+            self.song_mp3_paths.pop(song_key, None)
+
+    def mp3_offset_for(self, song_key: str) -> float:
+        """This song's recording offset. No global fallback on purpose --
+        encoder padding belongs to the file, not to the setup."""
+        if not song_key:
+            return 0.0
+        return float(self.song_mp3_offsets.get(song_key, 0.0))
+
+    def set_mp3_offset_for(self, song_key: str, offset_ms: float) -> None:
+        if song_key:
+            self.song_mp3_offsets[song_key] = float(offset_ms)
 
     def get_string_calibration(self, string: int) -> StringCalibration | None:
         """Return calibration for a string (1-6), or None if not calibrated."""

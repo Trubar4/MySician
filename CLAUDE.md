@@ -285,6 +285,25 @@ plain flags rather than a curve to reconstruct. They are separate axes — a chu
 - Still unmeasured: whether a heavy chug that returns NO pitch should credit its palm-muted note. That is leniency, and it needs reference
   recordings before it is granted, not a feel for how it ought to behave.
 
+## Two Backing Tracks, Switched Separately
+
+The MIDI backing is generated from the same timeline as the notes, so it cannot drift: it is told a position and plays the events at it. A
+recording has its own clock, running in the sound card, and the only control available is "start from here" — so `mp3_playback.py` compares
+where the song is with where the recording got to and corrects only past `RESYNC_MS` (90 ms), no more often than `MIN_RESYNC_GAP_MS`
+(1.5 s). A re-seek is audible; correcting an error nobody can hear costs more than the error.
+
+- **They are separate toggles (`B` and `U`), not one control cycling through both.** The player asked for it that way and the reason is the
+  workflow: lining a recording up against the click means hearing BOTH, then switching one off. A control that goes off → MIDI → recording
+  makes the state the job needs unreachable.
+- **Its own per-song offset (`Shift+N`/`Shift+M`), with no global fallback.** An MP3 decoder emits encoder padding before the music and how
+  much depends on the encoder that made the file, so nothing about one song's value predicts another's, and nothing about the MIDI offset
+  predicts this one.
+- **A recording cannot be slowed down.** `pygame.mixer.music` plays at the recorded rate, and resampling to 80 % drops the pitch four
+  semitones with it. Below full speed the recording is held silent and the HUD says why — the MIDI backing does follow the tempo and is the
+  answer there. Lifting this needs a phase vocoder, not a setting.
+- **Every failure is named on screen**: a file that has been moved, a decoder that cannot start from the middle of a file. A backing track
+  that silently does not play is indistinguishable from a feature that does not work, and the player would go looking in the wrong place.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain
@@ -329,6 +348,7 @@ pickhero/
 │   ├── detector.py
 │   ├── chord_verify.py  # per-string chord checking (score-informed)
 │   ├── midi_playback.py
+│   ├── mp3_playback.py  # a recording as a backing track, kept in sync
 │   └── note_utils.py
 ├── tabs/
 │   ├── __init__.py

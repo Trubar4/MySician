@@ -352,7 +352,28 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    damped over the whole timing test), confirmed by the player at the
    instrument. Much smaller than the clock bug was, so re-measure before
    designing anything. `CLAUDE.md`, "Ringing Strings Defeat Detection".
-5. **MP3 backing track.** The player's feature request, assessed as a
+5. ~~**MP3 backing track.**~~ **BUILT — 2026-08-19.** `U` switches the
+   recording on and off, `Shift+U` picks the file with the Windows dialog,
+   `Shift+N`/`Shift+M` shift it against the notes, and both the path and the
+   offset are stored per song. It runs ALONGSIDE the MIDI backing, both
+   switched separately, which is what the player asked for and why `B` does
+   not cycle. See `CLAUDE.md`, "Two Backing Tracks, Switched Separately".
+
+   **The one limit worth knowing, and the follow-up it implies:** a recording
+   cannot be slowed down. `pygame.mixer.music` plays at the recorded rate and
+   resampling to 80 % drops the pitch four semitones with it, so below full
+   speed the recording is held silent and the HUD says why. The player
+   practises at 80 % a great deal, so this WILL come up. Lifting it needs a
+   phase vocoder over the decoded samples (numpy is already a dependency),
+   cached per file and per speed — a real piece of DSP, not a setting, and
+   worth doing only once the player says the restriction bites.
+
+   Untested against a real file on this machine (no audio device here): the
+   parts to watch on Windows are `pygame.mixer.music.play(start=...)` on MP3,
+   and whether the tkinter dialog comes to the front. Both fail loudly rather
+   than silently if they fail at all.
+
+   The original assessment, for reference: The player's feature request, assessed as a
    moderate, non-research job. Wanted: a file picker, per-song path, on/off,
    and a per-song sync offset. Most of the machinery exists — `Config` already
    stores a per-song backing offset and `N`/`M` shift it live; `pygame.mixer.music`
