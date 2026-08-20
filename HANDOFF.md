@@ -17,7 +17,13 @@ which has now happened twice. When the work moves, update that file first.
 
 ## User's setup (important for debugging)
 
-- Windows PC, PowerShell; repo at `C:\Users\Admin\.vscode\MySician\mysician\mysician`
+- **Two Windows machines now.** `C:\Users\Admin\.vscode\MySician\mysician\mysician`
+  on the first, `C:\Users\lwnthp0\Mysician\MySician` on the second. A fresh
+  clone has no `.venv` (it holds binaries built for one machine's Python and
+  cannot be committed), so every import fails one at a time and reads like a
+  broken app. `setup.ps1` builds the whole environment in one command and
+  verifies the imports; point them at it rather than at a list of pip
+  commands. It also warns when the checkout is on the wrong branch.
 - Runs from source: `.venv` with **Python 3.12** (system Python is 3.14 — must
   NOT be used, aubio/pygame don't build there). Activate first:
   `.venv\Scripts\Activate.ps1`, then `python -m pickhero`

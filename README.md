@@ -69,7 +69,28 @@ green run, and download the **MySician** artifact (a ZIP containing the exe).
 
 ### Option 2: Local development on Windows
 
-One-time setup:
+**The short version — a fresh machine, in one command:**
+
+```powershell
+git clone https://github.com/Trubar4/MySician.git
+cd MySician
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+`setup.ps1` finds a usable Python, builds the `.venv`, installs everything,
+and then checks that each module really imports rather than trusting pip's
+exit code. It names the one step that failed if one does. The `.venv` is not
+in the repository and never can be — it holds binaries built for one
+machine's Python — so a fresh clone has the code and nothing to run it with,
+and that is what this script is for.
+
+Note `git clone`, not `git pull <branch>`: `pull` expects a *remote* name, so
+a branch name there fails with "does not appear to be a git repository". To
+move an existing clone onto a branch: `git fetch origin` then
+`git switch <branch>`.
+
+**The long version**, if you would rather do it by hand or the script stops
+on something:
 
 1. **Python 3.12** from [python.org](https://www.python.org/downloads/) —
    check *"Add python.exe to PATH"* in the installer. (3.10–3.12 work;
@@ -125,6 +146,7 @@ MySician/
 │   │   ├── detector.py      # aubio pitch + onset detection
 │   │   ├── chord_verify.py  # per-string chord checking (score-informed)
 │   │   ├── midi_playback.py # MIDI backing track playback
+│   │   ├── mp3_playback.py  # a recording as a backing track, kept in sync
 │   │   └── note_utils.py    # frequency → note/string/fret mapping
 │   ├── tabs/
 │   │   ├── loader.py        # pyguitarpro file reader, incl. bends and slides
