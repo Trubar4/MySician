@@ -127,6 +127,64 @@ if (-not $pyExe) {
     exit 1
 }
 
+# -- Is there a C++ compiler? -----------------------------------------------
+# aubio has shipped no wheel since 0.4.9 in 2019 -- PyPI carries the source
+# tarball and nothing else -- so on Windows it is compiled here, every time,
+# and that needs MSVC. Checked BEFORE anything is installed: finding out from
+# a failed build costs several minutes and buries the reason under forty lines
+# of pkg-config noise about libraries nobody needs.
+#
+# vswhere.exe ships with every Visual Studio and Build Tools install since
+# 2017 and lives at a fixed path, so its absence is itself the answer.
+function Find-MsvcTools {
+    $base = ${env:ProgramFiles(x86)}
+    if (-not $base) { $base = $env:ProgramFiles }
+    if (-not $base) { return @{ Vs = $false; Cpp = $false } }
+    $vswhere = Join-Path $base "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) { return @{ Vs = $false; Cpp = $false } }
+    $found = Try-Run $vswhere @(
+        "-latest", "-products", "*",
+        "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        "-property", "installationPath")
+    return @{ Vs = $true; Cpp = ($found.Ok -and $found.Out -ne "") }
+}
+
+if ($IsWindows -or ($null -eq $IsWindows)) {   # $IsWindows is absent on PS 5.1
+    $msvc = Find-MsvcTools
+    if ($msvc.Cpp) {
+        Good "C++-Compiler gefunden (fuer aubio gebraucht)"
+    } else {
+        Say ""
+        Bad "Der C++-Compiler von Microsoft fehlt - ohne ihn geht aubio nicht."
+        Say ""
+        Note "aubio gibt es seit 2019 nur als Quellcode, es MUSS hier gebaut"
+        Note "werden. Die Erweiterung 'C/C++' in VS Code ist dafuer nicht"
+        Note "genug - die bringt nur Syntaxhilfe, keinen Compiler."
+        Say ""
+        if ($msvc.Vs) {
+            Note "Visual Studio ist da, nur ohne die C++-Werkzeuge:"
+            Note "  1. 'Visual Studio Installer' aus dem Startmenue oeffnen"
+            Note "  2. Bei deiner Visual-Studio-Version auf 'Aendern' klicken"
+            Note "  3. Kachel 'Desktopentwicklung mit C++' ankreuzen"
+            Note "  4. Unten rechts 'Aendern' / 'Installieren'"
+        } else {
+            Note "Es ist gar kein Visual Studio installiert. Am schnellsten:"
+            Note "  https://visualstudio.microsoft.com/visual-cpp-build-tools/"
+            Note "  Herunterladen, starten, 'Desktopentwicklung mit C++'"
+            Note "  ankreuzen, installieren (ca. 2 GB)."
+        }
+        Say ""
+        Note "Danach ein NEUES PowerShell-Fenster oeffnen und dieses Skript"
+        Note "erneut starten. Im alten Fenster fehlen die neuen Pfade."
+        Say ""
+        Note "Kein Compiler und keine Lust darauf? Es gibt eine fertige"
+        Note "MySician.exe zum Herunterladen, ganz ohne Python:"
+        Note "  https://github.com/Trubar4/MySician/actions"
+        Note "  -> neuester gruener Lauf -> Artifact 'MySician'"
+        exit 1
+    }
+}
+
 # -- Build the environment --------------------------------------------------
 if (Test-Path ".venv") {
     Good ".venv ist schon da - wird nur aktualisiert"

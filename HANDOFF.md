@@ -24,6 +24,18 @@ which has now happened twice. When the work moves, update that file first.
   broken app. `setup.ps1` builds the whole environment in one command and
   verifies the imports; point them at it rather than at a list of pip
   commands. It also warns when the checkout is on the wrong branch.
+- **A local install needs the MSVC C++ toolchain, and there is no way round
+  it.** aubio's newest release is 0.4.9 from 2019 and PyPI carries the source
+  tarball *only* — no wheel for any Python on any platform — so it is compiled
+  on every install. The VS Code "C/C++" extension is not a compiler and the
+  player reached for it first; what is needed is the **"Desktop development
+  with C++"** workload in the Visual Studio Installer, or the standalone Build
+  Tools. `setup.ps1` now checks for it with `vswhere.exe` BEFORE installing
+  anything, and distinguishes "no Visual Studio at all" from "Visual Studio
+  without the C++ workload", because the fix differs.
+- **The escape hatch is the built exe.** GitHub Actions builds `MySician.exe`
+  on every push to any `claude/**` branch, and its runner has the compiler. On
+  a machine that cannot build aubio, that is the way to run the current code.
 - Runs from source: `.venv` with **Python 3.12**. The system Python is newer
   on both machines (3.14 on the first, 3.13 on the second) and must NOT be
   used. The reason, since it comes up on every new machine: aubio has shipped

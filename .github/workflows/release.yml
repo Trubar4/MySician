@@ -7,6 +7,12 @@ on:
     branches:
       - "claude/yousician-alternative-vshoiv"
       - "main"
+      # Every working branch too. aubio has shipped no wheel since 2019, so a
+      # machine without the MSVC toolchain cannot install it at all -- and the
+      # player has now hit exactly that on a second computer. This runner has
+      # the compiler, so the build it produces is the way to run the current
+      # code there without installing 2 GB of Visual Studio first.
+      - "claude/**"
   workflow_dispatch:
 
 permissions:

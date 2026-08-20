@@ -63,9 +63,16 @@ PickHero reads Guitar Pro files (`.gp3`, `.gp4`, `.gp5`, `.gp7`, `.gp8`). You ca
 
 ### Option 1: Download (no Python needed)
 
-Every push to this repo builds `MySician.exe` automatically via GitHub Actions.
+Every push builds `MySician.exe` via GitHub Actions, on every working branch.
 Go to [Actions](https://github.com/Trubar4/MySician/actions), open the newest
 green run, and download the **MySician** artifact (a ZIP containing the exe).
+
+This is the whole answer on a machine without a C++ compiler: `aubio` has
+shipped no wheel since 2019, so installing from source needs MSVC, while the
+build runner already has it. Put a `songs` folder next to the exe and run it.
+(The `tools/` scripts still need a local Python — but only
+`record_reference.py` matters day to day, and that one deliberately needs
+nothing but `sounddevice` and `numpy`, both of which install as wheels.)
 
 ### Option 2: Local development on Windows
 
