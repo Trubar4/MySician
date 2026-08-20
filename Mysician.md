@@ -1,3 +1,15 @@
+1. OGG downloaden
+2. GP5 downloaden
+3. 
+cd C:\Users\Admin\.vscode\MySician\mysician\mysician
+git pull
+.venv\Scripts\Activate.ps1
+python -m pickhero
+4. Shift+U -> Song laden (U ein/aus)
+5. Shift+M/N einstellen -> spielen
+6. Speed-Test und techtest durchspielen
+
+
 # Feedback
 Das offset von -400 ms reicht nicht. Vielleicht liegt es am Einzählen. Shift+M/N funktioniert ansonsten.
 Was macht wait on/off genau?
