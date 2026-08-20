@@ -79,9 +79,12 @@ if (Test-Path "UPLOAD_BRANCH") {
 }
 
 # -- Find a Python that can run this ----------------------------------------
-# aubio and pygame need wheels that exist for 3.10-3.12. Newer Pythons have no
-# aubio wheel, and building it on Windows needs a C toolchain -- a different
-# afternoon entirely, and not one to discover halfway through.
+# 3.10 to 3.12, and the reason is numpy rather than aubio itself. aubio has
+# shipped no wheel since 0.4.9 in 2019, so it is compiled from source on every
+# Python -- but it is written against the numpy 1.x C API, and the last numpy
+# 1.x (1.26.4) has no build for 3.13 or newer. On 3.13 the compile therefore
+# needs numpy built from source too, which is a far bigger job than installing
+# a second Python next to the one already there.
 $pyExe = ""
 $pyArgs = @()
 foreach ($version in @("3.12", "3.11", "3.10")) {
@@ -103,16 +106,24 @@ if (-not $pyExe) {
             $pyArgs = @()
             Good "Python $($probe.Out) gefunden"
         } else {
-            Bad "Gefunden wurde nur Python $($probe.Out), und damit gibt es kein fertiges aubio-Paket."
+            Bad "Gefunden wurde nur Python $($probe.Out) - zu neu fuer aubio."
         }
     }
 }
 if (-not $pyExe) {
     Say ""
     Bad "Kein passendes Python gefunden (gebraucht wird 3.10, 3.11 oder 3.12)."
-    Note "Hol dir 3.12 von https://www.python.org/downloads/"
-    Note "Beim Installieren 'Add python.exe to PATH' ankreuzen."
-    Note "Danach dieses Skript nochmal starten."
+    Say ""
+    Note "Warum: aubio wird auf Windows immer aus dem Quellcode gebaut und"
+    Note "braucht dafuer numpy 1.x. Das gibt es fuer 3.13 nicht mehr fertig."
+    Say ""
+    Note "Was zu tun ist - Python 3.12 ZUSAETZLICH installieren:"
+    Note "  1. https://www.python.org/downloads/  ->  weiter unten die"
+    Note "     neueste 3.12.x waehlen, 'Windows installer (64-bit)'"
+    Note "  2. Installieren. Ein vorhandenes 3.13 kann bleiben und wird"
+    Note "     NICHT ueberschrieben - Windows kann beide nebeneinander."
+    Note "  3. Dieses Skript nochmal starten. Es nimmt dann von selbst 3.12"
+    Note "     fuer die .venv; alles andere auf dem Rechner bleibt bei 3.13."
     exit 1
 }
 
@@ -191,8 +202,9 @@ Bad ("Es fehlt noch: " + ($missing -join ", "))
 if ($missing -contains "aubio") {
     Note "aubio ist der haeufigste Stolperstein - es wird auf Windows aus dem"
     Note "Quellcode gebaut. Zwei moegliche Ursachen:"
-    Note "  1. Python zu neu: es geht bis 3.12. Dann 3.12 installieren,"
-    Note "     den Ordner .venv loeschen und dieses Skript neu starten."
+    Note "  1. Python zu neu: es geht bis 3.12 (wegen numpy 1.x). Dann 3.12"
+    Note "     zusaetzlich installieren, den Ordner .venv loeschen und"
+    Note "     dieses Skript neu starten."
     Note "  2. Es fehlt der C++-Compiler von Microsoft. Im Visual Studio"
     Note "     Installer die Arbeitslast 'Desktopentwicklung mit C++'"
     Note "     nachinstallieren - VS Code allein reicht dafuer nicht."

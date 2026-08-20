@@ -24,8 +24,13 @@ which has now happened twice. When the work moves, update that file first.
   broken app. `setup.ps1` builds the whole environment in one command and
   verifies the imports; point them at it rather than at a list of pip
   commands. It also warns when the checkout is on the wrong branch.
-- Runs from source: `.venv` with **Python 3.12** (system Python is 3.14 — must
-  NOT be used, aubio/pygame don't build there). Activate first:
+- Runs from source: `.venv` with **Python 3.12**. The system Python is newer
+  on both machines (3.14 on the first, 3.13 on the second) and must NOT be
+  used. The reason, since it comes up on every new machine: aubio has shipped
+  no wheel since 0.4.9 in 2019, so it compiles from source everywhere — and it
+  needs the numpy 1.x C API, whose last release (1.26.4) has no build above
+  3.12. `setup.ps1` finds a 3.12 through the `py` launcher and says this in
+  plain terms when it cannot. Activate first:
   `.venv\Scripts\Activate.ps1`, then `python -m pickhero`
   ("No module named pygame" = venv not activated)
 - Guitar → **Focusrite Scarlett** USB interface (native 48 kHz) → PC.

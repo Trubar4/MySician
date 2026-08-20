@@ -93,10 +93,15 @@ move an existing clone onto a branch: `git fetch origin` then
 on something:
 
 1. **Python 3.12** from [python.org](https://www.python.org/downloads/) —
-   check *"Add python.exe to PATH"* in the installer. (3.10–3.12 work;
-   3.13+ does not — `aubio` and `pygame` have no wheels there and fail to
-   build. If another Python is also installed, create the venv explicitly
-   with `py -3.12 -m venv .venv`.)
+   check *"Add python.exe to PATH"* in the installer. 3.10–3.12 work and
+   3.13+ does not, and the reason is worth knowing so nobody spends an hour
+   on it: `aubio` has shipped **no wheel at all** since 0.4.9 in 2019, so it
+   is compiled from source on every Python — but it is written against the
+   numpy 1.x C API, and the last numpy 1.x (1.26.4) has no build for 3.13.
+   On 3.13 the compile would need numpy built from source too.
+   A newer Python can stay installed alongside; Windows handles several at
+   once and `setup.ps1` picks the right one through the `py` launcher. By
+   hand: `py -3.12 -m venv .venv`.
 2. **Microsoft C++ compiler** — needed because `aubio` compiles from source:
    - If you have Visual Studio installed: open *Visual Studio Installer* →
      *Modify* → check the workload **"Desktop development with C++"**
