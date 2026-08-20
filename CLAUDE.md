@@ -303,6 +303,10 @@ where the song is with where the recording got to and corrects only past `RESYNC
   answer there. Lifting this needs a phase vocoder, not a setting.
 - **Every failure is named on screen**: a file that has been moved, a decoder that cannot start from the middle of a file. A backing track
   that silently does not play is indistinguishable from a feature that does not work, and the player would go looking in the wrong place.
+- **Pause silences it too, and that took a bug to notice.** Every route to the recording reaches `Mp3Player.seek`, and seeking STARTS
+  playback — so nudging the offset on a paused song set the recording playing under a picture standing still, which is the one state the
+  offset cannot be judged in. `_mp3_plays()` includes `self._playing` for that reason. Paused, `Shift+N`/`Shift+M` only store the value;
+  the HUD shows it move regardless, so the key never looks dead.
 
 ## Colour
 

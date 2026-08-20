@@ -136,6 +136,8 @@ if (-not $pyExe) {
 #
 # vswhere.exe ships with every Visual Studio and Build Tools install since
 # 2017 and lives at a fixed path, so its absence is itself the answer.
+$noCompiler = $false
+
 function Find-MsvcTools {
     $base = ${env:ProgramFiles(x86)}
     if (-not $base) { $base = $env:ProgramFiles }
@@ -177,11 +179,15 @@ if ($IsWindows -or ($null -eq $IsWindows)) {   # $IsWindows is absent on PS 5.1
         Note "Danach ein NEUES PowerShell-Fenster oeffnen und dieses Skript"
         Note "erneut starten. Im alten Fenster fehlen die neuen Pfade."
         Say ""
-        Note "Kein Compiler und keine Lust darauf? Es gibt eine fertige"
-        Note "MySician.exe zum Herunterladen, ganz ohne Python:"
-        Note "  https://github.com/Trubar4/MySician/actions"
-        Note "  -> neuester gruener Lauf -> Artifact 'MySician'"
-        exit 1
+        Note "Darfst du auf diesem Rechner nichts installieren? Dann bleibt"
+        Note "alles Wichtige trotzdem erreichbar - siehe unten."
+        Say ""
+        # Not an exit. On a locked-down machine the compiler is simply not
+        # available, and stopping here would leave the player with nothing --
+        # including no way to RECORD, which is what every measurement in this
+        # project is built on. Everything except aubio installs as a wheel, so
+        # that much gets set up and the rest is named.
+        $noCompiler = $true
     }
 }
 
@@ -227,7 +233,15 @@ if (-not $base.Ok) {
 }
 Good "Grundpakete installiert"
 
-$req = Try-Run $venvPy @("-m", "pip", "install", "--quiet", "-r", "requirements.txt")
+if ($noCompiler) {
+    # Everything except aubio ships as a wheel, so the recorder still runs --
+    # and it is deliberately written to need only sounddevice and numpy, for
+    # exactly this case: it has to work when the detection stack does not.
+    $req = Try-Run $venvPy @("-m", "pip", "install", "--quiet",
+                             "sounddevice", "pyguitarpro", "pygame")
+} else {
+    $req = Try-Run $venvPy @("-m", "pip", "install", "--quiet", "-r", "requirements.txt")
+}
 Try-Run $venvPy @("-m", "pip", "install", "--quiet", "-r", "requirements-dev.txt") | Out-Null
 
 # -- Did it actually work? --------------------------------------------------
@@ -236,12 +250,33 @@ Try-Run $venvPy @("-m", "pip", "install", "--quiet", "-r", "requirements-dev.txt
 Say ""
 Say "  Wird geprueft, ob alles laeuft ..."
 $missing = @()
-foreach ($module in @("pygame", "aubio", "sounddevice", "numpy", "guitarpro")) {
+$wanted = @("pygame", "aubio", "sounddevice", "numpy", "guitarpro")
+if ($noCompiler) { $wanted = @("pygame", "sounddevice", "numpy", "guitarpro") }
+foreach ($module in $wanted) {
     $check = Try-Run $venvPy @("-c", "import $module")
     if ($check.Ok) { Good $module } else { Bad $module; $missing += $module }
 }
 
 Say ""
+if ($missing.Count -eq 0 -and $noCompiler) {
+    Say "=================================================================="
+    Say " Fertig, soweit es ohne Compiler geht."
+    Say ""
+    Say " ZUM SPIELEN: die fertige MySician.exe herunterladen -"
+    Say " die wird auf GitHub gebaut, wo der Compiler vorhanden ist:"
+    Say "     https://github.com/Trubar4/MySician/actions"
+    Say "     -> neuester gruener Lauf -> unten Artifact 'MySician'"
+    Say " Auspacken, einen Ordner 'songs' danebenlegen, exe starten."
+    Say ""
+    Say " ZUM AUFNEHMEN laeuft alles hier, ohne Compiler:"
+    Say "     .venv\Scripts\Activate.ps1"
+    Say "     python tools\record_reference.py --play-along timing_test_100bpm.gp5"
+    Say ""
+    Say " Nur die Tonerkennung selbst (aubio) fehlt, also 'python -m"
+    Say " pickhero' und die Analyse-Skripte. Dafuer ist die exe da."
+    Say "=================================================================="
+    exit 0
+}
 if ($missing.Count -eq 0) {
     Say "=================================================================="
     Say " Fertig. So startest du die App:"

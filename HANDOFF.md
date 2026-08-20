@@ -391,10 +391,16 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    cached per file and per speed — a real piece of DSP, not a setting, and
    worth doing only once the player says the restriction bites.
 
-   Untested against a real file on this machine (no audio device here): the
-   parts to watch on Windows are `pygame.mixer.music.play(start=...)` on MP3,
-   and whether the tkinter dialog comes to the front. Both fail loudly rather
-   than silently if they fail at all.
+   **First real-world bug, found and fixed:** pausing did not silence it.
+   Every route to the recording reaches `Mp3Player.seek`, and seeking STARTS
+   playback — so `Shift+N`/`Shift+M` on a paused song set the recording
+   playing under a frozen picture, which is exactly the state the offset has
+   to be judged in. `_mp3_plays()` now includes `self._playing`; paused, the
+   keys only store the number and the HUD still shows it move.
+
+   Still untested against a real file: `pygame.mixer.music.play(start=...)`
+   seeking into the middle of an MP3 on Windows, and whether the tkinter
+   dialog comes to the front. Both fail loudly rather than silently.
 
    The original assessment, for reference: The player's feature request, assessed as a
    moderate, non-research job. Wanted: a file picker, per-song path, on/off,

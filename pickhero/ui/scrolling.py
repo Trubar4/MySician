@@ -2918,22 +2918,31 @@ class PlayingScreen:
     def _mp3_plays(self) -> bool:
         """Whether the recording may sound at all right now.
 
-        A recording cannot be slowed down. `pygame.mixer.music` plays a file
-        at the rate it was recorded at, and resampling it to practice speed
-        would drop the pitch with it -- a backing track four semitones flat is
-        worse than none. Below full speed it stays silent and the HUD says so;
-        the MIDI backing does follow the tempo and is the answer there.
+        **Including whether the song is running at all.** Every caller here
+        reaches `Mp3Player.seek`, and seeking STARTS playback -- so without
+        this, nudging the offset on a paused song set the recording playing
+        against a picture standing still, which is exactly the state the
+        offset is meant to be judged in. Pausing has to mean silence for both
+        backings or neither.
+
+        A recording also cannot be slowed down. `pygame.mixer.music` plays a
+        file at the rate it was recorded at, and resampling it to practice
+        speed would drop the pitch with it -- a backing track four semitones
+        flat is worse than none. Below full speed it stays silent and the HUD
+        says so; the MIDI backing does follow the tempo and is the answer
+        there.
         """
         return (self._mp3_player is not None
                 and self._mp3_player.ready
                 and not self._mp3_muted
+                and self._playing
                 and self._tempo_factor >= 1.0)
 
     def _update_mp3(self) -> None:
         """Keep the recording where the song is, or silent if it may not play."""
         if self._mp3_player is None:
             return
-        if not self._mp3_plays() or not self._playing:
+        if not self._mp3_plays():
             self._mp3_player.pause()
             return
         self._mp3_player.update(self._mp3_ms(self._playback_ms))
@@ -2977,6 +2986,12 @@ class PlayingScreen:
         Its own offset, not the MIDI one: an MP3 decoder emits encoder padding
         before the music and how much depends on the encoder that made the
         file, so nothing about the MIDI backing predicts it.
+
+        On a paused song this only stores the number. Moving the recording
+        would mean starting it, and a recording playing under a frozen picture
+        tells the player nothing about whether the two line up -- which is the
+        one question the key exists to answer. The value is dialled in while
+        the song runs, and the HUD shows it either way.
         """
         if not self._song_key:
             return

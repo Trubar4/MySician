@@ -207,7 +207,9 @@ class TestSlowedPractice:
         config.tempo_factor = tempo
         monkeypatch.setattr(Mp3Player, "open", lambda self: True)
         monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
-        return PlayingScreen(_timeline(), config=config, song_key="song")
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        screen._playing = True
+        return screen
 
     def test_it_plays_at_full_speed(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch, 1.0)
@@ -293,3 +295,64 @@ class TestFailureIsNamed:
         screen = PlayingScreen(_timeline(), config=config, song_key="song")
         screen._mp3_player.error = "This file cannot start from the middle"
         assert "middle" in screen._mp3_hud_text()
+
+
+class TestPauseMeansSilence:
+    """Pausing has to silence both backings or neither.
+
+    Every route to the recording goes through Mp3Player.seek, and seeking
+    STARTS playback. So nudging the offset on a paused song set the recording
+    playing under a picture standing still -- which is precisely the state the
+    offset is supposed to be judged in, and made it impossible to judge.
+    """
+
+    def _screen(self, tmp_path, monkeypatch, playing):
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        started = []
+        monkeypatch.setattr(Mp3Player, "seek",
+                            lambda self, ms: started.append(ms))
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        screen._playing = playing
+        screen._playback_ms = 5000.0
+        return screen, started
+
+    def test_nudging_the_offset_while_paused_makes_no_sound(self, tmp_path,
+                                                            monkeypatch):
+        screen, started = self._screen(tmp_path, monkeypatch, playing=False)
+        screen._adjust_mp3_offset(-10.0)
+        assert started == []
+
+    def test_it_still_stores_the_value_while_paused(self, tmp_path, monkeypatch):
+        """Silent is not the same as ignored -- the number has to move, or the
+        key looks broken."""
+        screen, _ = self._screen(tmp_path, monkeypatch, playing=False)
+        screen._adjust_mp3_offset(-10.0)
+        assert screen._config.mp3_offset_for("song") == -10.0
+
+    def test_the_hud_shows_the_new_value_while_paused(self, tmp_path,
+                                                      monkeypatch):
+        screen, _ = self._screen(tmp_path, monkeypatch, playing=False)
+        screen._adjust_mp3_offset(-30.0)
+        assert "-30 ms" in screen._mp3_hud_text()
+
+    def test_nudging_while_playing_moves_the_recording(self, tmp_path,
+                                                       monkeypatch):
+        """The whole point of the key: hear the shift as it is made."""
+        screen, started = self._screen(tmp_path, monkeypatch, playing=True)
+        screen._adjust_mp3_offset(-10.0)
+        assert started == [pytest.approx(5010.0)]
+
+    def test_seeking_while_paused_makes_no_sound(self, tmp_path, monkeypatch):
+        screen, started = self._screen(tmp_path, monkeypatch, playing=False)
+        screen.seek(9000.0)
+        assert started == [-1.0]      # -1 is the player's "be quiet"
+
+    def test_a_paused_song_keeps_the_recording_stopped(self, tmp_path,
+                                                       monkeypatch):
+        screen, _ = self._screen(tmp_path, monkeypatch, playing=False)
+        assert not screen._mp3_plays()
