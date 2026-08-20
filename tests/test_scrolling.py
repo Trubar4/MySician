@@ -1291,3 +1291,79 @@ class TestHeardLine:
     def test_nothing_taken_back_says_nothing_about_it(self):
         screen = self._screen_with(["hit"])
         assert "taken back" not in screen._heard_line()
+
+
+class TestLevelAdvice:
+    """"Gate: -65 dB" is a number, not an instruction.
+
+    A player whose signal sits under the gate sees notes go unrecognised and
+    has no way to know that a threshold, not their playing, is eating them.
+    """
+
+    def _screen(self, peak, floor, gate=-60.0):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._noise_gate_db = gate
+        screen._signal_peak_db = peak
+        screen._signal_floor_db = floor
+        return screen
+
+    def test_a_healthy_level_says_nothing(self):
+        assert self._screen(peak=-20.0, floor=-75.0)._level_advice() == ""
+
+    def test_nothing_is_claimed_before_anything_was_heard(self):
+        assert self._screen(peak=-120.0, floor=0.0)._level_advice() == ""
+
+    def test_a_signal_that_barely_clears_the_gate_says_so(self):
+        advice = self._screen(peak=-55.0, floor=-75.0)._level_advice()
+        assert "X" in advice and "louder" in advice
+
+    def test_clipping_is_named_before_anything_else(self):
+        """Distortion destroys the period YIN looks for, so it outranks a
+        quiet-signal reading that the same run would also produce."""
+        advice = self._screen(peak=-2.0, floor=-70.0)._level_advice()
+        assert "Too loud" in advice
+
+    def test_background_noise_reaching_the_gate_says_so(self):
+        advice = self._screen(peak=-20.0, floor=-58.0)._level_advice()
+        assert "C" in advice and "noise" in advice.lower()
+
+    def test_raising_the_gate_can_silence_the_noise_advice(self):
+        screen = self._screen(peak=-20.0, floor=-58.0)
+        assert screen._level_advice() != ""
+        screen._noise_gate_db = -45.0
+        assert screen._level_advice() == ""
+
+    def test_the_peak_decays_so_one_loud_accident_does_not_stick(self):
+        screen = self._screen(peak=-120.0, floor=0.0)
+        screen._track_levels(-10.0)
+        for _ in range(1000):
+            screen._track_levels(-70.0)
+        assert screen._signal_peak_db < -20.0
+
+    def test_a_silent_frame_does_not_erase_the_peak_at_once(self):
+        screen = self._screen(peak=-120.0, floor=0.0)
+        screen._track_levels(-20.0)
+        screen._track_levels(-70.0)
+        assert screen._signal_peak_db == pytest.approx(-20.05)
+
+
+class TestTopRightHudDoesNotOverlap:
+    """The gate used to be drawn straight over the hit count.
+
+    The block above it renders two lines and the spacing had been counted for
+    one, which is the kind of thing a fixed pixel offset does the moment
+    anything above it grows.
+    """
+
+    def test_draw_stats_reports_where_it_ended(self):
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        from pickhero.ui.feedback import FeedbackRenderer
+        font = pygame.font.SysFont("arial", 14)
+        surface = pygame.Surface((320, 240))
+        renderer = FeedbackRenderer()
+        stats = {"hits": 57, "close": 3, "misses": 2, "total": 62,
+                 "accuracy_percent": 91.9}
+        end = renderer.draw_stats(surface, stats, font, 300, 36)
+        assert end >= 36 + 2 * font.get_height()
+        pygame.display.quit()

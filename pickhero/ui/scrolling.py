@@ -150,6 +150,23 @@ TIMING_WINDOW_PRESETS = (100.0, 150.0, 200.0, 250.0)
 MAX_BACKING_OFFSET_MS = 400.0
 BACKING_OFFSET_STEP_MS = 10.0
 
+# Input level advice. A level at or below this has not been measured yet --
+# the meter reads -120 dB before any audio arrives.
+SIGNAL_UNKNOWN_DB = -119.0
+# An RMS this high over a 512-sample hop means the peaks are already against
+# the ceiling, and a clipped waveform has no period for YIN to find.
+CLIPPING_DB = -8.0
+# How far the loudest playing must clear the gate before the gate is not the
+# thing eating the notes. A strike decays fast, so most of a note sits well
+# below its own peak.
+QUIET_MARGIN_DB = 12.0
+# How far the quietest moment must stay UNDER the gate before background hum
+# stops firing onsets of its own.
+NOISE_MARGIN_DB = 6.0
+# Per frame, so one loud accident or one silent gap does not fix the advice
+# in place for the rest of the song.
+LEVEL_DECAY_DB = 0.05
+
 # Auto-sync confidence. Scatter does not invalidate the median — a player is
 # simply not a metronome — it only means more strikes are needed before the
 # median is trustworthy. Refuse outright only when the scatter is so wide that
@@ -273,6 +290,10 @@ class PlayingScreen:
         # Signal level meter
         self._signal_db: float = -120.0
         self._signal_db_smooth: float = -120.0
+        # Loudest and quietest level heard recently, so the HUD can say what
+        # to do about the input rather than only what it is.
+        self._signal_peak_db: float = SIGNAL_UNKNOWN_DB
+        self._signal_floor_db: float = 0.0
 
         # Tuner display
         self._tuner_freq: float = 0.0
@@ -420,6 +441,7 @@ class PlayingScreen:
             raw_db = self._audio_capture.get_signal_db()
             self._signal_db = raw_db
             self._signal_db_smooth = self._signal_db_smooth * 0.7 + raw_db * 0.3
+            self._track_levels(raw_db)
             freq, conf = self._audio_capture.get_tuner_data()
             self._tuner_freq = freq
             self._tuner_confidence = conf
@@ -1579,33 +1601,50 @@ class PlayingScreen:
         if self._audio_enabled:
             self._feedback.draw_streak(surface, title_font, w // 2, loop_y)
 
-        # Top-right: time
+        # Top-right column. Every line is stacked on the measured height of
+        # the one above it. Fixed pixel offsets put the noise gate on top of
+        # the hit count, because the block above draws two lines and the
+        # spacing had been counted for one.
         current = format_time(self._playback_ms)
         total = format_time(self._timeline.duration_ms)
         time_text = f"{current} / {total}"
         time_surf = time_font.render(time_text, True, t.hud_text)
         surface.blit(time_surf, (w - time_surf.get_width() - 12, 12))
+        right_y = 12 + time_surf.get_height() + 2
 
-        # Top-right second line: accuracy stats
-        stats_bottom_y = 36
         if self._audio_enabled and self._matcher is not None:
             stats = self._matcher.get_statistics()
             if stats["total"] > 0:
-                self._feedback.draw_stats(surface, stats, hint_font, w - 12, 36)
-                stats_bottom_y = 54
+                right_y = self._feedback.draw_stats(
+                    surface, stats, hint_font, w - 12, right_y)
 
-        # Top-right: noise gate + signal meter + tuner (below stats, when audio capture exists)
+        line_h = hint_font.get_height() + 4
         if self._audio_enabled:
-            gate_text = f"Gate: {int(self._noise_gate_db)} dB"
-            gate_surf = hint_font.render(gate_text, True, t.hud_accent)
-            surface.blit(gate_surf, (w - gate_surf.get_width() - 12, stats_bottom_y))
+            gate_surf = hint_font.render(
+                f"Gate: {int(self._noise_gate_db)} dB (X/C)", True, t.hud_accent)
+            surface.blit(gate_surf, (w - gate_surf.get_width() - 12, right_y))
+            right_y += line_h
             if self._audio_capture is not None:
-                self._draw_signal_meter(surface, hint_font, w, stats_bottom_y + 18)
-                self._draw_tuner(surface, hint_font, w, stats_bottom_y + 36)
+                self._draw_signal_meter(surface, hint_font, w, right_y)
+                right_y += line_h
+                self._draw_tuner(surface, hint_font, w, right_y)
+                right_y += line_h
         elif self._audio_capture is not None:
             # Audio off but capture exists — still show meter and tuner
-            self._draw_signal_meter(surface, hint_font, w, stats_bottom_y)
-            self._draw_tuner(surface, hint_font, w, stats_bottom_y + 18)
+            self._draw_signal_meter(surface, hint_font, w, right_y)
+            right_y += line_h
+            self._draw_tuner(surface, hint_font, w, right_y)
+            right_y += line_h
+
+        # What to do about the level, when there is something to do. Silent
+        # otherwise: a permanent "everything is fine" is a line nobody reads,
+        # and the one time it changes nobody notices either.
+        if self._audio_capture is not None:
+            advice = self._level_advice()
+            if advice:
+                advice_surf = hint_font.render(advice, True, t.feedback_close)
+                surface.blit(advice_surf,
+                             (w - advice_surf.get_width() - 12, right_y))
 
         # Bottom-center: play state + controls
         self._blit_footer_lines(surface, layout, self._footer_lines(), t.hud_text)
@@ -1726,6 +1765,43 @@ class PlayingScreen:
             if sync_text:
                 sync_surf = hint_font.render(sync_text, True, sync_color)
                 surface.blit(sync_surf, (12, info_y))
+
+    def _level_advice(self) -> str:
+        """What to do about the input level, or "" when nothing needs doing.
+
+        "Gate: -65 dB" is a number, not an instruction. A player whose signal
+        sits under the gate sees notes go unrecognised and has no way to know
+        that a threshold, not their playing, is eating them -- which is the
+        single cheapest way to lose a whole session. So the two levels that
+        matter are watched and named in the player's terms.
+
+        Both are judged on what has been HEARD over the last few seconds, not
+        on the instant level: a guitar note decays, and a single quiet frame
+        between strikes says nothing about the input.
+        """
+        peak = self._signal_peak_db
+        floor = self._signal_floor_db
+        gate = self._noise_gate_db
+        if peak <= SIGNAL_UNKNOWN_DB:
+            return ""
+        if peak >= CLIPPING_DB:
+            return "Too loud — turn the interface down (it distorts the pitch)"
+        if peak < gate + QUIET_MARGIN_DB:
+            return "Barely above the gate — play louder, turn up, or press X"
+        if floor > gate - NOISE_MARGIN_DB:
+            return "Background noise reaches the gate — press C"
+        return ""
+
+    def _track_levels(self, db: float) -> None:
+        """Keep the loudest and quietest recent level, for _level_advice.
+
+        Decays back toward the present so a single loud accident does not
+        silence the advice for the rest of the song.
+        """
+        if db <= SIGNAL_UNKNOWN_DB:
+            return
+        self._signal_peak_db = max(db, self._signal_peak_db - LEVEL_DECAY_DB)
+        self._signal_floor_db = min(db, self._signal_floor_db + LEVEL_DECAY_DB)
 
     def _draw_signal_meter(self, surface: pygame.Surface, font: pygame.font.Font,
                            screen_w: int, y: int) -> None:

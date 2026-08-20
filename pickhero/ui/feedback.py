@@ -93,8 +93,13 @@ class FeedbackRenderer:
         surface.blit(surf, (x - surf.get_width() // 2, y))
 
     def draw_stats(self, surface: pygame.Surface, stats: dict,
-                   font: pygame.font.Font, x: int, y: int) -> None:
-        """Draw accuracy stats (top-right area)."""
+                   font: pygame.font.Font, x: int, y: int) -> int:
+        """Draw accuracy stats (top-right area). Returns the next free y.
+
+        Returning it rather than leaving the caller to guess is the point:
+        this draws TWO lines, the caller assumed one and a bit, and the noise
+        gate landed on top of the hit count.
+        """
         t = get_theme()
         acc = stats["accuracy_percent"]
         line1 = f"Accuracy: {acc:.0f}%"
@@ -104,7 +109,9 @@ class FeedbackRenderer:
         surf2 = font.render(line2, True, t.hud_text)
 
         surface.blit(surf1, (x - surf1.get_width(), y))
-        surface.blit(surf2, (x - surf2.get_width(), y + surf1.get_height() + 2))
+        second_y = y + surf1.get_height() + 2
+        surface.blit(surf2, (x - surf2.get_width(), second_y))
+        return second_y + surf2.get_height() + 2
 
     def cleanup(self, playback_ms: float) -> None:
         """Remove expired effects."""
