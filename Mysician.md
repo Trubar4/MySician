@@ -1,11 +1,18 @@
-Ein Experiment würde das klären, und es lohnt sich, weil sonst jeder künftige Mitschnitt einen wertlosen Punktestand danebenstellt:
+# Feedback
+Das offset von -400 ms reicht nicht. Vielleicht liegt es am Einzählen. Shift+M/N funktioniert ansonsten.
+Was macht wait on/off genau?
+Die Anwendung wird sehr langsam. Wenn ich Vorspule bewegt sich das OGG nicht und danach dauert es 10 Sek. bis das NB wieder reagiert in der App.
+Tempo sollte nicht auf Stumm schalten, sondern Tonhöhe anpassen und mitlaufen.
+Teste aktuell mit OGG.
+
+# Ein Experiment würde das klären, und es lohnt sich, weil sonst jeder künftige Mitschnitt einen wertlosen Punktestand danebenstellt:
 
 cd C:\Users\Admin\.vscode\MySician\mysician\mysician
 git pull
-# Fenster 1:
+### Fenster 1:
 .venv\Scripts\Activate.ps1
 python tools\record_reference.py --play-along timing_test_100bpm.gp5
-# Fenster 2 (parallel):
+### Fenster 2 (parallel):
 .venv\Scripts\Activate.ps1
 python -m pickhero
 
