@@ -152,6 +152,15 @@ TIMING_WINDOW_PRESETS = (100.0, 150.0, 200.0, 250.0)
 MAX_BACKING_OFFSET_MS = 400.0
 BACKING_OFFSET_STEP_MS = 10.0
 
+# When to stop believing the recording is following the song. A decoder that
+# cannot seek into a file accepts play(start=...) without complaint and starts
+# from the top anyway, so the only evidence is the gap that will not close --
+# and "the backing ignores the arrow keys" is otherwise indistinguishable from
+# "you were paused", which is a whole round trip to find out.
+MP3_STUCK_DRIFT_MS = 250.0
+# Long enough that the sync has had at least one correction attempt at it.
+MP3_STUCK_FOR_MS = 3000.0
+
 # Input level advice. A level at or below this has not been measured yet --
 # the meter reads -120 dB before any audio arrives.
 SIGNAL_UNKNOWN_DB = -119.0
@@ -288,6 +297,8 @@ class PlayingScreen:
         self._mp3_player: Mp3Player | None = None
         self._mp3_muted = not getattr(self._config, "mp3_backing_enabled", True)
         self._mp3_note: str = ""
+        # When the recording first fell behind, or None while it is keeping up.
+        self._mp3_stuck_since_ms: float | None = None
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         self._load_mp3_for_song()
@@ -2944,8 +2955,24 @@ class PlayingScreen:
             return
         if not self._mp3_plays():
             self._mp3_player.pause()
+            self._mp3_stuck_since_ms = None
             return
-        self._mp3_player.update(self._mp3_ms(self._playback_ms))
+        target = self._mp3_ms(self._playback_ms)
+        self._mp3_player.update(target)
+        self._track_mp3_drift(target)
+
+    def _track_mp3_drift(self, target_ms: float) -> None:
+        """Notice a recording that has stopped following the song."""
+        if abs(self._mp3_player.drift_ms(target_ms)) <= MP3_STUCK_DRIFT_MS:
+            self._mp3_stuck_since_ms = None
+        elif self._mp3_stuck_since_ms is None:
+            self._mp3_stuck_since_ms = self._playback_ms
+
+    def _mp3_is_stuck(self) -> bool:
+        """True once the gap has stayed open long enough to mean something."""
+        if self._mp3_stuck_since_ms is None:
+            return False
+        return self._playback_ms - self._mp3_stuck_since_ms > MP3_STUCK_FOR_MS
 
     def _toggle_mp3_backing(self) -> None:
         """Turn the recorded backing on or off (key: U). Independent of B."""
@@ -2978,7 +3005,19 @@ class PlayingScreen:
             self._mp3_muted = False
             self._config.mp3_backing_enabled = True
             self._config.save()
-            self._mp3_note = f"Backing track: {Path(chosen).name}"
+            # No message on success. The ordinary line already names the file
+            # AND the offset, and a note set here would sit on top of it for
+            # the rest of the session -- which is exactly what hid the offset
+            # from the one key that exists to change it.
+            self._mp3_note = ""
+
+    def _clear_mp3_note(self) -> None:
+        """Drop a status message once it has been overtaken by events.
+
+        A note outranks the ordinary line, so one left lying around silently
+        replaces the live reading with old news.
+        """
+        self._mp3_note = ""
 
     def _adjust_mp3_offset(self, delta_ms: float) -> None:
         """Shift the recording against the notes (Shift+N earlier, Shift+M later).
@@ -3002,6 +3041,8 @@ class PlayingScreen:
             return
         setter(self._song_key, new)
         self._config.save()
+        # Whatever the note said, the number is the news now.
+        self._clear_mp3_note()
         if self._mp3_player is not None and self._mp3_plays():
             self._mp3_player.seek(self._mp3_ms(self._playback_ms))
 
@@ -3018,6 +3059,9 @@ class PlayingScreen:
         name = Path(self._mp3_path()).name
         if self._mp3_muted:
             return f"Audio: off (U) — {name}"
+        if self._mp3_is_stuck():
+            return (f"Audio: not following the song — this file cannot be "
+                    f"seeked into; try OGG or WAV — {name}")
         if self._tempo_factor < 1.0:
             return (f"Audio: silent below full speed — {name} "
                     f"(the MIDI backing follows the tempo)")

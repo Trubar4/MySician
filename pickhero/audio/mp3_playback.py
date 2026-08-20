@@ -134,6 +134,10 @@ class Mp3Player:
             return self._origin_ms
         return self._origin_ms + float(elapsed)
 
+    def drift_ms(self, target_ms: float) -> float:
+        """How far behind (positive) or ahead the recording is running."""
+        return target_ms - self.position_ms()
+
     def seek(self, position_ms: float) -> None:
         """Jump the recording to a song position."""
         if not self._ready or self._muted:

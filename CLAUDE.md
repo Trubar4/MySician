@@ -303,6 +303,14 @@ where the song is with where the recording got to and corrects only past `RESYNC
   answer there. Lifting this needs a phase vocoder, not a setting.
 - **Every failure is named on screen**: a file that has been moved, a decoder that cannot start from the middle of a file. A backing track
   that silently does not play is indistinguishable from a feature that does not work, and the player would go looking in the wrong place.
+- **`play(start=)` really does seek — measured, not assumed.** A file whose pitch encodes its own timestamp, played from 5, 10 and 15 s
+  with SDL's output captured to disk, comes back at the right pitch every time. So when a jump does not carry, the fault is in this app's
+  path or in that particular file's decoder, and there is no point rewriting the transport. A decoder that cannot seek accepts
+  `play(start=)` without complaint and starts from the top anyway, which is invisible — so a gap that stays open past
+  `MP3_STUCK_DRIFT_MS` for `MP3_STUCK_FOR_MS` is named on screen rather than left to look like a dead key.
+- **A status message must never outlive its situation.** Picking a file set a note that outranks the ordinary HUD line, and nothing cleared
+  it — so the offset the player was adjusting with `Shift+N`/`Shift+M` was never on screen at all, and the key looked dead. Notes are for
+  what the live line cannot say, and they are dropped as soon as it can.
 - **Pause silences it too, and that took a bug to notice.** Every route to the recording reaches `Mp3Player.seek`, and seeking STARTS
   playback — so nudging the offset on a paused song set the recording playing under a picture standing still, which is the one state the
   offset cannot be judged in. `_mp3_plays()` includes `self._playing` for that reason. Paused, `Shift+N`/`Shift+M` only store the value;
