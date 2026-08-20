@@ -1,4 +1,15 @@
-Mein Rat: stell ihn per F auf 24,
+Ein Experiment würde das klären, und es lohnt sich, weil sonst jeder künftige Mitschnitt einen wertlosen Punktestand danebenstellt:
+
+cd C:\Users\Admin\.vscode\MySician\mysician\mysician
+git pull
+# Fenster 1:
+.venv\Scripts\Activate.ps1
+python tools\record_reference.py --play-along timing_test_100bpm.gp5
+# Fenster 2 (parallel):
+.venv\Scripts\Activate.ps1
+python -m pickhero
+
+Bricht die Quote wieder auf ~35 % ein, wissen wir: während einer Aufnahme ist der App-Score wertlos — gut zu wissen, statt es nochmal zu jagen. Bleibt sie bei ~90 %, waren es die Fixes und Punkt 1 ist erledigt.
 
 
 
