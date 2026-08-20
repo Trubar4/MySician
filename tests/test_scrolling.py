@@ -1303,6 +1303,9 @@ class TestLevelAdvice:
 
     def _screen(self, peak, floor, gate=-60.0):
         screen = PlayingScreen(_make_timeline(), config=Config())
+        # A stopped song has nothing to measure, so the advice stays quiet;
+        # every case here is about a song that is running.
+        screen._playing = True
         screen._noise_gate_db = gate
         screen._signal_peak_db = peak
         screen._signal_floor_db = floor
@@ -1315,8 +1318,21 @@ class TestLevelAdvice:
         assert self._screen(peak=-120.0, floor=0.0)._level_advice() == ""
 
     def test_a_signal_that_barely_clears_the_gate_says_so(self):
-        advice = self._screen(peak=-55.0, floor=-75.0)._level_advice()
+        advice = self._screen(peak=-35.0, floor=-75.0, gate=-40.0)._level_advice()
         assert "X" in advice and "louder" in advice
+
+    def test_a_signal_too_weak_for_the_detector_says_so(self):
+        """Measured rather than assumed: below about -40 dB the strikes keep
+        arriving and their pitch rots, which reads as bad playing."""
+        advice = self._screen(peak=-50.0, floor=-90.0, gate=-80.0)._level_advice()
+        assert "too quiet" in advice and "wrong note" in advice
+
+    def test_a_stopped_song_says_nothing(self):
+        """The peak decays while nothing is played, so the completion screen
+        would otherwise report a level fault that is not there."""
+        screen = self._screen(peak=-50.0, floor=-90.0, gate=-80.0)
+        screen._playing = False
+        assert screen._level_advice() == ""
 
     def test_clipping_is_named_before_anything_else(self):
         """Distortion destroys the period YIN looks for, so it outranks a
@@ -1333,6 +1349,12 @@ class TestLevelAdvice:
         assert screen._level_advice() != ""
         screen._noise_gate_db = -45.0
         assert screen._level_advice() == ""
+
+    def test_levels_are_only_tracked_while_the_song_runs(self):
+        screen = self._screen(peak=-120.0, floor=0.0)
+        screen._playing = False
+        screen._track_levels(-20.0)
+        assert screen._signal_peak_db == -120.0
 
     def test_the_peak_decays_so_one_loud_accident_does_not_stick(self):
         screen = self._screen(peak=-120.0, floor=0.0)
@@ -1446,3 +1468,34 @@ class TestSeekingDoesNotReopenTheDevice:
         assert screen._audio_capture.stops == 0
         assert screen._audio_capture.starts == 0
         assert screen._playback_ms == 1000.0
+
+
+class TestRunLogRecordsTheLevel:
+    """A weak input does not lose strikes, it corrupts their pitch -- which is
+    indistinguishable from bad playing unless the level is written down."""
+
+    def _screen(self, levels):
+        from pickhero.matcher import NoteMatcher
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._song_key = "song"
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._level_samples = list(levels)
+        return screen
+
+    def _log(self, screen):
+        import io
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        return buffer.getvalue()
+
+    def test_the_loudest_hop_is_written(self):
+        text = self._log(self._screen([-60.0, -30.0, -45.0]))
+        assert "level_loudest_db\t-30.0" in text
+
+    def test_the_share_under_the_gate_is_written(self):
+        screen = self._screen([-70.0, -70.0, -30.0, -30.0])
+        screen._config.audio.noise_gate_db = -60.0
+        assert "level_under_gate_percent\t50" in self._log(screen)
+
+    def test_a_run_with_no_audio_says_so_rather_than_inventing_a_number(self):
+        assert "(nothing measured)" in self._log(self._screen([]))

@@ -205,6 +205,29 @@ A ramp that resets at each phrase cannot be a clock (a clock would accumulate ov
 — it has a direction. It is the oldest fault in the book, and `K` cannot touch it. The report does not name it yet; the samples are in the
 `Shift+Y` CSV for whoever builds that.
 
+## A Weak Input Does Not Lose Notes, It Renames Them
+
+The obvious failure mode for a quiet signal is that strikes stop arriving. That is not what happens, and expecting it sends every
+diagnosis the wrong way. Measured by attenuating the player's own play-along take in steps and reading it back through the real
+detector — same audio, same code, only the gain changed:
+
+| loudest hop (the number the HUD shows) | strikes produced | heard with the right pitch |
+|---|---|---|
+| -20 dB | 60 | 96 % |
+| -32 dB | 56 | 96 % |
+| -38 dB | 59 | 91 % |
+| -44 dB | 58 | 83 % |
+| -50 dB | 34 | 52 % |
+| -56 dB | 5 | 9 % |
+
+**The strike count barely moves until the very bottom; the pitch rots long before.** So a low-scoring run with plenty of strikes heard
+is exactly what a weak input looks like — and also exactly what bad playing looks like, which is why the level is now written into the
+run log (`level_loudest_db`, `level_median_playing_db`, `level_under_gate_percent`) rather than left to be guessed at. The knee is
+around -38 dB and the collapse below -44, which is where `QUIET_PEAK_DB` comes from.
+
+The HUD advice is bounded by the same measurement, and is **silent while the song is not running**: the peak decays once the playing
+stops, so the completion screen used to report a level fault that was not there.
+
 ## Ringing Strings Defeat Detection
 
 Measured with one note per string at a time (a new note on a string physically stops the old one — a summed test that lets both ring is

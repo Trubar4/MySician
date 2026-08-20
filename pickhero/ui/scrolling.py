@@ -181,15 +181,29 @@ SIGNAL_UNKNOWN_DB = -119.0
 # An RMS this high over a 512-sample hop means the peaks are already against
 # the ceiling, and a clipped waveform has no period for YIN to find.
 CLIPPING_DB = -8.0
-# How far the loudest playing must clear the gate before the gate is not the
-# thing eating the notes. A strike decays fast, so most of a note sits well
-# below its own peak.
+# How loud the loudest hop has to be for the detector to keep its grip.
+# Measured, not guessed: the player's own play-along take was attenuated in
+# steps and read back through the real detector, which gives the level at
+# which pitch accuracy starts to rot. In the same units the HUD shows (RMS
+# over one 512-sample hop):
+#
+#   loudest hop   -20   -32   -38   -44   -50   -56 dB
+#   heard right    96    96    91    83    52     9 %
+#
+# So the knee sits around -38 and the collapse below -44. Note what fails
+# first: strikes keep arriving, they just carry the WRONG PITCH -- which is
+# why "few strikes" is the wrong thing to look for, and why the completion
+# screen counts strikes heard next to notes landed.
+QUIET_PEAK_DB = -40.0
+# How far the loudest playing must clear the gate before the gate itself is
+# the thing eating the notes. A strike decays fast, so most of a note sits
+# well below its own peak.
 QUIET_MARGIN_DB = 12.0
 # How far the quietest moment must stay UNDER the gate before background hum
-# stops firing onsets of its own.
+# starts firing onsets of its own.
 NOISE_MARGIN_DB = 6.0
-# Per frame, so one loud accident or one silent gap does not fix the advice
-# in place for the rest of the song.
+# Per frame, so one loud accident does not fix the advice in place for the
+# rest of the song.
 LEVEL_DECAY_DB = 0.05
 
 # Auto-sync confidence. Scatter does not invalidate the median — a player is
@@ -328,6 +342,8 @@ class PlayingScreen:
         # to do about the input rather than only what it is.
         self._signal_peak_db: float = SIGNAL_UNKNOWN_DB
         self._signal_floor_db: float = 0.0
+        # Every level seen while the song ran, for the run log.
+        self._level_samples: list[float] = []
 
         # Tuner display
         self._tuner_freq: float = 0.0
@@ -1848,15 +1864,20 @@ class PlayingScreen:
         """What to do about the input level, or "" when nothing needs doing.
 
         "Gate: -65 dB" is a number, not an instruction. A player whose signal
-        sits under the gate sees notes go unrecognised and has no way to know
-        that a threshold, not their playing, is eating them -- which is the
-        single cheapest way to lose a whole session. So the two levels that
-        matter are watched and named in the player's terms.
+        is too weak sees notes come back as the wrong note and has no way to
+        know it is the level rather than their playing -- and the level is
+        measurable, so it should not be guesswork.
 
-        Both are judged on what has been HEARD over the last few seconds, not
-        on the instant level: a guitar note decays, and a single quiet frame
-        between strikes says nothing about the input.
+        Judged on what has been HEARD over the last few seconds, not on the
+        instant level: a guitar note decays, and a single quiet frame between
+        strikes says nothing about the input.
         """
+        # A song that is not running has nothing to measure. Saying anything
+        # from a peak that has been decaying since the last note is worse than
+        # saying nothing -- it sends the player after a fault that is not
+        # there, which is exactly what it did on the completion screen.
+        if not self._playing:
+            return ""
         peak = self._signal_peak_db
         floor = self._signal_floor_db
         gate = self._noise_gate_db
@@ -1864,6 +1885,12 @@ class PlayingScreen:
             return ""
         if peak >= CLIPPING_DB:
             return "Too loud — turn the interface down (it distorts the pitch)"
+        if peak < QUIET_PEAK_DB:
+            # The detector's own limit, not the gate's. Below this the strikes
+            # keep coming and their pitch goes wrong, which reads as bad
+            # playing and is not.
+            return ("Input too quiet for reliable pitch — turn the interface "
+                    "up (notes will come back as the wrong note)")
         if peak < gate + QUIET_MARGIN_DB:
             return "Barely above the gate — play louder, turn up, or press X"
         if floor > gate - NOISE_MARGIN_DB:
@@ -1874,12 +1901,18 @@ class PlayingScreen:
         """Keep the loudest and quietest recent level, for _level_advice.
 
         Decays back toward the present so a single loud accident does not
-        silence the advice for the rest of the song.
+        silence the advice for the rest of the song. Only while the song is
+        running: silence between takes is not a reading.
         """
-        if db <= SIGNAL_UNKNOWN_DB:
+        if db <= SIGNAL_UNKNOWN_DB or not self._playing:
             return
         self._signal_peak_db = max(db, self._signal_peak_db - LEVEL_DECAY_DB)
         self._signal_floor_db = min(db, self._signal_floor_db + LEVEL_DECAY_DB)
+        # Kept for the run log, which is where a level problem is proved
+        # rather than suspected. Bounded so a long session cannot grow it
+        # without limit.
+        if len(self._level_samples) < 40_000:
+            self._level_samples.append(db)
 
     def _draw_signal_meter(self, surface: pygame.Surface, font: pygame.font.Font,
                            screen_w: int, y: int) -> None:
@@ -2365,6 +2398,23 @@ class PlayingScreen:
         fh.write(f"sample_rate\t{getattr(capture, '_sample_rate', ac.sample_rate)}\n")
         fh.write(f"dropped_buffers\t{getattr(capture, 'dropped_buffers', 0)}\n")
         fh.write(f"noise_gate_db\t{ac.noise_gate_db:.0f}\n")
+        # The input level, in the same units the HUD shows (RMS of one hop).
+        # A weak input does not lose strikes, it corrupts their PITCH -- which
+        # looks exactly like bad playing from the score alone. Measured on the
+        # player's own take: the loudest hop above -38 dB reads 91-96 %, at
+        # -44 dB it is 83 %, at -50 dB 52 %. So these three numbers settle in
+        # one reading what would otherwise be a round trip of guessing.
+        levels = sorted(self._level_samples)
+        if levels:
+            loudest = levels[-1]
+            playing = [db for db in levels if db > loudest - 30.0]
+            median = playing[len(playing) // 2] if playing else loudest
+            under = sum(1 for db in levels if db < ac.noise_gate_db)
+            fh.write(f"level_loudest_db\t{loudest:.1f}\n")
+            fh.write(f"level_median_playing_db\t{median:.1f}\n")
+            fh.write(f"level_under_gate_percent\t{100 * under / len(levels):.0f}\n")
+        else:
+            fh.write("level_loudest_db\t(nothing measured)\n")
         fh.write(f"confidence_threshold\t{ac.confidence_threshold}\n")
         fh.write(f"onset_threshold\t{ac.onset_threshold}\n")
         fh.write(f"calibrated\t{bool(getattr(self._config, 'calibration', None))}\n")
