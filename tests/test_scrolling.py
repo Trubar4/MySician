@@ -1368,3 +1368,81 @@ class TestTopRightHudDoesNotOverlap:
         end = renderer.draw_stats(surface, stats, font, 300, 36)
         assert end >= 36 + 2 * font.get_height()
         pygame.display.quit()
+
+
+class TestSeekingDoesNotReopenTheDevice:
+    """Seeking used to close and reopen the audio input device.
+
+    On Windows that is a real device open, and it happened on every arrow key
+    and every loop turn -- the player reported the app freezing for about ten
+    seconds after a seek. The clock still has to learn that the song moved,
+    but re-anchoring does that without touching the hardware.
+    """
+
+    class _FakeCapture:
+        def __init__(self):
+            self.starts = 0
+            self.stops = 0
+
+        def start(self):
+            self.starts += 1
+
+        def stop(self):
+            self.stops += 1
+
+        def elapsed_ms(self):
+            return 20_000.0
+
+        def get_notes(self):
+            return []
+
+        def get_strike_windows(self):
+            return []
+
+        def get_signal_db(self):
+            return -40.0
+
+        def get_tuner_data(self):
+            return (0.0, 0.0)
+
+    def _screen(self):
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=t, duration_ms=200.0, midi_note=40,
+                           string=6, fret=0, measure=0)
+                 for t in (1000.0, 30000.0)]
+        timeline = Timeline(notes, SongMetadata(title="T", tempo=100))
+        screen = PlayingScreen(timeline, config=Config())
+        screen._matcher = NoteMatcher(timeline)
+        screen._audio_capture = self._FakeCapture()
+        screen._audio_enabled = True
+        screen._playing = True
+        screen._playback_ms = 5000.0
+        return screen
+
+    def test_seeking_leaves_the_stream_alone(self):
+        screen = self._screen()
+        screen.seek(12000.0)
+        assert screen._audio_capture.stops == 0
+        assert screen._audio_capture.starts == 0
+
+    def test_seeking_still_moves_the_audio_clock(self):
+        """Leaving the device alone must not mean leaving the clock wrong."""
+        screen = self._screen()
+        screen.seek(12000.0)
+        # A strike stamped at the capture's current position must read as the
+        # song position the player can see.
+        adjusted = 20_000.0 * screen._tempo_factor + screen._matcher.audio_offset_ms
+        assert adjusted == pytest.approx(12000.0)
+
+    def test_a_loop_turn_leaves_the_stream_alone(self):
+        """Loops happen every few seconds -- this one mattered most."""
+        screen = self._screen()
+        screen._loop_enabled = True
+        screen._loop_start_ms = 1000.0
+        screen._loop_end_ms = 6000.0
+        screen._last_tick = None
+        screen._playback_ms = 6500.0
+        screen.update()
+        assert screen._audio_capture.stops == 0
+        assert screen._audio_capture.starts == 0
+        assert screen._playback_ms == 1000.0

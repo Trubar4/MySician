@@ -154,6 +154,13 @@ real time. `_start_audio()` therefore always stops first.
 played. `record_reference.py` now writes `tempo_percent` into the manifest (straight from the app's settings) and `analyze_play_along.py`
 measures it when the manifest does not say.
 
+## Seeking Must Not Reopen The Input Device
+
+`seek()` and the loop restart used to close the sounddevice stream and open a new one, to give the matcher a fresh audio offset. On Windows
+that is a real device open: the player reported the app freezing for about **ten seconds** after every arrow key, and a loop turn does the
+same thing every few seconds. The offset was the only reason for it, and `_reanchor_audio_clock()` produces exactly that offset without
+touching the hardware — see "The Two Clocks" above. Nothing else in a seek needs the stream restarted.
+
 ## When The Score Is Low, Say Which Half Is Low
 
 A percentage cannot be debugged. The player's take scored **34.6 % in the app** and **97.4 %** through the identical detector and matcher run
@@ -298,6 +305,10 @@ where the song is with where the recording got to and corrects only past `RESYNC
 - **Its own per-song offset (`Shift+N`/`Shift+M`), with no global fallback.** An MP3 decoder emits encoder padding before the music and how
   much depends on the encoder that made the file, so nothing about one song's value predicts another's, and nothing about the MIDI offset
   predicts this one.
+- **Its range is seconds, not milliseconds, and it needs two step sizes.** The MIDI backing is generated from the same timeline as the
+  notes, so it only ever needs the tens of milliseconds a synth adds; a recording is a different piece of music that happens to contain the
+  same song, and can carry a count-in, an intro or studio silence before the first beat. `MAX_MP3_OFFSET_MS` is 30 s. `Shift+N`/`Shift+M`
+  move 10 ms (what a sync is judged in), `Ctrl+N`/`Ctrl+M` move a second (reaching five seconds at 10 ms a press is five hundred presses).
 - **A recording cannot be slowed down.** `pygame.mixer.music` plays at the recorded rate, and resampling to 80 % drops the pitch four
   semitones with it. Below full speed the recording is held silent and the HUD says why — the MIDI backing does follow the tempo and is the
   answer there. Lifting this needs a phase vocoder, not a setting.

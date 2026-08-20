@@ -188,12 +188,22 @@ class TestPerSongSettings:
         screen = PlayingScreen(_timeline(), config=config, song_key="song")
         assert screen._mp3_ms(5000.0) == pytest.approx(4800.0)
 
-    def test_the_offset_is_clamped(self):
+    def test_the_offset_reaches_far_enough_for_a_real_intro(self):
+        """Half a second was the MIDI backing's range and it is nowhere near
+        enough here: a recording can have a count-in, an intro or studio
+        silence before the first beat."""
         config = Config()
         screen = PlayingScreen(_timeline(), config=config, song_key="song")
-        for _ in range(200):
-            screen._adjust_mp3_offset(50.0)
-        assert config.mp3_offset_for("song") <= 400.0
+        for _ in range(10):
+            screen._adjust_mp3_offset(-1000.0)
+        assert config.mp3_offset_for("song") == -10_000.0
+
+    def test_the_offset_is_still_clamped_somewhere(self):
+        config = Config()
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        for _ in range(100):
+            screen._adjust_mp3_offset(1000.0)
+        assert config.mp3_offset_for("song") == 30_000.0
 
 
 class TestSlowedPractice:
@@ -495,3 +505,48 @@ class TestARecordingThatWillNotFollow:
         screen._playing = False
         screen._update_mp3()
         assert not screen._mp3_is_stuck()
+
+
+class TestTwoStepSizes:
+    """One step cannot serve both jobs: 10 ms is what a sync is judged in,
+    and reaching five seconds at 10 ms a press is five hundred presses."""
+
+    def _screen(self, tmp_path, monkeypatch):
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        monkeypatch.setattr(Mp3Player, "seek", lambda self, ms: None)
+        return PlayingScreen(_timeline(), config=config, song_key="song")
+
+    def _press(self, screen, key, mod):
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, key=key, mod=mod))
+
+    def test_shift_moves_by_ten_milliseconds(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._press(screen, pygame.K_m, pygame.KMOD_LSHIFT)
+        assert screen._config.mp3_offset_for("song") == 10.0
+
+    def test_ctrl_moves_by_a_whole_second(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._press(screen, pygame.K_m, pygame.KMOD_LCTRL)
+        assert screen._config.mp3_offset_for("song") == 1000.0
+
+    def test_plain_n_and_m_still_move_the_midi_backing(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._press(screen, pygame.K_m, 0)
+        assert screen._config.mp3_offset_for("song") == 0.0
+        assert screen._backing_offset() == 10.0
+
+    def test_seconds_are_shown_as_seconds(self, tmp_path, monkeypatch):
+        """A five-digit millisecond count is not a number anyone reads."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._adjust_mp3_offset(-4500.0)
+        assert "-4.50 s" in screen._mp3_hud_text()
+
+    def test_small_values_stay_in_milliseconds(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._adjust_mp3_offset(-120.0)
+        assert "-120 ms" in screen._mp3_hud_text()

@@ -152,6 +152,20 @@ TIMING_WINDOW_PRESETS = (100.0, 150.0, 200.0, 250.0)
 MAX_BACKING_OFFSET_MS = 400.0
 BACKING_OFFSET_STEP_MS = 10.0
 
+# The recording gets its own, far wider range. The MIDI backing is generated
+# from the same timeline as the notes, so it only ever needs the tens of
+# milliseconds a synth and a sound card add. A recording is a different piece
+# of music that happens to contain the same song: it can have a count-in, an
+# intro, a spoken word, or several seconds of studio silence before the first
+# beat, and none of that is knowable in advance. Half a second was not enough
+# to reach the first note of a real track.
+MAX_MP3_OFFSET_MS = 30_000.0
+# Two steps, because one cannot serve both jobs: 10 ms is what a sync is
+# judged in, and reaching five seconds at 10 ms a press is five hundred
+# presses.
+MP3_OFFSET_STEP_MS = 10.0
+MP3_OFFSET_COARSE_MS = 1000.0
+
 # When to stop believing the recording is following the song. A decoder that
 # cannot seek into a file accepts play(start=...) without complaint and starts
 # from the top anyway, so the only evidence is the gap that will not close --
@@ -412,10 +426,13 @@ class PlayingScreen:
         if self._mp3_player is not None:
             self._mp3_player.seek(self._mp3_ms(self._playback_ms)
                                   if self._mp3_plays() else -1.0)
-        # Restart audio with new offset if active
+        # The audio clock has to be told the song moved -- but NOT by closing
+        # and reopening the input device, which is what this used to do. On
+        # Windows that is a real device open, and doing it on every arrow key
+        # and every loop turn froze the app for seconds at a time. Re-anchoring
+        # is the same correction without touching the hardware.
         if self._audio_enabled and self._playing:
-            self._stop_audio()
-            self._start_audio()
+            self._reanchor_audio_clock()
 
     def is_playing(self) -> bool:
         return self._playing
@@ -596,8 +613,7 @@ class PlayingScreen:
             if self._mp3_player is not None and self._mp3_plays():
                 self._mp3_player.seek(self._mp3_ms(self._loop_start_ms))
             if self._audio_enabled and self._playing:
-                self._stop_audio()
-                self._start_audio()
+                self._reanchor_audio_clock()
             return
 
         if self._playback_ms >= self._timeline.duration_ms:
@@ -705,13 +721,17 @@ class PlayingScreen:
         elif event.key == pygame.K_TAB:
             self._open_track_menu()
         elif event.key == pygame.K_n:
-            if event.mod & pygame.KMOD_SHIFT:
-                self._adjust_mp3_offset(-BACKING_OFFSET_STEP_MS)
+            if event.mod & pygame.KMOD_CTRL:
+                self._adjust_mp3_offset(-MP3_OFFSET_COARSE_MS)
+            elif event.mod & pygame.KMOD_SHIFT:
+                self._adjust_mp3_offset(-MP3_OFFSET_STEP_MS)
             else:
                 self._adjust_backing_offset(-BACKING_OFFSET_STEP_MS)
         elif event.key == pygame.K_m:
-            if event.mod & pygame.KMOD_SHIFT:
-                self._adjust_mp3_offset(BACKING_OFFSET_STEP_MS)
+            if event.mod & pygame.KMOD_CTRL:
+                self._adjust_mp3_offset(MP3_OFFSET_COARSE_MS)
+            elif event.mod & pygame.KMOD_SHIFT:
+                self._adjust_mp3_offset(MP3_OFFSET_STEP_MS)
             else:
                 self._adjust_backing_offset(BACKING_OFFSET_STEP_MS)
         elif event.key == pygame.K_u:
@@ -1572,7 +1592,7 @@ class PlayingScreen:
         tools = (
             "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
-            "|  U: audio track (Shift+U: pick, Shift+N/M: sync)  "
+            "|  U: audio track (Shift+U: pick, Shift/Ctrl+N/M: sync)  "
             "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
             "|  Y: timing report  |  D: run log  |  H: help"
@@ -2499,7 +2519,8 @@ class PlayingScreen:
             "Shift+Y: save the raw measurements as a CSV file",
             "D: save a full run log (what every strike did)",
             "U: recorded backing on/off, Shift+U picks the file",
-            "Shift+N / Shift+M: shift the recording against the notes",
+            "Shift+N / Shift+M: shift the recording by 10 ms",
+            "Ctrl+N / Ctrl+M: shift the recording by a whole second",
             "+/-: scroll faster / slower     G: hit window",
             "N/M: backing track earlier / later",
             "TAB: choose track     H: this help     ESC: song list",
@@ -3034,8 +3055,8 @@ class PlayingScreen:
         """
         if not self._song_key:
             return
-        new = max(-MAX_BACKING_OFFSET_MS,
-                  min(MAX_BACKING_OFFSET_MS, self._mp3_offset() + delta_ms))
+        new = max(-MAX_MP3_OFFSET_MS,
+                  min(MAX_MP3_OFFSET_MS, self._mp3_offset() + delta_ms))
         setter = getattr(self._config, "set_mp3_offset_for", None)
         if setter is None:
             return
@@ -3065,7 +3086,10 @@ class PlayingScreen:
         if self._tempo_factor < 1.0:
             return (f"Audio: silent below full speed — {name} "
                     f"(the MIDI backing follows the tempo)")
-        return f"Audio: {int(self._mp3_offset()):+d} ms (Shift+N/M) — {name}"
+        offset = self._mp3_offset()
+        shown = (f"{offset / 1000:+.2f} s" if abs(offset) >= 1000
+                 else f"{int(offset):+d} ms")
+        return f"Audio: {shown} (Shift+N/M ±10ms, Ctrl+N/M ±1s) — {name}"
 
     def _init_midi_player(self, backing_track: BackingTrack) -> None:
         """Create and open MidiPlayer. Silently continues if MIDI unavailable."""
