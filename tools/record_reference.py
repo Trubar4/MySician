@@ -192,6 +192,43 @@ EXERCISES = [
              [{3: 7}], technique="free",
              instruction="Anschlagen und einen Ganzton hochziehen. Dreimal.",
              seconds=9),
+
+    # ---- Block 5: ringing strings, the same line damped and undamped ------
+    #
+    # The one case no other take contains, and the reason it matters: a line
+    # walking ACROSS the neck while the strings it left keep sounding is
+    # polyphony, and monophonic YIN reports one pitch for it. That was
+    # measured on synthesis (3 of 8 against 8 of 8 damped) and never on a real
+    # guitar -- and the player's own play-along takes disagree with it, going
+    # 40 for 40 across string changes. But those changes all sit in a slow
+    # passage where the previous note has decayed anyway, so the takes cannot
+    # settle it either way.
+    #
+    # These four can. Same line, same player, same session: only the damping
+    # and the speed change, so whatever separates them IS the effect.
+    *[
+        Exercise(f"5{i}_across_{speed}_{damp}", 5,
+                 f"Saitenwechsel {'schnell' if speed == 'fast' else 'langsam'}"
+                 f" - {'GEDAEMPFT' if damp == 'damped' else 'KLINGEN LASSEN'}",
+                 [{6: 5}, {5: 5}, {4: 5}, {3: 5}, {2: 5}, {1: 5}],
+                 technique="normal" if damp == "damped" else "let_ring",
+                 instruction=(
+                     "Alle im 5. Bund, eine Note pro Saite, tief nach hoch "
+                     "und zurueck - zwei Durchgaenge. "
+                     + ("Jede Saite abdaempfen, sobald du sie verlaesst: "
+                        "immer nur EIN Ton gleichzeitig."
+                        if damp == "damped" else
+                        "NICHTS abdaempfen - alles weiterklingen lassen, "
+                        "auch wenn es matschig wird. Genau darum geht es.")
+                     + (" Zuegig, etwa zwei Toene pro Sekunde."
+                        if speed == "fast" else
+                        " Langsam, etwa ein Ton pro Sekunde.")),
+                 seconds=14 if speed == "slow" else 9)
+        for i, (speed, damp) in enumerate([
+            ("slow", "damped"), ("slow", "ringing"),
+            ("fast", "damped"), ("fast", "ringing"),
+        ])
+    ],
 ]
 
 

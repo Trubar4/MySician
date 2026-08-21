@@ -395,10 +395,40 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    calibrated against.** Every take peaks at -58 dBFS with an RMS of -70;
    the detector finds zero strikes in the whole set. Use `20260814_160019`,
    which is what every threshold in `chord_verify.py` was fitted on.
-4. **Ringing strings.** Real and measured (59 % everything ringing vs 100 %
-   damped over the whole timing test), confirmed by the player at the
-   instrument. Much smaller than the clock bug was, so re-measure before
-   designing anything. `CLAUDE.md`, "Ringing Strings Defeat Detection".
+4. **Ringing strings — STARTED, and the first thing measured contradicts the
+   premise.** This is the only detection fault left after 98.4 %: the one miss
+   in that run was a B3 read confidently as F#3, at the single place where the
+   previous note sat on another string and was still ringing.
+
+   But splitting every note in the three real play-along takes by whether its
+   predecessor shared its string gives **40/40 correct across string changes**,
+   against 133/159 on the same string. Not one string change costs anything.
+   The 59 % figure in `CLAUDE.md` is synthesis, and the takes cannot correct
+   it: in `timing_test_100bpm.gp5` every string change sits in the slow
+   opening section where the previous note has decayed, and every fast passage
+   stays on one string. The recordings hold the easy half of the case and none
+   of the hard half.
+
+   **So the next step is data, not code.** `record_reference.py` block 5 is now
+   the missing half — the same six-note line across all six strings, twice
+   damped and twice ringing, slow and fast, so damping and speed are the only
+   variables. `tools/analyze_ringing.py` reads the four back side by side and
+   says plainly whether there is anything to fix. On synthesis it separates
+   them cleanly (100 % damped, 50 % ringing), so the instrument works; what is
+   missing is a real take.
+
+       python tools/record_reference.py --block 5
+       python tools/analyze_ringing.py reference_recordings/<stamp>
+
+   **If it turns out to be real**, the shape of the fix is already known and
+   is not a new idea: when a strike's pitch matches nothing the tab expects,
+   ask `chord_verify.py` whether the WRITTEN pitch is present in the audio
+   before writing the strike off. That is the same score-informed partial
+   check the chord verifier already does, run one note at a time. It would
+   need `process_strike_windows` to be able to upgrade as well as downgrade,
+   which is a real change to a deliberate rule — positive evidence for the
+   written note is a legitimate reason, but do not make it without the
+   measurement first.
 5. ~~**MP3 backing track.**~~ **BUILT — 2026-08-19.** `U` switches the
    recording on and off, `Shift+U` picks the file with the Windows dialog,
    `Shift+N`/`Shift+M` shift it against the notes, and both the path and the

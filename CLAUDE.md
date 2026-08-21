@@ -253,10 +253,22 @@ Confirmed at the instrument, not only in simulation: the player reports that mut
 first note registers reliably once the string is damped before the next one. Over the whole timing test the same split appears — **59 % with
 everything left ringing, 100 % with each string damped as it is left**.
 
-The share that remains unexplained is the size of the effect, not its direction: the player measures ~24 %, well below the 59 % the model
-gives, so a real guitar (sympathetic resonance, richer partials, longer sustain) is worse than the synthesis. Closing that gap needs the
-song **played**, which `record_reference.py --play-along` records and `tools/analyze_play_along.py` reads back per onset — the 29 isolated
-exercises cannot show it, because an isolated note with a rest after it is the case that already works.
+**The player's own takes do not show this at all, and that has to be said before anything is built on the table above.** Splitting every
+written note in the three real play-along recordings by whether its predecessor shared its string:
+
+| predecessor | pitch heard right |
+|---|---|
+| same string | 133 / 159 |
+| **different string** | **40 / 40** |
+
+Not one string change costs anything. The catch is that in `timing_test_100bpm.gp5` every string change sits in the SLOW opening section,
+where the previous note has decayed long before the next arrives, while every fast passage stays on one string. So the takes cannot settle
+it either way — they hold the easy half of the case and none of the hard half.
+
+Block 5 of `record_reference.py` is the missing half: the same six-note line across all six strings, twice damped and twice ringing, slow
+and fast. Same guitar, same player, same session, so damping and speed are the only things that differ. `tools/analyze_ringing.py` reads the
+four back and prints them side by side. **Until that has been recorded, the size of this effect on a real guitar is unknown, and the 59 %
+above is synthesis** — which has already overstated one thing in this file (see "The Rushing That Was Not There").
 
 ## Timing Diagnosis
 
