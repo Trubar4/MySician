@@ -269,6 +269,40 @@ class ChordVerifier:
             verdicts[target] = self._decide(target, scores, allow_intruder)
         return verdicts
 
+    def confirms(
+        self, audio: np.ndarray, sample_rate: int, midi_note: int,
+    ) -> bool:
+        """Is this ONE written note actually present in the audio?
+
+        A different question from `verify`, and the reason it needs its own
+        method. `verify` asks which of several expected notes each string
+        played, and can convict; this only ever ACQUITS. It exists for the
+        strike that arrives carrying no pitch at all, where there is nothing
+        wrong to correct and nothing to credit either -- measured on a line
+        played across the strings without damping, where a fast run loses 24
+        points of usable strikes to exactly that.
+
+        No intruder tier: with one expected note there is no chord for it to
+        be masked by, so "something else is louder" says only that another
+        string is still ringing, which is the premise rather than evidence.
+        Only a direct confirmation counts.
+        """
+        if len(audio) < min_window_samples(sample_rate):
+            return False
+        window = np.asarray(audio, dtype=np.float64)
+        window = window * np.hanning(len(window))
+        mags = np.abs(np.fft.rfft(window, n=len(window) * 2))
+        freqs = np.fft.rfftfreq(len(window) * 2, 1.0 / sample_rate)
+        peak = float(mags.max()) + 1e-12
+        min_hz = min_hz_for(len(audio), sample_rate)
+        scores: dict[int, float] = {}
+        for cand in range(midi_note - self.span, midi_note + self.span + 1):
+            score = self._score(freqs, mags, peak, cand, [], sample_rate, min_hz)
+            if score is not None:
+                scores[cand] = score
+        verdict = self._decide(midi_note, scores, allow_intruder=False)
+        return verdict.correct
+
     def _decide(
         self, target: int, scores: dict[int, float], allow_intruder: bool = True,
     ) -> StringVerdict:

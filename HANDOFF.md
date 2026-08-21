@@ -395,8 +395,31 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    calibrated against.** Every take peaks at -58 dBFS with an RMS of -70;
    the detector finds zero strikes in the whole set. Use `20260814_160019`,
    which is what every threshold in `chord_verify.py` was fitted on.
-4. **Ringing strings — STARTED, and the first thing measured contradicts the
-   premise.** This is the only detection fault left after 98.4 %: the one miss
+4. ~~**Ringing strings.**~~ **MEASURED AND FIXED — 2026-08-21.** Recorded
+   (block 5), measured, and the answer was not the one the synthesis gave:
+   **nothing ever comes back as a different note** — not one, in any take.
+   What ringing strings cost is strikes carrying **no pitch at all**, and only
+   at speed. Slow is untouched (85 % against 80 % damped); fast loses 24
+   points (57 % against 81 %).
+
+   That made the planned fix wrong — there was no wrong pitch to correct — and
+   the right one is its mirror: an unpitched strike on a SINGLE written note is
+   held, and `ChordVerifier.confirms` is asked whether that pitch is present in
+   the audio. It acquits on positive evidence the way the chord verifier
+   convicts on it. Fast ringing goes **8/14 → 10/14**, every damped take gains
+   exactly nothing, and the chord and play-along takes are unchanged.
+   `tools/check_ringing_rescue.py` is the regression check and exits non-zero
+   if a damped take ever gains. See `CLAUDE.md`, "Rescuing A Strike That
+   Carries No Pitch".
+
+   **What is left:** it closes about half the gap. The two strikes it cannot
+   recover are the high A4, whose partials sit among the ringing lower
+   strings' harmonics with only 3-5 dB of margin — too little to act on
+   without inviting false credit. Whether that is worth chasing needs a
+   player who says the remaining loss bothers them, not another threshold.
+
+   Kept because it cost two wrong readings: ~~the first version of this
+   topic.~~ This is the only detection fault left after 98.4 %: the one miss
    in that run was a B3 read confidently as F#3, at the single place where the
    previous note sat on another string and was still ringing.
 

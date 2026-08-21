@@ -17,9 +17,13 @@ separates the takes IS the effect.
 
 Scored by SEQUENCE rather than by clock: the line is played freely with no
 click, so what can be checked is whether the notes come back in the order
-they were played, which is exactly the question. A strike whose pitch is not
-the next expected note is reported with what it was instead, because "read as
-the neighbouring string" and "read as a mixture of two" are different faults.
+they were played, which is exactly the question.
+
+The alignment is Needleman-Wunsch and has to be. The first version of this
+tool walked the two lists by index, which means one strike carrying no pitch
+shifts every comparison after it -- and it duly reported 16 % for the DAMPED
+takes, the control case known to work. A tool whose control comes back broken
+is measuring itself.
 """
 
 import argparse
@@ -68,30 +72,82 @@ def strikes_of(path: Path):
     return out
 
 
-def score_sequence(strikes, expected):
-    """Walk the strikes against the expected line, in order.
+# Alignment scores. Walking the two sequences by index does NOT work and the
+# first version of this tool proved it: a single strike that carries no pitch
+# shifts every comparison after it, and the damped takes -- the control, the
+# case known to work -- came back at 16 %. Alignment has to tolerate an extra
+# strike and a missing one, or it measures its own bookkeeping.
+EXACT, OCTAVE, MISMATCH, GAP = 3, 2, -2, -2
 
-    The player was asked for two passes up and down, but may have played one
-    or three -- so the expected sequence is repeated as far as the strikes
-    reach rather than assumed. A strike is credited when it carries the note
-    the line is up to; octave equivalence applies, since the matcher grants it
-    too and a wound string slipping an octave is not the fault under test.
+
+def align(detected, expected):
+    """Best correspondence between what was played and what came back.
+
+    Needleman-Wunsch: the standard way to line up two sequences when either
+    may have extra or missing entries, which is exactly the situation -- the
+    player may play the turning note twice, and the detector may drop one.
     """
-    right = []
-    wrong = []
-    unpitched = 0
-    for index, strike in enumerate(strikes):
-        want = expected[index % len(expected)]
-        if strike.note.unpitched:
-            unpitched += 1
-            continue
-        got = strike.note.midi_note
-        distance = abs(got - want)
-        if distance == 0 or distance % 12 == 0:
-            right.append(got)
+    n, m = len(detected), len(expected)
+    score = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        score[i][0] = i * GAP
+    for j in range(1, m + 1):
+        score[0][j] = j * GAP
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            got, want = detected[i - 1], expected[j - 1]
+            if got is None:
+                pair = MISMATCH          # a strike with no pitch matches nothing
+            elif got == want:
+                pair = EXACT
+            elif abs(got - want) % 12 == 0:
+                pair = OCTAVE
+            else:
+                pair = MISMATCH
+            score[i][j] = max(score[i - 1][j - 1] + pair,
+                              score[i - 1][j] + GAP,
+                              score[i][j - 1] + GAP)
+    pairs = []
+    i, j = n, m
+    while i > 0 and j > 0:
+        got, want = detected[i - 1], expected[j - 1]
+        if got is None:
+            pair = MISMATCH
+        elif got == want:
+            pair = EXACT
+        elif abs(got - want) % 12 == 0:
+            pair = OCTAVE
         else:
-            wrong.append((index, want, got))
-    return right, wrong, unpitched
+            pair = MISMATCH
+        if score[i][j] == score[i - 1][j - 1] + pair:
+            # Indices rather than values: the other tool needs the strike that
+            # sits at i, not only the pitch it carried.
+            pairs.append((i - 1, j - 1))
+            i, j = i - 1, j - 1
+        elif score[i][j] == score[i - 1][j] + GAP:
+            i -= 1
+        else:
+            j -= 1
+    return list(reversed(pairs))
+
+
+def score_sequence(strikes, expected):
+    """How the line came back: exactly, an octave out, or as another note.
+
+    The octave column is kept apart rather than folded in, because the matcher
+    grants octave equivalence on purpose (the player ruled that an octave slip
+    stays green) -- so an octave error costs nothing on screen while still
+    being the detector losing its grip, and the two facts belong side by side.
+    """
+    detected = [None if s.note.unpitched else s.note.midi_note for s in strikes]
+    unpitched = sum(1 for d in detected if d is None)
+    pairs = [(detected[i], expected[j]) for i, j in align(detected, expected)]
+    exact = sum(1 for got, want in pairs if got is not None and got == want)
+    octave = sum(1 for got, want in pairs
+                 if got is not None and got != want and abs(got - want) % 12 == 0)
+    wrong = [(i, want, got) for i, (got, want) in enumerate(pairs)
+             if got is not None and abs(got - want) % 12 != 0]
+    return exact, octave, wrong, unpitched, len(pairs)
 
 
 def main() -> int:
@@ -115,45 +171,61 @@ def main() -> int:
         print("\nAufnehmen mit:  python tools/record_reference.py --block 5")
         return 1
 
-    print(f"{'':>10} {'gedaempft':>22} {'klingen gelassen':>22}")
-    print("-" * 58)
+    print(f"{'Linie':>10} {'':>26} {'genau':>7} {'Oktave':>7} "
+          f"{'falsch':>7} {'ohne Ton':>9}")
+    print("-" * 72)
     verdicts = []
     for label, damped_id, ringing_id in PAIRS:
         row = []
-        for take_id in (damped_id, ringing_id):
+        for take_id, how in ((damped_id, "gedaempft"),
+                             (ringing_id, "klingen gelassen")):
             take = takes[take_id]
-            expected = [notes[0] for notes in take["expected_midi"]]
-            # Down and back up, which is what the instruction asks for.
-            expected = expected + expected[-2:0:-1]
+            line = [notes[0] for notes in take["expected_midi"]]
+            # Up and back down. The turning note may be struck once or twice;
+            # the alignment tolerates either, so the sequence is written the
+            # way it is most often played and left to sort itself out.
+            expected = (line + line[::-1]) * 3
             strikes = strikes_of(session / take["file"])
-            right, wrong, unpitched = score_sequence(strikes, expected)
-            total = len(right) + len(wrong)
-            share = 100 * len(right) / total if total else 0.0
-            row.append((share, len(right), total, unpitched, wrong))
-        (ds, dr, dt, du, _), (rs, rr, rt, ru, rw) = row
-        verdicts.append((label, ds, rs))
-        print(f"{label:>10} {f'{dr}/{dt}  {ds:5.1f} %':>22} "
-              f"{f'{rr}/{rt}  {rs:5.1f} %':>22}")
-        if du or ru:
-            print(f"{'':>10} {f'({du} ohne Tonhoehe)':>22} "
-                  f"{f'({ru} ohne Tonhoehe)':>22}")
-        if args.detail and rw:
-            for index, want, got in rw[:10]:
-                print(f"{'':>12}Anschlag {index + 1}: erwartet "
-                      f"{midi_to_name(want)}, gehoert {midi_to_name(got)} "
-                      f"({abs(got - want)} Halbtoene)")
+            exact, octave, wrong, unpitched, total = score_sequence(
+                strikes, expected)
+            share = 100 * exact / total if total else 0.0
+            row.append((share, exact, octave, wrong, unpitched, total))
+            print(f"{label:>10} {how:>26} {f'{exact}/{total}':>7} "
+                  f"{octave:>7} {len(wrong):>7} {unpitched:>9}")
+            if args.detail and wrong:
+                for index, want, got in wrong[:10]:
+                    print(f"{'':>14}Note {index + 1}: geschrieben "
+                          f"{midi_to_name(want)}, gehoert {midi_to_name(got)} "
+                          f"({abs(got - want)} Halbtoene)")
+        verdicts.append((label, row[0], row[1]))
 
     print()
-    worst = min((r - d) for _, d, r in verdicts)
+    # The share of strikes that came back with a pitch the app can use. Exact
+    # and an octave out both count, because the matcher grants octave
+    # equivalence on purpose -- an octave slip stays green on screen. What
+    # does NOT count is a strike carrying no pitch at all, which for a single
+    # written note is simply a miss.
+    def usable(entry):
+        share, exact, octave, wrong, unpitched, total = entry
+        strikes = exact + octave + len(wrong) + unpitched
+        return 100 * (exact + octave) / strikes if strikes else 0.0
+
+    worst = 0.0
+    for label, damped, ringing in verdicts:
+        gap = usable(ringing) - usable(damped)
+        worst = min(worst, gap)
+        print(f"{label:>10}: gedaempft {usable(damped):5.1f} % der Anschlaege "
+              f"brauchbar, klingend {usable(ringing):5.1f} %  ({gap:+.0f} Punkte)")
+
+    print()
     if worst > -10:
         print("Klingende Saiten kosten hier nichts Messbares.")
-        print("Die synthetische Messung (3/8 gegen 8/8) ueberzeichnet den Fall,")
-        print("und es gibt an dieser Stelle nichts zu bauen.")
+        print("An dieser Stelle gibt es nichts zu bauen.")
     else:
         print(f"Klingende Saiten kosten bis zu {-worst:.0f} Prozentpunkte.")
-        print("Der Fall ist real und lohnt eine Behandlung -- der naechste")
-        print("Schritt ist, die geschriebene Note gegen die Obertoene zu")
-        print("pruefen, statt der gemeldeten Tonhoehe blind zu glauben.")
+        print("Der Fall ist real. Der naechste Schritt ist, die GESCHRIEBENE")
+        print("Note gegen die Obertoene zu pruefen, statt der gemeldeten")
+        print("Tonhoehe blind zu glauben.")
     return 0
 
 

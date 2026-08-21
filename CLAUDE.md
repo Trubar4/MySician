@@ -265,10 +265,47 @@ Not one string change costs anything. The catch is that in `timing_test_100bpm.g
 where the previous note has decayed long before the next arrives, while every fast passage stays on one string. So the takes cannot settle
 it either way — they hold the easy half of the case and none of the hard half.
 
-Block 5 of `record_reference.py` is the missing half: the same six-note line across all six strings, twice damped and twice ringing, slow
-and fast. Same guitar, same player, same session, so damping and speed are the only things that differ. `tools/analyze_ringing.py` reads the
-four back and prints them side by side. **Until that has been recorded, the size of this effect on a real guitar is unknown, and the 59 %
-above is synthesis** — which has already overstated one thing in this file (see "The Rushing That Was Not There").
+**Recorded and measured** (block 5 of `record_reference.py`, read by `tools/analyze_ringing.py`) — and the answer is not the one the
+synthesis gave:
+
+| line | exactly right | an octave out | a DIFFERENT note | no pitch at all | usable strikes |
+|---|---|---|---|---|---|
+| slow, damped | 12 | 0 | **0** | 3 | 80 % |
+| slow, ringing | 7 | 4 | **0** | 2 | 85 % |
+| fast, damped | 12 | 1 | **0** | 3 | 81 % |
+| fast, ringing | 6 | 2 | **0** | 6 | **57 %** |
+
+**Nothing ever comes back as a different note.** The synthetic 3-of-8 predicted wrong pitches and there are none — not one, in any take. What
+ringing strings actually cost is strikes that carry **no pitch at all**, and only at speed: slow is untouched, fast loses 24 points. Octave
+slips appear too, but the matcher grants octave equivalence on purpose, so they stay green and cost nothing on screen.
+
+That changes the fix, and made the planned one wrong: there is no wrong pitch to correct, only nothing to credit. See "Rescuing A Strike
+That Carries No Pitch" below.
+
+**Two tools lied before they told the truth here, both by walking two lists in step.** `analyze_ringing.py` reported 16 % for the DAMPED
+takes — the control, known to work — because one pitchless strike shifts every comparison after it; and the regression check then convicted
+the rescue of inventing notes for the same reason. Both use Needleman-Wunsch now. **A tool whose control comes back broken is measuring
+itself**, and neither number should have been believed for a moment.
+
+## Rescuing A Strike That Carries No Pitch
+
+A strike with no pitch is not evidence of nothing. On a line played across the strings without damping it is the commonest thing that
+happens at speed, and the note was played — the ringing neighbours simply left monophonic YIN no single period to lock onto.
+
+So when a strike arrives unpitched and a **single** note is written there, the matcher holds it (`_hold_for_rescue`) and asks
+`ChordVerifier.confirms` whether that written pitch is present in the audio window. Confirmed, the note is credited.
+
+- **It only ever acquits.** `verify` asks which of several expected notes each string played and can convict; `confirms` asks one question
+  about one note and can only answer yes or stay silent. No intruder tier: with a single expected note there is no chord to be masked by, so
+  "something else is louder" only says another string is still ringing, which is the premise rather than evidence.
+- **A note already marked MISS can still be rescued.** The window trails its strike by ~380 ms by design, so the verdict arrives after the
+  note has timed out; refusing it for being late would throw the evidence away for arriving exactly when it was always going to.
+- **A chord is not rescued and a dead note is not either** — both already have their own rule, and neither needs audio.
+- **Measured, with the damped takes as the control** (`tools/check_ringing_rescue.py`): fast ringing 8/14 → **10/14**, and every damped take
+  gains exactly **nothing**. A rescue firing on a damped take would be a note being invented, which is what that check exists to catch; it
+  exits non-zero if one ever does. The chord takes and the play-along takes are unchanged.
+- It closes about half the gap, not all of it (57 % → 71 %, against 81 % damped). The two strikes it cannot recover are the high A4, whose
+  partials sit among the ringing lower strings' harmonics at a margin of 3-5 dB — too little to act on.
 
 ## Timing Diagnosis
 

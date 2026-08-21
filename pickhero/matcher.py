@@ -210,8 +210,11 @@ class NoteMatcher:
         # behaviour is exactly the pitch path's.
         self._chord_verifier = chord_verifier
         self._pending_verifications: dict[int, list[NoteEvent]] = {}
+        # Pitchless strikes on a single written note, waiting for their audio.
+        self._pending_rescues: dict[int, NoteEvent] = {}
         self.chord_verifications = 0
         self.chord_strings_corrected = 0
+        self.rescued_notes = 0
 
         # One line per strike, and one per string a chord verdict took back.
         # Written only; see StrikeTrace for why it exists.
@@ -552,6 +555,14 @@ class NoteMatcher:
                 dead = self._dead_note_credit(adjusted_ms)
                 credit = dead or self._unpitched_chord_credit(
                     adjusted_ms, ts_note.sample_pos)
+                if credit is None:
+                    # A single written note, and a strike with no pitch to
+                    # judge it by. That is what a line played across the
+                    # strings without damping produces -- the note sounded,
+                    # the ringing neighbours left YIN no single period. Held
+                    # for the audio window, which can still show the written
+                    # pitch present.
+                    self._hold_for_rescue(adjusted_ms, ts_note.sample_pos)
                 if credit is not None:
                     results.append(credit)
                 self._trace(ts_note, adjusted_ms, playback_ms,
@@ -703,6 +714,59 @@ class NoteMatcher:
             semitones=semitones,
         ))
 
+    def _hold_for_rescue(self, adjusted_ms: float, sample_pos: int | None) -> None:
+        """Remember a pitchless strike so its audio can be checked later.
+
+        Only for a single written note: a chord of two or more is already
+        credited outright, and a dead note has no pitch to look for.
+        """
+        if self._chord_verifier is None or sample_pos is None:
+            return
+        candidates = self._timeline.get_active_notes_at_time(
+            adjusted_ms, self._timing_window_ms
+        )
+        pending = [
+            n for n in candidates
+            if self._get_state(n) == MatchType.PENDING
+            and not self._is_filtered(n) and not n.dead
+        ]
+        if len(pending) != 1:
+            return
+        self._pending_rescues[sample_pos] = pending[0]
+        if len(self._pending_rescues) > 32:
+            oldest = sorted(self._pending_rescues)[:-32]
+            for key in oldest:
+                del self._pending_rescues[key]
+
+    def _apply_rescue(self, window: StrikeWindow) -> MatchResult | None:
+        """Credit a held strike if the audio shows the written note present.
+
+        The mirror of the chord verdicts below: those convict on positive
+        evidence of a wrong pitch, this acquits on positive evidence of the
+        right one. A note already marked MISS may be rescued -- the window
+        trails its strike by design, so the verdict simply arrives after the
+        note timed out, and refusing it for that reason would throw away the
+        evidence for being late.
+        """
+        note = self._pending_rescues.pop(window.sample_pos, None)
+        if note is None:
+            return None
+        if self._get_state(note) in (MatchType.HIT, MatchType.CLOSE):
+            return None
+        if not self._chord_verifier.confirms(
+                window.audio, window.sample_rate, note.midi_note):
+            return None
+        self._rerecord_match(note, MatchType.HIT)
+        self.rescued_notes += 1
+        self.strike_trace.append(StrikeTrace(
+            strike_ms=window.timestamp_ms, adjusted_ms=window.timestamp_ms,
+            playback_ms=window.timestamp_ms, midi_note=note.midi_note,
+            confidence=0.0, unpitched=True, subharmonic=False,
+            outcome="rescued", note_ms=note.timestamp_ms, semitones=0,
+        ))
+        return MatchResult(match_type=MatchType.HIT, matched_events=[note],
+                           semitone_distance=0)
+
     def process_strike_windows(
         self, windows: list[StrikeWindow]
     ) -> list[MatchResult]:
@@ -726,6 +790,9 @@ class NoteMatcher:
             return results
 
         for window in windows:
+            rescue = self._apply_rescue(window)
+            if rescue is not None:
+                results.append(rescue)
             siblings = self._pending_verifications.pop(window.sample_pos, None)
             if not siblings:
                 continue
@@ -1150,8 +1217,10 @@ class NoteMatcher:
         self.reset_timing_samples()
         # Chords awaiting their audio window belong to the abandoned position
         self._pending_verifications.clear()
+        self._pending_rescues.clear()
         self.chord_verifications = 0
         self.chord_strings_corrected = 0
+        self.rescued_notes = 0
         self.strike_trace.clear()
 
         # One line per strike, and one per string a chord verdict took back.
