@@ -1,0 +1,213 @@
+{
+  "created": "2026-08-21T11:41:56",
+  "samplerate": 48000,
+  "channels": 1,
+  "device": "Analogue 1 + 2 (Focusrite USB Audio)",
+  "tuning_offset_semitones": 0,
+  "takes": [
+    {
+      "id": "50_across_slow_damped",
+      "block": 5,
+      "title": "Saitenwechsel langsam - GEDAEMPFT",
+      "file": "50_across_slow_damped.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 5
+        },
+        {
+          "5": 5
+        },
+        {
+          "4": 5
+        },
+        {
+          "3": 5
+        },
+        {
+          "2": 5
+        },
+        {
+          "1": 5
+        }
+      ],
+      "expected_midi": [
+        [
+          45
+        ],
+        [
+          50
+        ],
+        [
+          55
+        ],
+        [
+          60
+        ],
+        [
+          64
+        ],
+        [
+          69
+        ]
+      ],
+      "seconds": 14,
+      "peak_dbfs": -6.0,
+      "rms_dbfs": -25.4
+    },
+    {
+      "id": "51_across_slow_ringing",
+      "block": 5,
+      "title": "Saitenwechsel langsam - KLINGEN LASSEN",
+      "file": "51_across_slow_ringing.wav",
+      "technique": "let_ring",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 5
+        },
+        {
+          "5": 5
+        },
+        {
+          "4": 5
+        },
+        {
+          "3": 5
+        },
+        {
+          "2": 5
+        },
+        {
+          "1": 5
+        }
+      ],
+      "expected_midi": [
+        [
+          45
+        ],
+        [
+          50
+        ],
+        [
+          55
+        ],
+        [
+          60
+        ],
+        [
+          64
+        ],
+        [
+          69
+        ]
+      ],
+      "seconds": 14,
+      "peak_dbfs": -6.0,
+      "rms_dbfs": -22.8
+    },
+    {
+      "id": "52_across_fast_damped",
+      "block": 5,
+      "title": "Saitenwechsel schnell - GEDAEMPFT",
+      "file": "52_across_fast_damped.wav",
+      "technique": "normal",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 5
+        },
+        {
+          "5": 5
+        },
+        {
+          "4": 5
+        },
+        {
+          "3": 5
+        },
+        {
+          "2": 5
+        },
+        {
+          "1": 5
+        }
+      ],
+      "expected_midi": [
+        [
+          45
+        ],
+        [
+          50
+        ],
+        [
+          55
+        ],
+        [
+          60
+        ],
+        [
+          64
+        ],
+        [
+          69
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -5.8,
+      "rms_dbfs": -25.3
+    },
+    {
+      "id": "53_across_fast_ringing",
+      "block": 5,
+      "title": "Saitenwechsel schnell - KLINGEN LASSEN",
+      "file": "53_across_fast_ringing.wav",
+      "technique": "let_ring",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 5
+        },
+        {
+          "5": 5
+        },
+        {
+          "4": 5
+        },
+        {
+          "3": 5
+        },
+        {
+          "2": 5
+        },
+        {
+          "1": 5
+        }
+      ],
+      "expected_midi": [
+        [
+          45
+        ],
+        [
+          50
+        ],
+        [
+          55
+        ],
+        [
+          60
+        ],
+        [
+          64
+        ],
+        [
+          69
+        ]
+      ],
+      "seconds": 9,
+      "peak_dbfs": -5.9,
+      "rms_dbfs": -23.1
+    }
+  ]
+}
