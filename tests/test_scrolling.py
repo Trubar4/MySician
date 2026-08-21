@@ -1499,3 +1499,74 @@ class TestRunLogRecordsTheLevel:
 
     def test_a_run_with_no_audio_says_so_rather_than_inventing_a_number(self):
         assert "(nothing measured)" in self._log(self._screen([]))
+
+
+class TestHeadUsesTheHeightItHas:
+    """A head squeezed narrow by a dense song is still full height.
+
+    Measured on the case the player reported -- a real song at 135 BPM whose
+    sixteenths put the notes 111 ms apart: the head sits at its 26 px floor
+    inside a 56 px lane, leaving 53 % of the height unused. Look-ahead is
+    bought and sold in WIDTH, so keeping the height costs nothing at all.
+    """
+
+    def _screen(self, spacing_ms, fret=5):
+        notes = [
+            NoteEvent(timestamp_ms=i * spacing_ms, duration_ms=150.0,
+                      midi_note=40 + (i % 6), string=6 - (i % 6), fret=fret,
+                      measure=i // 8)
+            for i in range(60)
+        ]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        surface = pygame.Surface((1277, 771))
+        screen._recompute_scroll_speed(screen._layout(surface))
+        return screen
+
+    def test_a_dense_song_keeps_its_height(self):
+        screen = self._screen(111.0)
+        assert screen._head_px < screen._head_h_px
+
+    def test_a_roomy_song_stays_round(self):
+        screen = self._screen(600.0)
+        assert screen._head_px == pytest.approx(screen._head_h_px)
+
+    def test_the_height_costs_no_look_ahead(self):
+        """The whole point: it is free. Width is the currency, not height."""
+        screen = self._screen(111.0)
+        window_with_height = screen._visible_window_ms
+        screen._head_h_px = screen._head_px       # as it was before
+        screen._recompute_scroll_speed(screen._layout(pygame.Surface((1277, 771))))
+        assert screen._visible_window_ms == pytest.approx(window_with_height)
+
+    def test_every_fret_number_is_the_same_size(self):
+        """A lone 5 towering over the 15 beside it reads as emphasis the
+        music never asked for."""
+        notes = [
+            NoteEvent(timestamp_ms=i * 400.0, duration_ms=150.0, midi_note=40,
+                      string=6, fret=(5 if i % 2 else 15), measure=0)
+            for i in range(20)
+        ]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        screen._recompute_scroll_speed(screen._layout(pygame.Surface((1277, 771))))
+        assert screen._fret_digits == 2
+
+    def test_the_number_fills_the_width_it_has(self):
+        """Where the digits grew: the old rule was a fixed multiple of the
+        radius and left room unused. The HEIGHT does not help a two-digit
+        label -- at a 26 px head the width is what binds -- so the height's
+        gain is the size of the note itself, not of the number."""
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        screen = self._screen(111.0)
+        font = screen._fret_font(13.0, 23.5, 2)
+        assert font.get_height() > int(13.0 * 1.1)     # the old rule
+        assert font.render("20", True, (0, 0, 0)).get_width() <= 26
+        pygame.display.quit()
+
+    def test_a_flat_head_is_limited_by_its_height(self):
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        screen = self._screen(111.0)
+        flat = screen._fret_font(40.0, 8.0, 2)
+        assert flat.get_height() <= 16
+        pygame.display.quit()

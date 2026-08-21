@@ -405,6 +405,31 @@ where the song is with where the recording got to and corrects only past `RESYNC
   offset cannot be judged in. `_mp3_plays()` includes `self._playing` for that reason. Paused, `Shift+N`/`Shift+M` only store the value;
   the HUD shows it move regardless, so the key never looks dead.
 
+## A Note Head Is Squeezed Sideways, Not Downwards
+
+A dense song shrinks its note heads to buy look-ahead — see `_recompute_scroll_speed`. What was never noticed is that the squeeze is
+entirely **horizontal**: look-ahead is bought and sold in width, while the lane is as tall as it ever was. Measured on the song the player
+reported, a solo track at 135 BPM whose sixteenths sit 111 ms apart, in a 1277x771 window:
+
+| | |
+|---|---|
+| head after shrinking | 26 px (the `MIN_HEAD_PX` floor) |
+| lane height | 56 px |
+| **vertical space unused** | **30 px, 53 %** |
+| look-ahead at full-size heads | 2.0 s — unreadable |
+
+So the head now carries its own height (`_head_h_px`), taken from the lane rather than from the music: full-size on a roomy song, where it
+equals the width and the note stays round, and full height on a dense one, where it does not. **This costs no look-ahead whatsoever** — the
+window is computed from the width alone, and the test asserts that rather than trusting it.
+
+Two things worth keeping straight, because the first version of the write-up got them backwards:
+
+- **The height makes the NOTE bigger, not the number.** At a 26 px head a two-digit fret is limited by the width, and more height does
+  nothing for it. The digits grew from 14 px to 21 px for a different reason: the old rule sized them at a fixed `radius * 1.1` and left
+  room unused, where `_fret_font` now fits them to the space that is actually there.
+- **Every fret number in a song is sized for the widest label in it.** Sized to its own label instead, a lone "5" towers over the "15"
+  beside it, which reads as emphasis the music never asked for.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain

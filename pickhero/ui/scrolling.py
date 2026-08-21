@@ -287,6 +287,8 @@ class PlayingScreen:
         self._scroll_speed_signature: tuple | None = None
         # One head size for the whole song, set with the scroll speed
         self._head_px: float | None = None
+        self._head_h_px: float | None = None
+        self._fret_digits: int = 2
         # Where the "PM" badges go. Computed from the whole song, not from the
         # notes currently on screen: a run crossing the edge of the view would
         # otherwise be re-labelled every time its first note scrolled off.
@@ -846,10 +848,21 @@ class PlayingScreen:
         """Calculate note rectangle width, enforcing minimum."""
         return max(duration_ms * pixels_per_ms, MIN_NOTE_WIDTH_PX)
 
-    def _fret_font(self, radius: float) -> pygame.font.Font:
-        """Font sized to a note head, cached: building one per note per frame
-        is far too slow, and heads now vary in size within a single frame."""
-        size = max(9, int(radius * 1.1))
+    def _fret_font(self, radius: float, half_h: float | None = None,
+                   digits: int = 2) -> pygame.font.Font:
+        """Font sized to the room the head actually has, cached.
+
+        Both dimensions, not just the radius. A head squeezed narrow by a
+        dense song is still full height, and a number sized on the width
+        alone throws that height away -- on a real 135 BPM song that is the
+        difference between a 14 px digit and a 20 px one, in a note that was
+        already hard to read.
+
+        Cached because building a font per note per frame is far too slow.
+        """
+        by_width = radius * 2 * 0.9 / max(1, digits) / 0.55
+        by_height = (half_h * 2 * 0.86) if half_h else radius * 1.1
+        size = max(9, int(min(by_width, by_height)))
         font = self._fret_fonts.get(size)
         if font is None:
             font = _get_font("consolas", size)
@@ -943,6 +956,21 @@ class PlayingScreen:
 
         self._visible_window_ms = window
         self._head_px = head
+        # The head is squeezed HORIZONTALLY, by how close the notes sit in
+        # time. Nothing squeezes it vertically -- the lane is as tall as it
+        # ever was -- so a shrunken head leaves half its lane empty for
+        # nothing. Measured on a real song at 135 BPM with sixteenths: the
+        # head is at its 26 px floor inside a 56 px lane, 53 % of the height
+        # unused. Keeping the full height costs no look-ahead at all, because
+        # look-ahead is bought and sold in width.
+        self._head_h_px = max(head, layout.note_h)
+        # Every fret number in the song is sized for the widest one in it, so
+        # they are all the same size. Sizing each to its own label makes a
+        # lone "5" tower over the "15" beside it, which reads as emphasis the
+        # music never asked for.
+        frets = [len(str(n.fret)) for n in self._timeline.notes
+                 if self._note_passes_filter(n)]
+        self._fret_digits = max(frets) if frets else 2
         self._scroll_speed_signature = self._filter_signature()
 
     def _backing_ms(self, playback_ms: float) -> float:
@@ -1217,9 +1245,15 @@ class PlayingScreen:
         pygame.draw.lines(surface, line, False, pts, width)
 
     @staticmethod
-    def _badge_y(cy: float, head: float) -> float:
-        """Badge centre: clear of the note's top edge, not on the fret number."""
-        return cy - head / 2 - head * BADGE_RADIUS_HEADS * BADGE_LIFT_HEADS
+    def _badge_y(cy: float, head: float, half_h: float | None = None) -> float:
+        """Badge centre: clear of the note's top edge, not on the fret number.
+
+        The top edge is the head's HEIGHT, which on a dense song is larger
+        than its width -- measuring from the width would park the badge
+        inside the note.
+        """
+        top = half_h if half_h is not None else head / 2
+        return cy - top - head * BADGE_RADIUS_HEADS * BADGE_LIFT_HEADS
 
     def _draw_badge(
         self, surface: pygame.Surface, label: str, cx: float, cy: float,
@@ -1456,6 +1490,11 @@ class PlayingScreen:
             # scroll, which is the thing this display must never do.
             head = self._head_px if self._head_px is not None else layout.note_h
             radius = head / 2
+            # Half-height, which is the lane's business rather than the
+            # music's. Equal to the radius on a song roomy enough to keep
+            # full-size heads, so those stay round.
+            half_h = (self._head_h_px if self._head_h_px is not None
+                      else layout.note_h) / 2
             visual_gap = head * (SLIDE_GAP_FRACTION if note.slide_to_next
                                  else SUSTAIN_GAP_FRACTION)
 
@@ -1501,15 +1540,18 @@ class PlayingScreen:
             # half a note late.
             if capsule_w > 2 * radius:
                 rect = pygame.Rect(
-                    int(x), int(cy - radius), int(capsule_w), int(2 * radius),
+                    int(x), int(cy - half_h), int(capsule_w), int(2 * half_h),
                 )
-                pygame.draw.rect(surface, color, rect, border_radius=int(radius))
+                corner = int(min(radius, half_h))
+                pygame.draw.rect(surface, color, rect, border_radius=corner)
                 pygame.draw.rect(surface, t.note_border, rect, width=2,
-                                 border_radius=int(radius))
+                                 border_radius=corner)
             else:
-                centre = (int(x + radius), int(cy))
-                pygame.draw.circle(surface, color, centre, int(radius))
-                pygame.draw.circle(surface, t.note_border, centre, int(radius), 2)
+                oval = pygame.Rect(
+                    int(x), int(cy - half_h), int(2 * radius), int(2 * half_h),
+                )
+                pygame.draw.ellipse(surface, color, oval)
+                pygame.draw.ellipse(surface, t.note_border, oval, 2)
 
             # Technique marks go OVER the head. They live inside the note now
             # rather than arcing out of the lane, so drawing them underneath
@@ -1544,7 +1586,7 @@ class PlayingScreen:
             if ((note.timestamp_ms, note.string) in self._palm_mute_starts
                     and not has_technique_badge):
                 self._draw_badge(surface, "PM", x + head,
-                                 self._badge_y(cy, head), head,
+                                 self._badge_y(cy, head, half_h), head,
                                  base_color, past_hit_zone)
 
             # Fret number centred in the head, sized to the head it sits in —
@@ -1552,7 +1594,7 @@ class PlayingScreen:
             # A dead note shows the X the tab shows: its fret says where the
             # hand goes, not which note comes out, and printing the digit
             # invites the player to actually fret it.
-            fret_font = self._fret_font(radius)
+            fret_font = self._fret_font(radius, half_h, self._fret_digits)
             fret_label = "X" if note.dead else str(note.fret)
             fret_text = fret_font.render(fret_label, True, t.note_text)
             if fret_text.get_width() <= 2 * radius:
