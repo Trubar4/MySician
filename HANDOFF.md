@@ -79,8 +79,9 @@ chords, per-string chord verification, wait mode, latency auto-sync, bends,
 slides, hammer-ons and pull-offs (drawn and scored), palm mutes and dead notes
 (drawn and scored), progress tracking.
 
-**Known-imperfect:** the timing report calls rushing "scatter" (topic 3a).
-Chord verification abstains on chords closer than ~255 ms
+**Known-imperfect:** a note whose neighbour is still ringing on another
+string can be misread (topic 4 — the one miss in a 98.4 % run). A recording
+cannot be slowed down (topic 5). Chord verification abstains on chords closer than ~255 ms
 (eighths past about 118 BPM). GP7 files load with muting but no bends or
 slides. Timing is measured and answered: plain input latency, which `K`
 removes.
@@ -125,6 +126,24 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 "Colour".
 
 ## What this session changed (newest first)
+
+-12. **Detection is DONE: 98.4 % (61/62).** The last three sessions' worth of
+   low scores were the input level, and nothing else. The run before this one
+   had 56 strikes heard and 25 landing — strikes arriving with the wrong
+   pitch, which is precisely what a weak input does (it does not lose notes,
+   it renames them; see `CLAUDE.md`). Turned up: `level_loudest_db` -10.2,
+   median while playing -23.1, and the same player on the same song scores
+   61 of 62 with 45 timing samples and nothing ambiguous.
+
+   Two things follow, and the second matters more than the first:
+   - The **one remaining miss** is a B3 read confidently as F#3, five
+     semitones off, at the single place in the song where the previous note
+     sat on a different string and was still ringing. That is topic 4, and it
+     is now the only detection fault left in the file.
+   - **The "player rushes" finding is withdrawn.** See `CLAUDE.md`, "The
+     Rushing That Was Not There": the ramp measured 4.2 % on one run and
+     0.1 % on the clean one. A timing sample is worth no more than the pitch
+     that anchored it, and those pitches were unreliable.
 
 -11. **A pitchless power chord now counts.** `MIN_UNPITCHED_CHORD_STRINGS`
    goes from 3 to 2. The old line was drawn on a rate (a pitchless strike is
@@ -355,17 +374,22 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    strikes) and doubled strikes on isolated chords (one shows in the 91.9 %
    log at 12.1 s, harmless to the score).
 
-3a. **Rushing, which the timing report calls scatter.** New, and the player's
-   own samples say it plainly: inside every fast passage the error ramps from
-   late to early and resets at the next phrase — 0.8 % fast on quarters,
+3a. ~~**Rushing, which the timing report calls scatter.**~~ **WITHDRAWN —
+   2026-08-21.** Measured 4.2 % on a run whose pitches were unreliable and
+   0.1 % on the clean one. Do not build the per-passage slope on this
+   evidence; if it is ever wanted, measure it again from a run with
+   `level_loudest_db` above -38. Original note kept below for the shape of
+   the argument, which was sound even though the data was not.
+
+   ~~The original: inside every fast passage the error ramped from
+   late to early and reset at the next phrase — 0.8 % fast on quarters,
    **4.2 % on eighths**, 9.2 % on the eighth-note chords. A ramp that resets
    cannot be a clock and is not scatter; it has a direction, and `K` cannot
    touch it. The report says `mixed` and sends them to practise slower, which
    is not wrong but is far less useful than "you speed up inside runs". A
    per-passage slope, tested against its own standard error the way the median
    and the per-string gap already are, would name it. See `CLAUDE.md`,
-   "Rushing Is Not Scatter". **The player has not asked for this** — it sits
-   behind their four priorities.
+   "The Rushing That Was Not There".~~
 
 3b. **`reference_recordings/20260818_194323` is unusable and should not be
    calibrated against.** Every take peaks at -58 dBFS with an RMS of -70;

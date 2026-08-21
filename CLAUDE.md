@@ -190,20 +190,22 @@ ruled out — the offline replay of that very take reads 97.4 % through the iden
 The five notes still lost were all named by the log rather than inferred: a two-string power chord that arrived pitchless (fixed, see the
 chord credit above) and two one-semitone misreads.
 
-## Rushing Is Not Scatter
+## The Rushing That Was Not There
 
-The player's timing report says `mixed` with a ±46 ms spread, which reads as loose playing. The exported samples say something more
-specific: inside every fast passage the error **ramps** from late to early and resets at the next phrase.
+Worth keeping as a warning about the reading, not about the playing.
 
-| passage | samples | first | last | drift |
-|---|---|---|---|---|
-| quarters, 7.8-16.2 s | 16 | +16 ms | -52 ms | 0.8 % fast |
-| eighths, 17.4-23.1 s | 21 | +141 ms | -98 ms | **4.2 % fast** |
-| eighth chords, 24.6-25.5 s | 4 | +18 ms | -64 ms | 9.2 % fast |
+A run scoring 91.9 % exported samples whose error **ramped** inside every fast passage — 0.8 % on quarters, 4.2 % on eighths, 9.2 % on the
+eighth-note chords — resetting at each phrase. That is not a clock (a clock accumulates and never jumps back) and not scatter (it has a
+direction), so it was written up as the player rushing, which is the oldest fault in the book and fits the shape exactly.
 
-A ramp that resets at each phrase cannot be a clock (a clock would accumulate over the song and never jump back) and is not scatter either
-— it has a direction. It is the oldest fault in the book, and `K` cannot touch it. The report does not name it yet; the samples are in the
-`Shift+Y` CSV for whoever builds that.
+The next clean run, at 98.4 % with the input level fixed, shows **0.1 % over the same fifteen seconds**. Same player, same song, same
+week.
+
+So the ramp was almost certainly an artifact of unreliable pitches: when a strike is read as the wrong note it is attributed to whichever
+neighbour it fits, and in a passage of repeating pitches the attribution slides along with it, which draws a ramp out of nothing. **A
+timing sample is only worth as much as the pitch that anchored it** — so read `level_loudest_db` and the strikes-heard-vs-landed line in
+the run log BEFORE believing anything the timing report says about playing. Whether the player rushes at all is currently unknown, and
+the honest answer to give them is that it has not been measured.
 
 ## A Weak Input Does Not Lose Notes, It Renames Them
 
@@ -227,6 +229,10 @@ around -38 dB and the collapse below -44, which is where `QUIET_PEAK_DB` comes f
 
 The HUD advice is bounded by the same measurement, and is **silent while the song is not running**: the peak decays once the playing
 stops, so the completion screen used to report a level fault that was not there.
+
+**Confirmed on the instrument.** The run before had 56 strikes heard and only 25 landing on a written note — the exact signature above,
+strikes arriving with the wrong pitch. With the input turned up (`level_loudest_db` -10.2, median while playing -23.1) the same player,
+same song, same code: **98.4 %, 61 of 62**, 45 timing samples, nothing ambiguous. The level was the whole of it.
 
 ## Ringing Strings Defeat Detection
 
