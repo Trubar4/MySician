@@ -49,8 +49,6 @@ Country) und übe bei Yousician auf Pro-Level — daran messe ich die App.
   `python tools/record_reference.py --block 6` (sechs Bend-Aufnahmen, ca. eine
   Minute) und danach `python tools/check_bends.py`, das ausgibt, in welchem
   Fenster jede Schwelle liegen muss.
-- **GP7-Techniken** (von mir zurückgestellt): der GP7-Pfad kennt Mutes, aber
-  keine Bends und Slides.
 - **Palm-Mute-Nachsicht** (zurückgestellt und ungemessen): ob ein schwerer Chug
   ohne Tonhöhe seine Note gutgeschrieben bekommen soll. Das ist Nachsicht und
   braucht Referenzaufnahmen, kein Bauchgefühl.

@@ -336,8 +336,8 @@ one of five answers: `fine`, `latency`, `scatter`, `mixed`, `per_string`.
 ## Techniques (bends, slides, legato)
 
 `NoteEvent` carries what the tab wrote: `bend` as ((position 0..1, semitones), ...), plus `slide_to_next`, `slide_in`, `slide_out` and
-`hammer_to_next`. Extracted in `tabs/loader.py` from pyguitarpro's already-normalised effects; the hand-written GP7 XML path does not carry
-them yet.
+`hammer_to_next`. Extracted in `tabs/loader.py` — from pyguitarpro's already-normalised effects for GP3-5, and by hand from the GPIF XML for
+GP6, GP7 and GP8 (`_parse_gpif_notes`).
 
 - **Drawn inside the note, badge above it** — the way Yousician does it, and the only thing a six-lane layout allows: a curve arcing out of
   its lane reads as a note on the neighbouring string. The white technique line always gets a dark shadow (`_draw_technique_line`), because
@@ -372,6 +372,28 @@ them yet.
 
 - **A sliding note gives up part of its sustain** so the connector has somewhere to be; back-to-back notes otherwise leave a few pixels.
 - `tools/make_technique_test.py` writes a GP5 stating exactly which technique is where, so a wrong drawing is the app's fault.
+
+## Three Guitar Pro Generations, One Parser
+
+GP6 (`.gpx`), GP7 and GP8 (`.gp`) all store the same GPIF XML and differ only in what they wrap it in: GP7 and GP8 use a zip, GP6 uses a
+container of its own — BCFZ compression around a BCFS sector image. `tabs/gpx.py` unwraps that container and hands the XML to the parser that
+already existed, so there is no second loader and a fix for one generation is a fix for all three.
+
+- **`.gpx` was not even in the song list.** `GP_EXTENSIONS` had never included it, so the files never appeared to be opened in the first
+  place — the format work was the second half of the problem, not the first.
+- **A real GP6 file stops one byte short of the length it declares.** The decompressor must accept that rather than treat it as damage:
+  refusing it rejected **13 of alphaTab's 35 GP6 test files**, and the missing byte is padding inside the last 4 KB sector that no file's
+  contents reach. alphaTab swallows the same end-of-stream exception for the same reason.
+- **Verified against all 35 of those files** — every one decompresses, parses and loads through `load_gp_file`, yielding 843 notes with 6
+  bends, 16 slides and 54 hammer-ons. The committed tests build containers by hand instead, since the files are not ours to vendor; what they
+  hold still is the bit order and the sector arithmetic.
+- **Both bit orders are needed and they are not interchangeable.** The chunk headers are most-significant-bit first, the offsets and lengths
+  inside them least-significant first. Getting one backwards decompresses for a while and then collapses.
+- **GPIF writes a bend value of 50 per semitone** (the unit GP5 used, kept through GP8) and a bend position as a percentage. A middle point
+  with no position of its own sits **halfway**, not at zero — at zero the bend scoring would ask the player to hold a pitch before the string
+  has been struck.
+- **`list_tracks` reads GPIF too.** Without it the track picker was empty for every GP6/7/8 file, because the caller asked the GP3-5 parser,
+  the exception was swallowed, and "no tracks" looks like a song with one track rather than like a format nobody read.
 
 ## Muting (palm mutes, dead notes)
 
@@ -539,6 +561,7 @@ pickhero/
 │   └── note_utils.py
 ├── tabs/
 │   ├── __init__.py
+│   ├── gpx.py           # Guitar Pro 6 containers (BCFZ/BCFS) → GPIF XML
 │   ├── loader.py
 │   ├── timeline.py
 │   └── downloader.py

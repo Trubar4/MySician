@@ -14,7 +14,9 @@ from pickhero.config import Config
 from pickhero.progress import ProgressTracker
 from pickhero.ui.colors import cycle_theme, get_theme
 
-GP_EXTENSIONS = {".gp3", ".gp4", ".gp5", ".gp", ".gp7", ".gp8"}
+# .gpx is Guitar Pro 6. It was missing here for as long as the app has
+# existed, so those files never even appeared in the list to be opened.
+GP_EXTENSIONS = {".gp3", ".gp4", ".gp5", ".gp", ".gp7", ".gp8", ".gpx"}
 
 # How many items visible at once before scrolling
 VISIBLE_ITEMS = 18

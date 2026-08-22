@@ -7,6 +7,7 @@ stdlib xml.etree. Builds note timelines for both formats.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -16,6 +17,7 @@ import guitarpro
 from pickhero.audio.midi_playback import (
     NOTE_ON, NOTE_OFF, PROGRAM_CHANGE, BackingTrack, MidiEvent,
 )
+from pickhero.tabs import gpx
 from pickhero.tabs.timeline import MeasureInfo, NoteEvent, SongMetadata, Timeline
 
 # GP tick resolution: 960 ticks = 1 quarter note
@@ -229,6 +231,9 @@ def list_tracks(path: str | Path) -> list[dict]:
     Returns a list of dicts with keys: index, name, strings, instrument,
     is_percussion, is_guitar.
     """
+    if _is_gpif_file(path):
+        return _list_gpif_tracks(path)
+
     song = guitarpro.parse(str(path))
     tracks = []
     for i, track in enumerate(song.tracks):
@@ -245,12 +250,67 @@ def list_tracks(path: str | Path) -> list[dict]:
     return tracks
 
 
+def _list_gpif_tracks(path: str | Path) -> list[dict]:
+    """The same listing for a GPIF score, so TAB offers its tracks too.
+
+    Without this the track picker was empty for every GP6/GP7/GP8 file: the
+    caller asks for the list, the plain parser refuses the format, and the
+    exception is swallowed into "no tracks" -- which looks like a song with
+    one track rather than like a format that was never read.
+    """
+    root = ET.fromstring(_read_gpif(path))
+    tracks = []
+    tracks_el = root.find("Tracks")
+    for index, t in enumerate(tracks_el.findall("Track") if tracks_el is not None
+                              else []):
+        pitches: list[int] = []
+        for prop in t.findall(".//Property"):
+            if prop.get("name") == "Tuning":
+                pitches = [int(x) for x in prop.findtext("Pitches", "").split()
+                           if x.lstrip("-").isdigit()]
+        try:
+            program = int(t.findtext(".//MIDI/Program", "-1"))
+        except ValueError:
+            program = -1
+        is_drum = (program == 1024
+                   or t.findtext(".//InstrumentSet", "") == "drums")
+        tracks.append({
+            "index": index,
+            "name": t.findtext("Name", "").strip(),
+            "strings": len(pitches),
+            "instrument": program,
+            "is_percussion": is_drum,
+            "is_guitar": (len(pitches) == 6 and not is_drum
+                          and GUITAR_INSTRUMENT_MIN <= program
+                          <= GUITAR_INSTRUMENT_MAX),
+        })
+    return tracks
+
+
 def _is_gp7_file(path: str | Path) -> bool:
     """Check if a file is GP7/GP8 format (ZIP with Content/score.gpif)."""
     try:
         return zipfile.is_zipfile(str(path))
     except OSError:
         return False
+
+
+def _is_gpif_file(path: str | Path) -> bool:
+    """Whether the score inside is GPIF XML — GP6, GP7 or GP8.
+
+    Three Guitar Pro generations write the same XML and differ only in what
+    they wrap it in: GP7 and GP8 use a zip, GP6 uses a container of its own.
+    Everything past this point is the same parser.
+    """
+    return _is_gp7_file(path) or gpx.is_gpx_file(path)
+
+
+def _read_gpif(path: str | Path) -> str:
+    """The score XML, whichever wrapper it arrived in."""
+    if gpx.is_gpx_file(path):
+        return gpx.read_gpif(path)
+    with zipfile.ZipFile(str(path)) as zf:
+        return zf.read("Content/score.gpif").decode("utf-8")
 
 
 # ── GP7/GP8 loader ──────────────────────────────────────────────────────────
@@ -262,12 +322,158 @@ _GP7_NOTE_VALUES = {
 }
 
 
-def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline:
-    """Load a GP7/GP8 file (ZIP containing Content/score.gpif XML)."""
-    with zipfile.ZipFile(str(path)) as zf:
-        gpif = zf.read("Content/score.gpif").decode("utf-8")
+# GPIF writes a bend value of 50 for one semitone -- the unit GP5 used, kept
+# through GP6, GP7 and GP8 -- and a bend position as a percentage of the note.
+# Read out of alphaTab, which converts by 1/25 into a unit that is itself half
+# a semitone, and confirmed against its GP6 test files.
+_GPIF_BEND_PER_SEMITONE = 50.0
+_GPIF_BEND_MAX_OFFSET = 100.0
 
-    root = ET.fromstring(gpif)
+# The bits of a GPIF <Slide><Flags>. Only the ones that change a pitch matter
+# here; a pick slide (64, 128) is a noise effect and carries no target.
+_GPIF_SLIDE_SHIFT_TO_NEXT = 1
+_GPIF_SLIDE_LEGATO_TO_NEXT = 2
+_GPIF_SLIDE_OUT_DOWN = 4
+_GPIF_SLIDE_OUT_UP = 8
+_GPIF_SLIDE_IN_BELOW = 16
+_GPIF_SLIDE_IN_ABOVE = 32
+
+
+@dataclass
+class _GpifNote:
+    """One <Note> of a GPIF score, with everything the app scores it by."""
+    fret: int
+    string: int                        # 0-indexed, 0 = low E
+    dead: bool = False
+    palm_mute: bool = False
+    bend: tuple[tuple[float, float], ...] = ()
+    slide_to_next: bool = False
+    slide_in: int = 0
+    slide_out: int = 0
+    hammer_to_next: bool = False
+
+
+def _gpif_float(prop: ET.Element) -> float:
+    try:
+        return float(prop.findtext("Float", "0"))
+    except ValueError:
+        return 0.0
+
+
+def _gpif_bend(values: dict[str, float]) -> tuple[tuple[float, float], ...]:
+    """The bend curve as ((position 0..1, semitones), ...), () if unbent.
+
+    GPIF states a bend as an origin, up to two middle points and a
+    destination, each a value and a position along the note. Most of them are
+    left out of the file when they are what you would assume, and the
+    assumptions are Guitar Pro's own: the origin sits at the start, the
+    destination at the end, and a middle value with no position of its own
+    sits halfway. Reading a missing position as zero instead -- which is what
+    this did first -- puts the top of the bend at the moment the string is
+    struck, and the scoring then asks the player to hold a pitch they have not
+    reached yet.
+    """
+    def semitones(key: str) -> float:
+        return values.get(key, 0.0) / _GPIF_BEND_PER_SEMITONE
+
+    def position(key: str) -> float:
+        return min(1.0, max(0.0, values.get(key, 0.0) / _GPIF_BEND_MAX_OFFSET))
+
+    points = [(position("BendOriginOffset"), semitones("BendOriginValue"))]
+    middle = semitones("BendMiddleValue")
+    if "BendMiddleValue" in values:
+        # A zero offset counts as absent, the way Guitar Pro writes it.
+        offsets = [position(key) for key in ("BendMiddleOffset1",
+                                             "BendMiddleOffset2")
+                   if values.get(key)]
+        for offset in (offsets or [0.5]):
+            points.append((offset, middle))
+    points.append((position("BendDestinationOffset")
+                   if values.get("BendDestinationOffset") else 1.0,
+                   semitones("BendDestinationValue")))
+    # Points written twice collapse into one; a curve with a duplicate draws
+    # as a kink that is not in the music.
+    curve = tuple(dict.fromkeys(points))
+    return curve if any(value > 0 for _, value in curve) else ()
+
+
+def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
+    """Every <Note> in a GPIF score, by id.
+
+    Techniques included. They were left out for a whole GP7 cycle on the
+    grounds that "a bend needs its whole curve read out of the Properties
+    block" -- which is true, and is eight lines. The cost of leaving them out
+    was that a GP6 or GP7 tab scored its bends and slides as wrong notes,
+    because the matcher only widens a note's accepted pitch range when the tab
+    says a technique is there.
+    """
+    notes: dict[str, _GpifNote] = {}
+    notes_el = root.find("Notes")
+    if notes_el is None:
+        return notes
+    for n in notes_el.findall("Note"):
+        nid = n.get("id", "")
+        fret = string_val = None
+        dead = palm_mute = bended = False
+        slide_flags = 0
+        hammer = False
+        bend_values: dict[str, float] = {}
+        for prop in n.findall(".//Property"):
+            pname = prop.get("name", "")
+            # Flags rather than values: GPIF writes them as an empty <Enable/>
+            # child, so the property being present IS the answer.
+            if pname == "Muted":
+                dead = prop.find("Enable") is not None
+            elif pname == "PalmMuted":
+                palm_mute = prop.find("Enable") is not None
+            elif pname == "Bended":
+                bended = prop.find("Enable") is not None
+            elif pname == "HopoOrigin":
+                # The note the hammer-on or pull-off starts FROM, which is the
+                # same end GP3-5 flag it at.
+                hammer = prop.find("Enable") is not None
+            elif pname == "Slide":
+                try:
+                    slide_flags = int(prop.findtext("Flags", "0"))
+                except ValueError:
+                    slide_flags = 0
+            elif pname.startswith("Bend"):
+                bend_values[pname] = _gpif_float(prop)
+            elif pname == "Fret":
+                try:
+                    fret = int(prop.findtext("Fret", "0"))
+                except ValueError:
+                    pass
+            elif pname == "String":
+                try:
+                    raw = float(prop.findtext("String", "0"))
+                    if raw != int(raw):
+                        continue          # fractional = drum/percussion, skip
+                    string_val = int(raw)
+                except ValueError:
+                    pass
+        if fret is None or string_val is None:
+            continue
+        notes[nid] = _GpifNote(
+            fret=fret,
+            string=string_val,
+            dead=dead,
+            palm_mute=palm_mute,
+            bend=_gpif_bend(bend_values) if bended else (),
+            slide_to_next=bool(slide_flags & (_GPIF_SLIDE_SHIFT_TO_NEXT
+                                              | _GPIF_SLIDE_LEGATO_TO_NEXT)),
+            slide_in=(1 if slide_flags & _GPIF_SLIDE_IN_BELOW
+                      else -1 if slide_flags & _GPIF_SLIDE_IN_ABOVE else 0),
+            slide_out=(1 if slide_flags & _GPIF_SLIDE_OUT_UP
+                       else -1 if slide_flags & _GPIF_SLIDE_OUT_DOWN else 0),
+            hammer_to_next=hammer,
+        )
+    return notes
+
+
+def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline:
+    """Load a GPIF score — GP6 (.gpx), GP7 or GP8 (.gp)."""
+    root = ET.fromstring(_read_gpif(path))
 
     # ── Parse lookup tables ──────────────────────────────────────────────
 
@@ -294,41 +500,7 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                     base = base * den / num
             rhythms[rid] = base
 
-    # Notes: id → (fret, gp7_string, dead, palm_mute)
-    # (gp7_string is 0-indexed, 0=low E)
-    notes_map: dict[str, tuple[int, int, bool, bool]] = {}
-    notes_el = root.find("Notes")
-    if notes_el is not None:
-        for n in notes_el.findall("Note"):
-            nid = n.get("id", "")
-            fret = None
-            string_val = None
-            dead = False
-            palm_mute = False
-            for prop in n.findall(".//Property"):
-                pname = prop.get("name", "")
-                # Flags rather than values: GP7 writes them as an empty
-                # <Enable/> child, so the property being present IS the answer.
-                if pname == "Muted":
-                    dead = prop.find("Enable") is not None
-                elif pname == "PalmMuted":
-                    palm_mute = prop.find("Enable") is not None
-                if pname == "Fret":
-                    try:
-                        fret = int(prop.findtext("Fret", "0"))
-                    except ValueError:
-                        pass
-                elif pname == "String":
-                    try:
-                        raw = prop.findtext("String", "0")
-                        f = float(raw)
-                        if f != int(f):
-                            continue  # fractional = drum/percussion, skip
-                        string_val = int(f)
-                    except ValueError:
-                        pass
-            if fret is not None and string_val is not None:
-                notes_map[nid] = (fret, string_val, dead, palm_mute)
+    notes_map = _parse_gpif_notes(root)
 
     # Beats: id → (rhythm_ref, [note_ids])
     beats_map: dict[str, tuple[str, list[str]]] = {}
@@ -469,7 +641,8 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                     for nid in note_ids:
                         if nid not in notes_map:
                             continue
-                        fret, gp7_string, dead, palm_mute = notes_map[nid]
+                        gpif_note = notes_map[nid]
+                        fret, gp7_string = gpif_note.fret, gpif_note.string
                         our_string = num_strings - gp7_string
                         if not 1 <= our_string <= 6:
                             continue
@@ -481,12 +654,6 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                         if not 0 <= midi_note <= 127:
                             continue
 
-                        # No bend or slide here: this path parses GP7's own XML
-                        # by hand, and a bend needs its whole curve read out of
-                        # the <Properties> block. Left for when a GP7 tab
-                        # actually needs them -- GP3-5 go through pyguitarpro.
-                        # Muting is different: both are plain flags, so they
-                        # cost nothing to carry and a metal tab is full of them.
                         note_events.append(NoteEvent(
                             timestamp_ms=beat_pos_ms,
                             duration_ms=dur_ms,
@@ -494,8 +661,13 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                             string=our_string,
                             fret=fret,
                             measure=mb_idx,
-                            dead=dead,
-                            palm_mute=palm_mute,
+                            bend=gpif_note.bend,
+                            slide_to_next=gpif_note.slide_to_next,
+                            slide_in=gpif_note.slide_in,
+                            slide_out=gpif_note.slide_out,
+                            hammer_to_next=gpif_note.hammer_to_next,
+                            dead=gpif_note.dead,
+                            palm_mute=gpif_note.palm_mute,
                         ))
 
                     beat_pos_ms += dur_ms
@@ -530,11 +702,8 @@ def _extract_gp7_backing_track(
     path: str | Path,
     exclude_track_indices: set[int] | None = None,
 ) -> BackingTrack:
-    """Extract non-guitar tracks from a GP7/GP8 file as MIDI events."""
-    with zipfile.ZipFile(str(path)) as zf:
-        gpif = zf.read("Content/score.gpif").decode("utf-8")
-
-    root = ET.fromstring(gpif)
+    """Extract non-guitar tracks from a GPIF score as MIDI events."""
+    root = ET.fromstring(_read_gpif(path))
 
     # Reuse the same lookup tables as _load_gp7_file
     # Rhythms
@@ -561,29 +730,7 @@ def _extract_gp7_backing_track(
             rhythms[rid] = base
 
     # Notes: id → (fret, gp7_string)
-    notes_map: dict[str, tuple[int, int]] = {}
-    notes_el = root.find("Notes")
-    if notes_el is not None:
-        for n in notes_el.findall("Note"):
-            nid = n.get("id", "")
-            fret = None
-            string_val = None
-            for prop in n.findall(".//Property"):
-                pname = prop.get("name", "")
-                if pname == "Fret":
-                    try:
-                        fret = int(prop.findtext("Fret", "0"))
-                    except ValueError:
-                        pass
-                elif pname == "String":
-                    try:
-                        raw = prop.findtext("String", "0")
-                        f = float(raw)
-                        string_val = int(round(f))
-                    except ValueError:
-                        pass
-            if fret is not None and string_val is not None:
-                notes_map[nid] = (fret, string_val)
+    notes_map = _parse_gpif_notes(root)
 
     # Beats
     beats_map: dict[str, tuple[str, list[str]]] = {}
@@ -712,7 +859,8 @@ def _extract_gp7_backing_track(
                     for nid in note_ids:
                         if nid not in notes_map:
                             continue
-                        fret, gp7_string = notes_map[nid]
+                        fret = notes_map[nid].fret
+                        gp7_string = notes_map[nid].string
                         if gp7_string < len(tuning):
                             midi_note = tuning[gp7_string] + fret
                         else:
@@ -750,7 +898,7 @@ def load_gp_file(path: str | Path, track_index: int | None = None) -> Timeline:
         track_index: Explicit track index to load. If None, auto-selects
                      the first guitar track (or track 0 as fallback).
     """
-    if _is_gp7_file(path):
+    if _is_gpif_file(path):
         return _load_gp7_file(path, track_index)
 
     song = guitarpro.parse(str(path))
@@ -799,7 +947,7 @@ def extract_backing_track(
     Returns:
         BackingTrack with note_on, note_off, and program_change events.
     """
-    if _is_gp7_file(path):
+    if _is_gpif_file(path):
         return _extract_gp7_backing_track(path, exclude_track_indices)
 
     song = guitarpro.parse(str(path))

@@ -40,7 +40,7 @@ A regular microphone also works for acoustic guitar or as a quick test, though a
 
 ## Tab Sources
 
-PickHero reads Guitar Pro files (`.gp3`, `.gp4`, `.gp5`, `.gp7`, `.gp8`). You can get tabs from:
+PickHero reads Guitar Pro files (`.gp3`, `.gp4`, `.gp5`, `.gpx`, `.gp`, `.gp7`, `.gp8`) — every generation from GP3 to GP8. You can get tabs from:
 
 - **Songsterr** — 1M+ songs, GP5 download via built-in downloader
 - **GProTab.net** — 70K+ free Guitar Pro files

@@ -527,8 +527,14 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    `tools/check_bends.py` reads it, printing the window each threshold has to
    sit in. Until that has been played, the honest description is "behaves
    sensibly", not "measured". `O` on the song list has a switch for it.
-8. **GP7 techniques** (deprioritised by the player). The hand-written GP7 XML
-   path carries muting but no bends or slides.
+8. ~~**GP7 techniques.**~~ **BUILT — 2026-08-22, and GP6 with it.** The GPIF
+   path now reads bends, slides and hammer-ons as well as muting
+   (`_parse_gpif_notes`), so a GP6/GP7/GP8 tab no longer scores its techniques
+   as wrong notes. `.gpx` files load at all for the first time: `tabs/gpx.py`
+   unwraps GP6's own container (BCFZ compression over a BCFS sector image) and
+   hands the same XML to the same parser. Verified against all 35 of
+   alphaTab's GP6 test files. See `CLAUDE.md`, "Three Guitar Pro Generations,
+   One Parser".
 9. **Palm-mute leniency** (deprioritised by the player, and unmeasured).
    Whether a chug that returns no pitch at all should credit its palm-muted
    note. Needs reference recordings, not a guess — see `CLAUDE.md`, "Muting".
