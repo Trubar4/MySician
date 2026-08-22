@@ -610,8 +610,11 @@ class PlayingScreen:
                 pinned_ts = self._playback_ms - self._matcher.audio_offset_ms
                 for d in detected:
                     d.timestamp_ms = pinned_ts
-            # Pinned timestamps carry no latency information
+            # Pinned timestamps carry no latency information -- nor any
+            # information about how long a bend was held, since every reading
+            # would claim the same millisecond.
             self._matcher.record_timing_samples = not self._wait_mode_frozen
+            self._matcher.record_contour = not self._wait_mode_frozen
             results = self._matcher.process_detected_notes(detected, self._playback_ms)
             # Per-string chord verdicts arrive ~380 ms after their strike, once
             # enough audio exists to tell a semitone apart. They can only
@@ -2474,6 +2477,7 @@ class PlayingScreen:
         fh.write(f"onset_threshold\t{ac.onset_threshold}\n")
         fh.write(f"calibrated\t{bool(getattr(self._config, 'calibration', None))}\n")
         fh.write(f"chord_verify\t{getattr(self._config, 'chord_verify', True)}\n")
+        fh.write(f"bend_check\t{getattr(self._config, 'bend_check', True)}\n")
         fh.write(f"chord_partial_credit\t{self._chord_partial_credit}\n")
         fh.write(f"max_fret\t{self._config.max_fret}\n")
         fh.write(f"active_strings\t{self._config.active_strings}\n")
@@ -2484,6 +2488,8 @@ class PlayingScreen:
         fh.write(f"strings_taken_back\t{matcher.chord_strings_corrected}\n")
         fh.write(f"chord_windows_judged\t{matcher.chord_verifications}\n")
         fh.write(f"rescued_notes\t{matcher.rescued_notes}\n")
+        fh.write(f"bends_judged\t{matcher.bends_judged}\n")
+        fh.write(f"bends_short\t{matcher.bends_short}\n")
         fh.write(f"timing_samples\t{len(matcher.timing_samples)}\n")
         fh.write(f"timing_ambiguous\t{matcher.timing_ambiguous}\n")
 
@@ -2986,6 +2992,7 @@ class PlayingScreen:
                 chord_partial_credit=self._chord_partial_credit,
                 late_window_ms=self._late_window_ms(),
                 chord_verifier=self._make_chord_verifier(),
+                bend_check=getattr(self._config, "bend_check", True),
             )
             self._feedback.reset()
         except Exception as e:

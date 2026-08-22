@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
-from pickhero.audio.note_utils import semitone_distance
+from pickhero.audio.note_utils import freq_to_midi_exact, semitone_distance
 from pickhero.audio.chord_verify import ChordVerifier
 from pickhero.audio.input import StrikeWindow, TimestampedNote
 from pickhero.tabs.timeline import NoteEvent, Timeline
@@ -43,6 +43,41 @@ AMBIGUITY_RATIO = 2.0
 # pitch counts as a different note. Slides off the end of a phrase have no
 # destination in the tab, so the only honest bound is a generous one.
 OPEN_SLIDE_SEMITONES = 2
+
+# -- Bends -------------------------------------------------------------------
+#
+# How far a bend went is judged from the pitch contour: the detector produces a
+# reading every ~11.6 ms and the matcher already receives them, so nothing new
+# has to be measured -- they were simply thrown away.
+#
+# THE NUMBERS BELOW ARE NOT CALIBRATED. Every other threshold in this app was
+# fitted to real takes; these three were fitted to nothing, because there is no
+# recording of a bend to fit them to. Block 6 of tools/record_reference.py
+# exists to produce one, and tools/analyze_bends.py to read it. Until that has
+# happened, treat them as placeholders that behave sensibly, not as findings --
+# and note that the rule they drive can only ever turn green into yellow.
+
+# How near the written top of the bend counts as having reached it. The
+# player's own ruling: "about a quarter tone", which is 50 cents.
+BEND_TOLERANCE_CENTS = 50.0
+# Of the time the tab writes the bend standing at its top, how much of it has
+# to be spent inside that tolerance. The player's ruling again: the target has
+# to be HELD as long as it is written, not merely touched on the way past.
+BEND_HOLD_FRACTION = 0.5
+# A written hold shorter than this is not a hold, and only the height is
+# judged. A bend written across a sixteenth has no plateau to speak of.
+BEND_MIN_HOLD_MS = 150.0
+# Pitch readings needed before a bend may be judged at all. Fewer than this is
+# not evidence that the bend fell short, only that nothing was heard -- and a
+# note is never marked down for the absence of evidence. Same presumption of
+# innocence the chord verifier runs on.
+BEND_MIN_SAMPLES = 4
+# How long after a bend note ends before its verdict is settled, so the last
+# frames of the note have arrived.
+BEND_VERDICT_DELAY_MS = 120.0
+# How long a pitch reading is kept. Long enough for the longest note anyone
+# writes a bend across, short enough that the list stays small.
+CONTOUR_KEEP_MS = 6000.0
 
 # How many strings a chord needs before a strike carrying no pitch at all is
 # accepted as having played it. Two, and the second string is where it has to
@@ -166,6 +201,7 @@ class NoteMatcher:
         chord_partial_credit: bool = True,
         late_window_ms: float = 0.0,
         chord_verifier: ChordVerifier | None = None,
+        bend_check: bool = True,
     ):
         self._timeline = timeline
         self._timing_window_ms = timing_window_ms
@@ -219,6 +255,20 @@ class NoteMatcher:
         # One line per strike, and one per string a chord verdict took back.
         # Written only; see StrikeTrace for why it exists.
         self.strike_trace: list[StrikeTrace] = []
+
+        # Bends, judged from the pitch contour once the note is over. The
+        # contour is the sustained pitch stream the audio thread already
+        # sends; it used to be dropped on the floor here.
+        self.bend_check = bend_check
+        self._bend_plans = self._build_bend_plans(timeline)
+        self._unjudged_bends = dict(self._bend_plans)
+        self._contour: list[tuple[float, float]] = []
+        # Cleared while wait mode pins every timestamp to one instant: a
+        # contour whose readings all claim the same millisecond says nothing
+        # about how long anything was held. Same reason timing samples stop.
+        self.record_contour = True
+        self.bends_judged = 0
+        self.bends_short = 0
 
         self._pitch_ranges = self._build_pitch_ranges(timeline)
         self._legato_sources = self._build_legato_sources(timeline)
@@ -540,6 +590,10 @@ class NoteMatcher:
         # Process each detected note with an onset
         for ts_note in detected:
             if not ts_note.note.is_onset:
+                # Not a strike: one reading of the pitch as it stands. Useless
+                # for matching -- that is what the onset collector is for --
+                # and the only thing that can say how far a bend went.
+                self._collect_contour(ts_note)
                 continue
 
             adjusted_ms = ts_note.timestamp_ms + self._audio_offset_ms
@@ -694,7 +748,132 @@ class NoteMatcher:
                 semitone_distance=best_dist,
             ))
 
+        results.extend(self._judge_finished_bends(playback_ms))
         return results
+
+    # -- Bends ---------------------------------------------------------------
+
+    @staticmethod
+    def _build_bend_plans(
+        timeline: Timeline,
+    ) -> dict[tuple[float, int], tuple[NoteEvent, float, float, float, float]]:
+        """What each bent note asks for: (note, top, hold start, hold end, end).
+
+        The tab writes a bend as points along the note -- ((0, 0), (0.5, 2),
+        (1, 2)) is "rise two semitones by halfway and stay there". The top is
+        the highest point, and the stretch of note over which the tab holds it
+        there is what the player has to hold. All three times are absolute
+        song milliseconds, so nothing downstream has to know about positions.
+        """
+        plans: dict[
+            tuple[float, int], tuple[NoteEvent, float, float, float, float]
+        ] = {}
+        for note in timeline.notes:
+            if not note.bend or note.dead:
+                continue
+            top = max(value for _, value in note.bend)
+            if top <= 0:
+                continue                      # a bend that goes nowhere
+            at_top = [pos for pos, value in note.bend if value >= top - 1e-9]
+            duration = max(note.duration_ms, 0.0)
+            plans[(note.timestamp_ms, note.string)] = (
+                note,
+                top,
+                note.timestamp_ms + min(at_top) * duration,
+                note.timestamp_ms + max(at_top) * duration,
+                note.timestamp_ms + duration,
+            )
+        return plans
+
+    def _collect_contour(self, ts_note: TimestampedNote) -> None:
+        """Keep one pitch reading, if any bent note might need it."""
+        if not (self.bend_check and self.record_contour and self._bend_plans):
+            return
+        freq = getattr(ts_note.note, "frequency", 0.0)
+        if freq <= 0 or ts_note.note.unpitched:
+            return
+        self._contour.append((ts_note.timestamp_ms + self._audio_offset_ms,
+                              freq_to_midi_exact(freq)))
+
+    def _judge_finished_bends(self, playback_ms: float) -> list[MatchResult]:
+        """Mark down a bend that measurably fell short of what was written.
+
+        It can only ever turn green into yellow, which is the player's own
+        ruling: a bend that arrives short is a bend played imperfectly, not a
+        note missed. And it never fires on silence -- see `_bend_verdict`.
+        """
+        results: list[MatchResult] = []
+        if not self.bend_check:
+            return results
+        # Pruned first and unconditionally. Hanging it off "is a bend still
+        # waiting" left the list growing for the whole rest of the song once
+        # the last bend had been judged.
+        if self._contour:
+            cutoff = playback_ms - CONTOUR_KEEP_MS
+            if self._contour[0][0] < cutoff:
+                self._contour = [c for c in self._contour if c[0] >= cutoff]
+        if not self._unjudged_bends:
+            return results
+
+        due = [key for key, plan in self._unjudged_bends.items()
+               if playback_ms >= plan[4] + BEND_VERDICT_DELAY_MS]
+        for key in due:
+            plan = self._unjudged_bends.pop(key)
+            note = plan[0]
+            if self._is_filtered(note):
+                continue
+            if self._get_state(note) != MatchType.HIT:
+                # Already yellow or missed: there is nothing left to take
+                # away, and a bend never makes a note worse than that.
+                continue
+            self.bends_judged += 1
+            if self._bend_verdict(note, plan) is False:
+                self.bends_short += 1
+                self._rerecord_match(note, MatchType.CLOSE)
+                results.append(MatchResult(
+                    match_type=MatchType.CLOSE,
+                    matched_events=[note],
+                    semitone_distance=None,
+                ))
+        return results
+
+    def _bend_verdict(self, note: NoteEvent, plan: tuple) -> bool | None:
+        """True if the bend was played, False if it fell short, None if unknown.
+
+        Two separate questions, both of which the player named:
+
+        - **Did it get there?** The highest pitch the note reached, against the
+          written top, within a quarter tone.
+        - **Was it held?** The tab says how long the bend stands at its top,
+          and touching the pitch on the way past is not the same as holding
+          it. Only asked when the tab writes a hold worth the name.
+
+        Either can only convict on positive evidence. A note that produced too
+        few readings -- a quiet passage, a chord ringing over it, a pickup that
+        lost the string -- returns None and keeps whatever it was given. This
+        is the presumption of innocence the chord verifier already runs on, and
+        for the same reason: absence of evidence is the commonest thing in this
+        signal path, and a rule that convicts on it marks down good playing.
+        """
+        _, top, hold_start, hold_end, end = plan
+        tolerance = BEND_TOLERANCE_CENTS / 100.0
+        window = [semis for ms, midi in self._contour
+                  if note.timestamp_ms <= ms <= end + BEND_VERDICT_DELAY_MS
+                  for semis in (midi - note.midi_note,)]
+        if len(window) < BEND_MIN_SAMPLES:
+            return None
+        if max(window) < top - tolerance:
+            return False                      # never got there
+
+        if hold_end - hold_start >= BEND_MIN_HOLD_MS:
+            held = [midi - note.midi_note for ms, midi in self._contour
+                    if hold_start <= ms <= hold_end]
+            if len(held) >= BEND_MIN_SAMPLES:
+                on_target = sum(1 for semis in held
+                                if abs(semis - top) <= tolerance)
+                if on_target < BEND_HOLD_FRACTION * len(held):
+                    return False              # got there, did not stay
+        return True
 
     def _trace(
         self, ts_note: TimestampedNote, adjusted_ms: float, playback_ms: float,
@@ -1221,6 +1400,10 @@ class NoteMatcher:
         self.chord_verifications = 0
         self.chord_strings_corrected = 0
         self.rescued_notes = 0
+        self._contour.clear()
+        self._unjudged_bends = dict(self._bend_plans)
+        self.bends_judged = 0
+        self.bends_short = 0
         self.strike_trace.clear()
 
         # One line per strike, and one per string a chord verdict took back.

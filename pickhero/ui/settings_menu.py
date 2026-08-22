@@ -195,6 +195,12 @@ class SettingsMenuScreen:
                          "Costs about a third of a second before the verdict "
                          "settles.",
                     is_default=lambda: c.chord_verify is True),
+            Setting("bend", "Bend check",
+                    lambda: "on" if c.bend_check else "off",
+                    lambda step: setattr(c, "bend_check", not c.bend_check),
+                    note="Marks a bend yellow when it measurably fell short "
+                         "of what the tab wrote, or was not held. Never red.",
+                    is_default=lambda: c.bend_check is True),
             Setting("tempo", "Practice speed",
                     lambda: f"{int(round(c.tempo_factor * 100))} %", adjust_tempo,
                     note="Also on PgUp/PgDn while playing. A recorded backing "
@@ -318,6 +324,8 @@ class SettingsMenuScreen:
             self._config.chord_partial_credit = default.chord_partial_credit
         elif row.key == "verify":
             self._config.chord_verify = default.chord_verify
+        elif row.key == "bend":
+            self._config.bend_check = default.bend_check
         elif row.key == "tempo":
             self._config.tempo_factor = 1.0
         elif row.key == "scroll":

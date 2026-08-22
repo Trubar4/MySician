@@ -33,7 +33,8 @@ Country) und übe bei Yousician auf Pro-Level — daran messe ich die App.
 
 ## Was ich noch testen soll (bitte danach fragen)
 
-- Den **Einstellungsbildschirm** und die **Zeitdehnung** im echten Lauf.
+- Den **Einstellungsbildschirm**, die **Zeitdehnung** und die **Bend-Bewertung**
+  im echten Lauf — und für die Bends die Aufnahme aus Block 6.
 - Das offene Experiment: läuft `record_reference.py` parallel mit, während die
   App wertet, verdirbt das die Wertung? Der 34,6-%-Lauf hatte genau das, und
   derselbe Mitschnitt liest offline 97,4 %. Bis das geklärt ist, gilt: **eine
@@ -41,11 +42,13 @@ Country) und übe bei Yousician auf Pro-Level — daran messe ich die App.
 
 ## Was als Nächstes offen ist (`HANDOFF.md` hat die Details)
 
-- **Bend-Bewertung** (Punkt 7). Gezeichnet wird alles, gewertet absichtlich
-  nachsichtig, weil die Tonhöhenkurve verworfen wird — der Detektor erzeugt sie
-  aber, alle ~11,6 ms. Meine Festlegung: zu flach = gelb, nicht rot; die
-  Zielhöhe muss so lange gehalten werden wie geschrieben, etwa auf einen
-  Viertelton genau.
+- **Bend-Schwellen messen** (Punkt 7 ist gebaut, aber nicht kalibriert). Ein zu
+  flacher oder nicht gehaltener Bend wird gelb — die drei Schwellen dahinter
+  sind aber die einzigen der App, die an nichts gefittet wurden. Zwei Befehle
+  ändern das:
+  `python tools/record_reference.py --block 6` (sechs Bend-Aufnahmen, ca. eine
+  Minute) und danach `python tools/check_bends.py`, das ausgibt, in welchem
+  Fenster jede Schwelle liegen muss.
 - **GP7-Techniken** (von mir zurückgestellt): der GP7-Pfad kennt Mutes, aber
   keine Bends und Slides.
 - **Palm-Mute-Nachsicht** (zurückgestellt und ungemessen): ob ein schwerer Chug

@@ -42,6 +42,19 @@ def freq_to_midi(freq: float) -> int:
     return round(12 * math.log2(freq / A4_FREQ) + A4_MIDI)
 
 
+def freq_to_midi_exact(freq: float) -> float:
+    """MIDI note number WITHOUT rounding, so a bend can be measured.
+
+    Everywhere else the app rounds to the nearest semitone, because a note is
+    either the written one or not. A bend is the exception: the whole question
+    is how far between two semitones the pitch got, and rounding throws away
+    exactly that. Returns -1.0 for an invalid frequency.
+    """
+    if freq <= 0:
+        return -1.0
+    return 12 * math.log2(freq / A4_FREQ) + A4_MIDI
+
+
 def midi_to_freq(midi_note: int) -> float:
     """Convert MIDI note number to frequency in Hz."""
     return A4_FREQ * (2 ** ((midi_note - A4_MIDI) / 12))

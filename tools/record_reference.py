@@ -229,6 +229,54 @@ EXERCISES = [
             ("fast", "damped"), ("fast", "ringing"),
         ])
     ],
+
+    # ---- Block 6: bends, played right and played short --------------------
+    #
+    # How far a bend went is now scored, and the three thresholds that decide
+    # it (a quarter tone of tolerance, half the written hold, four readings of
+    # evidence) were fitted to NOTHING -- there was no recording of a bend to
+    # fit them to. These takes are that recording.
+    #
+    # The pairs are what make it a measurement rather than a demonstration: a
+    # correct bend and a short one, a held one and one let go at once. A
+    # threshold has to pass every correct take AND catch every deliberate
+    # error, and the gap between those two demands is the room it has.
+    #
+    # 65 is the one most likely to embarrass the rule: vibrato swings the
+    # pitch either side of the target on purpose, and a rule that counts
+    # frames on target can read that as not holding.
+    Exercise("60_bend_full_ok", 6, "Ganzton-Bend, gehalten - RICHTIG",
+             [{3: 7}], technique="free",
+             instruction="7. Bund G-Saite anschlagen, einen GANZEN TON hoch "
+                         "ziehen und etwa zwei Sekunden oben halten. Dreimal.",
+             seconds=12),
+    Exercise("61_bend_half_ok", 6, "Halbton-Bend, gehalten - RICHTIG",
+             [{3: 7}], technique="free",
+             instruction="Dasselbe, aber nur einen HALBEN Ton hoch. Oben "
+                         "halten. Dreimal.",
+             seconds=12),
+    Exercise("62_bend_too_short", 6, "Ganzton-Bend, absichtlich ZU FLACH",
+             [{3: 7}], technique="free",
+             instruction="Ziel ist ein ganzer Ton, aber zieh absichtlich nur "
+                         "etwa die Haelfte und halte dort. Dreimal.",
+             intentional_error="nur etwa ein Halbton statt einem Ganzton",
+             seconds=12),
+    Exercise("63_bend_not_held", 6, "Ganzton-Bend, absichtlich NICHT GEHALTEN",
+             [{3: 7}], technique="free",
+             instruction="Ganzen Ton hochziehen und sofort wieder loslassen, "
+                         "als waere es ein Vorschlag. Dreimal.",
+             intentional_error="oben nicht gehalten",
+             seconds=12),
+    Exercise("64_bend_release", 6, "Bend und Release",
+             [{3: 7}], technique="free",
+             instruction="Ganzen Ton hoch, kurz halten, dann kontrolliert "
+                         "wieder herunterlassen. Dreimal.",
+             seconds=12),
+    Exercise("65_bend_vibrato", 6, "Ganzton-Bend mit Vibrato",
+             [{3: 7}], technique="free",
+             instruction="Ganzen Ton hoch und oben VIBRATO spielen, so wie du "
+                         "es normal machst. Dreimal.",
+             seconds=12),
 ]
 
 

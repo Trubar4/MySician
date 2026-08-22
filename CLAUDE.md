@@ -342,9 +342,34 @@ them yet.
 - **Drawn inside the note, badge above it** — the way Yousician does it, and the only thing a six-lane layout allows: a curve arcing out of
   its lane reads as a note on the neighbouring string. The white technique line always gets a dark shadow (`_draw_technique_line`), because
   white on the amber string is invisible and an invisible technique will not be played.
-- **Scored so the drawing is not a lie.** A bend accepts the whole region it covers (`_build_pitch_ranges`) — judging how FAR it went needs a
-  pitch contour the detector does not produce. A hammered, pulled or slid-into note is never picked, so it inherits its source's verdict
+- **Scored so the drawing is not a lie.** A bend accepts the whole region it covers (`_build_pitch_ranges`), so a correctly played technique is
+  never marked wrong for leaving its written pitch. A hammered, pulled or slid-into note is never picked, so it inherits its source's verdict
   (`_legato_credit`); waiting for a strike on it could only ever end in a miss.
+## How Far The Bend Went
+
+"Judging how FAR a bend went needs a pitch contour the detector does not produce" was wrong in one word. The detector produces one every
+~11.6 ms, the audio thread already sends it (`is_onset=False` readings on the same queue), and the matcher was throwing it away at the top of
+`process_detected_notes`. Nothing new is measured; the readings are simply kept.
+
+- **It can only ever turn green into yellow.** The player's ruling: a bend that arrives short is a note played imperfectly, not a note missed.
+  A bend on a note already CLOSE or MISS is left alone — there is nothing left to take away.
+- **Two questions, both of which the player named.** Did it get there (highest reading against the written top, within a quarter tone), and was
+  it HELD (the tab says how long the bend stands at its top; touching the pitch on the way past is not holding it). The hold is only asked when
+  the tab writes a hold worth the name — a bend across a sixteenth has no plateau.
+- **Neither convicts on silence.** Too few readings inside the note returns "unknown" and the note keeps what it was given. Absence of evidence
+  is the commonest thing in this signal path, and the chord verifier learned the same lesson the hard way.
+- **The three thresholds are NOT calibrated, and that is stated in the code.** Every other number in this app was fitted to reference
+  recordings; `BEND_TOLERANCE_CENTS`, `BEND_HOLD_FRACTION` and `BEND_MIN_SAMPLES` were fitted to nothing, because no recording of a bend
+  existed. Block 6 of `record_reference.py` records the pairs that would settle them (full vs deliberately shallow, held vs let go, plus a
+  bend-release and a bend with vibrato) and `tools/check_bends.py` reads them — printing not a score but the WINDOW each threshold has to sit
+  in: the worst correct take against the best deliberate error. If a window has no room, the rule is wrong and no amount of tuning fixes it.
+- **Verified so far only against synthesis**: through the real `PitchDetector`, a two-semitone bend reads +2.00 and a one-semitone bend +1.00,
+  which is twice the tolerance apart — so the rule CAN separate them. That says the mechanism works, not that the thresholds are right.
+- **Vibrato is the case most likely to embarrass it.** Vibrato swings the pitch either side of the target on purpose, and a rule counting
+  frames on target can read that as not holding. Take 65 exists for exactly that and has not been played yet.
+- **Wait mode stops the collection**, because it pins every timestamp to one instant and a contour whose readings all claim the same
+  millisecond cannot say how long anything was held — the same reason timing samples stop there.
+
 - **A sliding note gives up part of its sustain** so the connector has somewhere to be; back-to-back notes otherwise leave a few pixels.
 - `tools/make_technique_test.py` writes a GP5 stating exactly which technique is where, so a wrong drawing is the app's fault.
 

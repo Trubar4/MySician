@@ -514,12 +514,19 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    standard value is marked and named in the header, which is what would have
    caught the fret-filter incident. See `CLAUDE.md`, "A Setting You Cannot See
    Is A Setting You Cannot Undo".
-7. **Bend evaluation.** The visual exists; scoring is deliberately lenient
-   because nothing keeps the pitch contour — though the detector DOES produce
-   one, at one frame per ~11.6 ms, which `OnsetPitchCollector` discards. The
-   user's decisions: reaching the target too shallowly should score yellow (not
-   red), and the target has to be held for the note's written length, roughly a
-   quarter-tone accurate.
+7. ~~**Bend evaluation.**~~ **BUILT — 2026-08-22, thresholds still unmeasured.**
+   The matcher keeps the pitch contour it was already being handed and asks two
+   questions once a bent note is over: did it reach the written top within a
+   quarter tone, and was that top held as long as the tab writes it. Either
+   failing turns the note yellow, never red, per the player's ruling; too few
+   readings turns nothing at all, per the presumption of innocence.
+
+   **What is still owed:** `BEND_TOLERANCE_CENTS`, `BEND_HOLD_FRACTION` and
+   `BEND_MIN_SAMPLES` are the only thresholds in the app fitted to nothing.
+   Block 6 of `record_reference.py` records what would settle them and
+   `tools/check_bends.py` reads it, printing the window each threshold has to
+   sit in. Until that has been played, the honest description is "behaves
+   sensibly", not "measured". `O` on the song list has a switch for it.
 8. **GP7 techniques** (deprioritised by the player). The hand-written GP7 XML
    path carries muting but no bends or slides.
 9. **Palm-mute leniency** (deprioritised by the player, and unmeasured).
