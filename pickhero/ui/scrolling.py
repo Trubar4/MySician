@@ -2630,6 +2630,8 @@ class PlayingScreen:
             "+/-: scroll faster / slower     G: hit window",
             "N/M: backing track earlier / later",
             "TAB: choose track     H: this help     ESC: song list",
+            "On the song list, O opens the settings screen — everything that",
+            "is set once, with anything away from standard marked.",
         ], font=hint_font, step=17)
 
         close_surf = hint_font.render("Press H to close", True, t.hud_accent)

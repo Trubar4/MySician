@@ -502,13 +502,18 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    MP3 encoder delay varies per file, which is why the manual per-song sync is
    a requirement rather than a convenience — and why the two-at-once state
    above is what makes it usable at all.
-6. **Settings screen.** 41 keys are handled and the footer needs two lines.
-   Proposed split: shortcuts stay for everything used WHILE playing (space, K,
-   W, L, tempo — hands are on the guitar), a settings screen for everything set
-   once (device, noise gate, hit window, fret filter, muted strings, chord mode,
-   theme, backing offset). The menu infrastructure already exists
-   (`menu.py`, `device_menu.py`, `download_menu.py`, `calibration_menu.py`).
-   A screen showing current state would have caught the fret-filter incident.
+6. ~~**Settings screen.**~~ **BUILT — 2026-08-22.** `O` on the song list opens
+   `ui/settings_menu.py`: device, calibration, noise gate, hit window, timing
+   offset, fret limit, muted strings, chord scoring, per-string chord check,
+   practice speed, scroll speed, count-in, both backing tracks and their sync,
+   wait mode, theme. Up/down chooses, left/right changes, ENTER opens the
+   screens that need one, `R` puts one row back to standard, ESC leaves —
+   everything saved as it is changed.
+
+   **The point is the seeing, not the changing.** Anything away from its
+   standard value is marked and named in the header, which is what would have
+   caught the fret-filter incident. See `CLAUDE.md`, "A Setting You Cannot See
+   Is A Setting You Cannot Undo".
 7. **Bend evaluation.** The visual exists; scoring is deliberately lenient
    because nothing keeps the pitch contour — though the detector DOES produce
    one, at one frame per ~11.6 ms, which `OnsetPitchCollector` discards. The

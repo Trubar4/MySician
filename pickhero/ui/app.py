@@ -18,6 +18,7 @@ from pickhero.ui.calibration_menu import CalibrationMenuScreen
 from pickhero.ui.device_menu import DeviceMenuScreen
 from pickhero.ui.download_menu import DownloadMenuScreen
 from pickhero.ui.menu import MenuScreen
+from pickhero.ui.settings_menu import SettingsMenuScreen
 from pickhero.ui.scrolling import PlayingScreen
 
 
@@ -37,6 +38,12 @@ class App:
         self._device_menu: DeviceMenuScreen | None = None
         self._download_menu: DownloadMenuScreen | None = None
         self._calibration_menu: CalibrationMenuScreen | None = None
+        self._settings_menu: SettingsMenuScreen | None = None
+        # Where ESC goes from the device and calibration screens. They are
+        # reachable from the song list AND from the settings screen, and
+        # dropping the player somewhere they did not come from is how a menu
+        # starts to feel like a maze.
+        self._return_to = "menu"
 
     def run(self) -> None:
         """Initialize PyGame, run main loop, clean up."""
@@ -97,12 +104,17 @@ class App:
                 self._handle_download_event(event)
             elif self._state == "calibration":
                 self._handle_calibration_event(event)
+            elif self._state == "settings":
+                self._handle_settings_event(event)
 
     def _handle_menu_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.KEYDOWN and not self._menu.is_searching:
             if event.key == pygame.K_d:
-                self._device_menu = DeviceMenuScreen(self._config)
-                self._state = "device"
+                self._open_device_menu("menu")
+                return
+            if event.key == pygame.K_o:
+                self._settings_menu = SettingsMenuScreen(self._config)
+                self._state = "settings"
                 return
             if event.key == pygame.K_s:
                 songs_dir = Path(self._config.songs_dir)
@@ -110,8 +122,7 @@ class App:
                 self._state = "download"
                 return
             if event.key == pygame.K_g:
-                self._calibration_menu = CalibrationMenuScreen(self._config)
-                self._state = "calibration"
+                self._open_calibration("menu")
                 return
 
         result = self._menu.handle_event(event)
@@ -131,13 +142,37 @@ class App:
             self._state = "menu"
             self._menu.scan_files()
 
+    def _open_device_menu(self, came_from: str) -> None:
+        self._device_menu = DeviceMenuScreen(self._config)
+        self._return_to = came_from
+        self._state = "device"
+
+    def _open_calibration(self, came_from: str) -> None:
+        self._calibration_menu = CalibrationMenuScreen(self._config)
+        self._return_to = came_from
+        self._state = "calibration"
+
+    def _handle_settings_event(self, event: pygame.event.Event) -> None:
+        result = self._settings_menu.handle_event(event)
+        if result == "back":
+            # The song list shows the input device and the theme, both of
+            # which may have just changed under it.
+            self._menu.refresh_device_name()
+            set_theme(self._config.theme)
+            self._settings_menu = None
+            self._state = "menu"
+        elif result == "device":
+            self._open_device_menu("settings")
+        elif result == "calibration":
+            self._open_calibration("settings")
+
     def _handle_device_event(self, event: pygame.event.Event) -> None:
         result = self._device_menu.handle_event(event)
         if result in ("back", "selected"):
             if result == "selected":
                 self._menu.refresh_device_name()
             self._device_menu = None
-            self._state = "menu"
+            self._state = self._return_to
 
     def _handle_download_event(self, event: pygame.event.Event) -> None:
         result = self._download_menu.handle_event(event)
@@ -151,7 +186,7 @@ class App:
         result = self._calibration_menu.handle_event(event)
         if result == "back":
             self._calibration_menu = None
-            self._state = "menu"
+            self._state = self._return_to
         elif result == "complete":
             # Save calibration results to config
             from datetime import datetime
@@ -161,7 +196,7 @@ class App:
                 self._config.set_string_calibration(string_num, cal)
             self._config.save()
             self._calibration_menu = None
-            self._state = "menu"
+            self._state = self._return_to
 
     def _playable_track_indices(self, path: Path) -> list[int]:
         """Tracks worth offering: the guitar ones, or everything if none."""
@@ -264,3 +299,5 @@ class App:
             self._download_menu.render(surface)
         elif self._state == "calibration" and self._calibration_menu is not None:
             self._calibration_menu.render(surface)
+        elif self._state == "settings" and self._settings_menu is not None:
+            self._settings_menu.render(surface)

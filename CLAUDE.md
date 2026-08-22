@@ -443,6 +443,29 @@ Two things worth keeping straight, because the first version of the write-up got
 - **Every fret number in a song is sized for the widest label in it.** Sized to its own label instead, a lone "5" towers over the "15"
   beside it, which reads as emphasis the music never asked for.
 
+## A Setting You Cannot See Is A Setting You Cannot Undo
+
+Forty-one keys are handled while a song runs. That is right for the ones the hands reach for with the guitar still on — play, wait mode,
+tempo, loop, `K` — and wrong for the rest: a fret limit, a muted string, a noise gate is set once and then lives on, invisible, changing how
+everything scores. A fret filter left switched on once made whole songs unplayable and nothing on screen said so.
+
+`ui/settings_menu.py` (`O` from the song list) is therefore not a way to CHANGE those settings — the keys already were — it is a way to SEE
+them.
+
+- **Anything not on its standard value is marked**, in the accent colour and with a dot, and the header names them: "2 settings away from
+  standard: Fret limit, Strings played". That line is the whole feature. The test that matters asserts a changed fret limit and a muted
+  string appear in it, and that a fresh config produces nothing — a screen that always claims something is off teaches the player to ignore
+  it.
+- **`R` resets one row, not everything.** The value that needs undoing is usually one somebody changed by accident; losing the audio device
+  and the calibration along with it is a punishment for having noticed.
+- **Every row explains itself in terms of the guitar**, in one line, for the selected row only. A setting whose effect on the score is
+  invisible is left where it is out of fear.
+- **Saved as it is changed**, so there is no OK button to forget. The device and calibration screens are opened from here with ENTER and come
+  back here, not to the song list — `App._return_to` exists for exactly that.
+- **The strings row is six settings in one**, with a cursor of its own (left/right picks, ENTER mutes). `active_strings` is indexed by GP
+  string number minus one, so index 0 is the HIGH e while a guitarist names the low E first; the row is drawn low-first and the test pins the
+  mapping, because an off-by-one here mutes the wrong string and reads as a detection fault.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain
@@ -502,6 +525,7 @@ pickhero/
     ├── scrolling.py
     ├── feedback.py
     ├── menu.py
+    ├── settings_menu.py    # everything set once, and what it is set to
     ├── device_menu.py
     └── download_menu.py
 ```
