@@ -414,8 +414,19 @@ plain flags rather than a curve to reconstruct. They are separate axes — a chu
 - **"PM" is badged once per run, not per note**, the way paper tab writes it and dashes it onward — a disc over every note of a muted riff buries
   the music under its own labelling. A dead stroke inside the run does not break it (the hand never leaves the strings); a silence longer than
   `PALM_MUTE_RUN_GAP_MS` does, so the badge comes back when the riff does.
-- Still unmeasured: whether a heavy chug that returns NO pitch should credit its palm-muted note. That is leniency, and it needs reference
-  recordings before it is granted, not a feel for how it ought to behave.
+- **A chug that comes back with no pitch credits its written palm mute** (`_palm_mute_credit`). A palm mute is a note the tab TELLS the player
+  to choke, and a choked string sometimes gives monophonic YIN nothing to lock onto. For a chord that was already handled; for a single note
+  the strike is normally held and confirmed from the raw audio — except that a chug riff runs in eighths, the verification window is trimmed
+  to the gap before the next strike, and under `MIN_WINDOW_MS` it is dropped. On exactly the passage where chugs live, no evidence can ever
+  arrive, so the note timed out as a miss however well it was played.
+- **This is the one rule in the app granted on partial evidence, and it says so in the code.** What is measured: on the reference power chords
+  a palm-muted strike arrives pitchless about as often as an open one (20 % against 20 %), so muting does not appear to cost pitches by
+  itself. What is NOT measured: how often a SINGLE chug does it, because every palm-muted take recorded so far is a power chord. Block 7 of
+  `record_reference.py` records single chugs — slow, fast, and one deliberately a fret off — and `tools/check_palm_mute.py` prints what the
+  rule buys against what it costs. If it buys nothing, it should go.
+- **What keeps it honest is that a wrong fret still sounds a PITCH.** A strike carrying one is matched normally and marked wrong as before;
+  this rule only ever speaks for a strike carrying none, which is the case where nothing can be told either way. It is switchable
+  (`O` → Palm-mute leniency) for exactly the reason that it is not yet fitted.
 
 ## Two Backing Tracks, Switched Separately
 

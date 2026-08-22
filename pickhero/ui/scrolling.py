@@ -2478,6 +2478,8 @@ class PlayingScreen:
         fh.write(f"calibrated\t{bool(getattr(self._config, 'calibration', None))}\n")
         fh.write(f"chord_verify\t{getattr(self._config, 'chord_verify', True)}\n")
         fh.write(f"bend_check\t{getattr(self._config, 'bend_check', True)}\n")
+        fh.write("palm_mute_credit\t"
+                 f"{getattr(self._config, 'palm_mute_credit', True)}\n")
         fh.write(f"chord_partial_credit\t{self._chord_partial_credit}\n")
         fh.write(f"max_fret\t{self._config.max_fret}\n")
         fh.write(f"active_strings\t{self._config.active_strings}\n")
@@ -2490,6 +2492,7 @@ class PlayingScreen:
         fh.write(f"rescued_notes\t{matcher.rescued_notes}\n")
         fh.write(f"bends_judged\t{matcher.bends_judged}\n")
         fh.write(f"bends_short\t{matcher.bends_short}\n")
+        fh.write(f"palm_mutes_credited\t{matcher.palm_mutes_credited}\n")
         fh.write(f"timing_samples\t{len(matcher.timing_samples)}\n")
         fh.write(f"timing_ambiguous\t{matcher.timing_ambiguous}\n")
 
@@ -2993,6 +2996,8 @@ class PlayingScreen:
                 late_window_ms=self._late_window_ms(),
                 chord_verifier=self._make_chord_verifier(),
                 bend_check=getattr(self._config, "bend_check", True),
+                palm_mute_credit=getattr(
+                    self._config, "palm_mute_credit", True),
             )
             self._feedback.reset()
         except Exception as e:

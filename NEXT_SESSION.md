@@ -49,9 +49,13 @@ Country) und übe bei Yousician auf Pro-Level — daran messe ich die App.
   `python tools/record_reference.py --block 6` (sechs Bend-Aufnahmen, ca. eine
   Minute) und danach `python tools/check_bends.py`, das ausgibt, in welchem
   Fenster jede Schwelle liegen muss.
-- **Palm-Mute-Nachsicht** (zurückgestellt und ungemessen): ob ein schwerer Chug
-  ohne Tonhöhe seine Note gutgeschrieben bekommen soll. Das ist Nachsicht und
-  braucht Referenzaufnahmen, kein Bauchgefühl.
+- **Palm-Mute-Nachsicht nachmessen** (gebaut, aber nicht kalibriert). Ein Chug
+  ohne Tonhöhe wird gutgeschrieben — das ist Nachsicht, und die einzige Regel
+  der App ohne Messung dahinter. Zwei Befehle klären es:
+  `python tools/record_reference.py --block 7` und danach
+  `python tools/check_palm_mute.py`, das ausgibt, wie viele richtige Chugs die
+  Regel rettet und wie viele falsche sie durchlässt. Rettet sie nichts, gehört
+  sie wieder raus.
 
 ## Erledigt und nicht neu aufzurollen (Details in `HANDOFF.md`)
 

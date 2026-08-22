@@ -71,6 +71,11 @@ class Config:
     # missed -- but its thresholds are not yet fitted to real playing, so it
     # is a switch rather than a fact of life.
     bend_check: bool = True
+    # Credit a written palm mute for a strike that carried no pitch at all.
+    # A chug is choked on purpose and the riffs it lives in run too fast for
+    # the audio window that would otherwise confirm it. Leniency, and the one
+    # rule in the app not yet fitted to a recording.
+    palm_mute_credit: bool = True
     # Manual scroll speed trim, on top of the speed derived from the song.
     # Above 1.0 scrolls faster, below 1.0 slower.
     scroll_speed_factor: float = 1.0

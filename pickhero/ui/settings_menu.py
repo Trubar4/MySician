@@ -201,6 +201,14 @@ class SettingsMenuScreen:
                     note="Marks a bend yellow when it measurably fell short "
                          "of what the tab wrote, or was not held. Never red.",
                     is_default=lambda: c.bend_check is True),
+            Setting("palm", "Palm-mute leniency",
+                    lambda: "on" if c.palm_mute_credit else "off",
+                    lambda step: setattr(c, "palm_mute_credit",
+                                         not c.palm_mute_credit),
+                    note="Counts a chug that comes back with no pitch at all. "
+                         "A wrong fret still sounds a pitch and is still "
+                         "marked wrong.",
+                    is_default=lambda: c.palm_mute_credit is True),
             Setting("tempo", "Practice speed",
                     lambda: f"{int(round(c.tempo_factor * 100))} %", adjust_tempo,
                     note="Also on PgUp/PgDn while playing. A recorded backing "
@@ -326,6 +334,8 @@ class SettingsMenuScreen:
             self._config.chord_verify = default.chord_verify
         elif row.key == "bend":
             self._config.bend_check = default.bend_check
+        elif row.key == "palm":
+            self._config.palm_mute_credit = default.palm_mute_credit
         elif row.key == "tempo":
             self._config.tempo_factor = 1.0
         elif row.key == "scroll":

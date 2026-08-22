@@ -535,9 +535,20 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    hands the same XML to the same parser. Verified against all 35 of
    alphaTab's GP6 test files. See `CLAUDE.md`, "Three Guitar Pro Generations,
    One Parser".
-9. **Palm-mute leniency** (deprioritised by the player, and unmeasured).
-   Whether a chug that returns no pitch at all should credit its palm-muted
-   note. Needs reference recordings, not a guess — see `CLAUDE.md`, "Muting".
+9. ~~**Palm-mute leniency.**~~ **BUILT — 2026-08-22, measurement still owed.**
+   A strike with no pitch at all credits a written palm mute
+   (`_palm_mute_credit`), because a chug riff is too fast for the audio window
+   that would otherwise confirm it — under `MIN_WINDOW_MS` the window is
+   dropped, so on that passage no evidence can arrive at all.
+
+   **It is the one rule in the app granted on partial evidence.** Measured: a
+   palm-muted strike on the reference power chords arrives pitchless as often
+   as an open one, 20 % against 20 %. Not measured: how often a SINGLE chug
+   does, since every palm-muted take is a power chord. Block 7 of
+   `record_reference.py` records single chugs (slow, fast, and one a fret off)
+   and `tools/check_palm_mute.py` prints what the rule buys against what it
+   costs — run it once those takes exist, and take the rule back out if it
+   buys nothing. Switchable at `O` → Palm-mute leniency.
 
 ## Conventions
 

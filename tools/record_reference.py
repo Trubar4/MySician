@@ -277,6 +277,46 @@ EXERCISES = [
              instruction="Ganzen Ton hoch und oben VIBRATO spielen, so wie du "
                          "es normal machst. Dreimal.",
              seconds=12),
+
+    # ---- Block 7: single-note chugs, right and wrong ----------------------
+    #
+    # The app now credits a palm-muted note whose strike came back with no
+    # pitch at all. That is leniency, and the only rule in the app granted
+    # without a recording behind it -- because no take contains a SINGLE
+    # palm-muted note. Every palm mute recorded so far is a power chord, and a
+    # chord is credited by a different rule that was measured.
+    #
+    # Two numbers settle it, and both need these takes: how often a single
+    # chug really does arrive pitchless (if it is rare, the leniency buys
+    # nothing and should go), and how many wrong chugs it lets through (a
+    # wrong fret still sounds a PITCH, so the answer should be near zero --
+    # but "should be" is what this project does not accept).
+    #
+    # Fast matters on its own: a chug riff runs in eighths, the verification
+    # window is trimmed to the gap before the next strike, and under 200 ms it
+    # is dropped -- so on exactly this passage no evidence can ever arrive.
+    Exercise("70_chug_slow_ok", 7, "Chugs auf der tiefen E-Saite, LANGSAM",
+             [{6: 0}], technique="palm_mute",
+             instruction="Leere tiefe E-Saite, Handballen auf den Saiten, "
+                         "etwa ein Anschlag pro Sekunde. Acht Stueck.",
+             seconds=10),
+    Exercise("71_chug_fast_ok", 7, "Chugs auf der tiefen E-Saite, SCHNELL",
+             [{6: 0}], technique="palm_mute",
+             instruction="Dasselbe, aber im Achtel-Tempo wie in einem Riff - "
+                         "so schnell du sauber chuggst, durchgehend.",
+             seconds=10),
+    Exercise("72_chug_fast_sharp", 7,
+             "Chugs SCHNELL - absichtlich im 1. Bund statt leer",
+             [{6: 1}], technique="palm_mute",
+             instruction="Wie eben, aber greif die tiefe E-Saite im 1. Bund. "
+                         "Das ist der absichtliche Fehler.",
+             intentional_error="1. Bund statt leerer Saite",
+             seconds=10),
+    Exercise("73_chug_riff", 7, "Chug-Riff mit Wechsel",
+             [{6: 0}, {6: 0}, {6: 3}, {6: 0}], technique="palm_mute",
+             instruction="Leer, leer, 3. Bund, leer - als Riff, mit Palm Mute, "
+                         "vier Durchgaenge.",
+             seconds=12),
 ]
 
 
