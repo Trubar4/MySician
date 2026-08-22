@@ -2470,6 +2470,7 @@ class PlayingScreen:
         fh.write(f"misses\t{stats['misses']}\n")
         fh.write(f"strings_taken_back\t{matcher.chord_strings_corrected}\n")
         fh.write(f"chord_windows_judged\t{matcher.chord_verifications}\n")
+        fh.write(f"rescued_notes\t{matcher.rescued_notes}\n")
         fh.write(f"timing_samples\t{len(matcher.timing_samples)}\n")
         fh.write(f"timing_ambiguous\t{matcher.timing_ambiguous}\n")
 

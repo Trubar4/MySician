@@ -1236,7 +1236,8 @@ class TestRunLog:
     def test_the_counts_that_explain_a_bad_score_are_in_the_header(self):
         text = self._log_text(self._played_screen())
         for key in ("dropped_buffers", "sample_rate", "hit_window_ms",
-                    "sync_offset_ms", "strings_taken_back", "notes_written"):
+                    "sync_offset_ms", "strings_taken_back", "notes_written",
+                    "rescued_notes"):
             assert f"{key}\t" in text
 
     def test_writing_it_reports_where_it_went(self, tmp_path):
