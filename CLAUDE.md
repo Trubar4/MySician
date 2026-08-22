@@ -387,9 +387,22 @@ where the song is with where the recording got to and corrects only past `RESYNC
   notes, so it only ever needs the tens of milliseconds a synth adds; a recording is a different piece of music that happens to contain the
   same song, and can carry a count-in, an intro or studio silence before the first beat. `MAX_MP3_OFFSET_MS` is 30 s. `Shift+N`/`Shift+M`
   move 10 ms (what a sync is judged in), `Ctrl+N`/`Ctrl+M` move a second (reaching five seconds at 10 ms a press is five hundred presses).
-- **A recording cannot be slowed down.** `pygame.mixer.music` plays at the recorded rate, and resampling to 80 % drops the pitch four
-  semitones with it. Below full speed the recording is held silent and the HUD says why — the MIDI backing does follow the tempo and is the
-  answer there. Lifting this needs a phase vocoder, not a setting.
+- **Practice speed is served by a stretched COPY of the file, not by playing it slower.** `pygame.mixer.music` plays at the recorded rate,
+  and resampling to 80 % drops the pitch four semitones with it — so `audio/timestretch.py` makes a longer file at the same pitch (WSOLA:
+  overlapping windows laid down at a new spacing, each slid to where it best continues the last) and `Mp3Player.set_source` is handed that
+  instead. The player is told and reports SONG milliseconds throughout; the file's own time is `song × time_scale`, and `time_scale` is
+  `1/tempo`. Every result is cached under `~/.pickhero/stretched/`, keyed by the file's size and mtime as well as the speed, so picking a
+  different recording can never inherit the last one's stretch.
+- **Measured on the player's own guitar, not on a sine wave** (`tools/check_timestretch.py`): a chord, a fast line and a whole play-along
+  take, at every speed from 90 % down to 50 %. The pitch moves by at most **15 cents** — a sixth of a semitone, and the size of the
+  measurement's own precision — while the control column shows what merely playing the file slower would cost: **−182 cents at 90 % and
+  −1200 at 50 %**. The length lands within 1 % everywhere. The check prints the width of its own correlation peak beside every reading,
+  because on a sustained chord that peak is broad and a shift smaller than the width is not a reading at all.
+- **The stretch runs on a thread and the recording is silent until it lands.** A whole song is seconds of work, and seconds of work in the
+  game loop is a frozen app — the fault this project already shipped once, when a seek reopened the input device. Playing on at the old speed
+  meanwhile is not the lenient option either: it is a bar out within seconds. So the HUD says "fitting to 80 % speed" and the recording waits.
+  A file SDL can stream but not decode into memory fails here and is named on screen ("convert it to OGG or WAV"), and a failed speed is not
+  retried every frame.
 - **Every failure is named on screen**: a file that has been moved, a decoder that cannot start from the middle of a file. A backing track
   that silently does not play is indistinguishable from a feature that does not work, and the player would go looking in the wrong place.
 - **`play(start=)` really does seek — measured, not assumed.** A file whose pitch encodes its own timestamp, played from 5, 10 and 15 s

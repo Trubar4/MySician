@@ -80,8 +80,8 @@ slides, hammer-ons and pull-offs (drawn and scored), palm mutes and dead notes
 (drawn and scored), progress tracking.
 
 **Known-imperfect:** a note whose neighbour is still ringing on another
-string can be misread (topic 4 — the one miss in a 98.4 % run). A recording
-cannot be slowed down (topic 5). Chord verification abstains on chords closer than ~255 ms
+string can be misread (topic 4 — the one miss in a 98.4 % run). A stretched
+recording is audibly imperfect at 50 % (topic 5, and usable anyway). Chord verification abstains on chords closer than ~255 ms
 (eighths past about 118 BPM). GP7 files load with muting but no bends or
 slides. Timing is measured and answered: plain input latency, which `K`
 removes.
@@ -459,14 +459,17 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    switched separately, which is what the player asked for and why `B` does
    not cycle. See `CLAUDE.md`, "Two Backing Tracks, Switched Separately".
 
-   **The one limit worth knowing, and the follow-up it implies:** a recording
-   cannot be slowed down. `pygame.mixer.music` plays at the recorded rate and
-   resampling to 80 % drops the pitch four semitones with it, so below full
-   speed the recording is held silent and the HUD says why. The player
-   practises at 80 % a great deal, so this WILL come up. Lifting it needs a
-   phase vocoder over the decoded samples (numpy is already a dependency),
-   cached per file and per speed — a real piece of DSP, not a setting, and
-   worth doing only once the player says the restriction bites.
+   **The limit that came up immediately, and is now gone — 2026-08-22.** A
+   recording cannot be played slower without dropping its pitch four
+   semitones, and the player practises at 80 % a great deal, so it bit at
+   once. `audio/timestretch.py` now makes a longer file at the SAME pitch
+   (WSOLA, ~80 lines of numpy, no new dependency), built on a thread and
+   cached per file and per speed under `~/.pickhero/stretched/`. The
+   recording stays silent while the copy is being made and the HUD says so;
+   a file SDL cannot decode into memory is named rather than swallowed.
+   Measured on a synthetic take: 220 Hz stays 220 Hz at every speed from 50 %
+   up, the length lands within 1 %, and eight seconds of stereo takes about
+   a quarter of a second to convert.
 
    **First real-world bug, found and fixed:** pausing did not silence it.
    Every route to the recording reaches `Mp3Player.seek`, and seeking STARTS

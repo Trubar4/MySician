@@ -6,6 +6,7 @@ to a playback clock. Optionally captures audio and shows hit/miss feedback.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ import pygame
 
 from pickhero.audio.midi_playback import BackingTrack, MidiPlayer
 from pickhero.audio.mp3_playback import Mp3Player, pick_audio_file
+from pickhero.audio import timestretch
 from pickhero import config as config_module
 from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
 from pickhero.matcher import FINE_MS, STRING_MIN_SAMPLES, NoteMatcher
@@ -329,6 +331,16 @@ class PlayingScreen:
         self._mp3_note: str = ""
         # When the recording first fell behind, or None while it is keeping up.
         self._mp3_stuck_since_ms: float | None = None
+        # Practice speed below full needs a stretched copy of the recording,
+        # which takes seconds to make. It is built on a thread and swapped in
+        # when it is ready: the app must not freeze on a tempo key.
+        self._mp3_stretch_thread: threading.Thread | None = None
+        self._mp3_stretch_wanted: float | None = None
+        # (speed, the recording it was made from, the stretched file). The
+        # recording is part of the key because picking a new file mid-session
+        # must not inherit the last one's stretch.
+        self._mp3_stretch_done: tuple[float, str, str] | None = None
+        self._mp3_stretch_failed: tuple[float, str, str] | None = None
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         self._load_mp3_for_song()
@@ -464,8 +476,9 @@ class PlayingScreen:
         # The song clock now runs at a different fraction of the audio clock,
         # so the point where the two were last equal has to be moved to now.
         self._reanchor_audio_clock()
-        # A recording cannot follow a tempo change, so it stops rather than
-        # playing on against a song that has moved away from it.
+        # The recording needs a copy stretched for the new speed. It stays
+        # silent until that copy is there rather than playing on at a speed
+        # the song has left.
         self._update_mp3()
         if self._matcher:
             self._matcher.reset()
@@ -3050,23 +3063,89 @@ class PlayingScreen:
         offset is meant to be judged in. Pausing has to mean silence for both
         backings or neither.
 
-        A recording also cannot be slowed down. `pygame.mixer.music` plays a
-        file at the rate it was recorded at, and resampling it to practice
-        speed would drop the pitch with it -- a backing track four semitones
-        flat is worse than none. Below full speed it stays silent and the HUD
-        says so; the MIDI backing does follow the tempo and is the answer
-        there.
+        And whether the file loaded is the one this practice speed needs. Below
+        full speed that is a stretched copy, which takes seconds to build --
+        until it is there the recording stays silent rather than playing on at
+        the wrong speed, which would put it a bar out within seconds.
         """
         return (self._mp3_player is not None
                 and self._mp3_player.ready
                 and not self._mp3_muted
                 and self._playing
-                and self._tempo_factor >= 1.0)
+                and self._mp3_source_fits())
+
+    def _mp3_scale(self) -> float:
+        """File milliseconds per song millisecond at the current speed."""
+        return 1.0 / self._tempo_factor if self._tempo_factor > 0 else 1.0
+
+    def _mp3_source_fits(self) -> bool:
+        """Whether the loaded file plays this song at this practice speed."""
+        if self._mp3_player is None:
+            return False
+        return abs(self._mp3_player.time_scale - self._mp3_scale()) < 1e-6
+
+    def _ensure_mp3_source(self) -> None:
+        """Load the file this speed needs, building it if it does not exist.
+
+        At full speed that is the recording itself. Below it, a copy stretched
+        by `audio/timestretch.py` -- longer, same pitch, so a solo can be
+        practised slowly against the real thing instead of against a click.
+        The build takes seconds on a whole song, so it runs on a thread and is
+        swapped in when it lands; the recording is silent until then and the
+        HUD says why. Every result is cached, so the same song at the same
+        speed is instant ever after.
+        """
+        if self._mp3_player is None or self._mp3_muted or self._mp3_source_fits():
+            return
+        wanted = self._tempo_factor
+        if wanted >= 1.0:
+            self._mp3_player.set_source(self._mp3_path(), 1.0)
+            return
+        if self._mp3_stretch_matches(self._mp3_stretch_done, wanted):
+            self._mp3_player.set_source(self._mp3_stretch_done[2],
+                                        self._mp3_scale())
+            return
+        if self._mp3_stretch_matches(self._mp3_stretch_failed, wanted):
+            return                             # already said so on screen
+        if self._mp3_stretch_wanted is not None:
+            return                             # a build is already running
+        self._start_mp3_stretch(wanted)
+
+    def _mp3_stretch_matches(self, entry, tempo: float) -> bool:
+        """Whether a finished build belongs to this recording at this speed."""
+        return bool(entry) and entry[0] == tempo and entry[1] == self._mp3_path()
+
+    def _start_mp3_stretch(self, tempo: float) -> None:
+        """Build the stretched copy off the game loop."""
+        path = self._mp3_path()
+        if not path:
+            return
+        self._mp3_stretch_wanted = tempo
+        cache_dir = config_module.CONFIG_DIR / "stretched"
+
+        def work() -> None:
+            try:
+                built = timestretch.build(Path(path), tempo, cache_dir)
+                self._mp3_stretch_done = (tempo, path, str(built))
+            except Exception as exc:
+                # Not every format SDL can stream can also be decoded into
+                # memory. Named rather than swallowed: "convert it" is a thing
+                # the player can act on, silence is not.
+                self._mp3_stretch_failed = (
+                    tempo, path,
+                    f"cannot be slowed down ({type(exc).__name__}) — "
+                    f"convert it to OGG or WAV")
+            finally:
+                self._mp3_stretch_wanted = None
+
+        self._mp3_stretch_thread = threading.Thread(target=work, daemon=True)
+        self._mp3_stretch_thread.start()
 
     def _update_mp3(self) -> None:
         """Keep the recording where the song is, or silent if it may not play."""
         if self._mp3_player is None:
             return
+        self._ensure_mp3_source()
         if not self._mp3_plays():
             self._mp3_player.pause()
             self._mp3_stuck_since_ms = None
@@ -3176,9 +3255,11 @@ class PlayingScreen:
         if self._mp3_is_stuck():
             return (f"Audio: not following the song — this file cannot be "
                     f"seeked into; try OGG or WAV — {name}")
-        if self._tempo_factor < 1.0:
-            return (f"Audio: silent below full speed — {name} "
-                    f"(the MIDI backing follows the tempo)")
+        if self._mp3_stretch_matches(self._mp3_stretch_failed, self._tempo_factor):
+            return f"Audio: {self._mp3_stretch_failed[2]} — {name}"
+        if not self._mp3_source_fits():
+            return (f"Audio: fitting to {int(self._tempo_factor * 100)} % speed, "
+                    f"one moment — {name}")
         offset = self._mp3_offset()
         shown = (f"{offset / 1000:+.2f} s" if abs(offset) >= 1000
                  else f"{int(offset):+d} ms")

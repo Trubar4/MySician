@@ -8,8 +8,12 @@ feature honest: a recording cannot be slowed down, and its encoder padding
 cannot be derived.
 """
 
+import threading
+
 import pygame
 import pytest
+
+from pickhero.audio import timestretch
 
 from pickhero.audio.mp3_playback import (
     MIN_RESYNC_GAP_MS, RESYNC_MS, Mp3Player,
@@ -207,7 +211,14 @@ class TestPerSongSettings:
 
 
 class TestSlowedPractice:
-    """A recording cannot be slowed down, and must say so rather than drift."""
+    """Practising slowly against the real recording, not against a click.
+
+    Playing the file slower would drop its pitch four semitones, so a copy is
+    stretched instead. Building one takes seconds, so what matters here is
+    that the recording stays SILENT until the right copy is loaded -- playing
+    on at full speed under a song running at 80 % puts it a bar out within
+    seconds, which is worse than silence.
+    """
 
     def _screen(self, tmp_path, monkeypatch, tempo):
         song = tmp_path / "backing.mp3"
@@ -225,16 +236,85 @@ class TestSlowedPractice:
         screen = self._screen(tmp_path, monkeypatch, 1.0)
         assert screen._mp3_plays()
 
-    def test_it_is_silent_below_full_speed(self, tmp_path, monkeypatch):
+    def test_it_is_silent_until_the_stretched_copy_is_there(
+            self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch, 0.8)
         assert not screen._mp3_plays()
 
-    def test_the_hud_says_why_it_is_silent(self, tmp_path, monkeypatch):
-        """Silent with no explanation reads as broken, and the player would go
+    def test_the_hud_says_it_is_being_fitted(self, tmp_path, monkeypatch):
+        """Silence with no explanation reads as broken, and the player would go
         looking for a fault that is not there."""
         screen = self._screen(tmp_path, monkeypatch, 0.8)
-        text = screen._mp3_hud_text()
-        assert "full speed" in text and "MIDI" in text
+        assert "80 % speed" in screen._mp3_hud_text()
+
+    def test_the_stretched_copy_is_played_once_it_lands(
+            self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, 0.8)
+        stretched = tmp_path / "backing_080.wav"
+        stretched.write_bytes(b"x")
+        screen._mp3_stretch_done = (0.8, screen._mp3_path(), str(stretched))
+        screen._ensure_mp3_source()
+        assert screen._mp3_plays()
+        # A song millisecond costs a quarter more file milliseconds at 80 %,
+        # or the recording would run away from the notes.
+        assert screen._mp3_player.time_scale == pytest.approx(1.25)
+        assert screen._mp3_player.path == stretched
+
+    def test_going_back_to_full_speed_returns_to_the_original(
+            self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, 0.8)
+        screen._mp3_stretch_done = (0.8, screen._mp3_path(),
+                                    str(tmp_path / "backing_080.wav"))
+        screen._ensure_mp3_source()
+        screen._tempo_factor = 1.0
+        screen._ensure_mp3_source()
+        assert screen._mp3_player.path.name == "backing.mp3"
+        assert screen._mp3_player.time_scale == pytest.approx(1.0)
+
+    def test_a_file_that_cannot_be_stretched_is_named_on_screen(
+            self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, 0.8)
+        screen._mp3_stretch_failed = (0.8, screen._mp3_path(),
+                                      "cannot be slowed down (X) — "
+                                      "convert it to OGG or WAV")
+        assert "convert it" in screen._mp3_hud_text()
+        assert not screen._mp3_plays()
+
+    def test_a_new_recording_does_not_inherit_the_old_stretch(
+            self, tmp_path, monkeypatch):
+        """The stretch belongs to one file. Picking another one and getting the
+        first one's audio would be silent-running nonsense."""
+        screen = self._screen(tmp_path, monkeypatch, 0.8)
+        screen._mp3_stretch_done = (0.8, str(tmp_path / "another.mp3"),
+                                    str(tmp_path / "another_080.wav"))
+        screen._ensure_mp3_source()
+        assert not screen._mp3_plays()
+
+    def test_the_tempo_key_does_not_wait_for_the_stretch(
+            self, tmp_path, monkeypatch):
+        """Seconds of work in the game loop is a frozen app, which this project
+        has already shipped once (the seek that reopened the input device)."""
+        ran_in = []
+        monkeypatch.setattr(
+            timestretch, "build",
+            lambda path, tempo, cache: ran_in.append(
+                threading.current_thread()) or (tmp_path / "x.wav"))
+        screen = self._screen(tmp_path, monkeypatch, 0.8)
+        screen._ensure_mp3_source()
+        screen._mp3_stretch_thread.join(timeout=5)
+        assert ran_in and ran_in[0] is not threading.main_thread()
+
+    def test_a_failed_speed_is_not_attempted_again_every_frame(
+            self, tmp_path, monkeypatch):
+        """Retrying a decode that cannot work would spawn a thread a frame."""
+        screen = self._screen(tmp_path, monkeypatch, 0.8)
+        screen._mp3_stretch_failed = (0.8, screen._mp3_path(), "no")
+        started = []
+        monkeypatch.setattr(screen, "_start_mp3_stretch",
+                            lambda tempo: started.append(tempo))
+        for _ in range(5):
+            screen._ensure_mp3_source()
+        assert started == []
 
     def test_a_missing_file_is_named_on_screen(self, tmp_path):
         config = Config()

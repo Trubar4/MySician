@@ -10,11 +10,12 @@ recording has got to, and corrects only when the gap is big enough to hear.
 Two limits are the reason this module is small, and both are worth knowing
 before reaching for it:
 
-- **A recording cannot be slowed down.** `pygame.mixer.music` plays a file at
-  the rate it was recorded at, and resampling it to 80 % would drop the pitch
-  by four semitones, which is worse than useless for practising. Below full
-  speed the recording is therefore held silent and the app says so -- the MIDI
-  backing follows the tempo and remains the answer there.
+- **A recording cannot be slowed down by playing it slower.** `pygame.mixer.music`
+  plays a file at the rate it was recorded at, and resampling it to 80 % would
+  drop the pitch by four semitones. Practice speed is therefore served by a
+  stretched COPY of the file (`audio/timestretch.py`), which this player is
+  simply handed instead of the original -- see `set_source` and the time
+  scale it carries.
 - **Encoder delay differs per file.** An MP3 decoder emits a short run of
   padding samples before the music, and how many depends on the encoder. No
   amount of arithmetic recovers it, which is why the per-song offset is a
@@ -43,8 +44,14 @@ class Mp3Player:
     format the player asked for.
     """
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, time_scale: float = 1.0):
         self.path = Path(path)
+        # File milliseconds per song millisecond. 1.0 for the recording as it
+        # was made; 1/0.8 = 1.25 for a copy stretched for 80 % practice speed,
+        # where the same music takes a quarter longer to play. Everything this
+        # class is told and everything it reports is in SONG time, so nothing
+        # outside it has to know which file is loaded.
+        self._scale = float(time_scale)
         self._ready = False
         self._muted = False
         self._playing = False
@@ -78,6 +85,27 @@ class Mp3Player:
     @property
     def ready(self) -> bool:
         return self._ready
+
+    @property
+    def time_scale(self) -> float:
+        """File milliseconds per song millisecond for the loaded file."""
+        return self._scale
+
+    def set_source(self, path: str | Path, time_scale: float = 1.0) -> bool:
+        """Play a different file for the same song, at a different time scale.
+
+        Used to swap in a tempo-stretched copy when the practice speed
+        changes. Returns False (with .error set) if the new file will not
+        open, leaving the player stopped rather than playing the wrong speed.
+        """
+        self.pause()
+        self.path = Path(path)
+        self._scale = float(time_scale)
+        self._ready = False
+        self._ended = False
+        self._origin_ms = 0.0
+        self._last_resync_ms = float("-inf")
+        return self.open()
 
     def set_muted(self, muted: bool) -> None:
         """Silence or unsilence the recording without losing its place."""
@@ -132,7 +160,9 @@ class Mp3Player:
         elapsed = pygame.mixer.music.get_pos()
         if elapsed < 0:                        # finished, or never started
             return self._origin_ms
-        return self._origin_ms + float(elapsed)
+        # get_pos() counts real milliseconds of the FILE. A stretched copy
+        # spends `scale` of them on every millisecond of song.
+        return self._origin_ms + float(elapsed) / self._scale
 
     def drift_ms(self, target_ms: float) -> float:
         """How far behind (positive) or ahead the recording is running."""
@@ -177,7 +207,7 @@ class Mp3Player:
         track is often shorter than the practice loop around it -- so it
         simply leaves the recording silent rather than raising.
         """
-        start_s = max(0.0, position_ms) / 1000.0
+        start_s = max(0.0, position_ms) * self._scale / 1000.0
         try:
             pygame.mixer.music.stop()
             pygame.mixer.music.play(start=start_s)

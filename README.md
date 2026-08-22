@@ -204,6 +204,9 @@ Every key is also listed in the app's own footer, and explained under **H**.
 | `G` | hit window (timing slack) |
 | `K` | auto-sync timing · `Shift+K` reset · `,` `.` nudge ±10 ms |
 | `N` `M` | backing track earlier / later (stored per song) |
+| `U` | recorded backing track on / off · `Shift+U` pick the file |
+| `Shift+N` `Shift+M` | shift the recording ±10 ms · `Ctrl+N` `Ctrl+M` ±1 s |
+| `D` | save a run log (what every strike did) |
 | `X` `C` | noise gate down / up |
 | `Y` | timing report · `Shift+Y` save the measurements as CSV |
 | `TAB` | choose track |
