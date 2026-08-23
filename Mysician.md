@@ -1,21 +1,9 @@
-1. OGG downloaden
-2. GP5 downloaden
-3. 
-cd C:\Users\Admin\.vscode\MySician\mysician\mysician
-git pull
-.venv\Scripts\Activate.ps1
-python -m pickhero
-4. Shift+U -> Song laden (U ein/aus)
-5. Shift+M/N einstellen -> spielen
-6. Speed-Test und techtest durchspielen
+Ja hatte die Stimmung versehentlich auf Drop D - sorry.
+Ich muss den zeitlichen Versatz bei GP-Dateien und MP3 beiden noch weiter ehöhen können. Bitte mach, dass bei MP3 bis 8 min möglich sind, falls das GP nur das Solo enthält beispielsweise und dass beim GP wenigsten 10 SEkunden möglich sind.
+Was war sonst noch zu testen?
+Bending schein schon gut zu funktionieren.
 
 
-# Feedback
-Das offset von -400 ms reicht nicht. Vielleicht liegt es am Einzählen. Shift+M/N funktioniert ansonsten.
-Was macht wait on/off genau?
-Die Anwendung wird sehr langsam. Wenn ich Vorspule bewegt sich das OGG nicht und danach dauert es 10 Sek. bis das NB wieder reagiert in der App.
-Tempo sollte nicht auf Stumm schalten, sondern Tonhöhe anpassen und mitlaufen.
-Teste aktuell mit OGG.
 
 # Ein Experiment würde das klären, und es lohnt sich, weil sonst jeder künftige Mitschnitt einen wertlosen Punktestand danebenstellt:
 
