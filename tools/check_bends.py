@@ -27,6 +27,19 @@ What it prints is not a score but two WINDOWS -- one per rule:
 If a window has no room in it, no threshold works and the rule needs
 rethinking rather than tuning. Exits non-zero if the height rule marks down a
 correct take or lets the shallow one through.
+
+**Only picks count as bends, and finding that out took a wrong answer first.**
+The first version of this tool treated every onset as a bend attempt and duly
+reported that correct and deliberately-shallow bends overlap, so no threshold
+could work. They do not: the aubio onset detector fires again during a note's
+decay, and those re-triggers came back as bends that never left the written
+pitch. Measured on the player's own takes, a real pick peaks at -6 to -8.5 dB
+and every one of these ghosts at -21 to -49 dB -- 13 dB clear of the quietest
+real one. So a segment is a bend attempt only if its strike was loud enough to
+be a pick. A tool whose control comes back broken is measuring itself.
+
+None of this touches the app: the matcher reads the contour over the note's
+WRITTEN window, out of the tab, and never has to guess where a note began.
 """
 
 import argparse
@@ -39,10 +52,15 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pickhero.audio.detector import PitchDetector  # noqa: E402
+from pickhero.audio.detector import DetectedNote, PitchDetector  # noqa: E402
+from pickhero.audio.input import TimestampedNote  # noqa: E402
 from pickhero.audio.note_utils import freq_to_midi_exact  # noqa: E402
 from pickhero.matcher import (  # noqa: E402
-    BEND_HOLD_FRACTION, BEND_MIN_SAMPLES, BEND_TOLERANCE_CENTS,
+    BEND_HOLD_FRACTION, BEND_MIN_SAMPLES, BEND_TOLERANCE_CENTS, MatchType,
+    NoteMatcher,
+)
+from pickhero.tabs.timeline import (  # noqa: E402
+    NoteEvent, SongMetadata, Timeline,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -56,6 +74,12 @@ TAKES = [
     ("62_bend_too_short", 2.0, "height"),
     ("63_bend_not_held", 2.0, "hold"),
 ]
+# The tab the verdict pass writes: what the exercises actually asked for -- a
+# two-second note with the bend reaching at 40 % and held to the end. Every
+# take gets the same one, including the two deliberate errors: the whole point
+# of those is that the tab asks for something they do not deliver.
+WRITTEN_NOTE_MS = 2000.0
+WRITTEN_REACHES_AT = 0.4
 # How many times each exercise asks for the bend to be played. Fewer strikes
 # found than this is worth saying out loud: it means the reading rests on less
 # than it looks like it does.
@@ -67,10 +91,20 @@ MAX_NOTE_MS = 2500.0
 # Frames right after the attack, where the analysis window still holds the
 # previous sound. Same reasoning as OnsetPitchCollector.SKIP_FRAMES.
 SKIP_FRAMES = 3
+# How far below the take's loudest strike a strike may be and still count as a
+# pick. The onset detector re-triggers during a decaying note, and those
+# ghosts sit 13 dB or more below the quietest real pick on these takes.
+PICK_MARGIN_DB = 14.0
+# Two onsets closer than this are one pick. A hard attack can fire the
+# detector twice within a few frames.
+MIN_PICK_GAP_MS = 300.0
+# A vibrato dip below the target is not the end of a hold. Anything longer
+# than this is.
+HOLD_GAP_MS = 250.0
 
 
 def contours(path: Path, written_midi: int):
-    """One pitch contour per strike: [(ms since the strike, semitones), ...]."""
+    """One pitch contour per PICK: [(ms since the strike, semitones), ...]."""
     with wave.open(str(path)) as handle:
         rate = handle.getframerate()
         channels = handle.getnchannels()
@@ -80,47 +114,110 @@ def contours(path: Path, written_midi: int):
         audio = audio.reshape(-1, channels).mean(axis=1)
 
     detector = PitchDetector(buf_size=4096, hop_size=HOP, sample_rate=rate)
-    out: list[list[tuple[float, float]]] = []
-    frames_since_onset = 0
+    onsets: list[tuple[float, float, int]] = []      # (ms, peak dB, index)
+    readings: list[tuple[float, float]] = []         # (ms, semitones)
     for i in range(0, len(audio) - HOP + 1, HOP):
         detector.process(audio[i:i + HOP])
         ms = i * 1000.0 / rate
         if detector.last_is_onset:
-            out.append([])
-            frames_since_onset = 0
-            start_ms = ms
-            continue
-        if not out:
-            continue
-        frames_since_onset += 1
-        if frames_since_onset <= SKIP_FRAMES or ms - start_ms > MAX_NOTE_MS:
-            continue
-        if detector.last_freq > 0 and \
-                detector.last_confidence >= detector.confidence_threshold:
-            out[-1].append((ms - start_ms,
-                            freq_to_midi_exact(detector.last_freq) - written_midi))
-    return [c for c in out if len(c) >= BEND_MIN_SAMPLES]
+            # Straight out of the audio rather than out of the detector: what
+            # separates a pick from a re-trigger is how hard the string was
+            # hit, and that is the waveform right after the onset.
+            peak = float(np.abs(audio[i:i + int(rate * 0.1)]).max())
+            onsets.append((ms, 20 * np.log10(max(peak, 1e-9)), i))
+        if (detector.last_freq > 0
+                and detector.last_confidence >= detector.confidence_threshold):
+            readings.append(
+                (ms, freq_to_midi_exact(detector.last_freq) - written_midi))
+
+    picks = _picks(onsets)
+    out = []
+    for index, (start_ms, _, _) in enumerate(picks):
+        end_ms = picks[index + 1][0] if index + 1 < len(picks) else float("inf")
+        end_ms = min(end_ms, start_ms + MAX_NOTE_MS)
+        skip_until = start_ms + SKIP_FRAMES * HOP * 1000.0 / rate
+        contour = [(ms - start_ms, semis) for ms, semis in readings
+                   if skip_until < ms < end_ms]
+        if len(contour) >= BEND_MIN_SAMPLES:
+            out.append(contour)
+    return out
 
 
-def measure(contour):
-    """(highest reached, longest unbroken hold at the top in ms).
+def _picks(onsets):
+    """The onsets that were really picks.
 
-    The hold is measured against the take's OWN peak rather than against a
-    written target, and in milliseconds rather than as a fraction: these takes
-    have no tab behind them, so there is no written hold to take a fraction
-    of. What can be measured is how long a hold lasts when somebody means it.
+    Two things are thrown away: a re-trigger during a decaying note, which is
+    far quieter than any real pick, and a second fire within a few frames of
+    the first, which is one hard attack counted twice.
+    """
+    if not onsets:
+        return []
+    loudest = max(db for _, db, _ in onsets)
+    picks = []
+    for ms, db, index in onsets:
+        if db < loudest - PICK_MARGIN_DB:
+            continue
+        if picks and ms - picks[-1][0] < MIN_PICK_GAP_MS:
+            continue
+        picks.append((ms, db, index))
+    return picks
+
+
+def measure(contour, target: float):
+    """(highest reached, how long the TARGET was held, in ms).
+
+    The hold is measured against what the bend was aiming for, because that is
+    what the app compares against -- and a dip shorter than `HOLD_GAP_MS` does
+    not end it. That second part is not a convenience: vibrato swings the
+    pitch either side of the target on purpose, and counting frames without it
+    reads a held bend with vibrato on it as a bend let go four times a second.
+
+    Milliseconds rather than a fraction, since these takes have no tab and so
+    no written hold to take a fraction of.
     """
     reached = max(semis for _, semis in contour)
     tolerance = BEND_TOLERANCE_CENTS / 100.0
-    longest = run_start = None
-    for ms, semis in contour:
-        if abs(semis - reached) <= tolerance:
-            if run_start is None:
-                run_start = ms
-            longest = max(longest or 0.0, ms - run_start)
-        else:
-            run_start = None
-    return reached, longest or 0.0
+    on = [ms for ms, semis in contour if abs(semis - target) <= tolerance]
+    if not on:
+        return reached, 0.0
+    longest = 0.0
+    run_start = previous = on[0]
+    for ms in on[1:]:
+        if ms - previous > HOLD_GAP_MS:
+            run_start = ms
+        previous = ms
+        longest = max(longest, ms - run_start)
+    return reached, longest
+
+
+def verdict(contour, target: float, written_midi: int, release: bool):
+    """What the app itself would say about one bend: HIT, CLOSE or PENDING.
+
+    The real matcher, fed the real contour, against a tab written the way the
+    exercise was asked for. Everything above this is arithmetic about the
+    playing; this is the rule the player actually meets.
+    """
+    points = ((0.0, 0.0), (WRITTEN_REACHES_AT, target),
+              (1.0, 0.0 if release else target))
+    note = NoteEvent(timestamp_ms=1000.0, duration_ms=WRITTEN_NOTE_MS,
+                     midi_note=written_midi, string=3, fret=7, measure=0,
+                     bend=points)
+    matcher = NoteMatcher(Timeline([note], SongMetadata(title="bend", tempo=100)),
+                          timing_window_ms=150.0)
+    freq = 440.0 * 2 ** ((written_midi - 69) / 12)
+    matcher.process_detected_notes(
+        [TimestampedNote(note=DetectedNote(written_midi, freq, 0.95, "x", True),
+                         timestamp_ms=1000.0)], 1000.0)
+    for ms, semitones in contour:
+        midi = written_midi + semitones
+        matcher.process_detected_notes(
+            [TimestampedNote(
+                note=DetectedNote(int(round(midi)),
+                                  440.0 * 2 ** ((midi - 69) / 12),
+                                  0.95, "x", False),
+                timestamp_ms=1000.0 + ms)], 1000.0 + ms)
+    matcher.process_detected_notes([], 1000.0 + WRITTEN_NOTE_MS + 500)
+    return matcher.get_note_state(note)
 
 
 def main() -> int:
@@ -162,7 +259,7 @@ def main() -> int:
         if not found:
             print(f"{take_id:22s}  kein Anschlag erkannt")
             continue
-        readings = [measure(c) for c in found]
+        readings = [measure(c, target) for c in found]
         reached = [r for r, _ in readings]
         held = [h for _, h in readings]
         shortfalls[wrong].extend(target - r for r in reached)
@@ -200,14 +297,35 @@ def main() -> int:
         print(f"  Der nicht gehaltene haelt bis zu {max(holds['hold']):6.0f} ms")
         _window(max(holds["hold"]), min(holds[""]), "ms")
 
+    # -- and what the app itself says, which is the only thing the player
+    # -- ever sees. Same audio, real matcher, real rule.
     print()
-    if failures:
-        print(f"{failures} Take(s) werden von der Hoehenregel falsch "
-              f"beurteilt.")
+    print(f"{'Take':22s} {'gruen':>6s} {'gelb':>5s}   erwartet")
+    print("-" * 80)
+    wrong_verdicts = 0
+    for take_id, target, broken in TAKES:
+        if take_id not in takes:
+            continue
+        take = takes[take_id]
+        written = take["expected_midi"][0][0]
+        found = contours(directory / take["file"], written)
+        states = [verdict(c, target, written, release=take_id.endswith("release"))
+                  for c in found]
+        green = sum(1 for st in states if st == MatchType.HIT)
+        yellow = sum(1 for st in states if st == MatchType.CLOSE)
+        want = "alle gelb" if broken else "alle gruen"
+        ok = (yellow == len(states)) if broken else (green == len(states))
+        wrong_verdicts += not ok
+        print(f"{take_id:22s} {green:6d} {yellow:5d}   {want:12s} "
+              f"{'OK' if ok else '<<< FALSCH'}")
+
+    print()
+    if failures or wrong_verdicts:
+        print(f"{failures + wrong_verdicts} Take(s) werden falsch beurteilt.")
     else:
-        print("Die Hoehenregel laesst jeden richtigen Bend gruen und faengt "
-              "den zu flachen.")
-    return 1 if failures else 0
+        print("Jeder richtig gespielte Bend bleibt gruen, jeder absichtliche "
+              "Fehler wird gelb.")
+    return 1 if (failures or wrong_verdicts) else 0
 
 
 def _window(low: float, high: float, unit: str) -> None:

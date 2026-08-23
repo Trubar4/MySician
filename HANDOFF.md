@@ -521,12 +521,15 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    failing turns the note yellow, never red, per the player's ruling; too few
    readings turns nothing at all, per the presumption of innocence.
 
-   **What is still owed:** `BEND_TOLERANCE_CENTS`, `BEND_HOLD_FRACTION` and
-   `BEND_MIN_SAMPLES` are the only thresholds in the app fitted to nothing.
-   Block 6 of `record_reference.py` records what would settle them and
-   `tools/check_bends.py` reads it, printing the window each threshold has to
-   sit in. Until that has been played, the honest description is "behaves
-   sensibly", not "measured". `O` on the song list has a switch for it.
+   **Measured — 2026-08-23**, on 18 bends the player recorded as block 6.
+   `tools/check_bends.py` prints the window each threshold sits in and then
+   runs the real matcher over the same audio: 12 correct bends green, 6
+   deliberate errors yellow. The tolerance stayed at 50 cents (it cannot be
+   tightened: the player overshoots by up to 51), the hold fraction dropped
+   from a guessed 0.5 to a measured 0.3, and the hold became a run with a
+   250 ms gap tolerance rather than a frame count — which is what makes
+   vibrato survive. See `CLAUDE.md`, "How Far The Bend Went". `O` on the song
+   list still has a switch for it.
 8. ~~**GP7 techniques.**~~ **BUILT — 2026-08-22, and GP6 with it.** The GPIF
    path now reads bends, slides and hammer-ons as well as muting
    (`_parse_gpif_notes`), so a GP6/GP7/GP8 tab no longer scores its techniques

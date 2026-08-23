@@ -358,15 +358,30 @@ GP6, GP7 and GP8 (`_parse_gpif_notes`).
   the tab writes a hold worth the name — a bend across a sixteenth has no plateau.
 - **Neither convicts on silence.** Too few readings inside the note returns "unknown" and the note keeps what it was given. Absence of evidence
   is the commonest thing in this signal path, and the chord verifier learned the same lesson the hard way.
-- **The three thresholds are NOT calibrated, and that is stated in the code.** Every other number in this app was fitted to reference
-  recordings; `BEND_TOLERANCE_CENTS`, `BEND_HOLD_FRACTION` and `BEND_MIN_SAMPLES` were fitted to nothing, because no recording of a bend
-  existed. Block 6 of `record_reference.py` records the pairs that would settle them (full vs deliberately shallow, held vs let go, plus a
-  bend-release and a bend with vibrato) and `tools/check_bends.py` reads them — printing not a score but the WINDOW each threshold has to sit
-  in: the worst correct take against the best deliberate error. If a window has no room, the rule is wrong and no amount of tuning fixes it.
-- **Verified so far only against synthesis**: through the real `PitchDetector`, a two-semitone bend reads +2.00 and a one-semitone bend +1.00,
-  which is twice the tolerance apart — so the rule CAN separate them. That says the mechanism works, not that the thresholds are right.
-- **Vibrato is the case most likely to embarrass it.** Vibrato swings the pitch either side of the target on purpose, and a rule counting
-  frames on target can read that as not holding. Take 65 exists for exactly that and has not been played yet.
+- **The thresholds are measured now** (block 6, 2026-08-23, 18 bends). `tools/check_bends.py` prints the window each has to sit in — worst
+  correct take against best deliberate error — and then runs the real matcher over the same audio: all 12 correct bends green, all 6
+  deliberate errors yellow.
+  - **Tolerance 50 cents, and it cannot be tightened.** The player's correct bends land 7 to 51 cents ABOVE the written top — every one of
+    them overshoots. A 40-cent band starts marking their own good takes down; the deliberately shallow take misses by at least 63. Window
+    50-63, and the guessed 50 turned out to sit in it.
+  - **Hold 30 % of what the tab writes, as one unbroken run** (gap tolerated, below). Correct takes run 43-100 % of the written hold; the
+    not-held take reaches 0 %. The guessed 50 % was too strict and would have marked down a real take.
+  - **Both questions are one-sided.** Did it reach the top, and was it still up there. Overshoot is intonation, which nothing here was asked
+    to judge — and judging it would convict the very takes recorded to prove the rule works.
+- **Three things the recording changed, and each was a wrong answer first:**
+  - **Only picks are bends.** The onset detector fires again during a note's decay; those ghosts came back as bends that never left the
+    written pitch, and the first run of the tool duly reported that correct and shallow bends overlap so no threshold could work. A real pick
+    peaks at −6 to −8.5 dB and every ghost at −21 to −49. The app never had this problem — it reads the contour over the note's WRITTEN
+    window, out of the tab — but the tool did, and a tool whose control comes back broken is measuring itself.
+  - **An octave error is not the bend collapsing.** During a vibratoed bend the detector throws out readings 9, 18 and 36 semitones below the
+    written pitch. Left in, they read as the pitch falling off a cliff. `BEND_STRAY_SEMITONES` drops them.
+  - **A hold is a run, not a count and not a span.** Counting frames on target marks vibrato down (only 37 % of a vibratoed bend's readings
+    sit within a quarter tone — it is played by releasing and re-bending). A plain span from first to last lets a bend flicked up twice pass.
+    The longest run with a tolerated gap of 250 ms tells all three apart, and from 250 ms upward the reading stops changing, so the value sits
+    on a plateau rather than a knife edge.
+- **Measured where the hold is looked for, too.** Looking only inside the written hold window sounds stricter and is weaker: a bend let go
+  early takes the note with it, the window then holds no readings at all, and the rule abstains for want of evidence — which let two of three
+  deliberately-not-held bends through. The run is measured anywhere in the note; what the tab asks for is a duration, not a place.
 - **Wait mode stops the collection**, because it pins every timestamp to one instant and a contour whose readings all claim the same
   millisecond cannot say how long anything was held — the same reason timing samples stop there.
 

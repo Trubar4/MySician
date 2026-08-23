@@ -58,12 +58,30 @@ OPEN_SLIDE_SEMITONES = 2
 # and note that the rule they drive can only ever turn green into yellow.
 
 # How near the written top of the bend counts as having reached it. The
-# player's own ruling: "about a quarter tone", which is 50 cents.
+# player's own ruling: "about a quarter tone", which is 50 cents -- and the
+# measurement says it cannot be tightened. Their correct bends land between
+# +7 and +51 cents ABOVE the written top, so a 40-cent band starts convicting
+# good playing on the hold test, while the deliberately shallow take misses by
+# at least 63 cents. The window is 50 to 63 and 50 sits inside it.
 BEND_TOLERANCE_CENTS = 50.0
-# Of the time the tab writes the bend standing at its top, how much of it has
-# to be spent inside that tolerance. The player's ruling again: the target has
-# to be HELD as long as it is written, not merely touched on the way past.
-BEND_HOLD_FRACTION = 0.5
+# How much of the written hold the bend has to stand across, as one unbroken
+# run. MEASURED on block 6: the correct takes run from 43 % to 100 % of the
+# written hold, the deliberately-not-held one reaches 0 % -- it is gone before
+# the hold begins. Anything between separates them; 0.3 keeps 13 points of
+# margin against the worst correct take and 30 against the error.
+BEND_HOLD_FRACTION = 0.3
+# A dip below the target shorter than this does not end the hold. This is the
+# whole of what makes vibrato survive: at 250 ms the player's vibratoed bends
+# read 69-88 % of the written hold, at 150 ms they read 30-38 % and would be
+# marked down. From 250 ms upwards the reading stops changing, so the value
+# sits on a plateau rather than on a knife edge.
+BEND_HOLD_GAP_MS = 250.0
+# Readings further than this outside what the note could be sounding are not
+# evidence about the bend. Measured: during a vibratoed bend the detector
+# throws out readings 9, 18 and 36 semitones below the written pitch -- octave
+# errors and subharmonics while the pitch is moving. Left in the contour they
+# read as the bend collapsing.
+BEND_STRAY_SEMITONES = 1.5
 # A written hold shorter than this is not a hold, and only the height is
 # judged. A bend written across a sixteenth has no plateau to speak of.
 BEND_MIN_HOLD_MS = 150.0
@@ -910,9 +928,16 @@ class NoteMatcher:
 
         - **Did it get there?** The highest pitch the note reached, against the
           written top, within a quarter tone.
-        - **Was it held?** The tab says how long the bend stands at its top,
-          and touching the pitch on the way past is not the same as holding
-          it. Only asked when the tab writes a hold worth the name.
+        - **Was it still there at the end?** The tab says how long the bend
+          stands at its top, and touching the pitch on the way past is not the
+          same as holding it. Measured as the SPAN from the first reading on
+          target to the last, which is not the same as counting how many
+          readings sit on target -- and the difference is vibrato. A vibratoed
+          bend is played by releasing and re-bending, so its pitch spends much
+          of the hold BELOW the target on purpose: on the player's own take
+          only 37 % of readings sit within a quarter tone, which counted frame
+          by frame reads as a bend let go. The span reads it as what it is,
+          because the pitch keeps coming back to the top until the end.
 
         Either can only convict on positive evidence. A note that produced too
         few readings -- a quiet passage, a chord ringing over it, a pickup that
@@ -923,22 +948,30 @@ class NoteMatcher:
         """
         _, top, hold_start, hold_end, end = plan
         tolerance = BEND_TOLERANCE_CENTS / 100.0
-        window = [semis for ms, midi in self._contour
-                  if note.timestamp_ms <= ms <= end + BEND_VERDICT_DELAY_MS
-                  for semis in (midi - note.midi_note,)]
+        readings = [(ms, midi - note.midi_note) for ms, midi in self._contour
+                    if note.timestamp_ms <= ms <= end + BEND_VERDICT_DELAY_MS]
+        # An octave error or another string is not evidence about this bend.
+        window = [(ms, semis) for ms, semis in readings
+                  if -BEND_STRAY_SEMITONES <= semis
+                  <= top + BEND_STRAY_SEMITONES]
         if len(window) < BEND_MIN_SAMPLES:
             return None
-        if max(window) < top - tolerance:
+        if max(semis for _, semis in window) < top - tolerance:
             return False                      # never got there
 
         if hold_end - hold_start >= BEND_MIN_HOLD_MS:
-            held = [midi - note.midi_note for ms, midi in self._contour
-                    if hold_start <= ms <= hold_end]
-            if len(held) >= BEND_MIN_SAMPLES:
-                on_target = sum(1 for semis in held
-                                if abs(semis - top) <= tolerance)
-                if on_target < BEND_HOLD_FRACTION * len(held):
-                    return False              # got there, did not stay
+            # How long the bend stood, measured anywhere in the note, against
+            # how long the tab asks for it. Looking only INSIDE the written
+            # hold window sounds stricter and is weaker: a bend let go early
+            # takes the note with it, the window then holds no readings at
+            # all, and the rule abstains for want of evidence -- which let two
+            # of the three deliberately-not-held takes through. What the
+            # player was asked for is a duration; where in the note it lands
+            # is not the question.
+            on_target = [ms for ms, semis in window if semis >= top - tolerance]
+            held = _longest_run(on_target, BEND_HOLD_GAP_MS)
+            if held < BEND_HOLD_FRACTION * (hold_end - hold_start):
+                return False                  # got there, did not stay
         return True
 
     def _trace(
@@ -1476,3 +1509,24 @@ class NoteMatcher:
         # One line per strike, and one per string a chord verdict took back.
         # Written only; see StrikeTrace for why it exists.
         self.strike_trace: list[StrikeTrace] = []
+
+
+def _longest_run(times: list[float], gap_ms: float) -> float:
+    """The longest stretch these moments cover without a gap bigger than one.
+
+    A pure span from first to last would call a bend held that was flicked up
+    twice with nothing in between -- measured on the block 6 takes, that let
+    two of the three deliberately-not-held bends through. Counting frames
+    instead marks down vibrato, which leaves the target on purpose. The run
+    with a tolerated gap is the reading that tells all three apart.
+    """
+    if not times:
+        return 0.0
+    longest = 0.0
+    start = previous = times[0]
+    for moment in times[1:]:
+        if moment - previous > gap_ms:
+            start = moment
+        previous = moment
+        longest = max(longest, moment - start)
+    return longest

@@ -42,13 +42,6 @@ Country) und übe bei Yousician auf Pro-Level — daran messe ich die App.
 
 ## Was als Nächstes offen ist (`HANDOFF.md` hat die Details)
 
-- **Bend-Schwellen messen** (Punkt 7 ist gebaut, aber nicht kalibriert). Ein zu
-  flacher oder nicht gehaltener Bend wird gelb — die drei Schwellen dahinter
-  sind aber die einzigen der App, die an nichts gefittet wurden. Zwei Befehle
-  ändern das:
-  `python tools/record_reference.py --block 6` (sechs Bend-Aufnahmen, ca. eine
-  Minute) und danach `python tools/check_bends.py`, das ausgibt, in welchem
-  Fenster jede Schwelle liegen muss.
 - **Palm-Mute-Nachsicht nachmessen** (gebaut, aber nicht kalibriert). Ein Chug
   ohne Tonhöhe wird gutgeschrieben — das ist Nachsicht, und die einzige Regel
   der App ohne Messung dahinter. Zwei Befehle klären es:

@@ -131,18 +131,81 @@ class TestABendThatFellShort:
         assert _play(_matcher(note), note, lambda p: 0.0) != MatchType.MISS
 
     def test_touching_the_target_and_letting_go_is_yellow(self):
-        """Written held to the end, released a third of the way in: the pitch
-        was there and did not stay."""
+        """Written held to the end of the note, let go straight away.
+
+        The threshold is a measured one -- a bend has to stand for 30 % of the
+        written hold -- so this case is written well clear of it rather than
+        against it: reaching at 20 % of the note and gone again by 26 % is
+        about a sixth of what the tab asked for.
+        """
         note = _bend_note(top=2.0, reaches_at=0.2)
         assert _play(_matcher(note), note,
-                     _ramp(2.0, reaches_at=0.2, releases_at=0.35)) \
+                     _ramp(2.0, reaches_at=0.2, releases_at=0.26)) \
             == MatchType.CLOSE
 
-    def test_overbending_and_staying_sharp_is_yellow(self):
-        """A quarter tone is a tolerance, not a floor -- a whole tone past the
-        written target is as wrong as a whole tone short."""
+    def test_bending_past_the_target_is_not_judged(self):
+        """Overshoot stays green, and that is a measurement, not a mercy.
+
+        The player's own correct bends land between 7 and 51 cents ABOVE the
+        written top -- every single one of them. A rule that marked sharp
+        bends down would mark down the takes recorded to prove it works. So
+        both questions are one-sided: did it reach the top, and was it still
+        up there at the end. How far past the top it went is intonation, and
+        nothing here was asked to judge that.
+        """
         note = _bend_note(top=2.0)
-        assert _play(_matcher(note), note, _ramp(3.0)) == MatchType.CLOSE
+        assert _play(_matcher(note), note, _ramp(3.0)) == MatchType.HIT
+
+
+class TestWhatIsNotEvidence:
+    """Measured on the real takes: during a vibratoed bend the detector throws
+    out readings 9, 18 and 36 semitones below the written pitch."""
+
+    def test_an_octave_error_does_not_read_as_the_bend_collapsing(self):
+        note = _bend_note(top=2.0)
+        good = _contour(_ramp(2.0), note)
+        # Every third reading replaced by the kind of stray the detector
+        # actually produces while the pitch is moving.
+        for index in range(0, len(good), 3):
+            good[index] = _reading(-12.0, good[index].timestamp_ms)
+        assert _play(_matcher(note), note, None, good) == MatchType.HIT
+
+    def test_strays_alone_are_not_enough_to_judge_anything(self):
+        """Strip them out and there is nothing left, which is not evidence
+        that the bend fell short."""
+        note = _bend_note(top=2.0)
+        frames = [_reading(-12.0, NOTE_MS + i * FRAME_MS) for i in range(40)]
+        assert _play(_matcher(note), note, None, frames) == MatchType.HIT
+
+
+class TestVibrato:
+    """The case that was expected to embarrass the rule, and did.
+
+    A vibratoed bend is played by releasing and re-bending, so its pitch
+    spends much of the hold below the target on purpose -- 37 % of readings
+    within a quarter tone on the player's own take. Counting frames read that
+    as a bend let go; measuring the span from the first reading on target to
+    the last reads it as what it is.
+    """
+
+    def test_a_bend_with_vibrato_on_it_stays_green(self):
+        import math
+        note = _bend_note(top=2.0, reaches_at=0.25)
+
+        def shape(position):
+            if position < 0.25:
+                return 2.0 * position / 0.25
+            # +-0.7 semitones at 6 Hz, which is what the take measures.
+            return 2.0 - 0.7 * (1 - math.cos(2 * math.pi * 6 * position)) / 2
+
+        assert _play(_matcher(note), note, shape) == MatchType.HIT
+
+    def test_a_bend_let_go_at_once_is_still_caught(self):
+        """The same span rule has to keep telling these two apart."""
+        note = _bend_note(top=2.0, reaches_at=0.15)
+        assert _play(_matcher(note), note,
+                     _ramp(2.0, reaches_at=0.15, releases_at=0.25)) \
+            == MatchType.CLOSE
 
 
 class TestItNeverConvictsOnSilence:
