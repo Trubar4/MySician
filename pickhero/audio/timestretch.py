@@ -20,6 +20,11 @@ Two things it is honest about:
 - **It is not transparent.** Stretched far, a strummed chord picks up a faint
   flutter, and drums smear before guitars do. At 80-90 % it is hard to hear;
   at 50 % it is audible and still perfectly usable to practise against.
+- **It holds the whole song in memory while it works.** Eight minutes of
+  stereo is about 170 MB as float32, and the stretched copy is longer again,
+  so a long recording at 50 % briefly wants the better part of half a gigabyte.
+  It survives on the machines this app targets; a longer file than that would
+  need the stretch done in chunks, which the overlap makes real work.
 - **It costs seconds, not milliseconds.** A four-minute song takes a few
   seconds to stretch, so the result is written to a cache file and reused for
   every later run at the same speed. The caller does the work off the game

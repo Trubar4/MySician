@@ -150,9 +150,16 @@ SCROLL_FACTOR_STEP = 0.1
 # choice about how the app should feel, not a constant.
 TIMING_WINDOW_PRESETS = (100.0, 150.0, 200.0, 250.0)
 
-# How far the backing track can be shifted against the notes, and its step.
-MAX_BACKING_OFFSET_MS = 400.0
+# How far the MIDI backing can be shifted against the notes, and its steps.
+# Ten seconds is far more than a synth and a sound card need -- that is tens of
+# milliseconds -- but the player asked for it, and the reason holds: the tab
+# and the backing do not always start on the same beat, and a range chosen
+# from what the hardware needs is a range chosen from the wrong thing.
+MAX_BACKING_OFFSET_MS = 10_000.0
 BACKING_OFFSET_STEP_MS = 10.0
+# Ten seconds at 10 ms a press is a thousand presses, so the wide range needs
+# a wide step to go with it.
+BACKING_OFFSET_COARSE_MS = 1000.0
 
 # The recording gets its own, far wider range. The MIDI backing is generated
 # from the same timeline as the notes, so it only ever needs the tens of
@@ -161,12 +168,17 @@ BACKING_OFFSET_STEP_MS = 10.0
 # intro, a spoken word, or several seconds of studio silence before the first
 # beat, and none of that is knowable in advance. Half a second was not enough
 # to reach the first note of a real track.
-MAX_MP3_OFFSET_MS = 30_000.0
-# Two steps, because one cannot serve both jobs: 10 ms is what a sync is
-# judged in, and reaching five seconds at 10 ms a press is five hundred
-# presses.
+# Eight minutes, because a tab is not always the whole song: a GP file holding
+# only the solo has to be lined up against a recording that plays four minutes
+# of music before it. Thirty seconds reached the first beat of a track and
+# nothing further in.
+MAX_MP3_OFFSET_MS = 480_000.0
+# Three steps, because no single one serves all three jobs: 10 ms is what a
+# sync is judged in, a second is what an intro is worth, and reaching four
+# minutes at a second a press is four minutes of pressing.
 MP3_OFFSET_STEP_MS = 10.0
 MP3_OFFSET_COARSE_MS = 1000.0
+MP3_OFFSET_JUMP_MS = 10_000.0
 
 # When to stop believing the recording is following the song. A decoder that
 # cannot seek into a file accepts play(start=...) without complaint and starts
@@ -234,6 +246,22 @@ def format_time(ms: float) -> str:
     minutes = total_seconds // 60
     seconds = total_seconds % 60
     return f"{minutes}:{seconds:02d}"
+
+
+def _offset_text(ms: float) -> str:
+    """A backing offset in the unit it is actually judged in.
+
+    Milliseconds while it is a sync, seconds while it is an intro, and minutes
+    and seconds once the tab is only the solo of a longer recording -- where
+    "-192.00 s" is a number nobody can check against a player's time display.
+    """
+    sign = "-" if ms < 0 else "+"
+    size = abs(ms)
+    if size < 1000:
+        return f"{sign}{int(size)} ms"
+    if size < 60_000:
+        return f"{sign}{size / 1000:.2f} s"
+    return f"{sign}{int(size // 60_000)}:{size % 60_000 / 1000:04.1f} min"
 
 
 @dataclass
@@ -754,20 +782,8 @@ class PlayingScreen:
             self._cycle_timing_window()
         elif event.key == pygame.K_TAB:
             self._open_track_menu()
-        elif event.key == pygame.K_n:
-            if event.mod & pygame.KMOD_CTRL:
-                self._adjust_mp3_offset(-MP3_OFFSET_COARSE_MS)
-            elif event.mod & pygame.KMOD_SHIFT:
-                self._adjust_mp3_offset(-MP3_OFFSET_STEP_MS)
-            else:
-                self._adjust_backing_offset(-BACKING_OFFSET_STEP_MS)
-        elif event.key == pygame.K_m:
-            if event.mod & pygame.KMOD_CTRL:
-                self._adjust_mp3_offset(MP3_OFFSET_COARSE_MS)
-            elif event.mod & pygame.KMOD_SHIFT:
-                self._adjust_mp3_offset(MP3_OFFSET_STEP_MS)
-            else:
-                self._adjust_backing_offset(BACKING_OFFSET_STEP_MS)
+        elif event.key in (pygame.K_n, pygame.K_m):
+            self._nudge_backing(1 if event.key == pygame.K_m else -1, event.mod)
         elif event.key == pygame.K_u:
             if event.mod & pygame.KMOD_SHIFT:
                 self._choose_mp3_backing()
@@ -1003,6 +1019,25 @@ class PlayingScreen:
         if getter is None:
             return getattr(self._config, "backing_offset_ms", 0.0)
         return getter(self._song_key)
+
+    def _nudge_backing(self, direction: int, mods: int) -> None:
+        """N and M, with the modifier deciding which backing and how far.
+
+        Both backings live on one pair of keys because the hands are on the
+        guitar and a second pair would not be found. The order matters:
+        Ctrl+Shift has to be tested before Ctrl, or the wider step can never
+        be reached.
+        """
+        if mods & pygame.KMOD_CTRL and mods & pygame.KMOD_SHIFT:
+            self._adjust_mp3_offset(direction * MP3_OFFSET_JUMP_MS)
+        elif mods & pygame.KMOD_CTRL:
+            self._adjust_mp3_offset(direction * MP3_OFFSET_COARSE_MS)
+        elif mods & pygame.KMOD_SHIFT:
+            self._adjust_mp3_offset(direction * MP3_OFFSET_STEP_MS)
+        elif mods & pygame.KMOD_ALT:
+            self._adjust_backing_offset(direction * BACKING_OFFSET_COARSE_MS)
+        else:
+            self._adjust_backing_offset(direction * BACKING_OFFSET_STEP_MS)
 
     def _adjust_backing_offset(self, delta_ms: float) -> None:
         """Shift the backing against the notes (N earlier, M later).
@@ -1666,7 +1701,7 @@ class PlayingScreen:
         tools = (
             "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
-            "|  U: audio track (Shift+U: pick, Shift/Ctrl+N/M: sync)  "
+            "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
             "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
             "|  Y: timing report  |  D: run log  |  H: help"
@@ -2632,9 +2667,10 @@ class PlayingScreen:
             "D: save a full run log (what every strike did)",
             "U: recorded backing on/off, Shift+U picks the file",
             "Shift+N / Shift+M: shift the recording by 10 ms",
-            "Ctrl+N / Ctrl+M: shift the recording by a whole second",
+            "Ctrl+N / Ctrl+M: by a second   Ctrl+Shift: by ten seconds",
+            "  (reaches 8 minutes, for a tab that is only the solo)",
             "+/-: scroll faster / slower     G: hit window",
-            "N/M: backing track earlier / later",
+            "N/M: MIDI backing earlier / later   Alt+N/M: by a second",
             "TAB: choose track     H: this help     ESC: song list",
             "On the song list, O opens the settings screen — everything that",
             "is set once, with anything away from standard marked.",
@@ -3269,10 +3305,8 @@ class PlayingScreen:
         if not self._mp3_source_fits():
             return (f"Audio: fitting to {int(self._tempo_factor * 100)} % speed, "
                     f"one moment — {name}")
-        offset = self._mp3_offset()
-        shown = (f"{offset / 1000:+.2f} s" if abs(offset) >= 1000
-                 else f"{int(offset):+d} ms")
-        return f"Audio: {shown} (Shift+N/M ±10ms, Ctrl+N/M ±1s) — {name}"
+        return (f"Audio: {_offset_text(self._mp3_offset())} "
+                f"(Shift+N/M ±10ms, Ctrl ±1s, Ctrl+Shift ±10s) — {name}")
 
     def _init_midi_player(self, backing_track: BackingTrack) -> None:
         """Create and open MidiPlayer. Silently continues if MIDI unavailable."""

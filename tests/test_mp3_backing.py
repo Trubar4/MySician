@@ -202,12 +202,87 @@ class TestPerSongSettings:
             screen._adjust_mp3_offset(-1000.0)
         assert config.mp3_offset_for("song") == -10_000.0
 
+    def test_the_offset_reaches_a_solo_four_minutes_into_a_track(self):
+        """A tab is not always the whole song. A GP file holding only the solo
+        has to be lined up against a recording that plays four minutes of
+        music first, in either direction."""
+        config = Config()
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        for _ in range(30):
+            screen._adjust_mp3_offset(-10_000.0)
+        assert config.mp3_offset_for("song") == -300_000.0
+
     def test_the_offset_is_still_clamped_somewhere(self):
         config = Config()
         screen = PlayingScreen(_timeline(), config=config, song_key="song")
-        for _ in range(100):
-            screen._adjust_mp3_offset(1000.0)
-        assert config.mp3_offset_for("song") == 30_000.0
+        for _ in range(200):
+            screen._adjust_mp3_offset(10_000.0)
+        assert config.mp3_offset_for("song") == 480_000.0
+
+
+class TestReachingTheOffsetWithTheKeys:
+    """Three steps on one pair of keys, because the hands are on the guitar
+    and a second pair would not be found."""
+
+    def _screen(self, tmp_path, monkeypatch):
+        config = Config()
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        return PlayingScreen(_timeline(), config=config, song_key="song")
+
+    def _nudge(self, screen, mods):
+        screen._nudge_backing(1, mods)
+
+    def test_shift_moves_ten_milliseconds(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._nudge(screen, pygame.KMOD_SHIFT)
+        assert screen._mp3_offset() == pytest.approx(10.0)
+
+    def test_ctrl_moves_a_second(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._nudge(screen, pygame.KMOD_CTRL)
+        assert screen._mp3_offset() == pytest.approx(1000.0)
+
+    def test_ctrl_and_shift_together_move_ten_seconds(self, tmp_path, monkeypatch):
+        """Tested before Ctrl alone, or the widest step is unreachable."""
+        screen = self._screen(tmp_path, monkeypatch)
+        self._nudge(screen, pygame.KMOD_CTRL | pygame.KMOD_SHIFT)
+        assert screen._mp3_offset() == pytest.approx(10_000.0)
+
+    def test_plain_keys_move_the_midi_backing_not_the_recording(
+            self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._nudge(screen, 0)
+        assert screen._mp3_offset() == 0.0
+        assert screen._backing_offset() == pytest.approx(10.0)
+
+    def test_alt_moves_the_midi_backing_a_second(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._nudge(screen, pygame.KMOD_ALT)
+        assert screen._backing_offset() == pytest.approx(1000.0)
+
+    def test_the_midi_backing_reaches_ten_seconds(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        for _ in range(20):
+            self._nudge(screen, pygame.KMOD_ALT)
+        assert screen._backing_offset() == pytest.approx(10_000.0)
+
+
+class TestTheOffsetIsReadable:
+    """A number nobody can check against a player's time display is not a
+    reading."""
+
+    def test_milliseconds_while_it_is_a_sync(self):
+        from pickhero.ui.scrolling import _offset_text
+        assert _offset_text(-120.0) == "-120 ms"
+
+    def test_seconds_while_it_is_an_intro(self):
+        from pickhero.ui.scrolling import _offset_text
+        assert _offset_text(2500.0) == "+2.50 s"
+
+    def test_minutes_once_the_tab_is_only_the_solo(self):
+        from pickhero.ui.scrolling import _offset_text
+        assert _offset_text(-192_400.0) == "-3:12.4 min"
 
 
 class TestSlowedPractice:

@@ -29,6 +29,7 @@ import pygame
 
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
+from pickhero.ui.scrolling import MAX_BACKING_OFFSET_MS
 from pickhero.ui.colors import cycle_theme, get_theme
 
 VISIBLE_ROWS = 14
@@ -127,8 +128,12 @@ class SettingsMenuScreen:
             c.count_in_beats = max(0, min(8, c.count_in_beats + step))
 
         def adjust_backing_offset(step: int) -> None:
-            c.backing_offset_ms = max(-500.0, min(500.0,
-                                                  c.backing_offset_ms + step * 10))
+            # A hundred milliseconds a press: the row has to be able to cross
+            # ten seconds without turning into a thousand presses, and the
+            # fine work is done with N/M while the song runs anyway.
+            c.backing_offset_ms = max(-MAX_BACKING_OFFSET_MS,
+                                      min(MAX_BACKING_OFFSET_MS,
+                                          c.backing_offset_ms + step * 100))
 
         def strings_label() -> str:
             parts = []
@@ -226,15 +231,16 @@ class SettingsMenuScreen:
             Setting("backing_offset", "MIDI backing sync",
                     lambda: f"{c.backing_offset_ms:+.0f} ms",
                     adjust_backing_offset,
-                    note="Shifts the synth against the notes. A song of its "
-                         "own can be nudged with N/M while playing.",
+                    note="Shifts the synth against the notes. N/M while "
+                         "playing does 10 ms a press, Alt+N/M a second.",
                     is_default=lambda: c.backing_offset_ms == 0.0),
             Setting("mp3", "Recorded backing track",
                     lambda: "on" if c.mp3_backing_enabled else "off",
                     lambda step: setattr(c, "mp3_backing_enabled",
                                          not c.mp3_backing_enabled),
-                    note="A real recording alongside the synth. Shift+U picks "
-                         "the file for a song; its sync is stored per song.",
+                    note="A real recording alongside the synth. Shift+U "
+                         "picks the file; its sync reaches 8 minutes, for a "
+                         "tab that is only the solo.",
                     is_default=lambda: c.mp3_backing_enabled is True),
             Setting("wait", "Wait mode",
                     lambda: "on" if c.wait_mode else "off",
