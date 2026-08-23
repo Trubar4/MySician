@@ -57,10 +57,20 @@ class Exercise:
     # player does not "correct" it by accident.
     intentional_error: str = ""
 
-    def expected_midi(self, offset: int = 0) -> list:
-        """MIDI notes per shape, shifted by a uniform tuning offset."""
+    def expected_midi(self, offset: int = 0, drop: int = 0) -> list:
+        """MIDI notes per shape, for the tuning the guitar is actually in.
+
+        `offset` shifts every string (Eb, D standard, ...); `drop` lowers the
+        sixth string on its own. Drop tunings used to be forbidden here, on
+        the grounds that the shapes only hold for an evenly tuned guitar --
+        which is true of the shapes and false of the player, who plays metal
+        and lives in drop D. The block 7 takes were recorded that way and
+        every expected pitch on the low string was two semitones wrong, so
+        the whole set scored zero until it was worked out by hand.
+        """
         return [
-            sorted(STANDARD_TUNING[s] + fret + offset for s, fret in shape.items())
+            sorted(STANDARD_TUNING[s] + fret + offset - (drop if s == 6 else 0)
+                   for s, fret in shape.items())
             for shape in self.shapes
         ]
 
@@ -447,16 +457,28 @@ def choose_device():
 
 
 def ask_tuning_offset():
-    """Uniform semitone offset, so down-tuned guitars keep the same shapes."""
+    """How the guitar is tuned: a uniform shift, plus a dropped sixth string.
+
+    Both are needed. Asking only for the uniform shift is what invalidated the
+    first block 7 recording: the player answered "standard" because five of
+    their strings are, and the sixth was in drop D -- so every chug was scored
+    against a pitch two semitones above the one that sounded.
+    """
     print("\nStimmung der Gitarre:")
     print("  [0] Standard E")
     print("  [1] Eb / einen Halbton runter")
     print("  [2] D standard / einen Ganzton runter")
     print("  [3] C# standard / anderthalb Toene runter")
-    print("\n  (Drop-Stimmungen bitte NICHT verwenden - die Griffbilder unten")
-    print("   gelten nur fuer gleichmaessig gestimmte Gitarren.)")
     raw = input("\nAuswahl [0]: ").strip()
-    return -{"": 0, "0": 0, "1": 1, "2": 2, "3": 3}.get(raw, 0)
+    offset = -{"": 0, "0": 0, "1": 1, "2": 2, "3": 3}.get(raw, 0)
+
+    print("\nIst die tiefste Saite zusaetzlich heruntergestimmt (Drop)?")
+    print("  [0] nein")
+    print("  [1] Drop: einen Ganzton runter (z.B. Drop D)")
+    print("  [2] Drop: anderthalb Toene runter")
+    raw = input("\nAuswahl [0]: ").strip()
+    drop = {"": 0, "0": 0, "1": 2, "2": 3}.get(raw, 0)
+    return offset, drop
 
 
 def level_check(device, samplerate, channels):
@@ -494,7 +516,7 @@ def level_check(device, samplerate, channels):
     print(f"  Lautester Anschlag: {level['peak']:.1f} dBFS\n")
 
 
-def show_exercise(ex, index, total, offset):
+def show_exercise(ex, index, total, offset, drop=0):
     print("\n" + "=" * 72)
     print(f"[{index}/{total}]  Block {ex.block}  -  {ex.title}")
     print("=" * 72)
@@ -505,7 +527,7 @@ def show_exercise(ex, index, total, offset):
         print(render_tab(ex.shapes))
         names = " | ".join(
             " ".join(midi_name(m) for m in shape)
-            for shape in ex.expected_midi(offset)
+            for shape in ex.expected_midi(offset, drop)
         )
         print(f"\n    erwartete Toene: {names}")
     if ex.technique == "palm_mute":
@@ -698,9 +720,11 @@ def main():
     print(f"\n  Geraet {device}: {samplerate} Hz, "
           f"{'mono' if channels == 1 else 'stereo'}")
 
-    offset = ask_tuning_offset()
+    offset, drop = ask_tuning_offset()
     if offset:
         print(f"  Stimmung: {abs(offset)} Halbtoene runter")
+    if drop:
+        print(f"  Tiefste Saite: {drop} Halbtoene tiefer (Drop)")
 
     level_check(device, samplerate, channels)
 
@@ -714,6 +738,7 @@ def main():
         "channels": channels,
         "device": str(sd.query_devices(device)["name"]),
         "tuning_offset_semitones": offset,
+        "drop_semitones": drop,
         "takes": [],
     }
 
@@ -734,7 +759,7 @@ def main():
     idx = 0
     while idx < len(todo):
         ex = todo[idx]
-        show_exercise(ex, idx + 1, len(todo), offset)
+        show_exercise(ex, idx + 1, len(todo), offset, drop)
 
         key = input("\n  [Enter] aufnehmen  /  s = ueberspringen  /  q = Ende: ")
         key = key.strip().lower()
@@ -771,7 +796,7 @@ def main():
             "technique": ex.technique,
             "intentional_error": ex.intentional_error,
             "shapes": [{str(s): f for s, f in shape.items()} for shape in ex.shapes],
-            "expected_midi": ex.expected_midi(offset),
+            "expected_midi": ex.expected_midi(offset, drop),
             "seconds": ex.seconds,
             "peak_dbfs": round(peak, 1),
             "rms_dbfs": round(rms_db, 1),

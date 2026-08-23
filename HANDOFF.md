@@ -538,20 +538,19 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    hands the same XML to the same parser. Verified against all 35 of
    alphaTab's GP6 test files. See `CLAUDE.md`, "Three Guitar Pro Generations,
    One Parser".
-9. ~~**Palm-mute leniency.**~~ **BUILT — 2026-08-22, measurement still owed.**
-   A strike with no pitch at all credits a written palm mute
-   (`_palm_mute_credit`), because a chug riff is too fast for the audio window
-   that would otherwise confirm it — under `MIN_WINDOW_MS` the window is
-   dropped, so on that passage no evidence can arrive at all.
+9. ~~**Palm-mute leniency.**~~ **MEASURED AND REMOVED — 2026-08-23.** Built
+   on the argument that a chug is choked on purpose and its riff is too fast
+   for the audio window that would confirm it. Block 7 settled it the other
+   way: a single chug arrives with no pitch **3.4 %** of the time (3 of 87),
+   and on the take played a fret off, **3.5 %** — the same rate. The rule
+   would have bought three notes and turned two wrong ones green.
+   `tools/check_palm_mute.py` reports the rate and fails if it ever reaches a
+   fifth of strikes. See `CLAUDE.md`, "Muting".
 
-   **It is the one rule in the app granted on partial evidence.** Measured: a
-   palm-muted strike on the reference power chords arrives pitchless as often
-   as an open one, 20 % against 20 %. Not measured: how often a SINGLE chug
-   does, since every palm-muted take is a power chord. Block 7 of
-   `record_reference.py` records single chugs (slow, fast, and one a fret off)
-   and `tools/check_palm_mute.py` prints what the rule buys against what it
-   costs — run it once those takes exist, and take the rule back out if it
-   buys nothing. Switchable at `O` → Palm-mute leniency.
+   **The takes read as 0 of 87 at first**, and the cause was the tuning: they
+   were played in drop D while the manifest said E2, because the recorder
+   asked only for a uniform offset and forbade drop tunings. Fixed — see
+   `CLAUDE.md`, "Reference Takes Are Only Worth Their Tuning".
 
 ## Conventions
 

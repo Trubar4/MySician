@@ -42,13 +42,7 @@ Country) und übe bei Yousician auf Pro-Level — daran messe ich die App.
 
 ## Was als Nächstes offen ist (`HANDOFF.md` hat die Details)
 
-- **Palm-Mute-Nachsicht nachmessen** (gebaut, aber nicht kalibriert). Ein Chug
-  ohne Tonhöhe wird gutgeschrieben — das ist Nachsicht, und die einzige Regel
-  der App ohne Messung dahinter. Zwei Befehle klären es:
-  `python tools/record_reference.py --block 7` und danach
-  `python tools/check_palm_mute.py`, das ausgibt, wie viele richtige Chugs die
-  Regel rettet und wie viele falsche sie durchlässt. Rettet sie nichts, gehört
-  sie wieder raus.
+- Nichts Gebautes mehr offen. Was bleibt, ist Spielen und Messen — siehe oben.
 
 ## Erledigt und nicht neu aufzurollen (Details in `HANDOFF.md`)
 

@@ -1,31 +1,33 @@
-"""What does crediting a pitchless chug buy, and what does it cost?
+"""How often does a single chug arrive with no pitch at all?
 
-`NoteMatcher._palm_mute_credit` counts a written palm mute when the strike
-came back with no pitch at all. It is leniency, and the only rule in the app
-granted without a recording behind it: every palm-muted take recorded so far
-is a power CHORD, which a different and properly measured rule already
-credits. A single chug had never been recorded.
+This measured a rule out of the app, which is what it was built to be able to
+do. `NoteMatcher._palm_mute_credit` used to credit a written palm mute when
+the strike came back carrying no pitch, on the argument that a choked string
+often gives monophonic YIN nothing to lock onto and that a chug riff is too
+fast for the audio window that would otherwise confirm it. Every palm-muted
+take at the time was a power CHORD, where a pitchless strike really does run
+at 16-20 %, so the argument looked sound.
 
-Block 7 is that recording, and this reads it. Two numbers decide the rule, and
-neither of them is an opinion:
-
-- **What it buys.** How many correctly played chugs arrive with no pitch, and
-  are therefore lost without the rule. If that is near zero the rule buys
-  nothing and should go.
-- **What it costs.** How many chugs on the WRONG fret it credits. A wrong
-  fret sounds a different pitch, and a strike carrying a pitch never reaches
-  this rule -- so the cost should be small. "Should be" is exactly what this
-  project does not accept.
+Block 7 is single chugs, and it says the opposite. On 87 correctly played
+chugs a strike arrives pitchless **3 times** -- 3.4 %. On the take played a
+fret off, 3.5 %: the same rate. So the leniency would have bought three notes
+in eighty-seven, and paid for them by turning two wrong ones green. It was
+removed. This tool stays, because a finding nobody can re-run is an opinion.
 
     python tools/record_reference.py --block 7
     python tools/check_palm_mute.py
 
-For the error take the tab is the CORRECT shape, as everywhere here: the
-manifest records what was played, and asking whether the wrong note is the
-wrong note it was told to expect proves nothing.
+It reports what the app does now, and beside it what the removed rule WOULD
+have done, so the decision can be re-taken against a better recording.
 
-Exits non-zero if the rule credits more wrong chugs than correct ones -- the
-point at which it is doing harm rather than making up for the detector.
+Two things to know when reading the numbers. For the error take the tab is
+the CORRECT shape, as everywhere here -- the manifest records what was played.
+And a palm-muted low string is heard an octave above what was played on nearly
+every strike, which costs nothing: the matcher grants octave equivalence.
+
+Exits non-zero if a pitchless chug ever becomes commoner than a fifth of
+strikes, which is where the rule's original premise would start being true
+again.
 """
 
 import argparse
@@ -78,7 +80,13 @@ def capture(path: Path, sample_rate: int):
             cap.get_strike_windows())
 
 
-def score(strikes, windows, written_midi: int, credit: bool):
+# The share of pitchless strikes at which the removed rule's premise -- that a
+# choked string often produces no pitch -- would start holding for single
+# notes. It holds for chords, which is why they have a rule of their own.
+PREMISE_SHARE = 0.20
+
+
+def score(strikes, windows, written_midi: int):
     """Play the take against a tab writing one palm-muted note per strike."""
     notes = [
         NoteEvent(timestamp_ms=s.timestamp_ms, duration_ms=200.0,
@@ -87,8 +95,7 @@ def score(strikes, windows, written_midi: int, credit: bool):
     ]
     timeline = Timeline(notes, SongMetadata(title="chugs", tempo=150))
     matcher = NoteMatcher(timeline, timing_window_ms=150.0,
-                          late_window_ms=300.0, chord_verifier=ChordVerifier(),
-                          palm_mute_credit=credit)
+                          late_window_ms=300.0, chord_verifier=ChordVerifier())
     for strike in strikes:
         matcher.process_detected_notes([strike], strike.timestamp_ms)
     matcher.process_strike_windows(windows)
@@ -121,10 +128,11 @@ def main() -> int:
     sample_rate = int(manifest.get("samplerate", 48000))
 
     print(f"{directory.name}\n")
-    print(f"{'Take':22s} {'Anschlaege':>10s} {'ohne Ton':>9s} "
-          f"{'gruen ohne':>11s} {'mit Regel':>10s} {'Unterschied':>12s}")
+    print(f"{'Take':22s} {'Anschlaege':>10s} {'ohne Ton':>9s} {'Quote':>7s} "
+          f"{'gruen':>9s} {'Regel haette':>14s}")
     print("-" * 80)
     bought = cost = 0
+    played = pitchless_total = 0
     for take_id, tab_id, is_error in CASES:
         if take_id not in takes or tab_id not in takes:
             print(f"{take_id:22s}  fehlt")
@@ -136,31 +144,38 @@ def main() -> int:
             continue
         written = takes[tab_id]["expected_midi"][0][0]
         unpitched = sum(1 for s in strikes if s.note.unpitched)
-        before, total = score(strikes, windows, written, credit=False)
-        after, _ = score(strikes, windows, written, credit=True)
-        gained = after - before
+        green, total = score(strikes, windows, written)
+        # What the removed rule would have done: credit exactly the strikes
+        # that carried no pitch at all.
         if is_error:
-            cost += gained
+            cost += unpitched
         else:
-            bought += gained
-        print(f"{take_id:22s} {len(strikes):10d} {unpitched:9d} "
-              f"{f'{before}/{total}':>11s} {f'{after}/{total}':>10s} "
-              f"{gained:+12d}"
+            bought += unpitched
+            played += len(strikes)
+        pitchless_total += unpitched
+        share = unpitched / max(1, len(strikes))
+        print(f"{take_id:22s} {len(strikes):10d} {unpitched:9d} {share:6.1%} "
+              f"{f'{green}/{total}':>9s} {f'+{unpitched}':>14s}"
               f"{'   <- falsch gespielt' if is_error else ''}")
 
+    share = bought / max(1, played)
     print()
-    print(f"Die Regel rettet {bought} richtig gespielte Chugs "
-          f"und laesst {cost} falsche durch.")
-    if bought == 0 and cost == 0:
-        print("Sie aendert hier gar nichts: kein Chug kam ohne Tonhoehe an.")
-        print("Dann kauft die Nachsicht nichts und sollte wieder weg.")
-    elif cost > bought:
-        print("Sie kostet mehr, als sie bringt. So ist sie nicht zu halten.")
+    print(f"Ein einzelner Chug kommt in {share:.1%} der Anschlaege ohne "
+          f"Tonhoehe an ({bought} von {played}).")
+    print(f"Die Nachsicht haette davon {bought} gerettet und dabei {cost} "
+          f"falsch gegriffene mitgruen gemacht.")
+    print()
+    if share >= PREMISE_SHARE:
+        print("Damit traegt die urspruengliche Annahme wieder: ein Chug "
+              "verliert seine Tonhoehe oft genug,")
+        print("dass sich die Frage neu stellt. Diese Aufnahme gehoert "
+              "angesehen.")
     else:
-        print("Ein falscher Bund klingt weiter als falsche TONHOEHE und wird "
-              "normal erkannt;")
-        print("diese Regel spricht nur fuer Anschlaege, die gar keine tragen.")
-    return 1 if cost > bought else 0
+        print("Die urspruengliche Annahme traegt nicht: ein Chug behaelt "
+              "seine Tonhoehe fast immer,")
+        print("und wenn nicht, sagt das nichts darueber aus, ob der Bund "
+              "stimmte. Deshalb ist die Regel raus.")
+    return 1 if share >= PREMISE_SHARE else 0
 
 
 def newest_with_chugs():

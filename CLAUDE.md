@@ -429,94 +429,33 @@ plain flags rather than a curve to reconstruct. They are separate axes — a chu
 - **"PM" is badged once per run, not per note**, the way paper tab writes it and dashes it onward — a disc over every note of a muted riff buries
   the music under its own labelling. A dead stroke inside the run does not break it (the hand never leaves the strings); a silence longer than
   `PALM_MUTE_RUN_GAP_MS` does, so the badge comes back when the riff does.
-- **A chug that comes back with no pitch credits its written palm mute** (`_palm_mute_credit`). A palm mute is a note the tab TELLS the player
-  to choke, and a choked string sometimes gives monophonic YIN nothing to lock onto. For a chord that was already handled; for a single note
-  the strike is normally held and confirmed from the raw audio — except that a chug riff runs in eighths, the verification window is trimmed
-  to the gap before the next strike, and under `MIN_WINDOW_MS` it is dropped. On exactly the passage where chugs live, no evidence can ever
-  arrive, so the note timed out as a miss however well it was played.
-- **This is the one rule in the app granted on partial evidence, and it says so in the code.** What is measured: on the reference power chords
-  a palm-muted strike arrives pitchless about as often as an open one (20 % against 20 %), so muting does not appear to cost pitches by
-  itself. What is NOT measured: how often a SINGLE chug does it, because every palm-muted take recorded so far is a power chord. Block 7 of
-  `record_reference.py` records single chugs — slow, fast, and one deliberately a fret off — and `tools/check_palm_mute.py` prints what the
-  rule buys against what it costs. If it buys nothing, it should go.
-- **What keeps it honest is that a wrong fret still sounds a PITCH.** A strike carrying one is matched normally and marked wrong as before;
-  this rule only ever speaks for a strike carrying none, which is the case where nothing can be told either way. It is switchable
-  (`O` → Palm-mute leniency) for exactly the reason that it is not yet fitted.
+- **A chug that comes back with no pitch is NOT credited — built, measured and removed in the same week.** The argument for crediting it was
+  good: a palm mute is a note the tab TELLS the player to choke, a choked string sometimes gives YIN nothing to lock onto, and a chug riff runs
+  too fast for the audio window that would otherwise confirm it (trimmed to the gap before the next strike, dropped under `MIN_WINDOW_MS`), so
+  on exactly that passage no evidence can ever arrive. Every palm-muted take at the time was a power CHORD, where pitchless strikes really do
+  run at 16-20 %.
+- **Block 7 said the opposite for a single note.** On 87 correctly played chugs a strike arrives pitchless **3 times — 3.4 %**. On the take
+  played a fret off, **3.5 %**: the same rate. So the leniency would have bought three notes in eighty-seven and paid by turning two wrong ones
+  green, and being pitchless says nothing whatsoever about whether the fret was right. `tools/check_palm_mute.py` still reports the rate, and
+  fails if it ever climbs back to a fifth of strikes — the point where the original premise would hold again.
+- **What that recording did show is that a palm-muted low string is heard an OCTAVE above what was played** — 59 of 61 strikes. It costs
+  nothing, because the matcher grants octave equivalence on purpose, and it is why scoring a chug take against the wrong tuning reads as zero
+  rather than as an octave error.
 
-## Two Backing Tracks, Switched Separately
+## Reference Takes Are Only Worth Their Tuning
 
-The MIDI backing is generated from the same timeline as the notes, so it cannot drift: it is told a position and plays the events at it. A
-recording has its own clock, running in the sound card, and the only control available is "start from here" — so `mp3_playback.py` compares
-where the song is with where the recording got to and corrects only past `RESYNC_MS` (90 ms), no more often than `MIN_RESYNC_GAP_MS`
-(1.5 s). A re-seek is audible; correcting an error nobody can hear costs more than the error.
+The block 7 chugs scored **0 of 87** the first time they were read, and nothing was wrong with the audio: the takes were played in drop D and
+the manifest said E2. `record_reference.py` asked only for a UNIFORM tuning offset and told the player in as many words not to use a drop
+tuning — which is not a thing to ask of someone who plays metal. They answered "standard", correctly, because five of their six strings were.
 
-- **They are separate toggles (`B` and `U`), not one control cycling through both.** The player asked for it that way and the reason is the
-  workflow: lining a recording up against the click means hearing BOTH, then switching one off. A control that goes off → MIDI → recording
-  makes the state the job needs unreachable.
-- **Its own per-song offset (`Shift+N`/`Shift+M`), with no global fallback.** An MP3 decoder emits encoder padding before the music and how
-  much depends on the encoder that made the file, so nothing about one song's value predicts another's, and nothing about the MIDI offset
-  predicts this one.
-- **Its range is seconds, not milliseconds, and it needs two step sizes.** The MIDI backing is generated from the same timeline as the
-  notes, so it only ever needs the tens of milliseconds a synth adds; a recording is a different piece of music that happens to contain the
-  same song, and can carry a count-in, an intro or studio silence before the first beat. `MAX_MP3_OFFSET_MS` is 30 s. `Shift+N`/`Shift+M`
-  move 10 ms (what a sync is judged in), `Ctrl+N`/`Ctrl+M` move a second (reaching five seconds at 10 ms a press is five hundred presses).
-- **Practice speed is served by a stretched COPY of the file, not by playing it slower.** `pygame.mixer.music` plays at the recorded rate,
-  and resampling to 80 % drops the pitch four semitones with it — so `audio/timestretch.py` makes a longer file at the same pitch (WSOLA:
-  overlapping windows laid down at a new spacing, each slid to where it best continues the last) and `Mp3Player.set_source` is handed that
-  instead. The player is told and reports SONG milliseconds throughout; the file's own time is `song × time_scale`, and `time_scale` is
-  `1/tempo`. Every result is cached under `~/.pickhero/stretched/`, keyed by the file's size and mtime as well as the speed, so picking a
-  different recording can never inherit the last one's stretch.
-- **Measured on the player's own guitar, not on a sine wave** (`tools/check_timestretch.py`): a chord, a fast line and a whole play-along
-  take, at every speed from 90 % down to 50 %. The pitch moves by at most **15 cents** — a sixth of a semitone, and the size of the
-  measurement's own precision — while the control column shows what merely playing the file slower would cost: **−182 cents at 90 % and
-  −1200 at 50 %**. The length lands within 1 % everywhere. The check prints the width of its own correlation peak beside every reading,
-  because on a sustained chord that peak is broad and a shift smaller than the width is not a reading at all.
-- **The stretch runs on a thread and the recording is silent until it lands.** A whole song is seconds of work, and seconds of work in the
-  game loop is a frozen app — the fault this project already shipped once, when a seek reopened the input device. Playing on at the old speed
-  meanwhile is not the lenient option either: it is a bar out within seconds. So the HUD says "fitting to 80 % speed" and the recording waits.
-  A file SDL can stream but not decode into memory fails here and is named on screen ("convert it to OGG or WAV"), and a failed speed is not
-  retried every frame.
-- **Every failure is named on screen**: a file that has been moved, a decoder that cannot start from the middle of a file. A backing track
-  that silently does not play is indistinguishable from a feature that does not work, and the player would go looking in the wrong place.
-- **`play(start=)` really does seek — measured, not assumed.** A file whose pitch encodes its own timestamp, played from 5, 10 and 15 s
-  with SDL's output captured to disk, comes back at the right pitch every time. So when a jump does not carry, the fault is in this app's
-  path or in that particular file's decoder, and there is no point rewriting the transport. A decoder that cannot seek accepts
-  `play(start=)` without complaint and starts from the top anyway, which is invisible — so a gap that stays open past
-  `MP3_STUCK_DRIFT_MS` for `MP3_STUCK_FOR_MS` is named on screen rather than left to look like a dead key.
-- **A status message must never outlive its situation.** Picking a file set a note that outranks the ordinary HUD line, and nothing cleared
-  it — so the offset the player was adjusting with `Shift+N`/`Shift+M` was never on screen at all, and the key looked dead. Notes are for
-  what the live line cannot say, and they are dropped as soon as it can.
-- **Pause silences it too, and that took a bug to notice.** Every route to the recording reaches `Mp3Player.seek`, and seeking STARTS
-  playback — so nudging the offset on a paused song set the recording playing under a picture standing still, which is the one state the
-  offset cannot be judged in. `_mp3_plays()` includes `self._playing` for that reason. Paused, `Shift+N`/`Shift+M` only store the value;
-  the HUD shows it move regardless, so the key never looks dead.
+- **Ask for what varies, not for what is convenient to model.** The recorder now asks for the uniform offset AND for a dropped sixth string,
+  and writes both into the manifest. Every tool reads `expected_midi` from there, so the fix reaches all of them at once.
+- **A whole take set can be invalidated by one number** and it does not look like an error — it looks like the detector failing. The tell was
+  that every strike came back exactly 10 semitones off, which is a tuning, not a mistake: real detection errors scatter.
+- The existing session's manifest was corrected by hand rather than re-recorded (the audio is untouched, and the correction says so in a
+  `corrected` field).
 
-## A Note Head Is Squeezed Sideways, Not Downwards
-
-A dense song shrinks its note heads to buy look-ahead — see `_recompute_scroll_speed`. What was never noticed is that the squeeze is
-entirely **horizontal**: look-ahead is bought and sold in width, while the lane is as tall as it ever was. Measured on the song the player
-reported, a solo track at 135 BPM whose sixteenths sit 111 ms apart, in a 1277x771 window:
-
-| | |
-|---|---|
-| head after shrinking | 26 px (the `MIN_HEAD_PX` floor) |
-| lane height | 56 px |
-| **vertical space unused** | **30 px, 53 %** |
-| look-ahead at full-size heads | 2.0 s — unreadable |
-
-So the head now carries its own height (`_head_h_px`), taken from the lane rather than from the music: full-size on a roomy song, where it
-equals the width and the note stays round, and full height on a dense one, where it does not. **This costs no look-ahead whatsoever** — the
-window is computed from the width alone, and the test asserts that rather than trusting it.
-
-Two things worth keeping straight, because the first version of the write-up got them backwards:
-
-- **The height makes the NOTE bigger, not the number.** At a 26 px head a two-digit fret is limited by the width, and more height does
-  nothing for it. The digits grew from 14 px to 21 px for a different reason: the old rule sized them at a fixed `radius * 1.1` and left
-  room unused, where `_fret_font` now fits them to the space that is actually there.
-- **Every fret number in a song is sized for the widest label in it.** Sized to its own label instead, a lone "5" towers over the "15"
-  beside it, which reads as emphasis the music never asked for.
-
-## A Setting You Cannot See Is A Setting You Cannot Undo
+## A Setting You Cannot See Is A Setting You Cannot Undo## A Setting You Cannot See Is A Setting You Cannot Undo
 
 Forty-one keys are handled while a song runs. That is right for the ones the hands reach for with the guitar still on — play, wait mode,
 tempo, loop, `K` — and wrong for the rest: a fret limit, a muted string, a noise gate is set once and then lives on, invisible, changing how

@@ -220,7 +220,6 @@ class NoteMatcher:
         late_window_ms: float = 0.0,
         chord_verifier: ChordVerifier | None = None,
         bend_check: bool = True,
-        palm_mute_credit: bool = True,
     ):
         self._timeline = timeline
         self._timing_window_ms = timing_window_ms
@@ -279,10 +278,6 @@ class NoteMatcher:
         # contour is the sustained pitch stream the audio thread already
         # sends; it used to be dropped on the floor here.
         self.bend_check = bend_check
-        # A pitchless strike credits a written palm mute. Leniency, and the
-        # one rule here not fitted to a recording -- see _palm_mute_credit.
-        self.palm_mute_credit = palm_mute_credit
-        self.palm_mutes_credited = 0
         self._bend_plans = self._build_bend_plans(timeline)
         self._unjudged_bends = dict(self._bend_plans)
         self._contour: list[tuple[float, float]] = []
@@ -593,59 +588,6 @@ class NoteMatcher:
             semitone_distance=None,
         )
 
-    def _palm_mute_credit(self, adjusted_ms: float) -> MatchResult | None:
-        """Credit a written palm-muted note for a strike that carried no pitch.
-
-        A chug is a note the tab TELLS the player to choke, and a choked
-        string sometimes gives monophonic YIN nothing to lock onto. Measured
-        on the reference power chords, a palm-muted strike arrives pitchless
-        about as often as an open one -- 20 % against 20 % -- so muting does
-        not appear to cost pitches by itself; what it does is remove the
-        sustain a rescue would need.
-
-        That is the gap this fills. A pitchless strike on a single written
-        note is normally held for the audio window and confirmed against the
-        written pitch (`_hold_for_rescue`), but a chug riff runs in eighths:
-        the window is trimmed to the gap before the next strike, and under
-        `MIN_WINDOW_MS` it is dropped entirely. So on exactly the passage
-        where chugs live, no evidence can ever arrive, and the note times out
-        as a miss however well it was played.
-
-        **This is leniency, and it is the only rule in the app granted on
-        partial evidence.** What makes it defensible rather than a guess: a
-        wrong fret under the picking hand still sounds a different PITCH, and
-        a strike that carries one is matched normally and marked wrong as
-        before -- this only ever speaks for a strike that carries none, which
-        is the case where nothing can be told either way. What would settle it
-        is block 7 of `tools/record_reference.py`, read by
-        `tools/check_palm_mute.py`; until that has been played, the switch in
-        the settings screen is there so it can be taken back.
-        """
-        if not self.palm_mute_credit:
-            return None
-        candidates = self._timeline.get_active_notes_at_time(
-            adjusted_ms, self._timing_window_ms
-        )
-        pending = [
-            n for n in candidates
-            if n.palm_mute and self._get_state(n) == MatchType.PENDING
-            and not self._is_filtered(n) and not n.dead
-        ]
-        if not pending:
-            return None
-        nearest = min(pending, key=lambda n: abs(n.timestamp_ms - adjusted_ms))
-        struck = [
-            n for n in pending
-            if abs(n.timestamp_ms - nearest.timestamp_ms) <= self._chord_threshold_ms
-        ]
-        for note in struck:
-            self._record_match(note, MatchType.HIT)
-        self.palm_mutes_credited += len(struck)
-        return MatchResult(
-            match_type=MatchType.HIT, matched_events=struck,
-            semitone_distance=None,
-        )
-
     def process_detected_notes(
         self, detected: list[TimestampedNote], playback_ms: float
     ) -> list[MatchResult]:
@@ -685,13 +627,6 @@ class NoteMatcher:
                 dead = self._dead_note_credit(adjusted_ms)
                 credit = dead or self._unpitched_chord_credit(
                     adjusted_ms, ts_note.sample_pos)
-                # Then a written palm mute: a chug is choked on purpose, and
-                # the passage it lives in is too fast for the audio window
-                # that would otherwise settle it.
-                muted = None
-                if credit is None:
-                    muted = self._palm_mute_credit(adjusted_ms)
-                    credit = muted
                 if credit is None:
                     # A single written note, and a strike with no pitch to
                     # judge it by. That is what a line played across the
@@ -704,7 +639,6 @@ class NoteMatcher:
                     results.append(credit)
                 self._trace(ts_note, adjusted_ms, playback_ms,
                             "dead" if dead is not None else
-                            "palm_mute" if muted is not None else
                             ("chord" if credit is not None else "unmatched"),
                             credit.matched_events[0] if credit
                             and credit.matched_events else None, None)
@@ -1503,7 +1437,6 @@ class NoteMatcher:
         self._unjudged_bends = dict(self._bend_plans)
         self.bends_judged = 0
         self.bends_short = 0
-        self.palm_mutes_credited = 0
         self.strike_trace.clear()
 
         # One line per strike, and one per string a chord verdict took back.
