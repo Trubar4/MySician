@@ -1,0 +1,111 @@
+{
+  "created": "2026-08-23T14:11:45",
+  "samplerate": 48000,
+  "channels": 1,
+  "device": "Analogue 1 + 2 (Focusrite USB A",
+  "tuning_offset_semitones": 0,
+  "takes": [
+    {
+      "id": "70_chug_slow_ok",
+      "block": 7,
+      "title": "Chugs auf der tiefen E-Saite, LANGSAM",
+      "file": "70_chug_slow_ok.wav",
+      "technique": "palm_mute",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          40
+        ]
+      ],
+      "seconds": 10,
+      "peak_dbfs": -7.8,
+      "rms_dbfs": -24.8
+    },
+    {
+      "id": "71_chug_fast_ok",
+      "block": 7,
+      "title": "Chugs auf der tiefen E-Saite, SCHNELL",
+      "file": "71_chug_fast_ok.wav",
+      "technique": "palm_mute",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          40
+        ]
+      ],
+      "seconds": 10,
+      "peak_dbfs": -5.9,
+      "rms_dbfs": -18.0
+    },
+    {
+      "id": "72_chug_fast_sharp",
+      "block": 7,
+      "title": "Chugs SCHNELL - absichtlich im 1. Bund statt leer",
+      "file": "72_chug_fast_sharp.wav",
+      "technique": "palm_mute",
+      "intentional_error": "1. Bund statt leerer Saite",
+      "shapes": [
+        {
+          "6": 1
+        }
+      ],
+      "expected_midi": [
+        [
+          41
+        ]
+      ],
+      "seconds": 10,
+      "peak_dbfs": -5.9,
+      "rms_dbfs": -16.3
+    },
+    {
+      "id": "73_chug_riff",
+      "block": 7,
+      "title": "Chug-Riff mit Wechsel",
+      "file": "73_chug_riff.wav",
+      "technique": "palm_mute",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "6": 0
+        },
+        {
+          "6": 0
+        },
+        {
+          "6": 3
+        },
+        {
+          "6": 0
+        }
+      ],
+      "expected_midi": [
+        [
+          40
+        ],
+        [
+          40
+        ],
+        [
+          43
+        ],
+        [
+          40
+        ]
+      ],
+      "seconds": 12,
+      "peak_dbfs": -6.4,
+      "rms_dbfs": -24.0
+    }
+  ]
+}
