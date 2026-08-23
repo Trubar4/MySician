@@ -300,7 +300,7 @@ class TestSlowedPractice:
         song.write_bytes(b"x")
         config = Config()
         config.set_mp3_path_for("song", str(song))
-        config.tempo_factor = tempo
+        config.set_tempo_factor_for("song", tempo)
         monkeypatch.setattr(Mp3Player, "open", lambda self: True)
         monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
         screen = PlayingScreen(_timeline(), config=config, song_key="song")

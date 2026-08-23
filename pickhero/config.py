@@ -51,7 +51,16 @@ class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
     songs_dir: str = "songs"
+    # The speed the last song was practised at. Kept because tools outside
+    # the app read it (record_reference writes it into a take's manifest, and
+    # an analysis that does not know the speed reads a stretched take against
+    # the wrong grid). What a song STARTS at comes from song_tempo_factors.
     tempo_factor: float = 1.0
+    # {song key: speed}. Practice speed belongs to the piece, not to the app:
+    # the solo you are learning at 70 % should still be at 70 % tomorrow, and
+    # the song you have finished should not open slowed down because something
+    # else needed it. Anything not in here starts at full speed.
+    song_tempo_factors: dict = field(default_factory=dict)
     timing_window_ms: float = 150.0
     audio_latency_offset_ms: float = 0.0
     chord_threshold_ms: float = 50.0
@@ -100,6 +109,27 @@ class Config:
 
     # Store default for HUD comparison (not serialized)
     _default_chord_partial_credit: bool = field(default=True, repr=False)
+
+    def tempo_factor_for(self, song_key: str) -> float:
+        """The speed this song was last practised at, or full speed."""
+        try:
+            value = float(self.song_tempo_factors[song_key])
+        except (KeyError, TypeError, ValueError):
+            return 1.0
+        return value if 0.5 <= value <= 1.0 else 1.0
+
+    def set_tempo_factor_for(self, song_key: str, factor: float) -> None:
+        """Remember the speed for this song. Full speed is not remembered.
+
+        Storing 1.0 would fill the file with entries that say nothing, and
+        full speed is what a song opens at anyway.
+        """
+        if not song_key:
+            return
+        if factor >= 1.0:
+            self.song_tempo_factors.pop(song_key, None)
+        else:
+            self.song_tempo_factors[song_key] = float(factor)
 
     def backing_offset_for(self, song_key: str) -> float:
         """This song's backing offset, or the global one if it has none."""

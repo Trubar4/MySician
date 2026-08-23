@@ -116,10 +116,6 @@ class SettingsMenuScreen:
         def adjust_fret(step: int) -> None:
             c.max_fret = max(1, min(24, c.max_fret + step))
 
-        def adjust_tempo(step: int) -> None:
-            c.tempo_factor = max(0.5, min(1.0,
-                                          round((c.tempo_factor + step * 0.05) * 20) / 20))
-
         def adjust_scroll(step: int) -> None:
             c.scroll_speed_factor = max(0.5, min(2.0,
                                                  round((c.scroll_speed_factor + step * 0.1) * 10) / 10))
@@ -207,10 +203,13 @@ class SettingsMenuScreen:
                          "of what the tab wrote, or was not held. Never red.",
                     is_default=lambda: c.bend_check is True),
             Setting("tempo", "Practice speed",
-                    lambda: f"{int(round(c.tempo_factor * 100))} %", adjust_tempo,
-                    note="Also on PgUp/PgDn while playing. A recorded backing "
-                         "track is stretched to follow, keeping its pitch.",
-                    is_default=lambda: c.tempo_factor == 1.0),
+                    lambda: (f"per song — {len(c.song_tempo_factors)} slowed "
+                             f"down" if c.song_tempo_factors
+                             else "per song — none slowed down"),
+                    None,
+                    note="Set with PgUp/PgDn while playing and kept for that "
+                         "song. Every other song opens at full speed.",
+                    is_default=lambda: True),
             Setting("scroll", "Scroll speed",
                     lambda: f"{c.scroll_speed_factor:.1f}x", adjust_scroll,
                     note="How far ahead you see. Faster scrolling means more "
@@ -332,8 +331,6 @@ class SettingsMenuScreen:
             self._config.chord_verify = default.chord_verify
         elif row.key == "bend":
             self._config.bend_check = default.bend_check
-        elif row.key == "tempo":
-            self._config.tempo_factor = 1.0
         elif row.key == "scroll":
             self._config.scroll_speed_factor = 1.0
         elif row.key == "countin":

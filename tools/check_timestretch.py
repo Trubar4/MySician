@@ -17,8 +17,15 @@ different notes.
 
     python tools/check_timestretch.py
 
-Exits non-zero if any stretch moves the pitch audibly, or misses the length
-it was asked for.
+It also checks that the stretch KEEPS TIME, which is a different question
+from coming out the right length: a file can be exactly 25 % longer and still
+put the beats in the wrong places. A click track goes through at every speed
+and the spacing of the clicks is measured -- if that spacing is off by even
+half a percent, a three-minute song drifts a second against the notes, which
+is what "not quite in sync" feels like.
+
+Exits non-zero if any stretch moves the pitch audibly, misses the length it
+was asked for, or fails to keep time.
 
 **The threshold is loose on purpose, and that is the honest choice.** On a
 sustained chord the correlation peak is broad -- it moves by half a percent
@@ -114,6 +121,52 @@ def pitch_shift_cents(before, after, rate, max_lag=500):
     return (best - max_lag) * STEP_CENTS, precision
 
 
+# How far the clicks in a stretched click track may sit from where the new
+# tempo says they should, per second of music. A tenth of a millisecond per
+# second is 18 ms over three minutes -- below the ear, and far below the
+# 90 ms the player's recording is allowed to drift before it is pulled back.
+ALLOWED_DRIFT_MS_PER_S = 0.1
+
+
+def click_track(seconds=60.0, every_ms=500.0, rate=44100):
+    """Silence with a short tone every `every_ms`. A ruler, not music."""
+    audio = np.zeros(int(rate * seconds), dtype=np.float32)
+    tone = (np.hanning(220)
+            * np.sin(2 * np.pi * 1000 * np.arange(220) / rate)).astype(np.float32)
+    for ms in np.arange(0, seconds * 1000, every_ms):
+        start = int(ms * rate / 1000)
+        audio[start:start + len(tone)] = tone * 0.9
+    return audio
+
+
+def click_times(audio, rate=44100, threshold=0.2):
+    """Where the clicks landed, in ms."""
+    loud = np.abs(audio) > threshold
+    out = []
+    index = 0
+    while index < len(loud):
+        if loud[index]:
+            out.append(index * 1000.0 / rate)
+            index += int(0.2 * rate)         # one click cannot follow that fast
+        else:
+            index += 1
+    return np.asarray(out)
+
+
+def keeps_time(tempo: float, rate=44100):
+    """(measured spacing, what the new tempo asks for), both in ms.
+
+    Measured as the SPACING between clicks rather than their absolute
+    positions: the first click falls inside the window that fades the output
+    in and is swallowed, which reads as a constant offset and is not one. The
+    first version of this measurement was fooled by exactly that.
+    """
+    every = 500.0
+    stretched = stretch(click_track(rate=rate), 1.0 / tempo)[:, 0]
+    gaps = np.diff(click_times(stretched, rate))
+    return float(gaps.mean()), every / tempo, float(gaps.std())
+
+
 def resample(audio, factor):
     """The wrong way, kept as the control: longer AND lower."""
     index = np.arange(0, len(audio), 1 / factor)
@@ -152,6 +205,20 @@ def main() -> int:
                   f"{len(stretched) / rate:7.1f}s ({length:4.2f}x) "
                   f"{shift:+8.0f} +-{precision:3.0f} ct {control:+15.0f} ct"
                   f"{'   ZU WEIT' if bad else ''}")
+
+    # -- and whether it keeps time, which the length alone does not say ------
+    print()
+    print(f"{'Tempo':>6s} {'Klickabstand soll':>18s} {'gemessen':>12s} "
+          f"{'Abweichung':>12s} {'auf 3 Minuten':>15s}")
+    print("-" * 70)
+    for tempo in SPEEDS:
+        measured, wanted, spread = keeps_time(tempo)
+        per_second = (measured - wanted) / wanted * 1000.0
+        bad = abs(per_second) > ALLOWED_DRIFT_MS_PER_S
+        failures += bad
+        print(f"{int(tempo * 100):5d}% {wanted:15.1f} ms {measured:9.1f} ms "
+              f"{per_second:+9.3f} ms/s {per_second * 180:+12.0f} ms"
+              f"{'   ZU VIEL' if bad else ''}")
 
     print()
     if failures:

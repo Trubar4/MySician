@@ -64,6 +64,11 @@ class Mp3Player:
         # practice loop around it, and without this the sync would restart it
         # from past its own end once a frame for the rest of the song.
         self._ended = False
+        # How often the recording had to be pulled back into line, and how far
+        # it had wandered when it was. A re-seek is audible, so these two say
+        # whether the sync the player feels is drift or something else.
+        self.resyncs = 0
+        self.worst_drift_ms = 0.0
         self.error: str | None = None
 
     def open(self) -> bool:
@@ -141,6 +146,7 @@ class Mp3Player:
                 self._start_at(position_ms)
             return
         drift = position_ms - self.position_ms()
+        self.worst_drift_ms = max(self.worst_drift_ms, abs(drift))
         if abs(drift) < RESYNC_MS:
             return
         # Correcting is audible, so it is rate-limited. A file whose clock
@@ -152,6 +158,7 @@ class Mp3Player:
             return
         self._start_at(position_ms)
         self._last_resync_ms = position_ms
+        self.resyncs += 1
 
     def position_ms(self) -> float:
         """Where the recording has got to, in song time."""

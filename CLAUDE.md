@@ -482,6 +482,11 @@ where the song is with where the recording got to and corrects only past `RESYNC
   instead. The player is told and reports SONG milliseconds throughout; the file's own time is `song × time_scale`, and `time_scale` is
   `1/tempo`. Every result is cached under `~/.pickhero/stretched/`, keyed by the file's size and mtime as well as the speed, so picking a
   different recording can never inherit the last one's stretch.
+- **It keeps time, which is a different question from coming out the right length.** A file can be exactly 25 % longer and still put the
+  beats in the wrong places. Measured with a click track at every speed: the spacing is off by **0.03 ms per second at worst — 5 ms over
+  three minutes**. So when the recording feels out of sync, it is not the tempo; look at `mp3_worst_drift_ms` and `mp3_resyncs` in the run
+  log, which say how far it actually wandered and how often it was pulled back. Individual transients scatter by up to 6 ms at 50 % speed,
+  which is WSOLA sliding each window to where it best continues the last, and is the price of the pitch staying put.
 - **Measured on the player's own guitar, not on a sine wave** (`tools/check_timestretch.py`): a chord, a fast line and a whole play-along
   take, at every speed from 90 % down to 50 %. The pitch moves by at most **15 cents** — a sixth of a semitone, and the size of the
   measurement's own precision — while the control column shows what merely playing the file slower would cost: **−182 cents at 90 % and
@@ -539,6 +544,17 @@ Two things worth keeping straight, because the first version of the write-up got
   room unused, where `_fret_font` now fits them to the space that is actually there.
 - **Every fret number in a song is sized for the widest label in it.** Sized to its own label instead, a lone "5" towers over the "15"
   beside it, which reads as emphasis the music never asked for.
+
+## Practice Speed Belongs To The Song
+
+`tempo_factor` was one number for the whole app, so the solo being learned at 70 % opened the next song at 70 % too, and the song you had
+finished opened slowed down because something else needed it. `song_tempo_factors` keys it by song; anything not in there starts at full
+speed, and full speed is never written (an entry saying 1.0 says nothing).
+
+- **The plain `tempo_factor` stays**, because tools outside the app read it: `record_reference.py` writes it into a take's manifest, and an
+  analysis that does not know the speed reads a stretched take against the wrong grid — which cost a whole session once.
+- **The settings screen shows it as "per song", not as a value.** A global number that no longer decides anything is a lie on a screen whose
+  entire job is saying what is set.
 
 ## A Setting You Cannot See Is A Setting You Cannot Undo
 

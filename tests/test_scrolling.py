@@ -184,17 +184,61 @@ class TestTempoFactor:
         screen.set_tempo_factor(0.68)
         assert screen._tempo_factor == pytest.approx(0.70)
 
-    def test_tempo_factor_from_config(self):
+    def test_the_speed_belongs_to_the_song(self):
+        """The solo being learned at 70 % is still at 70 % tomorrow."""
         from pickhero.config import Config
-        config = Config(tempo_factor=0.75)
-        screen = PlayingScreen(_make_timeline(), config=config)
+        config = Config()
+        config.set_tempo_factor_for("solo", 0.75)
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="solo")
         assert screen._tempo_factor == pytest.approx(0.75)
 
-    def test_tempo_factor_config_clamped_on_init(self):
+    def test_another_song_opens_at_full_speed(self):
+        """A song that never needed slowing must not inherit what the last
+        one needed -- which is what a single global speed did."""
         from pickhero.config import Config
-        config = Config(tempo_factor=0.2)
-        screen = PlayingScreen(_make_timeline(), config=config)
-        assert screen._tempo_factor == 0.5
+        config = Config()
+        config.set_tempo_factor_for("solo", 0.6)
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="other")
+        assert screen._tempo_factor == 1.0
+
+    def test_a_song_never_slowed_opens_at_full_speed(self):
+        from pickhero.config import Config
+        screen = PlayingScreen(_make_timeline(), config=Config(), song_key="new")
+        assert screen._tempo_factor == 1.0
+
+    def test_changing_the_speed_stores_it_for_this_song(self):
+        from pickhero.config import Config
+        config = Config()
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="solo")
+        screen.set_tempo_factor(0.7)
+        assert config.tempo_factor_for("solo") == pytest.approx(0.7)
+
+    def test_full_speed_is_not_stored(self):
+        """Storing 1.0 fills the file with entries that say nothing, and full
+        speed is what a song opens at anyway."""
+        from pickhero.config import Config
+        config = Config()
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="solo")
+        screen.set_tempo_factor(0.7)
+        screen.set_tempo_factor(1.0)
+        assert "solo" not in config.song_tempo_factors
+
+    def test_a_stored_speed_out_of_range_is_ignored(self):
+        from pickhero.config import Config
+        config = Config()
+        config.song_tempo_factors["solo"] = 0.2
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="solo")
+        assert screen._tempo_factor == 1.0
+
+    def test_tools_can_still_read_the_speed_in_use(self):
+        """record_reference writes it into a take's manifest, and an analysis
+        that does not know the speed reads a stretched take against the wrong
+        grid -- which cost a whole session once."""
+        from pickhero.config import Config
+        config = Config()
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="solo")
+        screen.set_tempo_factor(0.65)
+        assert config.tempo_factor == pytest.approx(0.65)
 
 
 class TestLoopState:

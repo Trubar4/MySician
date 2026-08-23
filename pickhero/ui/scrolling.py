@@ -294,7 +294,14 @@ class PlayingScreen:
         self._hit_zone_fraction = hit_zone_fraction
         self._config = config or Config()
 
-        self._tempo_factor = max(0.5, min(1.0, self._config.tempo_factor))
+        # Practice speed belongs to the song, not to the app. A song never
+        # slowed down opens at full speed, whatever the last one needed.
+        # The parameter, not self._song_key: that is not assigned until fifty
+        # lines further down, and reading it here quietly gave every song the
+        # speed of no song at all.
+        getter = getattr(self._config, "tempo_factor_for", None)
+        self._tempo_factor = (getter(song_key) if getter
+                              else max(0.5, min(1.0, self._config.tempo_factor)))
 
         # Where the audio clock and the song clock were last agreed to be the
         # same moment. A strike is stamped in recorded time, which runs at
@@ -504,7 +511,14 @@ class PlayingScreen:
         factor = max(0.5, min(1.0, factor))
         factor = round(factor * 20) / 20  # round to nearest 0.05
         self._tempo_factor = factor
+        # Both: the per-song value is what this song opens at next time, and
+        # the plain one is what tools outside the app read to find out what
+        # speed a take was played at.
         self._config.tempo_factor = factor
+        setter = getattr(self._config, "set_tempo_factor_for", None)
+        if setter is not None:
+            setter(self._song_key, factor)
+        self._config.save()
         # The song clock now runs at a different fraction of the audio clock,
         # so the point where the two were last equal has to be moved to now.
         self._reanchor_audio_clock()
@@ -2534,6 +2548,14 @@ class PlayingScreen:
         fh.write(f"rescued_notes\t{matcher.rescued_notes}\n")
         fh.write(f"bends_judged\t{matcher.bends_judged}\n")
         fh.write(f"bends_short\t{matcher.bends_short}\n")
+        # The recording's own sync, so "it feels out" becomes a number. The
+        # stretch itself keeps time to 2 ms a minute (tools/check_timestretch),
+        # so anything felt here is drift or latency, not the tempo.
+        player = self._mp3_player
+        if player is not None:
+            fh.write(f"mp3_worst_drift_ms\t{player.worst_drift_ms:.0f}\n")
+            fh.write(f"mp3_resyncs\t{player.resyncs}\n")
+            fh.write(f"mp3_time_scale\t{player.time_scale:.3f}\n")
         fh.write(f"timing_samples\t{len(matcher.timing_samples)}\n")
         fh.write(f"timing_ambiguous\t{matcher.timing_ambiguous}\n")
 
