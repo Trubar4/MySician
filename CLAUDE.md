@@ -455,7 +455,92 @@ tuning — which is not a thing to ask of someone who plays metal. They answered
 - The existing session's manifest was corrected by hand rather than re-recorded (the audio is untouched, and the correction says so in a
   `corrected` field).
 
-## A Setting You Cannot See Is A Setting You Cannot Undo## A Setting You Cannot See Is A Setting You Cannot Undo
+## Two Backing Tracks, Switched Separately
+
+The MIDI backing is generated from the same timeline as the notes, so it cannot drift: it is told a position and plays the events at it. A
+recording has its own clock, running in the sound card, and the only control available is "start from here" — so `mp3_playback.py` compares
+where the song is with where the recording got to and corrects only past `RESYNC_MS` (90 ms), no more often than `MIN_RESYNC_GAP_MS`
+(1.5 s). A re-seek is audible; correcting an error nobody can hear costs more than the error.
+
+- **They are separate toggles (`B` and `U`), not one control cycling through both.** The player asked for it that way and the reason is the
+  workflow: lining a recording up against the click means hearing BOTH, then switching one off. A control that goes off → MIDI → recording
+  makes the state the job needs unreachable.
+- **Its own per-song offset (`Shift+N`/`Shift+M`), with no global fallback.** An MP3 decoder emits encoder padding before the music and how
+  much depends on the encoder that made the file, so nothing about one song's value predicts another's, and nothing about the MIDI offset
+  predicts this one.
+- **Its range is minutes, not milliseconds, and it needs three step sizes.** A recording is a different piece of music that happens to
+  contain the same song, and the tab is not always the whole of it: a GP file holding only the solo has to be lined up against four minutes
+  of music before it. `MAX_MP3_OFFSET_MS` is 8 minutes. `Shift+N`/`Shift+M` move 10 ms (what a sync is judged in), `Ctrl` a second (an
+  intro), `Ctrl+Shift` ten seconds (reaching four minutes at a second a press is four minutes of pressing). The MIDI backing keeps its own
+  offset on the plain keys, with `Alt` for a second — and its range is 10 s rather than the 400 ms it had, because 400 ms was chosen from
+  what a synth and a sound card add, which is the wrong thing to choose it from: the tab and the backing do not always start on the same beat.
+- **The offset reads in the unit it is judged in.** Milliseconds while it is a sync, seconds while it is an intro, minutes and seconds once
+  the tab is only the solo — "-192.00 s" is not something anyone can check against a player's time display.
+- **Practice speed is served by a stretched COPY of the file, not by playing it slower.** `pygame.mixer.music` plays at the recorded rate,
+  and resampling to 80 % drops the pitch four semitones with it — so `audio/timestretch.py` makes a longer file at the same pitch (WSOLA:
+  overlapping windows laid down at a new spacing, each slid to where it best continues the last) and `Mp3Player.set_source` is handed that
+  instead. The player is told and reports SONG milliseconds throughout; the file's own time is `song × time_scale`, and `time_scale` is
+  `1/tempo`. Every result is cached under `~/.pickhero/stretched/`, keyed by the file's size and mtime as well as the speed, so picking a
+  different recording can never inherit the last one's stretch.
+- **Measured on the player's own guitar, not on a sine wave** (`tools/check_timestretch.py`): a chord, a fast line and a whole play-along
+  take, at every speed from 90 % down to 50 %. The pitch moves by at most **15 cents** — a sixth of a semitone, and the size of the
+  measurement's own precision — while the control column shows what merely playing the file slower would cost: **−182 cents at 90 % and
+  −1200 at 50 %**. The length lands within 1 % everywhere. The check prints the width of its own correlation peak beside every reading,
+  because on a sustained chord that peak is broad and a shift smaller than the width is not a reading at all.
+- **It takes seconds, and the player has to be able to see them.** Measured: about 20 ms per second of stereo audio, so a four-minute song
+  is five seconds here and plausibly three times that on a laptop, with the recording silent throughout. The first version said "one moment"
+  and nothing moved, which is indistinguishable from a feature that does not work — and that is exactly how it came back. It shows the
+  percentage now, and a build nobody wants any more is abandoned rather than finished: stepping the tempo down three times would otherwise
+  build three copies before reaching the one that was asked for.
+- **The recording is looked after while the song is PAUSED too.** `update()` returns early when not playing and the recording's update sat
+  after that return, so a copy that landed during a pause was never swapped in and the progress line stood still until playback resumed.
+  Pausing stops the music, not the work.
+- **The stretch runs on a thread and the recording is silent until it lands.** A whole song is seconds of work, and seconds of work in the
+  game loop is a frozen app — the fault this project already shipped once, when a seek reopened the input device. Playing on at the old speed
+  meanwhile is not the lenient option either: it is a bar out within seconds. So the HUD says "fitting to 80 % speed" and the recording waits.
+  A file SDL can stream but not decode into memory fails here and is named on screen ("convert it to OGG or WAV"), and a failed speed is not
+  retried every frame.
+- **Every failure is named on screen**: a file that has been moved, a decoder that cannot start from the middle of a file. A backing track
+  that silently does not play is indistinguishable from a feature that does not work, and the player would go looking in the wrong place.
+- **`play(start=)` really does seek — measured, not assumed.** A file whose pitch encodes its own timestamp, played from 5, 10 and 15 s
+  with SDL's output captured to disk, comes back at the right pitch every time. So when a jump does not carry, the fault is in this app's
+  path or in that particular file's decoder, and there is no point rewriting the transport. A decoder that cannot seek accepts
+  `play(start=)` without complaint and starts from the top anyway, which is invisible — so a gap that stays open past
+  `MP3_STUCK_DRIFT_MS` for `MP3_STUCK_FOR_MS` is named on screen rather than left to look like a dead key.
+- **A status message must never outlive its situation.** Picking a file set a note that outranks the ordinary HUD line, and nothing cleared
+  it — so the offset the player was adjusting with `Shift+N`/`Shift+M` was never on screen at all, and the key looked dead. Notes are for
+  what the live line cannot say, and they are dropped as soon as it can.
+- **Pause silences it too, and that took a bug to notice.** Every route to the recording reaches `Mp3Player.seek`, and seeking STARTS
+  playback — so nudging the offset on a paused song set the recording playing under a picture standing still, which is the one state the
+  offset cannot be judged in. `_mp3_plays()` includes `self._playing` for that reason. Paused, `Shift+N`/`Shift+M` only store the value;
+  the HUD shows it move regardless, so the key never looks dead.
+
+## A Note Head Is Squeezed Sideways, Not Downwards
+
+A dense song shrinks its note heads to buy look-ahead — see `_recompute_scroll_speed`. What was never noticed is that the squeeze is
+entirely **horizontal**: look-ahead is bought and sold in width, while the lane is as tall as it ever was. Measured on the song the player
+reported, a solo track at 135 BPM whose sixteenths sit 111 ms apart, in a 1277x771 window:
+
+| | |
+|---|---|
+| head after shrinking | 26 px (the `MIN_HEAD_PX` floor) |
+| lane height | 56 px |
+| **vertical space unused** | **30 px, 53 %** |
+| look-ahead at full-size heads | 2.0 s — unreadable |
+
+So the head now carries its own height (`_head_h_px`), taken from the lane rather than from the music: full-size on a roomy song, where it
+equals the width and the note stays round, and full height on a dense one, where it does not. **This costs no look-ahead whatsoever** — the
+window is computed from the width alone, and the test asserts that rather than trusting it.
+
+Two things worth keeping straight, because the first version of the write-up got them backwards:
+
+- **The height makes the NOTE bigger, not the number.** At a 26 px head a two-digit fret is limited by the width, and more height does
+  nothing for it. The digits grew from 14 px to 21 px for a different reason: the old rule sized them at a fixed `radius * 1.1` and left
+  room unused, where `_fret_font` now fits them to the space that is actually there.
+- **Every fret number in a song is sized for the widest label in it.** Sized to its own label instead, a lone "5" towers over the "15"
+  beside it, which reads as emphasis the music never asked for.
+
+## A Setting You Cannot See Is A Setting You Cannot Undo
 
 Forty-one keys are handled while a song runs. That is right for the ones the hands reach for with the guitar still on — play, wait mode,
 tempo, loop, `K` — and wrong for the rest: a fret limit, a muted string, a noise gate is set once and then lives on, invisible, changing how
