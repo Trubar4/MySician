@@ -1,0 +1,135 @@
+{
+  "created": "2026-08-23T13:46:53",
+  "samplerate": 48000,
+  "channels": 1,
+  "device": "Analogue 1 + 2 (Focusrite USB A",
+  "tuning_offset_semitones": 0,
+  "takes": [
+    {
+      "id": "60_bend_full_ok",
+      "block": 6,
+      "title": "Ganzton-Bend, gehalten - RICHTIG",
+      "file": "60_bend_full_ok.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "3": 7
+        }
+      ],
+      "expected_midi": [
+        [
+          62
+        ]
+      ],
+      "seconds": 12,
+      "peak_dbfs": -6.0,
+      "rms_dbfs": -25.2
+    },
+    {
+      "id": "61_bend_half_ok",
+      "block": 6,
+      "title": "Halbton-Bend, gehalten - RICHTIG",
+      "file": "61_bend_half_ok.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "3": 7
+        }
+      ],
+      "expected_midi": [
+        [
+          62
+        ]
+      ],
+      "seconds": 12,
+      "peak_dbfs": -6.7,
+      "rms_dbfs": -27.1
+    },
+    {
+      "id": "62_bend_too_short",
+      "block": 6,
+      "title": "Ganzton-Bend, absichtlich ZU FLACH",
+      "file": "62_bend_too_short.wav",
+      "technique": "free",
+      "intentional_error": "nur etwa ein Halbton statt einem Ganzton",
+      "shapes": [
+        {
+          "3": 7
+        }
+      ],
+      "expected_midi": [
+        [
+          62
+        ]
+      ],
+      "seconds": 12,
+      "peak_dbfs": -6.9,
+      "rms_dbfs": -26.8
+    },
+    {
+      "id": "63_bend_not_held",
+      "block": 6,
+      "title": "Ganzton-Bend, absichtlich NICHT GEHALTEN",
+      "file": "63_bend_not_held.wav",
+      "technique": "free",
+      "intentional_error": "oben nicht gehalten",
+      "shapes": [
+        {
+          "3": 7
+        }
+      ],
+      "expected_midi": [
+        [
+          62
+        ]
+      ],
+      "seconds": 12,
+      "peak_dbfs": -6.0,
+      "rms_dbfs": -27.1
+    },
+    {
+      "id": "64_bend_release",
+      "block": 6,
+      "title": "Bend und Release",
+      "file": "64_bend_release.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "3": 7
+        }
+      ],
+      "expected_midi": [
+        [
+          62
+        ]
+      ],
+      "seconds": 12,
+      "peak_dbfs": -5.9,
+      "rms_dbfs": -25.9
+    },
+    {
+      "id": "65_bend_vibrato",
+      "block": 6,
+      "title": "Ganzton-Bend mit Vibrato",
+      "file": "65_bend_vibrato.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [
+        {
+          "3": 7
+        }
+      ],
+      "expected_midi": [
+        [
+          62
+        ]
+      ],
+      "seconds": 12,
+      "peak_dbfs": -6.6,
+      "rms_dbfs": -27.2
+    }
+  ]
+}
