@@ -35,6 +35,7 @@ Two things it is honest about:
 import hashlib
 import wave
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -54,11 +55,23 @@ SEARCH = 256
 MAX_CACHED = 24
 
 
-def stretch(samples: np.ndarray, factor: float) -> np.ndarray:
+class Cancelled(RuntimeError):
+    """The stretch was abandoned because nobody wants it any more."""
+
+
+def stretch(samples: np.ndarray, factor: float,
+            progress: Callable[[float], bool] | None = None) -> np.ndarray:
     """Make the audio `factor` times as long at the same pitch.
 
     `samples` is float32, mono `(n,)` or `(n, channels)`. A factor above 1
     makes it longer (slower playback), below 1 shorter.
+
+    `progress` is called with how far along this is, 0 to 1, and may return
+    False to abandon the work -- which raises `Cancelled`. Both exist for the
+    same reason: a whole song takes five to twenty seconds, and the player is
+    sitting in silence for all of it. They deserve to see it moving, and
+    stepping the tempo down three times should not build three copies before
+    reaching the one they asked for.
     """
     if samples.ndim == 1:
         samples = samples[:, None]
@@ -78,8 +91,15 @@ def stretch(samples: np.ndarray, factor: float) -> np.ndarray:
 
     read = 0.0
     write = 0
+    frames = 0
     previous = None
     while write + WINDOW <= out_len and int(read) + WINDOW <= n:
+        # Reported every so often rather than every window: the callback
+        # crosses a thread boundary and the answer cannot change that fast.
+        frames += 1
+        if progress is not None and frames % 64 == 0:
+            if progress(write / out_len) is False:
+                raise Cancelled()
         base = int(read)
         if previous is None:
             position = base
@@ -136,25 +156,32 @@ def cache_name(path: Path, tempo_factor: float) -> str:
     return f"{path.stem[:32]}_{int(round(tempo_factor * 100)):03d}_{key}.wav"
 
 
-def build(path: Path, tempo_factor: float, cache_dir: Path) -> Path:
+def build(path: Path, tempo_factor: float, cache_dir: Path,
+          progress: Callable[[float], bool] | None = None) -> Path:
     """Return a WAV of `path` slowed to `tempo_factor`, building it if needed.
 
     Blocking and slow by design -- seconds for a whole song. Call it off the
-    game loop.
+    game loop, and pass `progress` so the player can see it moving.
     """
     cache_dir = Path(cache_dir)
     target = cache_dir / cache_name(Path(path), tempo_factor)
     if target.exists():
         return target
+    if progress is not None and progress(0.0) is False:
+        raise Cancelled()
     samples, rate = _decode(Path(path))
-    stretched = stretch(samples, 1.0 / tempo_factor)
+    stretched = stretch(samples, 1.0 / tempo_factor, progress)
     del samples                                # a whole song, twice, is real
     cache_dir.mkdir(parents=True, exist_ok=True)
     # Written beside the target and renamed, so a stretch interrupted halfway
     # never leaves a half-written file that later looks like a cache hit.
     partial = target.with_suffix(".part")
-    _write_wav(partial, stretched, rate)
-    partial.replace(target)
+    try:
+        _write_wav(partial, stretched, rate)
+        partial.replace(target)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     _prune(cache_dir)
     return target
 

@@ -369,6 +369,10 @@ class PlayingScreen:
         # must not inherit the last one's stretch.
         self._mp3_stretch_done: tuple[float, str, str] | None = None
         self._mp3_stretch_failed: tuple[float, str, str] | None = None
+        # How far the build has got, 0 to 1. A whole song is five to twenty
+        # seconds of work and the player hears nothing for all of it -- "one
+        # moment" with nothing moving is indistinguishable from broken.
+        self._mp3_stretch_progress = 0.0
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         self._load_mp3_for_song()
@@ -584,6 +588,11 @@ class PlayingScreen:
                     self._tuner_note_stable_frames = 0
 
         if not self._playing:
+            # Still worth a look: a stretched copy that lands while the song
+            # is paused has to be swapped in, and the line that says how far
+            # along it is has to keep moving. Pausing does not stop the work,
+            # and _update_mp3 keeps the recording itself silent.
+            self._update_mp3()
             return
 
         now = time.perf_counter()
@@ -3166,12 +3175,21 @@ class PlayingScreen:
         if not path:
             return
         self._mp3_stretch_wanted = tempo
+        self._mp3_stretch_progress = 0.0
         cache_dir = config_module.CONFIG_DIR / "stretched"
+
+        def report(fraction: float) -> bool:
+            self._mp3_stretch_progress = fraction
+            # Stepping the tempo down three times should not build three
+            # copies before reaching the one that was asked for.
+            return self._tempo_factor == tempo
 
         def work() -> None:
             try:
-                built = timestretch.build(Path(path), tempo, cache_dir)
+                built = timestretch.build(Path(path), tempo, cache_dir, report)
                 self._mp3_stretch_done = (tempo, path, str(built))
+            except timestretch.Cancelled:
+                pass                          # the speed moved on; not a fault
             except Exception as exc:
                 # Not every format SDL can stream can also be decoded into
                 # memory. Named rather than swallowed: "convert it" is a thing
@@ -3303,8 +3321,8 @@ class PlayingScreen:
         if self._mp3_stretch_matches(self._mp3_stretch_failed, self._tempo_factor):
             return f"Audio: {self._mp3_stretch_failed[2]} — {name}"
         if not self._mp3_source_fits():
-            return (f"Audio: fitting to {int(self._tempo_factor * 100)} % speed, "
-                    f"one moment — {name}")
+            return (f"Audio: fitting to {int(self._tempo_factor * 100)} % speed "
+                    f"— {self._mp3_stretch_progress:.0%} — {name}")
         return (f"Audio: {_offset_text(self._mp3_offset())} "
                 f"(Shift+N/M ±10ms, Ctrl ±1s, Ctrl+Shift ±10s) — {name}")
 

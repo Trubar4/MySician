@@ -372,12 +372,40 @@ class TestSlowedPractice:
         ran_in = []
         monkeypatch.setattr(
             timestretch, "build",
-            lambda path, tempo, cache: ran_in.append(
+            lambda path, tempo, cache, progress=None: ran_in.append(
                 threading.current_thread()) or (tmp_path / "x.wav"))
         screen = self._screen(tmp_path, monkeypatch, 0.8)
         screen._ensure_mp3_source()
         screen._mp3_stretch_thread.join(timeout=5)
         assert ran_in and ran_in[0] is not threading.main_thread()
+
+    def test_the_player_is_told_how_far_along_it_is(self, tmp_path, monkeypatch):
+        """Five to twenty seconds of silence with nothing moving on screen is
+        indistinguishable from a feature that does not work."""
+        screen = self._screen(tmp_path, monkeypatch, 0.8)
+        screen._mp3_stretch_progress = 0.42
+        assert "42%" in screen._mp3_hud_text()
+
+    def test_a_build_nobody_wants_any_more_is_abandoned(
+            self, tmp_path, monkeypatch):
+        """Stepping the tempo down three times must not build three copies
+        before reaching the one that was asked for."""
+        reports = []
+        monkeypatch.setattr(
+            timestretch, "build",
+            lambda path, tempo, cache, progress=None:
+                reports.append(progress(0.5)) or (tmp_path / "x.wav"))
+        screen = self._screen(tmp_path, monkeypatch, 0.8)
+        screen._ensure_mp3_source()
+        screen._mp3_stretch_thread.join(timeout=5)
+        assert reports == [True]
+
+        reports.clear()
+        screen._tempo_factor = 0.6           # the player moved on mid-build
+        screen._mp3_stretch_wanted = None
+        screen._start_mp3_stretch(0.8)
+        screen._mp3_stretch_thread.join(timeout=5)
+        assert reports == [False]
 
     def test_a_failed_speed_is_not_attempted_again_every_frame(
             self, tmp_path, monkeypatch):
