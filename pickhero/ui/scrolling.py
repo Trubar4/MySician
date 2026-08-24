@@ -557,7 +557,7 @@ class PlayingScreen:
         self._matcher.audio_offset_ms = (
             self._audio_anchor_song_ms
             - self._audio_anchor_ms * self._tempo_factor
-            + self._config.audio_latency_offset_ms
+            + self._sync_offset_song_ms()
         )
 
     def set_noise_gate_db(self, db: float) -> None:
@@ -2818,6 +2818,24 @@ class PlayingScreen:
 
     # -- Latency sync --
 
+    def _sync_offset_song_ms(self) -> float:
+        """The latency compensation, in SONG milliseconds.
+
+        `audio_latency_offset_ms` is a delay of the real world -- the sound
+        card's buffer plus aubio's analysis window, both a fixed number of
+        SAMPLES and both entirely indifferent to the practice speed. A strike
+        is stamped in recorded time and then scaled into song time, so the
+        compensation has to be scaled with it.
+
+        It was not, and slow practice paid for it. Measured on a 70 % run with
+        a -220 ms offset: every strike landed 114 ms before its note, 66 of
+        which is this -- a third of the 200 ms hit window, spent before the
+        player has played anything. At 50 % it would be 110 ms, over half.
+        Slowing a song down is what you do when a passage is too hard, and it
+        was quietly making the scoring harder.
+        """
+        return self._config.audio_latency_offset_ms * self._tempo_factor
+
     def _late_window_ms(self) -> float:
         """Grace period for late-arriving strike notes.
 
@@ -2825,7 +2843,7 @@ class PlayingScreen:
         latency delays the strike's real-world arrival by the same amount
         on top, so misses must be marked correspondingly later.
         """
-        return 150.0 + max(0.0, -self._config.audio_latency_offset_ms)
+        return 150.0 + max(0.0, -self._sync_offset_song_ms())
 
     def _make_chord_verifier(self):
         """Per-string chord verifier, or None when the setting is off."""
@@ -2853,7 +2871,8 @@ class PlayingScreen:
         self._config.audio_latency_offset_ms = clamped
         self._config.save()
         if self._matcher is not None:
-            self._matcher.audio_offset_ms += delta_ms
+            # The stored value is real time; the matcher works in song time.
+            self._matcher.audio_offset_ms += delta_ms * self._tempo_factor
             self._matcher.late_window_ms = self._late_window_ms()
             # Old measurements no longer reflect the new offset
             self._matcher.reset_timing_samples()
@@ -2916,7 +2935,9 @@ class PlayingScreen:
         # guess dressed up as a measurement.
         if report["verdict"] not in ("latency", "mixed"):
             return
-        self._adjust_latency_offset(-report["median_ms"])
+        # The report's median is song milliseconds; the offset is stored in
+        # real ones, so that a speed change does not invalidate it.
+        self._adjust_latency_offset(-report["median_ms"] / self._tempo_factor)
         self._sync_applied = True
 
     def _reset_latency_offset(self) -> None:
@@ -3086,7 +3107,7 @@ class PlayingScreen:
             self._matcher = NoteMatcher(
                 self._timeline,
                 timing_window_ms=self._config.timing_window_ms,
-                audio_offset_ms=self._playback_ms + self._config.audio_latency_offset_ms,
+                audio_offset_ms=self._playback_ms + self._sync_offset_song_ms(),
                 chord_threshold_ms=self._config.chord_threshold_ms,
                 note_filter=self._note_passes_filter if self._is_filter_active() else None,
                 chord_partial_credit=self._chord_partial_credit,

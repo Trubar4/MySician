@@ -999,10 +999,12 @@ class TestAutoSync:
     sitting in the config for days.
     """
 
-    def _screen_with(self, deltas):
+    def _screen_with(self, deltas, tempo=1.0):
         from pickhero.matcher import NoteMatcher, TimingSample
         from pickhero.tabs.timeline import SongMetadata, Timeline
         screen = PlayingScreen(_make_timeline(), config=Config())
+        # Before the samples: changing the speed resets them, on purpose.
+        screen.set_tempo_factor(tempo)
         matcher = NoteMatcher(Timeline([], SongMetadata(title="x", tempo=100)))
         for i, d in enumerate(deltas):
             matcher.timing_errors_ms.append(d)
@@ -1039,6 +1041,26 @@ class TestAutoSync:
         screen = self._screen_with([120, 118, 122])
         screen._auto_sync_timing()
         assert self._offset(screen) == 0.0
+
+    def test_what_it_stores_is_real_time_not_song_time(self):
+        """The samples are song milliseconds and the setting is real ones.
+        Stored unconverted, an offset calibrated at 70 % would be a seventh
+        too small the moment the song went back to full speed -- and the
+        player has no way to see that, because the number on screen looks
+        exactly the same either way."""
+        screen = self._screen_with([118, 122, 120, 125, 119, 121, 123, 120,
+                                    124, 119], tempo=0.5)
+        screen._auto_sync_timing()
+        # 120 ms of song at half speed is 240 ms of the world.
+        assert self._offset(screen) == pytest.approx(-240, abs=8)
+
+    def test_and_that_is_what_the_matcher_then_gets_back(self):
+        """Round trip: measure at one speed, and the strikes land on the beat
+        at that same speed rather than being corrected twice."""
+        screen = self._screen_with([118, 122, 120, 125, 119, 121, 123, 120,
+                                    124, 119], tempo=0.5)
+        screen._auto_sync_timing()
+        assert screen._sync_offset_song_ms() == pytest.approx(-120, abs=4)
 
     def test_applying_clears_the_measurements_it_used(self):
         """Otherwise a second press would count the same error twice instead
@@ -1210,10 +1232,37 @@ class TestAudioClockAnchor:
         assert self._song_position(screen, 21_000.0) == pytest.approx(20_500.0)
 
     def test_the_sync_offset_survives_the_change(self):
+        """And it is scaled, because it is a delay of the real world.
+
+        The sound card's buffer and aubio's analysis window are a fixed
+        number of SAMPLES; neither knows the song has been slowed down. A
+        strike is stamped in recorded time and scaled into song time, so its
+        compensation is scaled with it. Applied unscaled it over-corrects by
+        (1 - tempo) of itself -- 66 ms of a 200 ms hit window on the player's
+        70 % run, spent before they had played anything.
+        """
         screen = self._screen(elapsed_ms=10_000.0, playback_ms=10_000.0)
         screen._config.audio_latency_offset_ms = -60.0
         screen.set_tempo_factor(0.75)
+        assert self._song_position(screen, 10_000.0) == pytest.approx(9_955.0)
+
+    def test_full_speed_is_untouched_by_the_scaling(self):
+        """Every offset ever calibrated was calibrated at some speed, and at
+        full speed the two times are the same thing."""
+        screen = self._screen(elapsed_ms=10_000.0, playback_ms=10_000.0)
+        screen._config.audio_latency_offset_ms = -60.0
+        screen.set_tempo_factor(1.0)
         assert self._song_position(screen, 10_000.0) == pytest.approx(9_940.0)
+
+    def test_the_offset_the_player_set_is_what_stays_in_the_config(self):
+        """Scaling happens on the way to the matcher, not in the setting. A
+        value that changed itself when you slowed the song down could never
+        be judged by feel, and K would fight it every run."""
+        screen = self._screen(elapsed_ms=1000.0, playback_ms=1000.0)
+        screen._config.audio_latency_offset_ms = -60.0
+        screen.set_tempo_factor(0.5)
+        assert screen._config.audio_latency_offset_ms == pytest.approx(-60.0)
+        assert screen._sync_offset_song_ms() == pytest.approx(-30.0)
 
     def test_strikes_stamped_before_the_change_are_dropped(self):
         """They were stamped under the old speed and would be read under the

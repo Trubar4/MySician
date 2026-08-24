@@ -145,6 +145,14 @@ advances at 0.8 of it. `song = recorded x tempo` is only a position when both ar
 by `elapsed x change` — growing for the rest of the song, and not something `K` can take back. Strikes already queued at the moment of the
 change were stamped under the old speed and are dropped rather than read under the new one.
 
+**The latency compensation is a real-world delay and has to be scaled too.** `audio_latency_offset_ms` is the sound card's buffer plus
+aubio's analysis window — a fixed number of SAMPLES, indifferent to the practice speed. It was added to the song-time equation unscaled, so
+at 70 % it over-corrected by 30 % of itself. Measured on the player's own 70 % run with a −220 ms offset: every strike landed **114 ms before
+its note**, 66 of that this bug — a third of the 200 ms hit window, spent before they had played anything; scaled it comes back to −48 ms. At
+50 % it would be 110 ms, over half the window. Slowing a song down is what you do when a passage is too hard, and it was quietly making the
+scoring harder. `_sync_offset_song_ms()` is now the only reader; `K` measures in song time and therefore divides before storing, so an offset
+calibrated at one speed still holds at every other.
+
 `AudioCapture.start()` builds a **new** stream and a new ring every time. Called on a capture that is already running — which is what the
 signal meter before the count-in does — the old stream is never closed and keeps writing into the same ring, so the counter advances at twice
 real time. `_start_audio()` therefore always stops first.
