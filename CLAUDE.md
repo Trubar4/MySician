@@ -175,6 +175,10 @@ Two things now answer that without another guess:
   stamp, playback position, pitch, confidence, what became of it — plus every written note's final verdict, plus the header that explains a
   run: resolved sample rate, dropped buffers, gate, thresholds, tempo, offsets, filters. `matcher.strike_trace` is written only and never
   read back by the matcher.
+- **It works from half a run, and says that it is half a run.** `D` is pressed at any moment and mostly will be: a song abandoned a third of
+  the way in leaves two thirds of its notes PENDING, and hits over `notes_written` then reads as a catastrophe. So the header carries
+  `notes_reached`, `notes_not_reached`, `reached_ms`, `played_to_the_end` and the loop, and the HUD says "up to 40 s". Same lesson as the
+  stated practice speed: a number is only readable next to what it is a number of.
 
 ## What A Run Log Answered, First Time Out
 

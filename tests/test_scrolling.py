@@ -1295,6 +1295,72 @@ class TestRunLog:
         assert "audio was off" in screen._run_log_note
 
 
+class TestALogFromHalfARun:
+    """D can be pressed at any moment, and most of the time it will be.
+
+    Two thirds of a song not yet reached leaves two thirds of the notes
+    PENDING, and hits divided by notes_written then reads as a catastrophic
+    score. A number is only readable next to what it is a number of, which is
+    the same lesson the stated practice speed taught the analysis.
+    """
+
+    def _half_played(self):
+        from pickhero.audio.detector import DetectedNote
+        from pickhero.audio.input import TimestampedNote
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=1000.0 * i, midi_note=40, string=6,
+                           fret=0, duration_ms=400.0, measure=0)
+                 for i in range(1, 11)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "half.gp5"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        for i in range(1, 4):
+            struck = TimestampedNote(
+                note=DetectedNote(40, 82.4, 0.95, "E2", True),
+                timestamp_ms=1000.0 * i + 10.0)
+            screen._matcher.process_detected_notes([struck], 1000.0 * i + 10.0)
+        screen._playback_ms = 3500.0
+        return screen
+
+    def _text(self, screen):
+        import io
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        return buffer.getvalue()
+
+    def test_it_says_how_many_notes_the_run_actually_reached(self):
+        text = self._text(self._half_played())
+        assert "notes_written\t10" in text
+        assert "notes_reached\t3" in text
+        assert "notes_not_reached\t7" in text
+
+    def test_it_says_where_the_playhead_stopped(self):
+        text = self._text(self._half_played())
+        assert "reached_ms\t3500" in text
+        assert "played_to_the_end\tFalse" in text
+
+    def test_a_finished_run_says_that_instead(self):
+        screen = self._half_played()
+        screen._song_completed = True
+        assert "played_to_the_end\tTrue" in self._text(screen)
+
+    def test_a_loop_is_named_because_the_bars_were_played_many_times(self):
+        screen = self._half_played()
+        screen._loop_enabled = True
+        screen._loop_start_ms = 1000.0
+        screen._loop_end_ms = 3000.0
+        assert "loop\t1000-3000 ms" in self._text(screen)
+
+    def test_no_loop_writes_no_loop_line(self):
+        assert "\nloop\t" not in self._text(self._half_played())
+
+    def test_the_screen_says_it_was_only_part_of_the_song(self):
+        screen = self._half_played()
+        screen._export_run_log()
+        assert "up to 4 s" in screen._run_log_note
+
+
 class TestHeardLine:
     """A low score has two completely different causes and one number.
 

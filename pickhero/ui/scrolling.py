@@ -18,7 +18,8 @@ from pickhero.audio.mp3_playback import Mp3Player, pick_audio_file
 from pickhero.audio import timestretch
 from pickhero import config as config_module
 from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
-from pickhero.matcher import FINE_MS, STRING_MIN_SAMPLES, NoteMatcher
+from pickhero.matcher import (FINE_MS, STRING_MIN_SAMPLES, MatchType,
+                              NoteMatcher)
 from pickhero import practice_log
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.timeline import NoteEvent, Timeline
@@ -2507,7 +2508,9 @@ class PlayingScreen:
         except OSError as exc:
             self._run_log_note = f"Could not write the file: {exc}"
             return
-        self._run_log_note = f"Run written to {path}"
+        done = self._song_completed or self._playback_ms >= self._timeline.duration_ms
+        where = "" if done else f" — up to {self._playback_ms / 1000:.0f} s"
+        self._run_log_note = f"Run written to {path}{where}"
 
     def _write_run_log(self, fh) -> None:
         """The body of the run log. Split out so a test can read it back."""
@@ -2518,6 +2521,22 @@ class PlayingScreen:
         fh.write("# MySician run log\n")
         fh.write(f"song\t{self._song_key}\n")
         fh.write(f"notes_written\t{len(self._timeline.notes)}\n")
+        # How far the run actually got. D can be pressed at any moment, and a
+        # log stopped a third of the way in has two thirds of its notes still
+        # PENDING -- which reads as a catastrophic score to anybody who
+        # divides hits by notes_written. A number is only readable next to
+        # what it is a number of.
+        pending = sum(1 for note in self._timeline.notes
+                      if matcher.get_note_state(note) is MatchType.PENDING)
+        fh.write(f"notes_reached\t{len(self._timeline.notes) - pending}\n")
+        fh.write(f"notes_not_reached\t{pending}\n")
+        fh.write(f"reached_ms\t{self._playback_ms:.0f}\n")
+        fh.write(f"song_ms\t{self._timeline.duration_ms:.0f}\n")
+        fh.write(f"played_to_the_end\t{bool(self._song_completed)}\n")
+        if self._loop_enabled and self._loop_start_ms is not None:
+            fh.write(f"loop\t{self._loop_start_ms:.0f}-"
+                     f"{'' if self._loop_end_ms is None else f'{self._loop_end_ms:.0f}'}"
+                     f" ms (the same bars were played over and over)\n")
         fh.write(f"tempo_percent\t{int(self._tempo_factor * 100)}\n")
         fh.write(f"hit_window_ms\t{self._config.timing_window_ms:.0f}\n")
         fh.write(f"sync_offset_ms\t{self._config.audio_latency_offset_ms:.0f}\n")
