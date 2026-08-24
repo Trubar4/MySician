@@ -116,6 +116,37 @@ def best_offset_at(strike_ms, onsets, tempo):
     return best_offset, best_hits, best_error
 
 
+# A stated practice speed is checked against the audio, never believed. The
+# manifest said 80 % for a take played at 100 % and the report came back at
+# 13 %, which reads exactly like a detector that has stopped working. On a
+# real take the true speed is a sharp peak (46 strikes explained against 40
+# at the neighbouring speed); the wrong one sat at 33 against 51. So another
+# speed has to explain a QUARTER more strikes before it overrules what the
+# manifest says -- far more than the peak's own margin, and far less than the
+# gap a wrong number opens.
+TEMPO_DOUBT_RATIO = 1.25
+
+
+def check_tempo(strike_ms, onsets, stated):
+    """(tempo, note) -- the stated speed, or the measured one if it is beaten.
+
+    A tool that reports a number without checking the assumption underneath it
+    is measuring itself, and this one has done exactly that once already.
+    """
+    if stated is None:
+        return None, ""
+    _, stated_hits, _ = best_offset_at(strike_ms, onsets, stated)
+    _, best_hits, best_tempo = best_alignment(strike_ms, onsets, None)
+    if best_hits < stated_hits * TEMPO_DOUBT_RATIO:
+        return stated, ""
+    note = (f"ACHTUNG: angegeben sind {stated * 100:.0f} %, aber bei "
+            f"{best_tempo * 100:.0f} % passen {best_hits} statt {stated_hits} "
+            f"Anschlaege aufs Raster.\n"
+            f"         Gelesen wird mit {best_tempo * 100:.0f} %. "
+            f"Das Manifest der Aufnahme stimmt nicht.")
+    return best_tempo, note
+
+
 def best_alignment(strike_ms, onsets, tempo=None):
     """(offset, hits, tempo) for the best fit, over one tempo or all of them.
 
@@ -186,8 +217,12 @@ def main() -> int:
         print(f"(WAV liegt bei {rate} Hz, Manifest sagt {rate_hint})")
     strikes = strikes_of(audio, rate)
     stated = stated if stated is not None else tempo
-    offset, aligned, tempo = best_alignment(
-        [s.timestamp_ms for s in strikes], onsets, tempo)
+    strike_ms = [s.timestamp_ms for s in strikes]
+    tempo, doubt = check_tempo(strike_ms, onsets, tempo)
+    if doubt:
+        print(doubt + "\n")
+        stated = None
+    offset, aligned, tempo = best_alignment(strike_ms, onsets, tempo)
 
     print(f"{wav_path.name}: {len(audio) / rate:.0f}s, {rate} Hz")
     print(f"Song: {Path(song).name} — {len(onsets)} Anschlaege geschrieben")

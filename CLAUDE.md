@@ -184,8 +184,13 @@ the verifier, the clock anchored at 5.4 ms. Every candidate on the list was clea
 
 What it could NOT say is which change did it, because two things moved at once: the fixes, and the player regenerating the timing test
 (their copy was the older 78-note build). The one difference nobody had considered is that the 34.6 % run had `record_reference.py`
-capturing from the same interface at the same time. **A score taken while the reference recorder is running is not evidence** until that is
-ruled out — the offline replay of that very take reads 97.4 % through the identical code.
+capturing from the same interface at the same time.
+
+**Measured since, and the recorder is innocent.** Two runs of the same song four minutes apart, one of them with `record_reference.py
+--play-along` capturing from the same interface: the recorded run scored **98.4 %** (61/62) and the unrecorded control **88.7 %** (55/62,
+six strings read a semitone flat in the eighth-note chords). Both logs show `dropped_buffers 0` and the same input level, so the second
+stream costs neither audio nor clock. The 34.6 % run had a different cause, and the offline replay of that take reading 97.4 % says the
+audio was never the problem.
 
 The five notes still lost were all named by the log rather than inferred: a two-string power chord that arrived pitchless (fixed, see the
 chord credit above) and two one-semitone misreads.
@@ -553,6 +558,14 @@ speed, and full speed is never written (an entry saying 1.0 says nothing).
 
 - **The plain `tempo_factor` stays**, because tools outside the app read it: `record_reference.py` writes it into a take's manifest, and an
   analysis that does not know the speed reads a stretched take against the wrong grid — which cost a whole session once.
+- **And keeping it is exactly what then wrote the wrong number.** `practice_tempo()` went on reading the global value, so the first take
+  recorded after this change said 80 % for a song played at 100 %, and `analyze_play_along.py` read that take at **13 %** instead of 91 % —
+  which looks precisely like a detector that has stopped working. It reads `song_tempo_factors[key]` now, and a song with no entry of its own
+  is **1.0**, not the global value: that is what the app opens it at. A setting that moves house has to be followed into every reader, and the
+  writer outside the app is the one nobody looks at.
+- **The analysis no longer believes the manifest either** (`check_tempo`). It measures the speed anyway and overrules a stated one that
+  another speed beats by a quarter — 51 strikes explained against 33, where a correct speed is a sharp peak (46 against 40 at its neighbour).
+  Same rule as everywhere else here: a tool that reports a number without checking the assumption underneath it is measuring itself.
 - **The settings screen shows it as "per song", not as a value.** A global number that no longer decides anything is a lie on a screen whose
   entire job is saying what is set.
 

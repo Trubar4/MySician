@@ -607,21 +607,46 @@ def countdown(n=3):
 
 # -------------------------------------------------------------------- main
 
-def practice_tempo():
-    """The speed the app is set to play at, as a fraction, or None.
+def practice_tempo(song=None):
+    """The speed THIS SONG is set to play at, as a fraction, or None.
 
     Read straight out of the app's settings rather than asked for: a take
     played at 80 % is stretched against the written tab, and an analysis that
     does not know that reports the detector hearing a quarter of what it
     actually heard. The recorder is deliberately standalone, so this reads the
     JSON rather than importing the app.
+
+    The speed belongs to the SONG (`song_tempo_factors`), and the plain
+    `tempo_factor` is whatever was last set globally -- which is nothing this
+    take was played at. Reading the global one wrote 80 % into a take played
+    at 100 %, and the analysis then read that take at 13 % instead of 91 %.
+    A song with no entry of its own opens at full speed, which is what the
+    app does, so it is 1.0 here rather than None.
     """
     try:
         path = Path.home() / ".pickhero" / "settings.json"
-        value = float(json.loads(path.read_text(encoding="utf-8"))["tempo_factor"])
-        return value if 0.4 < value <= 1.0 else None
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+    key = Path(song).stem if song else None
+    per_song = data.get("song_tempo_factors") or {}
+    if key is not None and isinstance(per_song, dict):
+        if key in per_song:
+            value = _tempo_value(per_song[key])
+            return value if value is not None else 1.0
+        # The song is not in there, so the app opens it at full speed. Falling
+        # back to the global value here is what caused the wrong number.
+        return 1.0
+    return _tempo_value(data.get("tempo_factor"))
+
+
+def _tempo_value(raw):
+    """A practice speed the app could actually be set to, or None."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if 0.4 < value <= 1.0 else None
 
 
 def play_along(device, samplerate, channels, out_dir, seconds, song):
@@ -640,7 +665,7 @@ def play_along(device, samplerate, channels, out_dir, seconds, song):
     print("=" * 72)
     print("MITSCHNITT beim Durchspielen")
     print("=" * 72)
-    tempo = practice_tempo()
+    tempo = practice_tempo(song)
     print(f"  Song:      {song}")
     print(f"  Dauer:     {seconds:.0f}s")
     if tempo is not None:

@@ -16,10 +16,11 @@
       "shapes": [],
       "expected_midi": [],
       "song": "timing_test_100bpm",
-      "tempo_percent": 80,
+      "tempo_percent": 100,
       "seconds": 60.0,
       "peak_dbfs": -5.9,
-      "rms_dbfs": -23.2
+      "rms_dbfs": -23.2,
+      "corrected": "tempo_percent war 80: der Recorder las den globalen tempo_factor statt der Geschwindigkeit dieses Songs. Gespielt wurde bei 100 % (Run-Log 18:29:52, und bei 100 % passen 51 von 55 Anschlaegen aufs Raster statt 33)."
     }
   ]
 }

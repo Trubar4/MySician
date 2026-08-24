@@ -67,3 +67,74 @@ class TestTempoIsMeasured:
         strikes = _played(ONSETS, 1.0, 2000.0)
         _, _, tempo = analyze.best_alignment(strikes, ONSETS)
         assert tempo == 1.0
+
+
+class TestAStatedTempoIsCheckedNotBelieved:
+    """The manifest said 80 % for a take played at 100 % and the report came
+    back at 13 %, which reads exactly like a detector that has stopped
+    working. A tool that reports a number without checking the assumption
+    underneath it is measuring itself, and this one had done that once
+    already over the very same field."""
+
+    def test_a_wrong_manifest_is_overruled_and_named(self):
+        strikes = _played(ONSETS, 1.0, 1900.0)
+        tempo, note = analyze.check_tempo(strikes, ONSETS, 0.8)
+        assert tempo == pytest.approx(1.0)
+        assert "80" in note and "100" in note
+
+    def test_a_right_manifest_is_left_alone(self):
+        strikes = _played(ONSETS, 0.8, 1900.0)
+        tempo, note = analyze.check_tempo(strikes, ONSETS, 0.8)
+        assert tempo == pytest.approx(0.8)
+        assert note == ""
+
+    def test_a_take_with_no_stated_tempo_is_still_measured(self):
+        """Nothing to check, so nothing to complain about."""
+        assert analyze.check_tempo(_played(ONSETS, 0.8, 0.0), ONSETS, None) == (None, "")
+
+    def test_sloppy_playing_does_not_overrule_the_manifest(self):
+        """A take played loosely at the stated speed still fits it best, and
+        a near-tie must not flap the reading between two speeds."""
+        jitter = [40.0 * ((i % 5) - 2) for i in range(len(ONSETS))]
+        strikes = [t + j for t, j in zip(_played(ONSETS, 0.8, 1200.0), jitter)]
+        tempo, note = analyze.check_tempo(strikes, ONSETS, 0.8)
+        assert tempo == pytest.approx(0.8) and note == ""
+
+
+class TestTheRecorderWritesTheSpeedTheSongIsPlayedAt:
+    """`tempo_percent` is what every analysis reads the take against, so the
+    recorder writing the wrong one costs the whole take. It wrote the global
+    `tempo_factor` after practice speed became a per-song setting."""
+
+    def _recorder(self, tmp_path, monkeypatch, settings):
+        import json as _json
+        spec = importlib.util.spec_from_file_location(
+            "record_reference", REPO_ROOT / "tools" / "record_reference.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["record_reference"] = module
+        spec.loader.exec_module(module)
+        home = tmp_path / "home"
+        (home / ".pickhero").mkdir(parents=True)
+        (home / ".pickhero" / "settings.json").write_text(_json.dumps(settings))
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        return module
+
+    def test_the_songs_own_speed_wins_over_the_global_one(self, tmp_path,
+                                                          monkeypatch):
+        module = self._recorder(tmp_path, monkeypatch, {
+            "tempo_factor": 0.8,
+            "song_tempo_factors": {"timing_test_100bpm": 0.7}})
+        assert module.practice_tempo("timing_test_100bpm.gp5") == pytest.approx(0.7)
+
+    def test_a_song_with_no_entry_opens_at_full_speed(self, tmp_path,
+                                                      monkeypatch):
+        """This is the bug: the global said 80 %, the app played it at 100 %."""
+        module = self._recorder(tmp_path, monkeypatch, {
+            "tempo_factor": 0.8, "song_tempo_factors": {"something_else": 0.6}})
+        assert module.practice_tempo("timing_test_100bpm.gp5") == pytest.approx(1.0)
+
+    def test_no_settings_file_says_nothing_rather_than_guessing(self, tmp_path,
+                                                               monkeypatch):
+        module = self._recorder(tmp_path, monkeypatch, {})
+        (tmp_path / "home" / ".pickhero" / "settings.json").unlink()
+        assert module.practice_tempo("x.gp5") is None
