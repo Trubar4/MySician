@@ -596,6 +596,12 @@ other half: one line of JSON per session, appended, never rewritten, read by `to
   dashboard would happily average in.
 - **Written once, when the sitting ends** — leaving the song and closing the window both reach it, because either can be the end and neither
   happens reliably. Under `MIN_SESSION_SECONDS` nothing is written: opening a song to look at it is not practice.
+- **The dashboard is generated, not live** (`tools/make_dashboard.py` → one HTML file). It follows the layout of the player's OWN Yousician
+  dashboard, because that is the one they read without thinking — but with the charts drawn as plain SVG rather than pulled from a CDN: an
+  offline-first practice app whose dashboard needs the internet to draw a bar chart is a contradiction. Everything is added up in Python and
+  the browser only draws, so the arithmetic is testable and the drawing is checked by looking at it.
+- **A song name lands inside a `<script>` tag**, and a song called `</script>` closes it. The embedded JSON escapes `<` and `>`; the test that
+  found that is the reason it is written down here.
 
 ## Colour
 

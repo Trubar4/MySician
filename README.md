@@ -229,6 +229,16 @@ python tools/practice_report.py --by song
 python tools/practice_report.py --csv > practice.csv
 ```
 
+And `tools/make_dashboard.py` turns the same file into a page:
+
+```bash
+python tools/make_dashboard.py --open        # writes ~/.pickhero/dashboard.html
+```
+
+One self-contained HTML file — practice calendar, minutes per month, minutes
+per song, the scored runs, and the last sittings. No CDN, no build step, no
+server: re-run it after practising and it is up to date.
+
 
 ## Reading the display
 
