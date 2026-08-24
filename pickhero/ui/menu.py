@@ -159,8 +159,13 @@ class MenuScreen:
                     return None
                 return "escape"
 
-            # F activates filter mode
-            if event.key == pygame.K_f and not self._search_active:
+            # F, / and Ctrl+F all open the search. One of them is the key
+            # this app happened to pick; the other two are the ones everybody
+            # already has in their fingers.
+            if not self._search_active and (
+                    event.key == pygame.K_f
+                    or event.unicode == "/"
+                    or (event.key == pygame.K_f and event.mod & pygame.KMOD_CTRL)):
                 self._search_active = True
                 self._search_text = ""
                 self._apply_filter()
@@ -267,20 +272,30 @@ class MenuScreen:
         )
         surface.blit(sub_surf, (w // 2 - sub_surf.get_width() // 2, 68))
 
-        list_top = 110
         item_h = 30
         list_left = 60
         list_width = w - 120
 
-        # Search bar
+        # The search box is always drawn, empty or not. It existed as a hidden
+        # mode for a long time and was asked for as a missing feature, which is
+        # what a feature nobody can see amounts to.
+        box = pygame.Rect(list_left - 8, 88, min(420, list_width), 26)
+        pygame.draw.rect(surface, t.menu_selected_bg if self._search_active
+                         else t.menu_bg, box, border_radius=4)
+        pygame.draw.rect(surface, t.hud_accent if self._search_active
+                         else t.hud_text, box, width=1, border_radius=4)
         if self._search_active:
-            search_label = f"Filter: {self._search_text}_"
-            search_surf = item_font.render(search_label, True, t.hud_accent)
-            surface.blit(search_surf, (list_left, 90))
-            count_label = f"({len(files)} of {len(self._files)} songs)"
+            label, colour = f"{self._search_text}_", t.hud_accent
+        elif self._search_text:
+            label, colour = self._search_text, t.menu_item
+        else:
+            label, colour = "Search  (F or /)", t.hud_text
+        surface.blit(item_font.render(label, True, colour), (box.x + 8, box.y + 2))
+        if self._search_text:
+            count_label = f"{len(files)} of {len(self._files)} songs"
             count_surf = hint_font.render(count_label, True, t.hud_text)
-            surface.blit(count_surf, (list_left + search_surf.get_width() + 12, 95))
-            list_top = 120
+            surface.blit(count_surf, (box.right + 12, box.y + 6))
+        list_top = 124
 
         # Empty states
         if not files:
@@ -349,10 +364,10 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to filter  |  BACKSPACE: edit  |  ESC: exit filter  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
-            hint = f"F: filter  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  G: calibrate  |  T: theme  |  ESC: quit"
+            hint = f"F or /: search  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  G: calibrate  |  T: theme  |  ESC: quit"
         hint_surf = hint_font.render(hint, True, t.hud_text)
         surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
 

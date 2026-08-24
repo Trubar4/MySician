@@ -81,6 +81,9 @@ class App:
             pygame.display.flip()
             clock.tick(60)
 
+        # Closing the window ends a session as surely as pressing ESC does.
+        if self._playing_screen is not None:
+            self._playing_screen.close_session()
         pygame.quit()
 
     def _process_events(self, surface: pygame.Surface) -> None:

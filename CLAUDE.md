@@ -579,6 +579,24 @@ them.
   string number minus one, so index 0 is the HIGH e while a guitarist names the low E first; the row is drawn low-first and the test pins the
   mapping, because an off-by-one here mutes the wrong string and reads as a detection fault.
 
+## Two Kinds Of History, And They Answer Different Questions
+
+`progress.py` keeps the BEST a song has ever been played — one record per song, overwritten as it improves. That answers "am I getting better
+at this piece" and cannot answer "how much did I play this month", because it forgets everything except the peak. `practice_log.py` is the
+other half: one line of JSON per session, appended, never rewritten, read by `tools/practice_report.py` for day, month, year and song totals.
+
+- **The app does not draw it.** A diary rendered inside the app competes with the notes for screen space, and the format is deliberately one
+  anything can read — the question behind it was "so I can build a dashboard".
+- **Time is real seconds with the song running.** Not song time, which at 70 % practice speed is shorter than the time actually spent, and not
+  wall-clock time, which counts the coffee taken with the app paused.
+- **A struck note is a strike the microphone heard**, right or wrong. Zero when audio is off, with the minutes still counted — the playing
+  happened either way. Both counters live on the SCREEN, not in the matcher: the matcher is reset by a seek, a loop and a tempo change, and a
+  diary that forgets an hour because somebody pressed PgDn is worse than none.
+- **A session with no score says so** rather than claiming 0 %. A sitting spent looping four bars has no accuracy, and a zero is a lie a
+  dashboard would happily average in.
+- **Written once, when the sitting ends** — leaving the song and closing the window both reach it, because either can be the end and neither
+  happens reliably. Under `MIN_SESSION_SECONDS` nothing is written: opening a song to look at it is not practice.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain
@@ -616,6 +634,7 @@ pickhero/
 ├── main.py
 ├── config.py
 ├── matcher.py           # note matching engine (hit/close/miss)
+├── practice_log.py      # one line per session: minutes and notes struck
 ├── progress.py          # per-song progress tracking
 ├── audio/
 │   ├── __init__.py

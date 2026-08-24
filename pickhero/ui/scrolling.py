@@ -19,6 +19,7 @@ from pickhero.audio import timestretch
 from pickhero import config as config_module
 from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
 from pickhero.matcher import FINE_MS, STRING_MIN_SAMPLES, NoteMatcher
+from pickhero import practice_log
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.timeline import NoteEvent, Timeline
 from pickhero.audio.note_utils import (
@@ -350,6 +351,14 @@ class PlayingScreen:
 
         # Progress tracking
         self._progress_tracker = progress_tracker
+        # The practice diary: real seconds with the song running, and every
+        # strike the microphone heard. Both survive a seek, a loop and a
+        # tempo change, which the matcher's own counters do not -- it is reset
+        # by all three.
+        self._session_started = practice_log.now_iso()
+        self._session_seconds = 0.0
+        self._session_strikes = 0
+        self._session_written = False
         self._song_key = song_key
         self._song_completed = False
         self._is_new_best = False
@@ -612,8 +621,12 @@ class PlayingScreen:
         now = time.perf_counter()
         prev_ms = self._playback_ms
         if self._last_tick is not None:
-            elapsed_ms = (now - self._last_tick) * 1000.0 * self._tempo_factor
-            self._playback_ms += elapsed_ms
+            real_elapsed = now - self._last_tick
+            self._playback_ms += real_elapsed * 1000.0 * self._tempo_factor
+            # REAL seconds, not song time: at 70 % speed the song is shorter
+            # than the time you spent on it, and it is the time you spent that
+            # a practice diary is about.
+            self._session_seconds += real_elapsed
         self._last_tick = now
 
         # Wait mode: freeze if there are pending notes the player hasn't hit yet
@@ -666,6 +679,7 @@ class PlayingScreen:
             # would claim the same millisecond.
             self._matcher.record_timing_samples = not self._wait_mode_frozen
             self._matcher.record_contour = not self._wait_mode_frozen
+            self._session_strikes += sum(1 for d in detected if d.note.is_onset)
             results = self._matcher.process_detected_notes(detected, self._playback_ms)
             # Per-string chord verdicts arrive ~380 ms after their strike, once
             # enough audio exists to tell a semitone apart. They can only
@@ -3082,8 +3096,40 @@ class PlayingScreen:
         if self._audio_capture is not None:
             self._audio_capture.stop()
 
+    def close_session(self) -> bool:
+        """Write this sitting to the practice diary. Once, whenever it ends.
+
+        Called when the player leaves the song and when the app shuts down --
+        both, because either can be the end of a session and neither happens
+        reliably. Idempotent for the same reason: leaving after finishing a
+        song reaches this twice.
+        """
+        if self._session_written or not self._song_key:
+            return False
+        self._session_written = True
+        stats = (self._matcher.get_statistics()
+                 if (self._matcher is not None and self._song_completed) else None)
+        session = practice_log.Session(
+            started=self._session_started,
+            song=self._song_key,
+            seconds=round(self._session_seconds, 1),
+            strikes=self._session_strikes,
+            tempo_percent=int(round(self._tempo_factor * 100)),
+            notes_hit=stats["hits"] if stats else None,
+            notes_written=stats["total"] if stats else None,
+            accuracy=(round(stats["accuracy_percent"], 1)
+                      if stats and stats.get("total") else None),
+        )
+        try:
+            return practice_log.append(session)
+        except OSError:
+            # A diary that cannot be written must not take the app down with
+            # it; the playing is what matters and it has already happened.
+            return False
+
     def stop_audio(self) -> None:
         """Public method to stop audio (called on state transitions)."""
+        self.close_session()
         self._stop_audio()
         self._audio_enabled = False
         if self._midi_player is not None:

@@ -216,7 +216,19 @@ Every key is also listed in the app's own footer, and explained under **H**.
 | `F` | fret limit · `F1`–`F6` mute a string |
 | `T` | theme · `H` help · `ESC` song list |
 
-On the song list: `O` opens the settings screen — everything that is set once (device, noise gate, hit window, fret limit, muted strings, chord scoring, backing tracks, theme), with anything away from its standard value marked.
+On the song list: `F` or `/` searches, `O` opens the settings screen — everything that is set once (device, noise gate, hit window, fret limit, muted strings, chord scoring, backing tracks, theme), with anything away from its standard value marked.
+
+## Practice diary
+
+Every sitting is appended to `~/.pickhero/practice_log.jsonl` — one line of JSON with the date, the song, the real minutes played, the notes you struck and, if the run was scored, the accuracy. Nothing in the app draws it; `tools/practice_report.py` adds it up:
+
+```bash
+python tools/practice_report.py              # the last 14 days
+python tools/practice_report.py --by month
+python tools/practice_report.py --by song
+python tools/practice_report.py --csv > practice.csv
+```
+
 
 ## Reading the display
 
