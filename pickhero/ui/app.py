@@ -5,6 +5,7 @@ Two states: MENU (song selection) and PLAYING (scrolling display).
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pygame
@@ -19,6 +20,7 @@ from pickhero.ui.device_menu import DeviceMenuScreen
 from pickhero.ui.download_menu import DownloadMenuScreen
 from pickhero.ui.menu import MenuScreen
 from pickhero.ui.settings_menu import SettingsMenuScreen
+from pickhero.ui import scrolling
 from pickhero.ui.scrolling import PlayingScreen
 
 
@@ -60,6 +62,9 @@ class App:
             self._config.save()
 
         pygame.init()
+        # Fonts and the surfaces drawn with them belong to this
+        # session; one kept from a previous pygame.quit() would crash.
+        scrolling.clear_font_cache()
         pygame.key.set_repeat(300, 40)  # 300ms delay, then repeat every 40ms
         pygame.display.set_caption("PickHero")
 
@@ -75,10 +80,18 @@ class App:
         self._running = True
 
         while self._running:
+            frame_started = time.perf_counter()
             self._process_events(surface)
             self._update()
             self._render(surface)
             pygame.display.flip()
+            # How long the work took, BEFORE the wait that pads it out to
+            # 60 Hz. clock.get_fps() would report the padded rate and read a
+            # healthy 60 right up to the moment the machine can no longer
+            # keep up -- which is the one thing it is being asked about.
+            if self._playing_screen is not None:
+                self._playing_screen.record_frame_ms(
+                    (time.perf_counter() - frame_started) * 1000.0)
             clock.tick(60)
 
         # Closing the window ends a session as surely as pressing ESC does.

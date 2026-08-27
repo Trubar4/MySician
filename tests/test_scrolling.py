@@ -1344,6 +1344,110 @@ class TestRunLog:
         assert "audio was off" in screen._run_log_note
 
 
+class TestDrawingTheSameTextAgain:
+    """Measured: one frame of the playing screen rasterised 62 text surfaces,
+    and that was 79 % of the frame -- against 8 % for drawing the notes. The
+    footer alone was 66 %, and the footer is the list of keyboard shortcuts,
+    which never changes at all. Caching it took a frame from 15.2 ms to
+    1.5 ms, and a dense song from unplayable to 2.7 ms."""
+
+    def _font(self):
+        pygame.init()
+        from pickhero.ui.scrolling import _get_font
+        return _get_font("arial", 14)
+
+    def test_the_same_text_comes_back_as_the_same_surface(self):
+        font = self._font()
+        first = font.render("Tempo: 80 %", True, (255, 255, 255))
+        assert font.render("Tempo: 80 %", True, (255, 255, 255)) is first
+
+    def test_different_text_is_drawn_afresh(self):
+        font = self._font()
+        assert (font.render("1:04", True, (255, 255, 255))
+                is not font.render("1:05", True, (255, 255, 255)))
+
+    def test_the_colour_is_part_of_it(self):
+        """Green and red say completely different things about a note."""
+        font = self._font()
+        assert (font.render("hit", True, (0, 255, 0))
+                is not font.render("hit", True, (255, 0, 0)))
+
+    def test_asking_twice_gives_the_same_font_object(self):
+        """Otherwise every lookup would hand back an empty cache."""
+        pygame.init()
+        from pickhero.ui.scrolling import _get_font
+        assert _get_font("arial", 14) is _get_font("arial", 14)
+
+    def test_it_does_not_grow_without_end(self):
+        """A clock ticking through a long song must not become a leak."""
+        font = self._font()
+        from pickhero.ui.scrolling import _CachedFont
+        for i in range(_CachedFont.MAX_ENTRIES + 40):
+            font.render(f"{i}", True, (255, 255, 255))
+        assert len(font._cache) <= _CachedFont.MAX_ENTRIES
+
+    def test_the_cache_can_be_dropped_with_the_pygame_session(self):
+        """A font kept across pygame.quit() is a dangling pointer, and
+        rendering with it segfaults -- verified, not assumed."""
+        pygame.init()
+        from pickhero.ui import scrolling
+        first = scrolling._get_font("arial", 14)
+        scrolling.clear_font_cache()
+        assert scrolling._get_font("arial", 14) is not first
+
+    def test_a_font_still_answers_the_questions_a_font_answers(self):
+        """The wrapper delegates, so layout code is untouched by all this."""
+        font = self._font()
+        assert font.get_height() > 0
+        assert font.size("abc")[0] > 0
+
+
+class TestHowLongAFrameTook:
+    """"Slow and stuttering" is a feeling, and a feeling cannot say whether
+    the drawing is behind or something arrives in bursts."""
+
+    def _screen(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._playing = True
+        return screen
+
+    def test_frames_are_only_counted_while_the_song_runs(self):
+        """A frame spent on a paused picture says nothing about keeping up."""
+        screen = self._screen()
+        screen._playing = False
+        screen.record_frame_ms(50.0)
+        assert screen._frame_ms == []
+
+    def test_the_log_reports_the_median_and_the_tail(self):
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = self._screen()
+        screen._matcher = NoteMatcher(_make_timeline())
+        for ms in [8.0] * 90 + [40.0] * 10:
+            screen.record_frame_ms(ms)
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        text = buffer.getvalue()
+        assert "frame_ms_median\t8.0" in text
+        assert "frame_ms_worst\t40.0" in text
+        assert "frames_over_budget_percent\t10" in text
+
+    def test_a_long_session_does_not_become_a_leak(self):
+        screen = self._screen()
+        for _ in range(PlayingScreen.FRAME_SAMPLES + 500):
+            screen.record_frame_ms(8.0)
+        assert len(screen._frame_ms) == PlayingScreen.FRAME_SAMPLES
+
+    def test_nothing_measured_says_so_rather_than_dividing_by_zero(self):
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = self._screen()
+        screen._matcher = NoteMatcher(_make_timeline())
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "frame_ms\t(nothing measured)" in buffer.getvalue()
+
+
 class TestALogFromHalfARun:
     """D can be pressed at any moment, and most of the time it will be.
 

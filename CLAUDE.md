@@ -628,6 +628,34 @@ other half: one line of JSON per session, appended, never rewritten, read by `to
 - **A song name lands inside a `<script>` tag**, and a song called `</script>` closes it. The embedded JSON escapes `<` and `>`; the test that
   found that is the reason it is written down here.
 
+## The Notes Were Never What Cost The Frame
+
+The app ran "slow and stuttering" on a thin 14" laptop, and the obvious suspect on a scrolling display is the scrolling. It was not. Profiled over
+60 frames of the playing screen:
+
+| | share of one frame |
+|---|---|
+| **rasterising text** (62 surfaces a frame) | **79 %** |
+| of which the footer alone | 66 % |
+| drawing every note | 8 % |
+| looking fonts up (uncached `SysFont`) | 6 % |
+
+**The footer is the list of keyboard shortcuts. It never changes at all**, and almost none of the rest does either — the title, the tempo, the
+tuning, the hit window. Only the clock moves, once a second. So `_CachedFont` keeps the surface and blits it again: **15.2 ms a frame → 1.5 ms**,
+and a dense song (4200 notes of sixteenths) draws in 2.7 ms where the budget is 16.7.
+
+- **Wrap the font, not the call sites.** The ~180 `font.render(...)` calls in `ui/` are untouched and anything added later is cached without
+  knowing. `__getattr__` delegates `size()`, `get_height()` and the rest.
+- **A font does not survive `pygame.quit()`** — it is a dangling pointer and rendering with it segfaults, which is verified rather than assumed
+  (the test suite found it, because several tests run an init/quit cycle). Hence `clear_font_cache()`, called by `App.run` on init and by an
+  autouse fixture between tests. A cache tied to a session has to be dropped with it.
+- **The cache is cleared wholesale at `MAX_ENTRIES`**, not evicted one at a time. The only text that really varies is the clock, a re-render
+  costs a fraction of a millisecond, and an LRU here would be bookkeeping to save nothing.
+- **The run log now says how long a frame took** (`frame_ms_median`, `frame_ms_worst_tenth`, `frames_over_budget_percent`), measured BEFORE
+  `clock.tick(60)` pads the frame out — `clock.get_fps()` reports the padded rate and reads a healthy 60 right up to the moment the machine can
+  no longer keep up, which is the one thing it is being asked. A median under budget with a fat tail is something arriving in bursts; a median
+  over it is the drawing. They are fixed in different places, which is the same reason strikes are named next to notes.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain

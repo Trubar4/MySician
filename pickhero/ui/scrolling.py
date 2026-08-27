@@ -6,6 +6,7 @@ to a playback clock. Optionally captures audio and shows hit/miss feedback.
 
 from __future__ import annotations
 
+import functools
 import threading
 import time
 from dataclasses import dataclass
@@ -233,13 +234,83 @@ AUTO_SYNC_MIN_SAMPLES = 8
 # HUD line now ask the report.
 
 
-def _get_font(name: str, size: int) -> pygame.font.Font:
-    """Try to load a system font with fallbacks."""
+# 60 FPS is a 16.7 ms budget for everything a frame does.
+FRAME_BUDGET_MS = 1000.0 / 60.0
+
+
+class _CachedFont:
+    """A font that keeps the text surfaces it has already drawn.
+
+    Measured on the playing screen: one frame rasterises **62 text surfaces**
+    and that was **79 % of the whole frame** -- against 8 % for drawing the
+    notes. The footer alone was 66 %, and the footer is the list of keyboard
+    shortcuts, which never changes at all. Almost none of the rest changes
+    either: the song title, the tempo, the tuning, the hit window. Only the
+    clock does, once a second.
+
+    So the surface is kept and blitted again. Wrapping the font rather than
+    every call site means the ~180 `font.render(...)` calls in this file are
+    untouched, and anything added later gets the cache without knowing.
+
+    The cache is cleared wholesale when it grows past `MAX_ENTRIES` rather
+    than evicted one at a time: the only text that really varies is the clock,
+    a re-render costs a fraction of a millisecond, and an LRU here would be
+    bookkeeping to save nothing.
+    """
+
+    MAX_ENTRIES = 256
+
+    __slots__ = ("_font", "_cache")
+
+    def __init__(self, font: pygame.font.Font) -> None:
+        self._font = font
+        self._cache: dict = {}
+
+    def render(self, text, antialias=True, color=(255, 255, 255),
+               background=None):
+        if background is not None:
+            # Rare, and a second key dimension for nothing.
+            return self._font.render(text, antialias, color, background)
+        key = (text, bool(antialias), tuple(color))
+        surface = self._cache.get(key)
+        if surface is None:
+            if len(self._cache) >= self.MAX_ENTRIES:
+                self._cache.clear()
+            surface = self._font.render(text, antialias, color)
+            self._cache[key] = surface
+        return surface
+
+    def __getattr__(self, name):
+        # size(), get_height(), get_linesize() and the rest, unchanged.
+        return getattr(self._font, name)
+
+
+@functools.lru_cache(maxsize=64)
+def _get_font(name: str, size: int) -> "_CachedFont":
+    """Try to load a system font with fallbacks.
+
+    Cached because SysFont is a font-file lookup every call, and the playing
+    screen asks for the same handful of fonts on every frame -- and because
+    the cache of drawn text lives on the object it returns, so handing back a
+    fresh one each time would throw that away.
+    """
     for family in (name, "Courier New", "monospace"):
         font = pygame.font.SysFont(family, size)
         if font:
-            return font
-    return pygame.font.Font(None, size)
+            return _CachedFont(font)
+    return _CachedFont(pygame.font.Font(None, size))
+
+
+def clear_font_cache() -> None:
+    """Drop every cached font and every surface drawn with one.
+
+    Both belong to ONE pygame session. A Font kept across `pygame.quit()` is a
+    dangling pointer and rendering with it segfaults -- verified, not assumed,
+    and it is why this function exists rather than being left to chance. The
+    app calls it when it starts a session; the test suite calls it between
+    tests, several of which run an init/quit cycle of their own.
+    """
+    _get_font.cache_clear()
 
 
 def format_time(ms: float) -> str:
@@ -346,6 +417,9 @@ class PlayingScreen:
         self._noise_gate_db: float = self._config.audio.noise_gate_db
 
         # Loop state
+        # A ring of recent frame times, for the run log. Bounded: a long
+        # session must not turn a diagnostic into a memory leak.
+        self._frame_ms: list[float] = []
         self._loop_start_ms: float | None = None
         self._loop_end_ms: float | None = None
         self._loop_enabled: bool = False
@@ -1696,6 +1770,7 @@ class PlayingScreen:
 
     # Sizes the footer will try, largest first. A shortcut nobody can read
     # because the line ran off the window is a shortcut nobody has.
+    FRAME_SAMPLES = 3600          # a minute of frames at 60 Hz
     FOOTER_FONT_SIZES = (14, 13, 12, 11, 10)
 
     def _footer_lines(self) -> tuple[str, str]:
@@ -2481,6 +2556,42 @@ class PlayingScreen:
             return
         self._timing_export_note = f"Saved {len(self._matcher.timing_samples)} measurements to {path}"
 
+    def record_frame_ms(self, ms: float) -> None:
+        """One frame's work, for the run log.
+
+        "Slow and stuttering" is a feeling, and a feeling cannot say whether
+        the display is behind, the machine is throttling, or the audio thread
+        is stalling -- the same problem the score had before the log named
+        strikes and notes separately. So the frames are counted here and the
+        header reports the median and the worst tenth.
+
+        Only while the song is running: a frame spent on the settings screen
+        or a paused picture says nothing about whether the app can keep up.
+        """
+        if not self._playing:
+            return
+        self._frame_ms.append(ms)
+        if len(self._frame_ms) > self.FRAME_SAMPLES:
+            del self._frame_ms[:len(self._frame_ms) - self.FRAME_SAMPLES]
+
+    def _frame_line(self, fh) -> None:
+        """Median and worst-tenth frame, and how many frames were late.
+
+        60 FPS is a 16.7 ms budget. A median well under it with a fat tail is
+        something arriving in bursts; a median over it is the drawing itself,
+        and those are fixed in different places.
+        """
+        frames = sorted(self._frame_ms)
+        if not frames:
+            fh.write("frame_ms\t(nothing measured)\n")
+            return
+        late = sum(1 for ms in frames if ms > FRAME_BUDGET_MS)
+        fh.write(f"frame_ms_median\t{frames[len(frames) // 2]:.1f}\n")
+        fh.write(f"frame_ms_worst_tenth\t{frames[int(len(frames) * 0.9)]:.1f}\n")
+        fh.write(f"frame_ms_worst\t{frames[-1]:.1f}\n")
+        fh.write(f"frames_over_budget_percent\t{100 * late / len(frames):.0f}\n")
+        fh.write(f"frames_measured\t{len(frames)}\n")
+
     def _export_run_log(self) -> None:
         """Write everything the audio path did this run, as one text file.
 
@@ -2589,6 +2700,7 @@ class PlayingScreen:
             fh.write(f"mp3_worst_drift_ms\t{player.worst_drift_ms:.0f}\n")
             fh.write(f"mp3_resyncs\t{player.resyncs}\n")
             fh.write(f"mp3_time_scale\t{player.time_scale:.3f}\n")
+        self._frame_line(fh)
         fh.write(f"timing_samples\t{len(matcher.timing_samples)}\n")
         fh.write(f"timing_ambiguous\t{matcher.timing_ambiguous}\n")
 
