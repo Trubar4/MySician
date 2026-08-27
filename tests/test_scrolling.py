@@ -1344,6 +1344,232 @@ class TestRunLog:
         assert "audio was off" in screen._run_log_note
 
 
+class TestPausingIsNotStoppingEverything:
+    """The space bar cost a device open and an MP3 re-decode, each way.
+
+    Reported as: pausing or seeking with a backing recording freezes the
+    picture for up to three seconds and the sound stutters coming back. Three
+    separate faults, all of them here.
+    """
+
+    def _screen(self, mp3=None):
+        # A song long enough to have somewhere to be, and started past the
+        # count-in: at position 0 the space bar counts in instead of playing.
+        notes = [NoteEvent(timestamp_ms=60_000.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=0, measure=0)]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        screen._mp3_player = mp3
+        screen._playback_ms = 30_000.0
+        return screen
+
+    class _FakeMp3:
+        ready = True
+        time_scale = 1.0
+        suspended = False
+        def __init__(self):
+            self.stopped = 0
+            self.seeks = 0
+            self.suspends = []
+        def pause(self):
+            self.stopped += 1
+            self.suspended = False
+        def seek(self, ms):
+            self.seeks += 1
+            self.suspended = False
+        def set_suspended(self, value):
+            if value != self.suspended:
+                self.suspends.append(value)
+            self.suspended = value
+        def update(self, ms): pass
+        def drift_ms(self, ms): return 0.0
+
+    def test_pausing_holds_the_recording_instead_of_stopping_it(self):
+        """Stopping means play(start=) to come back, which decodes the file up
+        to that point -- seconds, four minutes in, on a thin laptop."""
+        mp3 = self._FakeMp3()
+        screen = self._screen(mp3)
+        screen.toggle_play()                 # play
+        screen.toggle_play()                 # pause
+        assert mp3.suspends[-1] is True
+        assert mp3.stopped == 0
+
+    def test_resuming_lifts_the_hold_rather_than_seeking_again(self):
+        mp3 = self._FakeMp3()
+        screen = self._screen(mp3)
+        screen.toggle_play()
+        seeks_after_start = mp3.seeks
+        screen.toggle_play()                 # pause
+        screen.toggle_play()                 # resume
+        assert mp3.suspends[-1] is False
+        assert mp3.seeks == seeks_after_start
+        assert mp3.stopped == 0
+
+    def test_the_frame_loop_does_not_undo_the_hold(self):
+        """_update_mp3 runs every frame while paused too, and stopping there
+        would cancel the suspension on the very next one."""
+        mp3 = self._FakeMp3()
+        screen = self._screen(mp3)
+        screen.toggle_play()
+        screen.toggle_play()                 # paused
+        for _ in range(5):
+            screen._update_mp3()
+        assert mp3.stopped == 0
+        assert mp3.suspended is True
+
+    def test_muting_really_stops_it(self):
+        """Only a PAUSE is a hold. Muting has to be silence, not a pause that
+        resumes the moment the song does."""
+        mp3 = self._FakeMp3()
+        screen = self._screen(mp3)
+        screen._mp3_muted = True
+        screen._update_mp3()
+        assert mp3.stopped >= 1
+
+    def test_pausing_leaves_the_input_device_open(self):
+        """Closing and reopening it is a real device open on Windows -- the
+        same fault that made every arrow key freeze the app for seconds."""
+        screen = self._screen()
+        stops = []
+        class Capture:
+            def is_running(self): return True
+            def stop(self): stops.append(1)
+            def elapsed_ms(self): return 0.0
+            def get_notes(self): return []
+            def get_strike_windows(self): return []
+        from pickhero.matcher import NoteMatcher
+        screen._audio_enabled = True
+        screen._audio_capture = Capture()
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._playing = True
+        screen.toggle_play()                 # pause
+        assert stops == []
+
+    def test_resuming_reanchors_instead_of_reopening(self):
+        screen = self._screen()
+        starts = []
+        class Capture:
+            def is_running(self): return True
+            def stop(self): starts.append("stop")
+            def start(self): starts.append("start")
+            def elapsed_ms(self): return 4000.0
+            def get_notes(self): return []
+            def get_strike_windows(self): return []
+        from pickhero.matcher import NoteMatcher
+        screen._audio_enabled = True
+        screen._audio_capture = Capture()
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen.toggle_play()                 # play
+        assert starts == []
+        assert screen._audio_anchor_ms == pytest.approx(4000.0)
+
+    def test_a_closed_device_is_still_opened(self):
+        """Re-anchoring only works on a stream that is actually there."""
+        screen = self._screen()
+        opened = []
+        class Capture:
+            def is_running(self): return False
+            def stop(self): pass
+            def start(self): opened.append(1)
+            def elapsed_ms(self): return 0.0
+            def get_notes(self): return []
+            def get_strike_windows(self): return []
+        from pickhero.matcher import NoteMatcher
+        screen._audio_enabled = True
+        screen._audio_capture = Capture()
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen.toggle_play()
+        assert opened == [1]
+
+    def test_the_clock_starts_after_the_slow_work_not_before(self):
+        """Set first, whatever the device and the decoder take is charged to
+        the song, and the picture jumps forward by it on the next frame."""
+        screen = self._screen()
+        started_at = screen._playback_ms
+        screen.toggle_play()
+        assert screen._last_tick is not None
+        # Nothing has been drawn yet, so no song time may have passed.
+        screen.update()
+        assert screen._playback_ms - started_at < 200.0
+
+
+class TestScrubbingDoesNotDecodeTwentyFiveTimesASecond:
+    """A held arrow key repeats every 40 ms, and every repeat was a
+    play(start=) -- which decodes the file up to that point, on the frame's
+    own thread. One press must still be immediate: a loop turn is a seek too,
+    and delaying that would start the recording late every time round."""
+
+    def _screen(self):
+        notes = [NoteEvent(timestamp_ms=60_000.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=0, measure=0)]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        screen._mp3_player = TestPausingIsNotStoppingEverything._FakeMp3()
+        screen._playback_ms = 30_000.0
+        screen._playing = True
+        return screen
+
+    def test_one_seek_reaches_the_recording_at_once(self):
+        screen = self._screen()
+        screen.seek(31_000.0)
+        assert screen._mp3_player.seeks == 1
+
+    def test_a_burst_of_seeks_becomes_one(self):
+        screen = self._screen()
+        for i in range(20):
+            screen.seek(31_000.0 + i * 100)
+        assert screen._mp3_player.seeks == 1
+        assert screen._mp3_pending_seek_ms is not None
+
+    def test_the_last_position_is_the_one_that_lands(self):
+        """Scrubbing forward and stopping must not leave the recording at the
+        first position of the burst."""
+        import time as _time
+        screen = self._screen()
+        for i in range(5):
+            screen.seek(31_000.0 + i * 1000)
+        screen._mp3_last_seek_at = _time.perf_counter() - 1.0   # they stopped
+        screen._update_mp3()
+        assert screen._mp3_pending_seek_ms is None
+        assert screen._mp3_player.seeks == 2
+
+    def test_the_recording_is_silent_while_it_is_being_scrubbed(self):
+        """Playing on from where it was is worse than nothing here."""
+        screen = self._screen()
+        for i in range(5):
+            screen.seek(31_000.0 + i * 100)
+        assert screen._mp3_player.suspended is True
+
+
+class TestAStalledFrameDoesNotTeleportTheSong:
+    """"It stands still and then jumps." A frame blocked for three seconds
+    advanced the song by three seconds, scrolling a bar of music past
+    uncredited and landing the picture somewhere the player never saw."""
+
+    def _screen(self):
+        # An empty timeline is zero milliseconds long and clamps every
+        # position to 0, which would make this assert nothing at all.
+        notes = [NoteEvent(timestamp_ms=60_000.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=0, measure=0)]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        screen._playing = True
+        screen._playback_ms = 10_000.0
+        return screen
+
+    def test_a_long_frame_advances_the_song_by_at_most_the_cap(self):
+        import time as _time
+        from pickhero.ui.scrolling import MAX_FRAME_STALL_S
+        screen = self._screen()
+        screen._last_tick = _time.perf_counter() - 3.0      # a 3 s stall
+        screen.update()
+        assert screen._playback_ms <= 10_000.0 + MAX_FRAME_STALL_S * 1000.0 + 50
+
+    def test_an_ordinary_frame_is_untouched(self):
+        import time as _time
+        screen = self._screen()
+        screen._last_tick = _time.perf_counter() - 0.016
+        screen.update()
+        assert screen._playback_ms == pytest.approx(10_016.0, abs=12.0)
+
+
 class TestDrawingTheSameTextAgain:
     """Measured: one frame of the playing screen rasterised 62 text surfaces,
     and that was 79 % of the frame -- against 8 % for drawing the notes. The

@@ -237,6 +237,19 @@ AUTO_SYNC_MIN_SAMPLES = 8
 # 60 FPS is a 16.7 ms budget for everything a frame does.
 FRAME_BUDGET_MS = 1000.0 / 60.0
 
+# The longest a single frame may move the song. Fifteen frames' worth: beyond
+# that nothing was drawn and nothing was heard, so charging the song for it
+# only teleports the picture.
+MAX_FRAME_STALL_S = 0.25
+
+# How long seeks have to stop arriving before the recording follows them.
+# A held arrow key repeats every 40 ms and every repeat used to be a
+# play(start=), which decodes the file up to that point -- 25 of them a
+# second on the frame's own thread. The FIRST seek of a burst is still
+# immediate, so a single press and a loop turn are as sharp as they were;
+# only a run of them is collapsed into one.
+MP3_SEEK_SETTLE_S = 0.15
+
 
 class _CachedFont:
     """A font that keeps the text surfaces it has already drawn.
@@ -420,6 +433,10 @@ class PlayingScreen:
         # A ring of recent frame times, for the run log. Bounded: a long
         # session must not turn a diagnostic into a memory leak.
         self._frame_ms: list[float] = []
+        # A seek collapsed because more were still arriving, and when the
+        # last one did. See _seek_mp3.
+        self._mp3_pending_seek_ms: float | None = None
+        self._mp3_last_seek_at = float("-inf")
         self._loop_start_ms: float | None = None
         self._loop_end_ms: float | None = None
         self._loop_enabled: bool = False
@@ -550,23 +567,37 @@ class PlayingScreen:
             self._recommendations = []
         self._playing = not self._playing
         if self._playing:
-            self._last_tick = time.perf_counter()
-            # Only start audio capture when past count-in
+            # Only start audio capture when past count-in. If the stream is
+            # already open -- which after a pause it now is -- re-anchoring is
+            # the whole of what resuming needs, and it does not touch the
+            # hardware. See _resume_audio.
             if self._audio_enabled and self._playback_ms >= 0:
-                self._start_audio()
+                self._resume_audio()
             if self._midi_player is not None:
                 if self._playback_ms >= 0:
                     self._midi_player.seek(self._backing_ms(self._playback_ms))
             if self._mp3_player is not None and self._playback_ms >= 0:
-                if self._mp3_plays():
-                    self._mp3_player.seek(self._mp3_ms(self._playback_ms))
+                if self._mp3_plays() and self._mp3_pending_seek_ms is None:
+                    if self._mp3_player.suspended:
+                        self._mp3_player.set_suspended(False)
+                    else:
+                        self._seek_mp3(self._mp3_ms(self._playback_ms))
+            # LAST, not first: opening a device or starting a recording can
+            # take a moment, and the clock must start when the song does. Set
+            # before them, that moment is charged to the song and the picture
+            # jumps forward by it on the very next frame.
+            self._last_tick = time.perf_counter()
         else:
             self._last_tick = None
-            self._stop_audio()
+            # The input device stays OPEN. Closing it here and opening it
+            # again on resume is a real device open on Windows -- the same
+            # thing that made every arrow key freeze the app for seconds, and
+            # the space bar was still doing it twice per pause. Strikes that
+            # arrive while the song stands still are dropped on resume.
             if self._midi_player is not None:
                 self._midi_player.pause()
             if self._mp3_player is not None:
-                self._mp3_player.pause()
+                self._mp3_player.set_suspended(True)
 
     def seek(self, ms: float) -> None:
         """Seek to an absolute position in ms, clamped to [0, duration]."""
@@ -577,8 +608,8 @@ class PlayingScreen:
         if self._midi_player is not None:
             self._midi_player.seek(self._backing_ms(self._playback_ms))
         if self._mp3_player is not None:
-            self._mp3_player.seek(self._mp3_ms(self._playback_ms)
-                                  if self._mp3_plays() else -1.0)
+            self._seek_mp3(self._mp3_ms(self._playback_ms)
+                           if self._mp3_plays() else -1.0)
         # The audio clock has to be told the song moved -- but NOT by closing
         # and reopening the input device, which is what this used to do. On
         # Windows that is a real device open, and doing it on every arrow key
@@ -696,7 +727,14 @@ class PlayingScreen:
         now = time.perf_counter()
         prev_ms = self._playback_ms
         if self._last_tick is not None:
-            real_elapsed = now - self._last_tick
+            # A frame that took longer than this is a machine that stalled --
+            # a decoder, a device open, the operating system. Advancing the
+            # song by the whole of it scrolls a bar of music past uncredited
+            # and lands the picture somewhere the player never saw, which is
+            # the "it stands still and then jumps" they reported. Losing the
+            # time is the cheaper of the two: the recording is pulled back
+            # into line by the ordinary sync a frame later.
+            real_elapsed = min(now - self._last_tick, MAX_FRAME_STALL_S)
             self._playback_ms += real_elapsed * 1000.0 * self._tempo_factor
             # REAL seconds, not song time: at 70 % speed the song is shorter
             # than the time you spent on it, and it is the time you spent that
@@ -3198,6 +3236,27 @@ class PlayingScreen:
         else:
             self._stop_audio()
 
+    def _resume_audio(self) -> None:
+        """Carry on capturing after a pause, without reopening anything.
+
+        A pause used to stop the stream and a resume used to open a new one,
+        which on Windows is a real device open and cost seconds every time the
+        space bar was pressed -- exactly the fault "Seeking Must Not Reopen
+        The Input Device" fixed for the arrow keys and never for the pause.
+
+        It also threw the matcher away, so a run log lost every strike before
+        the pause. Re-anchoring keeps both: the clock agrees with the song
+        again and the strikes stamped while the picture stood still are
+        dropped, because they belong to no moment in the song.
+        """
+        if self._audio_capture is None or self._matcher is None:
+            self._start_audio()
+            return
+        if not getattr(self._audio_capture, "is_running", lambda: False)():
+            self._start_audio()
+            return
+        self._reanchor_audio_clock()
+
     def _start_audio(self) -> None:
         """Start audio capture and create matcher."""
         try:
@@ -3348,6 +3407,51 @@ class PlayingScreen:
                 and self._playing
                 and self._mp3_source_fits())
 
+    def _seek_mp3(self, target_ms: float) -> None:
+        """Move the recording, collapsing a burst of seeks into one.
+
+        Seeking really means `play(start=)`, which decodes the file up to that
+        point. One is fine; twenty-five a second -- which is what a held arrow
+        key produces -- is a stuttering picture and a stuttering sound, on the
+        frame's own thread.
+
+        The first seek of a burst still happens at once, so a single press and
+        a loop turn are unchanged. Inside the window the recording is held
+        silent instead, because playing on from where it was is worse than
+        nothing while the song is being scrubbed.
+        """
+        if self._mp3_player is None:
+            return
+        now = time.perf_counter()
+        if now - self._mp3_last_seek_at >= MP3_SEEK_SETTLE_S:
+            self._mp3_last_seek_at = now
+            self._mp3_pending_seek_ms = None
+            self._mp3_player.seek(target_ms)
+            return
+        self._mp3_pending_seek_ms = target_ms
+        self._mp3_player.set_suspended(True)
+
+    def _apply_pending_mp3_seek(self) -> bool:
+        """Carry out a seek that was collapsed, once they have stopped."""
+        if self._mp3_pending_seek_ms is None:
+            return False
+        now = time.perf_counter()
+        if now - self._mp3_last_seek_at < MP3_SEEK_SETTLE_S:
+            return True                    # still moving; stay silent
+        target = self._mp3_pending_seek_ms
+        self._mp3_pending_seek_ms = None
+        self._mp3_last_seek_at = now
+        self._mp3_player.seek(target)
+        return False
+
+    def _mp3_paused_only(self) -> bool:
+        """True when the song standing still is the ONLY reason for silence."""
+        return (not self._playing
+                and self._mp3_player is not None
+                and self._mp3_player.ready
+                and not self._mp3_muted
+                and self._mp3_source_fits())
+
     def _mp3_scale(self) -> float:
         """File milliseconds per song millisecond at the current speed."""
         return 1.0 / self._tempo_factor if self._tempo_factor > 0 else 1.0
@@ -3429,10 +3533,22 @@ class PlayingScreen:
         if self._mp3_player is None:
             return
         self._ensure_mp3_source()
+        if self._apply_pending_mp3_seek():
+            return                         # a seek is still being scrubbed
         if not self._mp3_plays():
-            self._mp3_player.pause()
+            # WHY it may not sound decides what happens to it. A paused song
+            # is held where it is; anything else -- muted, a different file
+            # wanted, not ready -- really stops. Stopping for a pause is what
+            # made the space bar cost a re-decode each way, and this runs
+            # every frame, so it would undo the hold on the very next one.
+            if self._mp3_paused_only():
+                self._mp3_player.set_suspended(True)
+            else:
+                self._mp3_player.pause()
             self._mp3_stuck_since_ms = None
             return
+        if self._mp3_player.suspended:
+            self._mp3_player.set_suspended(False)
         target = self._mp3_ms(self._playback_ms)
         self._mp3_player.update(target)
         self._track_mp3_drift(target)

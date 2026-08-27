@@ -656,6 +656,31 @@ and a dense song (4200 notes of sixteenths) draws in 2.7 ms where the budget is 
   no longer keep up, which is the one thing it is being asked. A median under budget with a fat tail is something arriving in bursts; a median
   over it is the drawing. They are fixed in different places, which is the same reason strikes are named next to notes.
 
+## Pausing Was Reopening The Device, And Seeking Was Redecoding The File
+
+The player reported the picture freezing for up to three seconds on every space bar with a backing recording, the sound stuttering on the way
+back, and the song then "jumping until it is in sync again". Three separate faults, and the first is a lesson this project had already written
+down for the arrow keys and never applied to the pause.
+
+- **Pausing closed the input device and resuming opened a new one.** That is the identical fault as "Seeking Must Not Reopen The Input
+  Device" — a real device open on Windows, seconds of frozen app — except the space bar did it twice, once each way. It also threw the matcher
+  away, so a run log lost every strike from before the pause. `_resume_audio()` re-anchors a stream that is still open and only opens one when
+  there genuinely is none.
+- **Pausing STOPPED the recording, so resuming was a `play(start=)`.** That decodes the file up to the point it starts from, which four
+  minutes in is the seconds the player was watching. `Mix_PauseMusic` costs nothing, and `get_pos()` stands still while it is held — measured,
+  because a clock that kept running would put the recording exactly the length of the pause out on resume. So a paused SONG suspends the
+  recording; muting it, changing the file or jumping elsewhere still stops it. `_update_mp3` runs every frame while paused too, so it has to
+  make the same distinction or it cancels the hold on the very next frame.
+- **A held arrow key was 25 decodes a second.** Key repeat is 40 ms and every repeat seeked the recording. The FIRST seek of a burst is still
+  immediate — a loop turn is a seek too, and delaying it would start the recording late every time round — and the rest are collapsed into one
+  once they stop arriving (`MP3_SEEK_SETTLE_S`), with the recording held silent meanwhile.
+- **And a stalled frame moved the song by the whole stall.** `_playback_ms` advanced by real elapsed time with no cap, so three seconds of
+  blocked frame scrolled three seconds of music past uncredited and landed the picture somewhere the player never saw — the "it stands still
+  and then jumps". Capped at `MAX_FRAME_STALL_S`; losing the time is the cheaper of the two, and the recording is pulled back into line by the
+  ordinary sync a frame later.
+- **The clock now starts AFTER the slow work of resuming, not before.** Set first, whatever the device and the decoder take is charged to the
+  song and the picture jumps forward by it on the very next frame.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain

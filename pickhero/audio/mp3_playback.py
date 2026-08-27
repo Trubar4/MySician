@@ -55,6 +55,8 @@ class Mp3Player:
         self._ready = False
         self._muted = False
         self._playing = False
+        # Held by a paused song rather than stopped. See set_suspended.
+        self._suspended = False
         # The song position the current play() call started from, and the
         # clock reading when it did. get_pos() counts from the play() call and
         # knows nothing about the start offset it was given.
@@ -70,6 +72,11 @@ class Mp3Player:
         self.resyncs = 0
         self.worst_drift_ms = 0.0
         self.error: str | None = None
+
+    @property
+    def suspended(self) -> bool:
+        """Held where it is by a paused song, rather than stopped."""
+        return self._suspended
 
     def open(self) -> bool:
         """Load the file. False (with .error set) if it cannot be played."""
@@ -127,6 +134,11 @@ class Mp3Player:
         Called once a frame with the song position the recording should be at.
         """
         if not self._ready or self._muted:
+            return
+        if self._suspended:
+            # Held by a paused song. Its position is not moving and neither is
+            # the recording's, so there is nothing to correct -- and a resync
+            # here would be the very re-decode the suspension exists to avoid.
             return
         if position_ms < 0:
             # Still counting in. The recording starts when the song does.
@@ -193,10 +205,38 @@ class Mp3Player:
         if self._playing:
             self._origin_ms = self.position_ms()
         self._playing = False
+        self._suspended = False
         try:
             pygame.mixer.music.stop()
         except Exception:
             pass
+
+    def set_suspended(self, suspended: bool) -> None:
+        """Hold the recording where it is, without giving up its place.
+
+        The difference from `pause` is the whole point: `pause` STOPS, and
+        starting again means `play(start=)`, which decodes the file up to that
+        point. For an MP3 four minutes in, on a thin laptop, that is seconds
+        of a frozen picture -- and the space bar does it twice, once each way.
+
+        `Mix_PauseMusic` costs nothing and `get_pos()` stands still while it
+        is held (measured, because a clock that kept running would put the
+        recording exactly the length of the pause out of step on resume). So
+        pausing the SONG suspends the recording, and only muting it, changing
+        the file, or jumping somewhere else still stops it.
+        """
+        if not self._ready or suspended == self._suspended:
+            return
+        if suspended and not self._playing:
+            return                       # nothing playing to hold
+        try:
+            if suspended:
+                pygame.mixer.music.pause()
+            else:
+                pygame.mixer.music.unpause()
+        except Exception:
+            return
+        self._suspended = suspended
 
     def close(self) -> None:
         self.pause()
@@ -233,6 +273,7 @@ class Mp3Player:
         self.error = None
         self._origin_ms = max(0.0, position_ms)
         self._playing = True
+        self._suspended = False
         self._ended = False
 
 

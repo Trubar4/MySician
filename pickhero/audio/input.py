@@ -468,6 +468,15 @@ class AudioCapture:
         )
         self._stream.start()
 
+    def is_running(self) -> bool:
+        """Whether a stream is open and capturing.
+
+        Resuming a paused song asks this: a stream still open needs only its
+        clock re-anchored, where opening a new one is a real device open and
+        costs seconds on Windows.
+        """
+        return self._stream is not None
+
     def stop(self):
         """Stop audio capture."""
         if self._stream is not None:
