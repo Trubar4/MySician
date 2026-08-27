@@ -1,37 +1,22 @@
-Ja hatte die Stimmung versehentlich auf Drop D - sorry.
-Ich muss den zeitlichen Versatz bei GP-Dateien und MP3 beiden noch weiter ehöhen können. Bitte mach, dass bei MP3 bis 8 min möglich sind, falls das GP nur das Solo enthält beispielsweise und dass beim GP wenigsten 10 SEkunden möglich sind.
-Was war sonst noch zu testen?
-Bending schein schon gut zu funktionieren.
+Billy Talent - Red Flag
+Three days Grace - I hate everything about you
+Shinedown - Sound of Madness
+Shinedown - Lost in the crowd
+Billy Talent - Swallowed up by the Ocean
+Papa Roach - Leave a light on
+Atreyu - Glass eater
+Atreyu - Afterglow
+Asking Alexandria - When the lights go on
+Asking Alexandria - Dark Void
+Bon Jovi - Dry Country
+Disturbed - The Sound of Silence
+I Prevail - Rain
+I Prevail - Rise above it
+Everest - Darkness always wins
+Everest - Everest
 
 
 
-# Ein Experiment würde das klären, und es lohnt sich, weil sonst jeder künftige Mitschnitt einen wertlosen Punktestand danebenstellt:
-
-cd C:\Users\Admin\.vscode\MySician\mysician\mysician
-git pull
-### Fenster 1:
-.venv\Scripts\Activate.ps1
-python tools\record_reference.py --play-along timing_test_100bpm.gp5
-### Fenster 2 (parallel):
-.venv\Scripts\Activate.ps1
-python -m pickhero
-
-Bricht die Quote wieder auf ~35 % ein, wissen wir: während einer Aufnahme ist der App-Score wertlos — gut zu wissen, statt es nochmal zu jagen. Bleibt sie bei ~90 %, waren es die Fixes und Punkt 1 ist erledigt.
-
-
-
-**Features:**
-○ Taste, um Midi zu muten
-○ Ich hätte gerne eine Möglichkeit auch echte MP3s Background mitlaufen zu lassen.
-Dafür brauche ich einen Datei-Auswähler zur Wahl des MP3s (Quelladresse wir gespeichert zum Song). Außerdem möchte ich es starten können (oder abschalten). Außerdem brauche ich eine Möglichkeit es zu Syncen, damit es mit den MIDI Klicks und der Visualisierung synchron läuft. Auch das muss gespeichert werden.
-
-
-
-**Prüfen:**
-○ Bending
-○ Sliding
-○ Hammer on / pull off
-○ Farbschema
 
 cd C:\\Users\\Admin.vscode\\MySician\\mysician\\mysician
 git pull origin claude/mysician-timing-measurement-au2v0m
