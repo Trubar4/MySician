@@ -251,6 +251,7 @@ class AudioCapture:
         self._pending_windows: list[list[float]] = []
         self._sample_rate: int = int(ac.sample_rate)
         self._stream: sd.InputStream | None = None
+        self._channel_energy = None
         self._signal_db: float = -120.0
         self._tuner_freq: float = 0.0
         self._tuner_confidence: float = 0.0
@@ -277,10 +278,23 @@ class AudioCapture:
             # same drops with the counter still advancing cost only two.
             self.dropped_buffers += 1
 
-        # indata shape: (frames, channels) — downmix so the guitar is picked
-        # up no matter which interface input (1 or 2) it is plugged into
+        # indata shape: (frames, channels). The guitar is in ONE input of the
+        # interface, so the channel carrying it is the one to listen to --
+        # picked by which has had the most energy, and held across buffers so
+        # a rest cannot make it flap.
+        #
+        # Averaging the channels would be the obvious downmix and it is the
+        # wrong one: with the other input silent it halves the guitar, which
+        # is 6 dB given away for nothing. Six dB matters here -- the pitch
+        # starts rotting below -38 dB and collapses under -44 -- so a quiet
+        # take would be blamed on the player or the detector.
         if indata.shape[1] > 1:
-            mono = indata.mean(axis=1)
+            energy = np.mean(indata * indata, axis=0)
+            if self._channel_energy is None or len(self._channel_energy) != len(energy):
+                self._channel_energy = energy
+            else:
+                self._channel_energy = self._channel_energy * 0.95 + energy * 0.05
+            mono = indata[:, int(np.argmax(self._channel_energy))].copy()
         else:
             mono = indata[:, 0].copy()
 
@@ -389,8 +403,16 @@ class AudioCapture:
 
         USB interfaces (e.g. Focusrite) often run at 48000 Hz in Windows shared
         mode and reject the 44100 Hz default with "Invalid sample rate". Probe
-        the configured rate first, then the device default, then common rates;
-        for each rate try mono first, then stereo (callback uses channel 0).
+        the configured rate first, then the device default, then common rates.
+
+        **Stereo first, then mono**, which is the opposite of what this did.
+        The callback downmixes every channel it is given precisely so the
+        guitar is heard whichever input of a two-in interface it is plugged
+        into -- and asking for ONE channel takes that chance away, because
+        Windows then hands over input 1 alone. A guitar in input 2 arrives as
+        silence: a stream that opens, a level meter that reads nothing, and no
+        error anywhere to say why. The two halves of this file contradicted
+        each other and the resolver won.
         """
         ac = self.config.audio
         if self._resolved_settings is not None and self._resolved_device == ac.device_index:
@@ -411,7 +433,7 @@ class AudioCapture:
         resolved = (int(ac.sample_rate), 1)
         for sr in candidates:
             found = False
-            for ch in (1, 2):
+            for ch in (2, 1):
                 try:
                     sd.check_input_settings(
                         device=ac.device_index, channels=ch,
@@ -443,6 +465,9 @@ class AudioCapture:
         self._sample_rate = sample_rate
         self._ring = _AudioRing(int(sample_rate * RING_SECONDS))
         self._pending_windows = []
+        # Which input of the interface is carrying the guitar, learned from
+        # the audio itself. A fresh stream knows nothing about the last one.
+        self._channel_energy = None
         self.dropped_buffers = 0
 
         # Drain any leftover notes
@@ -467,6 +492,26 @@ class AudioCapture:
             callback=self._audio_callback,
         )
         self._stream.start()
+
+    def describe_device(self) -> str:
+        """The input actually in use, as the run log has to name it.
+
+        A log that reports a silent stream without saying WHICH device was
+        silent cannot tell a wrong device from a blocked one, and on a machine
+        with the same interface listed several times over (MME, DirectSound,
+        WASAPI) that is the whole question.
+        """
+        ac = self.config.audio
+        index = ac.device_index
+        try:
+            info = sd.query_devices(index, "input")
+            name = info["name"]
+            inputs = info["max_input_channels"]
+        except Exception:
+            return f"index {index} (could not be queried)"
+        rate, channels = (self._resolved_settings or (ac.sample_rate, 1))
+        return (f"{name} — index {'default' if index is None else index}, "
+                f"{channels} of {inputs} channel(s) at {rate} Hz")
 
     def is_running(self) -> bool:
         """Whether a stream is open and capturing.

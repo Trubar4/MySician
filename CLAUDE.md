@@ -59,6 +59,21 @@ onset_detector.set_threshold(0.3)  # adjust based on testing
   rebuilt at the resolved rate
 - Noise gate: ignore buffers below configurable dB level
 
+## Which Input Of The Interface The Guitar Is In
+
+`_audio_callback` was written to downmix every channel "so the guitar is picked up no matter which interface input (1 or 2) it is plugged
+into" — and `_resolve_input_settings` asked for **mono first, then stereo**, which takes that chance away: Windows then hands over input 1
+alone and a guitar in input 2 arrives as silence. A stream that opens, a meter that reads nothing, and no error anywhere to say why. The two
+halves of the file contradicted each other and the resolver won.
+
+- **Stereo is probed first now**, falling back to mono for a device that really has one input.
+- **The channel is chosen, not averaged.** The mean would halve a guitar sitting in one input — 6 dB given away, where the pitch starts
+  rotting below −38 dB and collapses under −44, so a quiet take gets blamed on the player or the detector. The channel with the most energy
+  wins, held across buffers by an EMA so a rest cannot make it flap.
+- **The run log names the input** (`input_device`: name, index, channels of how many, resolved rate). A log reporting a silent stream without
+  saying WHICH device was silent cannot tell a wrong device from a blocked one — and on a machine listing the same interface under MME,
+  DirectSound and WASAPI, that is the whole question.
+
 ## Chord Verification
 
 Monophonic pitch detection cannot say which string of a chord was mis-fretted, so `audio/chord_verify.py` answers that separately, using the

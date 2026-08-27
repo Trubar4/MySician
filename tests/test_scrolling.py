@@ -1330,8 +1330,20 @@ class TestRunLog:
         text = self._log_text(self._played_screen())
         for key in ("dropped_buffers", "sample_rate", "hit_window_ms",
                     "sync_offset_ms", "strings_taken_back", "notes_written",
-                    "rescued_notes"):
+                    "rescued_notes", "input_device"):
             assert f"{key}\t" in text
+
+    def test_it_names_the_input_it_was_listening_to(self):
+        """A log reporting a silent stream without saying WHICH device was
+        silent cannot tell a wrong device from a blocked one -- and on a
+        machine listing the same interface under MME, DirectSound and WASAPI
+        that is the whole question."""
+        screen = self._played_screen()
+        class Capture:
+            def describe_device(self):
+                return "Focusrite USB — index 7, 2 of 2 channel(s) at 48000 Hz"
+        screen._audio_capture = Capture()
+        assert "Focusrite USB" in self._log_text(screen)
 
     def test_writing_it_reports_where_it_went(self, tmp_path):
         screen = self._played_screen()

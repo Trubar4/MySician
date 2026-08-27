@@ -2715,6 +2715,8 @@ class PlayingScreen:
         fh.write(f"audio_anchor_ms\t{self._audio_anchor_ms:.1f}\n")
         fh.write(f"audio_anchor_song_ms\t{self._audio_anchor_song_ms:.1f}\n")
         fh.write(f"sample_rate\t{getattr(capture, '_sample_rate', ac.sample_rate)}\n")
+        describe = getattr(capture, "describe_device", None)
+        fh.write(f"input_device\t{describe() if describe else '(unknown)'}\n")
         fh.write(f"dropped_buffers\t{getattr(capture, 'dropped_buffers', 0)}\n")
         fh.write(f"noise_gate_db\t{ac.noise_gate_db:.0f}\n")
         # The input level, in the same units the HUD shows (RMS of one hop).
