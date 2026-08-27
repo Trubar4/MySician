@@ -35,6 +35,9 @@ class App:
         self._load_error: str | None = None
         self._current_song_path: Path | None = None
         self._current_track_index: int | None = None
+        # The last file's track list. See _tracks_of.
+        self._tracks_cache_key: str | None = None
+        self._tracks_cache: list[dict] = []
         self._menu: MenuScreen | None = None
         self._playing_screen: PlayingScreen | None = None
         self._device_menu: DeviceMenuScreen | None = None
@@ -214,24 +217,34 @@ class App:
             self._calibration_menu = None
             self._state = self._return_to
 
+    def _tracks_of(self, path: Path) -> list[dict]:
+        """The file's track list, parsed once and kept.
+
+        Reading it means unpacking the whole file -- and for a GP6 container,
+        decompressing it first. It was read TWICE per call below and again on
+        every change of instrument, though a file's tracks cannot change
+        while it is sitting there being played.
+        """
+        key = str(path)
+        if self._tracks_cache_key != key:
+            from pickhero.tabs.loader import list_tracks
+            try:
+                self._tracks_cache = list_tracks(path)
+            except Exception:
+                self._tracks_cache = []
+            self._tracks_cache_key = key
+        return self._tracks_cache
+
     def _playable_track_indices(self, path: Path) -> list[int]:
         """Tracks worth offering: the guitar ones, or everything if none."""
-        from pickhero.tabs.loader import list_tracks
-        try:
-            tracks = list_tracks(path)
-        except Exception:
-            return []
+        tracks = self._tracks_of(path)
         guitars = [t["index"] for t in tracks
                    if t.get("is_guitar") and not t.get("is_percussion")]
         return guitars or [t["index"] for t in tracks]
 
     def _track_options(self, path: Path) -> list[tuple[int, str]]:
         """(index, label) for every track worth offering."""
-        from pickhero.tabs.loader import list_tracks
-        try:
-            tracks = list_tracks(path)
-        except Exception:
-            return []
+        tracks = self._tracks_of(path)
         wanted = set(self._playable_track_indices(path))
         return [(t["index"], f"{t['index'] + 1}. {t['name']}")
                 for t in tracks if t["index"] in wanted]
@@ -250,7 +263,17 @@ class App:
         surface.blit(surf, (12, y))
 
     def _load_song(self, path: Path, track_index: int | None = None) -> None:
-        """Load a GP file and switch to playing state."""
+        """Load a GP file and switch to playing state.
+
+        The screen being replaced is torn down FIRST. Changing instrument
+        reaches this too, and it used to leave the old one holding the input
+        stream and the MIDI output port -- so the new screen then opened a
+        second of each, which on Windows is why changing track took longer
+        than opening the song did. It also lost the sitting: close_session
+        lives in stop_audio, and nothing called it on this path.
+        """
+        if self._playing_screen is not None:
+            self._playing_screen.stop_audio()
         try:
             timeline = load_gp_file(path, track_index)
         except Exception as e:

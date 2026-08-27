@@ -707,6 +707,20 @@ down for the arrow keys and never applied to the pause.
 - **The clock now starts AFTER the slow work of resuming, not before.** Set first, whatever the device and the decoder take is charged to the
   song and the picture jumps forward by it on the very next frame.
 
+## Changing Instrument Took Longer Than Opening The Song
+
+Which is the tell, because the two go through the same `_load_song`. Whatever is slower has to be something the FIRST open does not have — and
+what it does not have is an old screen.
+
+- **The screen being replaced was never torn down.** It went on holding the input stream and the MIDI output port, so the new one opened a
+  second of each; on Windows that is a real device open, the cost this project has now paid three times (seeks, the pause, this). It also lost
+  the sitting, because `close_session` lives in `stop_audio` and nothing on this path called it — an hour of practice quietly gone for having
+  switched track.
+- **The file was unpacked twice per open and twice again per change.** `_track_options` read the track list for the labels and
+  `_playable_track_indices` read it again to ask which are guitars. For a GP6 container that is the BCFZ decompression, twice. It is read once
+  now and kept, keyed by the file: a song's tracks cannot change while it sits there being played. Measured: 2 reads per open → 1, and per
+  instrument change → 0.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain
