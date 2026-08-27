@@ -216,7 +216,7 @@ Every key is also listed in the app's own footer, and explained under **H**.
 | `F` | fret limit · `F1`–`F6` mute a string |
 | `T` | theme · `H` help · `ESC` song list |
 
-On the song list: `F` or `/` searches, `O` opens the settings screen — everything that is set once (device, noise gate, hit window, fret limit, muted strings, chord scoring, backing tracks, theme), with anything away from its standard value marked.
+On the song list: `F` or `/` searches, `F5` reloads the list after copying a file in, `O` opens the settings screen — everything that is set once (device, noise gate, hit window, fret limit, muted strings, chord scoring, backing tracks, theme), with anything away from its standard value marked.
 
 ## Practice diary
 

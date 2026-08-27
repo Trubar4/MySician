@@ -49,6 +49,10 @@ class MenuScreen:
         self._progress = progress
         self._sort_mode: str = config.sort_mode if config else "name_asc"
         self._files: list[Path] = []
+        # What the last F5 found, shown until the next keypress. A refresh
+        # that looks like nothing happened is indistinguishable from a dead
+        # key, and this one usually finds exactly one new file.
+        self._reload_note: str = ""
         self._search_text: str = ""
         self._search_active: bool = False
         self._filtered_files: list[Path] = []
@@ -146,11 +150,72 @@ class MenuScreen:
         self._search_active = False
         self._apply_filter()
 
+    def reload_files(self) -> str:
+        """Read the folder again without losing the player's place (F5).
+
+        A file copied in while the app is open was invisible until it was
+        restarted. Rescanning is the whole of the work; what takes care is
+        everything around it.
+
+        The search is KEPT. Dropping a new song in the middle of hunting for
+        one and coming back to an unfiltered list means typing it all again,
+        and the new file is very likely the one being searched for.
+
+        The selection is kept too, by name rather than by row: the list is
+        sorted, so a file added above the cursor moves every row below it and
+        the highlight would land on a different song than the one it was on.
+
+        And it says what it found. A refresh that looks exactly like no
+        refresh cannot be told apart from a dead key -- the same rule as every
+        other silent failure in this app.
+        """
+        before = set(self._files)
+        selected = self._selected_path()
+        text, active = self._search_text, self._search_active
+        self.scan_files()
+        self._search_text, self._search_active = text, active
+        self._apply_filter()
+        self._select_path(selected)
+        added = len(set(self._files) - before)
+        gone = len(before - set(self._files))
+        parts = [f"{len(self._files)} songs"]
+        if added:
+            parts.append(f"{added} new")
+        if gone:
+            parts.append(f"{gone} gone")
+        if not added and not gone:
+            parts.append("nothing changed")
+        return "Reloaded: " + ", ".join(parts)
+
+    def _selected_path(self):
+        """The song under the cursor, or None when the list is empty."""
+        files = self._display_files
+        if not files or not (0 <= self._selected < len(files)):
+            return None
+        return files[self._selected]
+
+    def _select_path(self, path) -> None:
+        """Put the cursor back on this song, or leave it where it fits."""
+        files = self._display_files
+        if not files:
+            self._selected = 0
+            self._scroll_offset = 0
+            return
+        if path is not None and path in files:
+            self._selected = files.index(path)
+        else:
+            self._selected = min(self._selected, len(files) - 1)
+        self._ensure_visible()
+
     def handle_event(self, event: pygame.event.Event) -> Path | str | None:
         """Process input. Returns Path (file selected), "escape" (quit), or None."""
         files = self._display_files
 
         if event.type == pygame.KEYDOWN:
+            if event.key != pygame.K_F5:
+                # A note is for what just happened, not for the rest of the
+                # session. Any other key means the player has moved on.
+                self._reload_note = ""
             if event.key == pygame.K_ESCAPE:
                 if self._search_active:
                     self._search_text = ""
@@ -169,6 +234,12 @@ class MenuScreen:
                 self._search_active = True
                 self._search_text = ""
                 self._apply_filter()
+                return None
+
+            # F5, the key everybody already reaches for. It cannot be a
+            # letter: the search box takes those the moment it is open.
+            if event.key == pygame.K_F5:
+                self._reload_note = self.reload_files()
                 return None
 
             if event.key == pygame.K_BACKSPACE:
@@ -291,7 +362,10 @@ class MenuScreen:
         else:
             label, colour = "Search  (F or /)", t.hud_text
         surface.blit(item_font.render(label, True, colour), (box.x + 8, box.y + 2))
-        if self._search_text:
+        if self._reload_note:
+            note_surf = hint_font.render(self._reload_note, True, t.hud_accent)
+            surface.blit(note_surf, (box.right + 12, box.y + 6))
+        elif self._search_text:
             count_label = f"{len(files)} of {len(self._files)} songs"
             count_surf = hint_font.render(count_label, True, t.hud_text)
             surface.blit(count_surf, (box.right + 12, box.y + 6))
@@ -364,10 +438,10 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to search  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
-            hint = f"F or /: search  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  G: calibrate  |  T: theme  |  ESC: quit"
+            hint = f"F or /: search  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  G: calibrate  |  T: theme  |  ESC: quit"
         hint_surf = hint_font.render(hint, True, t.hud_text)
         surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
 
