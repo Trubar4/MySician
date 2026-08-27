@@ -435,6 +435,10 @@ class PlayingScreen:
         self._frame_ms: list[float] = []
         # A seek collapsed because more were still arriving, and when the
         # last one did. See _seek_mp3.
+        # The file chooser blocks for seconds, so it is opened one frame
+        # AFTER the key, once the note saying so has been drawn.
+        self._mp3_dialog_due = False
+        self._mp3_dialog_armed = False
         self._mp3_pending_seek_ms: float | None = None
         self._mp3_last_seek_at = float("-inf")
         self._loop_start_ms: float | None = None
@@ -676,6 +680,12 @@ class PlayingScreen:
 
     def update(self) -> None:
         """Advance playback clock by real elapsed time."""
+        if self._mp3_dialog_armed:
+            # The note has been on screen for a frame; now we may block.
+            self._mp3_dialog_due = False
+            self._mp3_dialog_armed = False
+            self._open_mp3_dialog()
+
         # Update signal level meter and tuner even when paused (so user can verify signal)
         if self._audio_capture is not None:
             raw_db = self._audio_capture.get_signal_db()
@@ -717,6 +727,14 @@ class PlayingScreen:
                     self._tuner_note_stable_frames = 0
 
         if not self._playing:
+            # The input device stays open through a pause now, so whatever it
+            # hears has to be thrown away here. Both queues are unbounded and
+            # a strike window holds 341 ms of audio: a long pause with the
+            # guitar in hand would otherwise fill memory with sound belonging
+            # to no moment in the song.
+            if self._audio_capture is not None:
+                self._audio_capture.get_notes()
+                self._audio_capture.get_strike_windows()
             # Still worth a look: a stretched copy that lands while the song
             # is paused has to be swapped in, and the line that says how far
             # along it is has to keep moving. Pausing does not stop the work,
@@ -1976,6 +1994,9 @@ class PlayingScreen:
 
         # Bottom-center: play state + controls
         self._blit_footer_lines(surface, layout, self._footer_lines(), t.hud_text)
+        if self._mp3_dialog_due:
+            # Drawn this frame, so the next update may block on the chooser.
+            self._mp3_dialog_armed = True
 
         # Top-left second line: track name + filter info
         info_y = 38
@@ -3577,13 +3598,39 @@ class PlayingScreen:
             self._mp3_note = "No backing track chosen yet — Shift+U to pick one"
 
     def _choose_mp3_backing(self) -> None:
-        """Pick the recording for this song with the system file dialog."""
+        """Ask for the file chooser -- next frame, not this one.
+
+        The dialog is the operating system's, and on Windows the first one
+        takes seconds to appear. Opened straight from the key press, nothing
+        is drawn in between: the app simply stops, which is indistinguishable
+        from a dead key. So the note goes up first and the dialog opens once
+        it has actually been on screen.
+        """
         if not self._song_key:
             self._mp3_note = "No song loaded"
             return
+        self._mp3_note = "Opening the file chooser..."
+        self._mp3_dialog_due = True
+        self._mp3_dialog_armed = False
+
+    def _open_mp3_dialog(self) -> None:
+        """Actually show the chooser. Blocks until the player answers."""
         current = self._mp3_path()
         start_dir = str(Path(current).parent) if current else self._config.songs_dir
-        chosen = pick_audio_file(start_dir)
+        try:
+            chosen = pick_audio_file(start_dir)
+        finally:
+            self._mp3_note = ""
+            # Every key repeat that arrived while the dialog held the app is
+            # still in the queue, and each one would open it again. That is
+            # exactly what happened: the chooser came back over and over and
+            # had to be cancelled each time. Key repeat is 40 ms, so seconds
+            # of a blocked frame are dozens of them.
+            try:
+                pygame.event.clear(pygame.KEYDOWN)
+                pygame.event.clear(pygame.KEYUP)
+            except Exception:
+                pass
         if not chosen:
             # Cancelled, or no tkinter on this machine. The two look the same
             # from here and neither is an error worth shouting about.
@@ -3647,7 +3694,11 @@ class PlayingScreen:
         if self._mp3_note:
             return self._mp3_note
         if self._mp3_player is None:
-            return ""
+            # Not nothing. A song with no recording showed no line at all, so
+            # the key that assigns one was invisible and U looked as though it
+            # had been removed -- which is what the player reported. A feature
+            # that silently does nothing cannot be told from a broken one.
+            return "Audio: no backing track — Shift+U to pick one"
         name = Path(self._mp3_path()).name
         if self._mp3_muted:
             return f"Audio: off (U) — {name}"

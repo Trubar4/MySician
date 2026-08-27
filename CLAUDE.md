@@ -529,6 +529,14 @@ where the song is with where the recording got to and corrects only past `RESYNC
   path or in that particular file's decoder, and there is no point rewriting the transport. A decoder that cannot seek accepts
   `play(start=)` without complaint and starts from the top anyway, which is invisible — so a gap that stays open past
   `MP3_STUCK_DRIFT_MS` for `MP3_STUCK_FOR_MS` is named on screen rather than left to look like a dead key.
+- **The file chooser is the operating system's, and the first one takes seconds.** Opened straight from the key press nothing is drawn in
+  between, so the app just stops — indistinguishable from a dead key. The note goes up first and the dialog opens on the NEXT frame, once it
+  has really been on screen. And every key repeat that arrived while it blocked was still in the queue afterwards, each one reopening it: the
+  player had to cancel the same dialog over and over. Key repeat is 40 ms, so seconds of blocked frame are dozens of them; the keys are
+  dropped when the dialog returns.
+- **A song with no recording said nothing at all**, so the key that assigns one was invisible and `U` looked as though it had been removed.
+  The line now names `Shift+U`. A feature that silently does nothing cannot be told apart from a broken one — the same rule as every named
+  failure above.
 - **A status message must never outlive its situation.** Picking a file set a note that outranks the ordinary HUD line, and nothing cleared
   it — so the offset the player was adjusting with `Shift+N`/`Shift+M` was never on screen at all, and the key looked dead. Notes are for
   what the live line cannot say, and they are dropped as soon as it can.
@@ -678,6 +686,9 @@ down for the arrow keys and never applied to the pause.
   blocked frame scrolled three seconds of music past uncredited and landed the picture somewhere the player never saw — the "it stands still
   and then jumps". Capped at `MAX_FRAME_STALL_S`; losing the time is the cheaper of the two, and the recording is pulled back into line by the
   ordinary sync a frame later.
+- **Leaving the device open means draining what it hears.** Both capture queues are unbounded and a strike window holds 341 ms of audio, so a
+  long pause with the guitar in hand would fill memory with sound belonging to no moment in the song. The paused branch of `update()` throws
+  it away every frame.
 - **The clock now starts AFTER the slow work of resuming, not before.** Set first, whatever the device and the decoder take is charged to the
   song and the picture jumps forward by it on the very next frame.
 

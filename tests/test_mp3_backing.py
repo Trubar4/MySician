@@ -425,9 +425,14 @@ class TestSlowedPractice:
         screen = PlayingScreen(_timeline(), config=config, song_key="song")
         assert "not found" in screen._mp3_hud_text().lower()
 
-    def test_a_song_with_no_recording_says_nothing(self):
+    def test_a_song_with_no_recording_says_how_to_give_it_one(self):
+        """It used to say nothing at all, so the key that assigns a recording
+        was invisible and U looked as though it had been removed -- which is
+        what the player reported. A feature that silently does nothing cannot
+        be told apart from a broken one."""
         screen = PlayingScreen(_timeline(), config=Config(), song_key="song")
-        assert screen._mp3_hud_text() == ""
+        text = screen._mp3_hud_text()
+        assert "Shift+U" in text and "no backing track" in text.lower()
 
 
 class TestWhenTheRecordingRunsOut:
@@ -631,14 +636,77 @@ class TestTheOffsetIsVisible:
         monkeypatch.setattr("pickhero.ui.scrolling.pick_audio_file",
                             lambda d=None: chosen)
         screen._choose_mp3_backing()
+        screen._open_mp3_dialog()          # the key arms it, a frame later it opens
         assert screen._mp3_note == ""
         assert "+0 ms" in screen._mp3_hud_text()
+
 
     def test_a_note_gives_way_once_the_offset_moves(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
         screen._mp3_note = "something from earlier"
         screen._adjust_mp3_offset(10.0)
         assert "10 ms" in screen._mp3_hud_text()
+
+
+class TestTheFileChooserDoesNotLookLikeADeadKey:
+    """Reported: several seconds of frozen app after Shift+U, and then the
+    dialog opening again and again, each one needing to be cancelled."""
+
+    def _screen(self, tmp_path, monkeypatch):
+        config = Config()
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        monkeypatch.setattr("pickhero.ui.scrolling.pick_audio_file",
+                            lambda d=None: str(tmp_path / "backing.mp3"))
+        return screen
+
+    def test_the_key_says_what_is_happening_before_anything_blocks(
+            self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._choose_mp3_backing()
+        assert "chooser" in screen._mp3_hud_text().lower()
+        assert screen._mp3_dialog_due is True
+
+    def test_it_does_not_open_until_that_has_been_drawn(self, tmp_path,
+                                                        monkeypatch):
+        """Opened from the key press itself, nothing is drawn in between and
+        the app simply stops -- which is what a dead key looks like."""
+        opened = []
+        screen = self._screen(tmp_path, monkeypatch)
+        monkeypatch.setattr(screen, "_open_mp3_dialog",
+                            lambda: opened.append(1))
+        screen._choose_mp3_backing()
+        screen.update()
+        assert opened == []                 # nothing drawn yet
+        screen._mp3_dialog_armed = True     # what render() does
+        screen.update()
+        assert opened == [1]
+
+    def test_the_keys_that_piled_up_while_it_blocked_are_dropped(
+            self, tmp_path, monkeypatch):
+        """Key repeat is 40 ms, so seconds of blocked frame are dozens of
+        keydowns -- and each one reopened the chooser."""
+        pygame.init()
+        screen = self._screen(tmp_path, monkeypatch)
+        def slow_dialog(d=None):
+            for _ in range(12):
+                pygame.event.post(pygame.event.Event(
+                    pygame.KEYDOWN, key=pygame.K_u, mod=pygame.KMOD_LSHIFT))
+            return str(tmp_path / "backing.mp3")
+        monkeypatch.setattr("pickhero.ui.scrolling.pick_audio_file", slow_dialog)
+        screen._open_mp3_dialog()
+        assert pygame.event.get(pygame.KEYDOWN) == []
+
+    def test_a_cancelled_dialog_clears_its_note_too(self, tmp_path, monkeypatch):
+        """Otherwise "Opening the file chooser..." outranks the ordinary line
+        for the rest of the session."""
+        screen = self._screen(tmp_path, monkeypatch)
+        monkeypatch.setattr("pickhero.ui.scrolling.pick_audio_file",
+                            lambda d=None: None)
+        screen._mp3_note = "Opening the file chooser..."
+        screen._open_mp3_dialog()
+        assert "chooser" not in screen._mp3_hud_text().lower()
+
+
 
 
 class TestARecordingThatWillNotFollow:
