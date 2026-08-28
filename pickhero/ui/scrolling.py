@@ -23,6 +23,7 @@ from pickhero.matcher import (FINE_MS, STRING_MIN_SAMPLES, MatchType,
                               NoteMatcher)
 from pickhero import practice_log
 from pickhero.progress import ProgressTracker
+from pickhero.tabs.chords import name_chord
 from pickhero.tabs.timeline import NoteEvent, Timeline
 from pickhero.audio.note_utils import (
     freq_to_cents_deviation, is_standard_tuning, midi_to_name, tuning_name,
@@ -64,6 +65,11 @@ PLAIN_TINT = (208, 212, 220)
 # Fret wire. Warm and grey rather than white, so it cannot be mistaken for the
 # hit line -- which is white, full height, and the one vertical that matters.
 FRET_WIRE_COLOR = (150, 142, 122)
+
+# How far the hit line stands proud of the board, top and bottom. Flush with
+# the edge it is one more vertical among the fret wires; past it, it is the
+# thing the board scrolls through.
+HIT_LINE_OVERHANG_PX = 14
 
 # Gap left between a sustain and the next note, as a fraction of note height.
 # A capsule is drawn from the head's left edge to one radius before the next
@@ -461,6 +467,8 @@ class PlayingScreen:
         # Loop state
         # A ring of recent frame times, for the run log. Bounded: a long
         # session must not turn a diagnostic into a memory leak.
+        # (when, name) for every chord change. Built once per song.
+        self._chord_names: list[tuple[float, str]] = []
         self._frame_ms: list[float] = []
         # A seek collapsed because more were still arriving, and when the
         # last one did. See _seek_mp3.
@@ -1049,6 +1057,7 @@ class PlayingScreen:
         self._draw_loop_region(surface, layout)
         self._draw_hit_zone(surface, layout)
         self._draw_notes(surface, layout)
+        self._draw_chord_names(surface, layout)
         self._draw_hud(surface, layout)
 
         if self._show_timing:
@@ -1234,7 +1243,57 @@ class PlayingScreen:
         # unused. Keeping the full height costs no look-ahead at all, because
         # look-ahead is bought and sold in width.
         self._head_h_px = max(head, layout.note_h)
+        self._chord_names = self._build_chord_names()
         self._scroll_speed_signature = self._filter_signature()
+
+    def _build_chord_names(self) -> list[tuple[float, str]]:
+        """(when, name) for every chord CHANGE in the song.
+
+        At the change, not on every beat: a name repeated over eight bars of
+        the same chord is eight bars of noise, and the thing worth seeing is
+        the moment the hand has to move.
+
+        Built once per song. Naming a chord is cheap but it is not free, and
+        this display has been bitten twice by work that looked cheap until it
+        ran once a frame.
+        """
+        by_time: dict[float, list[int]] = {}
+        for note in self._timeline.notes:
+            if self._note_passes_filter(note) and not note.dead:
+                by_time.setdefault(note.timestamp_ms, []).append(note.midi_note)
+        out: list[tuple[float, str]] = []
+        last = None
+        for when in sorted(by_time):
+            name = name_chord(by_time[when])
+            if name is None or name == last:
+                continue
+            out.append((when, name))
+            last = name
+        return out
+
+    def _draw_chord_names(self, surface: pygame.Surface,
+                          layout: _Layout) -> None:
+        """The chord name above the board, where the chord changes."""
+        if not self._chord_names:
+            return
+        t = get_theme()
+        font = _get_font("arial", int(layout.lane_height * 0.62), True)
+        view_start = self._playback_ms - LEFT_MARGIN_MS
+        view_end = self._playback_ms + self._visible_window_ms + RIGHT_MARGIN_MS
+        y = int(layout.lane_top) - HIT_LINE_OVERHANG_PX - font.get_height() - 4
+        for when, name in self._chord_names:
+            if when < view_start or when > view_end:
+                continue
+            x = int(self.note_x(when, self._playback_ms,
+                                layout.hit_zone_x, layout.pixels_per_ms))
+            if x < -80 or x > layout.screen_w:
+                continue
+            # Outlined, like every other white mark on this screen: it sits
+            # over whatever the background happens to be at that moment.
+            shadow = font.render(name, True, (0, 0, 0))
+            for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+                surface.blit(shadow, (x + dx, y + dy))
+            surface.blit(font.render(name, True, t.hud_text), (x, y))
 
     def _backing_ms(self, playback_ms: float) -> float:
         """Playback position as the backing track should hear it.
@@ -1790,7 +1849,13 @@ class PlayingScreen:
             band.fill((*t.hit_zone, 28))
             surface.blit(band, (x - int(slack_px), top))
 
-        pygame.draw.line(surface, t.hit_zone, (x, top), (x, bottom), 3)
+        # It stands PROUD of the board, top and bottom. Ending flush with the
+        # edge, the line is one more vertical among the fret wires; running
+        # past it, it reads as the thing the board scrolls through -- and the
+        # overhang is visible even where a long note covers the line itself.
+        pygame.draw.line(surface, t.hit_zone,
+                         (x, top - HIT_LINE_OVERHANG_PX),
+                         (x, bottom + HIT_LINE_OVERHANG_PX), 3)
 
     def _draw_notes(self, surface: pygame.Surface, layout: _Layout) -> None:
         t = get_theme()

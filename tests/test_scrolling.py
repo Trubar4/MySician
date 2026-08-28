@@ -1733,6 +1733,41 @@ class TestTheBoardTheNotesSitOn:
         assert abs(PLAIN_TINT[0] - PLAIN_TINT[2]) < 20  # steel: neutral
 
 
+class TestTheHitLineStandsProudOfTheBoard:
+    def test_it_runs_past_the_board_top_and_bottom(self):
+        """Flush with the edge it is one more vertical among the fret wires;
+        past it, it is the thing the board scrolls through -- and the
+        overhang stays visible where a long note covers the line itself."""
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen.render(surface)
+        layout = screen._last_layout
+        drawn = []
+        real = pygame.draw.line
+        try:
+            pygame.draw.line = lambda s, c, a, b, w=1: drawn.append((a, b, w))
+            screen._draw_hit_zone(surface, layout)
+        finally:
+            pygame.draw.line = real
+        from pickhero.ui.scrolling import HIT_LINE_OVERHANG_PX
+        (_, top), (_, bottom), _ = drawn[-1]
+        assert top < layout.lane_top
+        assert bottom > layout.lane_top + 6 * layout.lane_height
+        assert HIT_LINE_OVERHANG_PX > 0
+
+
+class TestTheBoardIsAnObjectOnABackground:
+    def test_the_board_and_the_surround_are_told_apart(self):
+        """They were ten points apart -- near-black on near-black -- so the
+        board dissolved into the screen and the notes floated."""
+        pygame.init()
+        from pickhero.ui.colors import get_theme
+        theme = get_theme()
+        distance = sum(abs(a - b) for a, b in zip(theme.bg, theme.lane_bg_even))
+        assert distance > 40
+
+
 class TestTheStringColoursStayApartFromTheFeedback:
     """Two palettes share the screen and must never be confusable: one says
     WHICH STRING, the other says HOW IT WENT."""

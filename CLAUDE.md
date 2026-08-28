@@ -840,10 +840,34 @@ that is hard to read in the first place.
 - **The three lowest strings are brass and visibly thicker** (`STRING_THICKNESS` 1-6, `WOUND_TINT`), each drawn as a dark core with a lighter
   highlight so it reads as round rather than as a thick line. That is the cue that tells the low half of the board apart without reading
   anything — which is the entire point of drawing a fretboard instead of six rows.
+- **The hit line stands proud of the board**, top and bottom (`HIT_LINE_OVERHANG_PX`). Flush with the edge it is one more vertical among the
+  fret wires; running past it, it reads as the thing the board scrolls THROUGH — and the overhang stays visible where a long note covers the
+  line itself.
+- **The board is an object lying on a background, and only reads as one if the two differ.** They were ten points apart, near-black on
+  near-black, so the board dissolved into the screen and the notes floated. Dark warm wood on a cool grey now: the same relationship the
+  reference uses (dark fretboard, bright surround) at the brightness a dark theme is chosen for.
 - **The string palette was re-sampled from the reference itself**, and the check is what makes it safe: its RED sits at (248, 98, 98), within
   a few points of `feedback_miss`. A string that looks like a missed note is exactly the collision this project already fixed once, so that
   hue is not in the set and two colours of the same family stand in for it. Neighbouring lanes never share a hue, because the lane above is
   the one a note can be confused with — asserted, not eyeballed.
+
+## The Chord Name Is Not In The Tab Either
+
+Guitar Pro has a field for it, and it is empty: **5601 beats in the player's own tab, not one chord name** — the same story as the fingering.
+So `tabs/chords.py` reads it out of the notes, which is a reading of what is written rather than an invention, and that is the line it has to
+stay on the right side of. A name that is wrong now and then teaches the player to distrust the line, and then it is worth nothing even when
+it is right.
+
+- **It abstains, and abstaining is the commonest answer.** A run of single notes has no chord. Two notes are a chord only when they are a
+  fifth (a fourth counts — that is the same fifth inverted); calling a third "C" would be a claim about a note nobody played.
+- **Three or more must match a quality EXACTLY** on pitch classes. The one exception is a seventh without its fifth, because guitarists drop
+  it constantly and the shape is unambiguous. Dropping a note from a TRIAD leaves something that is not a triad, and naming it anyway is the
+  guess this refuses to make.
+- **Named over its bass** when the bass is not the root (`Em/B`), and where two readings fit, the one whose root is in the bass wins —
+  C-E-G-A is `C6`, the same notes over A are `Am7`. Both are what a player would call it.
+- **Drawn at the CHANGE, not on every beat.** A name repeated over eight bars of the same chord is eight bars of noise; the moment the hand
+  has to move is the thing worth seeing. Built once per song, because this display has been bitten twice by work that looked cheap until it
+  ran once a frame.
 
 ## Colour
 

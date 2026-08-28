@@ -60,9 +60,15 @@ class Theme:
 
 
 DARK_THEME = Theme(
-    bg=(20, 20, 30),
-    lane_bg_even=(30, 30, 42),
-    lane_bg_odd=(25, 25, 36),
+    # The board is an OBJECT lying on a background, and it only reads as one
+    # if the two differ. They were ten points apart -- near-black on
+    # near-black -- so the board dissolved into the screen and the notes
+    # floated. The board is dark warm wood now and the surround a cool grey,
+    # which is the same relationship the reference uses (dark fretboard,
+    # bright surround) at the brightness a dark theme is chosen for.
+    bg=(38, 42, 58),
+    lane_bg_even=(26, 23, 22),
+    lane_bg_odd=(23, 20, 19),
     lane_line=(60, 60, 80),
     hit_zone=(255, 255, 255),
     note_text=(255, 255, 255),
