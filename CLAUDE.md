@@ -648,6 +648,12 @@ other half: one line of JSON per session, appended, never rewritten, read by `to
   dashboard, because that is the one they read without thinking — but with the charts drawn as plain SVG rather than pulled from a CDN: an
   offline-first practice app whose dashboard needs the internet to draw a bar chart is a contradiction. Everything is added up in Python and
   the browser only draws, so the arithmetic is testable and the drawing is checked by looking at it.
+- **Two machines, one player: `tools/merge_stats.py` brings the other one's history over.** The constraint that shaped it is that running it
+  twice must change nothing the second time — nobody remembers whether they already merged, and a doubled history cannot be told apart from
+  having practised twice as much. Sittings merge by (`started`, `song`), which two machines cannot both invent and the same file cannot bring
+  twice. `progress.json` is a high score, not a statistic: the better record wins WHOLE (mixing one run's hits with another's accuracy
+  describes a run that never happened) and `attempts` takes the larger rather than the sum, because a sum is exactly what cannot be done
+  twice — the honest count of sittings is in the practice log.
 - **A song name lands inside a `<script>` tag**, and a song called `</script>` closes it. The embedded JSON escapes `<` and `>`; the test that
   found that is the reason it is written down here.
 

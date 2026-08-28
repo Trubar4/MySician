@@ -239,6 +239,16 @@ One self-contained HTML file — practice calendar, minutes per month, minutes
 per song, the scored runs, and the last sittings. No CDN, no build step, no
 server: re-run it after practising and it is up to date.
 
+Practised on a second computer? Copy its `~/.pickhero` folder over and merge:
+
+```bash
+python tools/merge_stats.py --from D:/pickhero-vom-notebook --dry-run
+python tools/merge_stats.py --from D:/pickhero-vom-notebook
+```
+
+Sittings are merged by when they started and which song, so running it twice
+changes nothing the second time. Backups are left as `.bak`.
+
 
 ## Reading the display
 
