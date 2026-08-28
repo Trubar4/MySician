@@ -873,6 +873,38 @@ it is right.
   has to move is the thing worth seeing. Built once per song, because this display has been bitten twice by work that looked cheap until it
   ran once a frame.
 
+## A Note Is Not Over Because The Clock Passed It
+
+The player reported a note going DARK for a moment and then turning green, and being distracted by it. It was not a glitch — it was the app
+drawing a state it had no business showing.
+
+`get_note_color` ended with `dimmed(base_color) if is_past else base_color`, and `is_past` was `note.timestamp_ms < playback_ms`. So a note
+was dimmed the instant its written time crossed the hit line. The verdict cannot arrive that soon: the strike is still inside the hit window
+(200 ms) and the late window (370 ms) beyond it, and a chord verdict trails its strike by ~380 ms by design. **The dark phase was the whole
+width of the window, drawn as "already missed".**
+
+- **The matcher decides, not the clock.** While it still has the note PENDING the note keeps its full colour; once it is resolved the feedback
+  effect takes over and paints hit, close or miss. One definition inside `_draw_notes`, so the technique marks and badges follow the same rule
+  rather than each deciding for itself.
+- **With audio OFF the clock is still the answer**, because nothing is coming to decide it and there is nothing to wait for.
+- The test asserts the PROPERTY rather than a colour: full colour at 50, 100 and 150 ms past the note, then green — with nothing dimmed in
+  between.
+
+## Nothing Here Grows With The Song, And That Is Asserted
+
+Three loops that began at the start of the song have now been found in this codebase, each one arriving as "it stutters now and then". The
+fretboard and the chord names add two more per-frame loops over per-song lists, so the property is measured rather than assumed:
+
+| song | chord changes | bars | one frame at 60 s |
+|---|---|---|---|
+| 1.5 min | 200 | 52 | 8.84 ms |
+| 6 min | 800 | 202 | 8.94 ms |
+| **24 min** | **3200** | **802** | **8.93 ms** |
+
+Sixteen times the song costs **1 %**, so the loops stay: a bisect for a hundred-element list would be bookkeeping to save nothing. Seeking is
+0.002 ms and an eight-minute MP3 offset changes the frame not at all. `tests/test_scaling.py` holds all of it, including that
+`_build_chord_names` runs **once per song and never in a frame**.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain

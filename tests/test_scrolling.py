@@ -1785,6 +1785,90 @@ class TestTheBoardTheNotesSitOn:
         assert abs(PLAIN_TINT[0] - PLAIN_TINT[2]) < 20  # steel: neutral
 
 
+class TestANoteIsNotOverBecauseTheClockPassedIt:
+    """Reported as distracting: a note goes DARK for a moment and then turns
+    green. It was not a glitch -- it was the whole width of the hit window
+    being drawn as "already missed". The verdict cannot arrive any sooner:
+    the strike is still inside the window (200 ms) and the late window
+    (370 ms) beyond it, and a chord verdict trails its strike by ~380 ms by
+    design.
+    """
+
+    def _screen(self):
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=3, measure=0),
+                 NoteEvent(timestamp_ms=9000.0, duration_ms=400.0,
+                           midi_note=45, string=5, fret=3, measure=0)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._audio_enabled = True
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=200.0)
+        return screen, timeline.notes[0]
+
+    def _colour_of(self, screen, note):
+        """What _draw_notes would paint this note, by the same rules."""
+        from pickhero.matcher import MatchType
+        from pickhero.ui.colors import STRING_COLORS, dimmed
+        base = STRING_COLORS[note.string]
+        if screen._audio_enabled and screen._matcher is not None:
+            over = (screen._matcher.get_note_state(note)
+                    is not MatchType.PENDING)
+        else:
+            over = note.timestamp_ms < screen._playback_ms
+        if screen._audio_enabled:
+            return screen._feedback.get_note_color(
+                note, base, screen._playback_ms, over)
+        return dimmed(base) if over else base
+
+    def test_a_note_inside_its_own_window_is_still_full_colour(self):
+        from pickhero.ui.colors import STRING_COLORS
+        screen, note = self._screen()
+        screen._playback_ms = 1100.0        # 100 ms past it, window is 200
+        assert self._colour_of(screen, note) == STRING_COLORS[note.string]
+
+    def test_it_is_still_full_colour_deep_into_the_late_window(self):
+        from pickhero.ui.colors import STRING_COLORS
+        screen, note = self._screen()
+        screen._playback_ms = 1400.0
+        assert self._colour_of(screen, note) == STRING_COLORS[note.string]
+
+    def test_once_the_matcher_calls_it_missed_it_turns_red(self):
+        from pickhero.ui.colors import get_theme
+        screen, note = self._screen()
+        results = screen._matcher.process_detected_notes([], 3000.0)
+        screen._feedback.add_results(results, 3000.0)
+        screen._playback_ms = 3000.0
+        assert self._colour_of(screen, note) == get_theme().feedback_miss
+
+    def test_a_note_that_was_hit_turns_green_with_no_dark_step_before_it(self):
+        from pickhero.audio.detector import DetectedNote
+        from pickhero.audio.input import TimestampedNote
+        from pickhero.ui.colors import STRING_COLORS, get_theme
+        screen, note = self._screen()
+        seen = []
+        for ms in (1050.0, 1100.0, 1150.0):
+            screen._playback_ms = ms
+            seen.append(self._colour_of(screen, note))
+        struck = TimestampedNote(
+            note=DetectedNote(40, 82.4, 0.95, "E2", True), timestamp_ms=1160.0)
+        results = screen._matcher.process_detected_notes([struck], 1160.0)
+        screen._feedback.add_results(results, 1160.0)
+        screen._playback_ms = 1160.0
+        seen.append(self._colour_of(screen, note))
+        # Full colour throughout, then green. Nothing dimmed in between.
+        assert seen[:3] == [STRING_COLORS[note.string]] * 3
+        assert seen[3] == get_theme().feedback_hit
+
+    def test_with_audio_off_the_clock_is_still_the_answer(self):
+        """Nothing is coming to decide it, so there is nothing to wait for."""
+        from pickhero.ui.colors import STRING_COLORS, dimmed
+        screen, note = self._screen()
+        screen._audio_enabled = False
+        screen._playback_ms = 1100.0
+        assert self._colour_of(screen, note) == dimmed(STRING_COLORS[note.string])
+
+
 class TestTheHitLineStandsProudOfTheBoard:
     def test_it_runs_past_the_board_top_and_bottom(self):
         """Flush with the edge it is one more vertical among the fret wires;

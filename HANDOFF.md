@@ -552,26 +552,6 @@ list as a paste-ready prompt, with what has already been ruled out on each.
    asked only for a uniform offset and forbade drop tunings. Fixed — see
    `CLAUDE.md`, "Reference Takes Are Only Worth Their Tuning".
 
-## Open, with the cause already found
-
-**A note goes DARK for a moment before it turns green.** The player reports it as distracting, and they are right: it is a state the
-display has no business showing.
-
-`ui/feedback.py`, `get_note_color`, last line:
-
-```python
-return dimmed(base_color) if is_past else base_color
-```
-
-`is_past` is `note.timestamp_ms < playback_ms` — so a note is dimmed the instant its written time crosses the hit line, and it stays dimmed
-until a verdict arrives. The verdict cannot arrive that soon: the strike is still inside the timing window (200 ms) and the late window
-(370 ms) beyond it, and a chord verdict trails its strike by ~380 ms by design. So the dark phase is not a glitch, it is the whole width of
-the window being drawn as "already over".
-
-The fix is to dim a note only once it is genuinely resolved or has run out of window — the matcher already knows which (`MatchType.PENDING`
-against everything else), so the screen should ask it rather than deciding from the clock. Small, and it needs a test that a note inside its
-own hit window is still drawn at full colour.
-
 ## Conventions
 
 - Commit style: imperative subject + explanatory body saying *why*, not what.

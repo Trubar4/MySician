@@ -139,3 +139,74 @@ class TestSweepingUpMissedNotes:
         matcher.process_detected_notes([], 500.0)
         matcher.process_detected_notes([], 3000.0)
         assert matcher.get_note_state(timeline.notes[0]) is MatchType.MISS
+
+
+class TestDrawingDoesNotGrowWithTheSong:
+    """Two loops that started at the beginning of the song were found and
+    fixed here. The fretboard and the chord names added two more loops over
+    per-song lists, so the property has to be asserted rather than assumed --
+    that is the whole reason this file exists.
+    """
+
+    SHAPES = ([(6, 3), (5, 2), (4, 0), (3, 0), (2, 0), (1, 3)],
+              [(4, 0), (3, 2), (2, 3), (1, 2)],
+              [(6, 0), (5, 2), (4, 2), (3, 0), (2, 0), (1, 0)],
+              [(5, 3), (4, 2), (3, 0), (2, 1), (1, 0)])
+    OPEN = {1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 40}
+
+    def _song(self, chords):
+        from pickhero.tabs.timeline import MeasureInfo
+        notes = []
+        t = 0.0
+        for i in range(chords):
+            for string, fret in self.SHAPES[i % 4]:
+                notes.append(NoteEvent(timestamp_ms=t, duration_ms=420.0,
+                                       midi_note=self.OPEN[string] + fret,
+                                       string=string, fret=fret, measure=i // 2))
+            t += 450.0
+        measures = [MeasureInfo(index=i, start_ms=i * 1800.0,
+                                end_ms=(i + 1) * 1800.0)
+                    for i in range(int(t / 1800) + 2)]
+        return Timeline(notes, SongMetadata(title="x", tempo=120),
+                        measures=measures)
+
+    def _cost(self, chords):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = PlayingScreen(self._song(chords), config=Config())
+        screen._playing = True
+        screen._playback_ms = 60_000.0
+        for _ in range(6):
+            screen.render(surface)
+        best = 1e9
+        for _ in range(3):
+            start = time.perf_counter()
+            for i in range(80):
+                screen._playback_ms = 60_000.0 + i * 16.7
+                screen.render(surface)
+            best = min(best, time.perf_counter() - start)
+        return best
+
+    def test_a_song_four_times_as_long_draws_at_the_same_speed(self):
+        """Same notes on screen, sixteen times the bars and chord names."""
+        assert self._cost(3200) < self._cost(200) * 1.6
+
+    def test_the_chord_names_are_worked_out_once_not_once_a_frame(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = PlayingScreen(self._song(200), config=Config())
+        screen._playback_ms = 1000.0
+        screen.render(surface)
+        calls = []
+        real = screen._build_chord_names
+        screen._build_chord_names = lambda: calls.append(1) or real()
+        for i in range(60):
+            screen._playback_ms = 1000.0 + i * 16.7
+            screen.render(surface)
+        assert calls == []

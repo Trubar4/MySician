@@ -1941,7 +1941,22 @@ class PlayingScreen:
             # is, so the colour can say the thing the position cannot.
             base_color = (OPEN_STRING_COLOR if note.fret == 0 and not note.dead
                           else STRING_COLORS.get(note.string, (180, 180, 180)))
-            past_hit_zone = note.timestamp_ms < self._playback_ms
+            # A note is not OVER because the clock passed it. It is over when
+            # the matcher has finished with it -- and the matcher cannot have
+            # finished that soon: the strike is still inside the hit window
+            # and the late window beyond it, and a chord verdict trails its
+            # strike by ~380 ms by design. Dimming on the clock drew the whole
+            # width of the window as "already missed", which is the dark flash
+            # before the green the player reported as distracting. It was not
+            # a glitch; it was the app showing a state it had no business
+            # showing.
+            if self._audio_enabled and self._matcher is not None:
+                past_hit_zone = (self._matcher.get_note_state(note)
+                                 is not MatchType.PENDING)
+            else:
+                # Nothing is coming to decide it, so the clock is the only
+                # answer there is.
+                past_hit_zone = note.timestamp_ms < self._playback_ms
             if self._audio_enabled:
                 color = self._feedback.get_note_color(
                     note, base_color, self._playback_ms, past_hit_zone,
