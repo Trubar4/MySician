@@ -195,7 +195,8 @@ Every key is also listed in the app's own footer, and explained under **H**.
 | `HOME` | restart |
 | `PgDn` `PgUp` | tempo down / up |
 | `A` | audio input on / off |
-| `B` | backing track on / off |
+| `B` | backing track on / off (the other instruments) |
+| `Shift+B` | hear your own part on / off |
 | `W` | wait mode — holds until you play the right note |
 | `I` `O` | set loop start / end |
 | `P` | loop on / off |

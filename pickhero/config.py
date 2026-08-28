@@ -65,6 +65,10 @@ class Config:
     audio_latency_offset_ms: float = 0.0
     chord_threshold_ms: float = 50.0
     backing_track_enabled: bool = True
+    # The written part of the track being played, as a guide to hear. Off by
+    # default: producing that part is the whole point of the app, and hearing
+    # it play itself on the first run would teach the wrong thing.
+    guide_track_enabled: bool = False
     count_in_beats: int = 4
     theme: str = "dark"
     max_fret: int = 24

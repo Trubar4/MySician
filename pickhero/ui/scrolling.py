@@ -373,6 +373,7 @@ class PlayingScreen:
     def __init__(self, timeline: Timeline, visible_beats: int = 4,
                  hit_zone_fraction: float = 0.20, config: Config | None = None,
                  backing_track: BackingTrack | None = None,
+                 guide_track: BackingTrack | None = None,
                  progress_tracker: ProgressTracker | None = None,
                  song_key: str = ""):
         self._timeline = timeline
@@ -462,7 +463,19 @@ class PlayingScreen:
 
         # MIDI backing track
         self._midi_player: MidiPlayer | None = None
+        # The written part of the track being PLAYED, as a guide to hear.
+        # A separate player rather than a second toggle on the same one,
+        # because the two answer different questions -- "what does the band
+        # play" and "what am I supposed to play" -- and a player learning a
+        # solo wants the second without the first. The MIDI output is shared,
+        # so this costs no extra device.
+        self._guide_player: MidiPlayer | None = None
+        self._guide_muted = True
         self._backing_muted = not self._config.backing_track_enabled
+        # Off unless asked for: the whole point of the app is that the player
+        # produces this part, and starting with it playing would teach the
+        # wrong thing on the first run.
+        self._guide_muted = not getattr(self._config, "guide_track_enabled", False)
         # A recording playing alongside the MIDI backing, not instead of it.
         # Hearing both at once is how the recording gets lined up against the
         # click, which is the only way its encoder padding can be found.
@@ -487,6 +500,8 @@ class PlayingScreen:
         self._mp3_stretch_progress = 0.0
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
+        if guide_track is not None and len(guide_track) > 0:
+            self._init_guide_player(guide_track)
         self._load_mp3_for_song()
 
         # Difficulty filter
@@ -577,9 +592,9 @@ class PlayingScreen:
             # hardware. See _resume_audio.
             if self._audio_enabled and self._playback_ms >= 0:
                 self._resume_audio()
-            if self._midi_player is not None:
-                if self._playback_ms >= 0:
-                    self._midi_player.seek(self._backing_ms(self._playback_ms))
+            if self._playback_ms >= 0:
+                for player in self._midi_all():
+                    player.seek(self._backing_ms(self._playback_ms))
             if self._mp3_player is not None and self._playback_ms >= 0:
                 if self._mp3_plays() and self._mp3_pending_seek_ms is None:
                     if self._mp3_player.suspended:
@@ -598,8 +613,8 @@ class PlayingScreen:
             # thing that made every arrow key freeze the app for seconds, and
             # the space bar was still doing it twice per pause. Strikes that
             # arrive while the song stands still are dropped on resume.
-            if self._midi_player is not None:
-                self._midi_player.pause()
+            for player in self._midi_all():
+                player.pause()
             if self._mp3_player is not None:
                 self._mp3_player.set_suspended(True)
 
@@ -609,8 +624,8 @@ class PlayingScreen:
         if self._matcher:
             self._matcher.reset()
         self._feedback.reset()
-        if self._midi_player is not None:
-            self._midi_player.seek(self._backing_ms(self._playback_ms))
+        for player in self._midi_all():
+            player.seek(self._backing_ms(self._playback_ms))
         if self._mp3_player is not None:
             self._seek_mp3(self._mp3_ms(self._playback_ms)
                            if self._mp3_plays() else -1.0)
@@ -767,12 +782,12 @@ class PlayingScreen:
                 self._playback_ms = prev_ms
                 self._last_tick = now
                 self._wait_mode_frozen = True
-                if self._midi_player is not None and not self._backing_muted:
-                    self._midi_player.pause()
+                for player in self._midi_all():
+                    player.pause()
             elif self._wait_mode_frozen:
                 self._wait_mode_frozen = False
-                if self._midi_player is not None and not self._backing_muted:
-                    self._midi_player.seek(self._backing_ms(self._playback_ms))
+                for player in self._midi_all():
+                    player.seek(self._backing_ms(self._playback_ms))
 
         # Count-in: play metronome clicks and start audio/midi when crossing 0
         if prev_ms < 0:
@@ -787,8 +802,8 @@ class PlayingScreen:
             if self._playback_ms >= 0:
                 if self._audio_enabled:
                     self._start_audio()
-                if self._midi_player is not None:
-                    self._midi_player.seek(0)
+                for player in self._midi_all():
+                    player.seek(0)
 
         # Process audio matching (only during actual song, not count-in)
         if (self._playback_ms >= 0
@@ -822,8 +837,9 @@ class PlayingScreen:
             self._feedback.cleanup(self._playback_ms)
 
         # Advance MIDI backing track (only during actual song)
-        if self._playback_ms >= 0 and self._midi_player is not None:
-            self._midi_player.update(self._backing_ms(self._playback_ms))
+        if self._playback_ms >= 0:
+            for player in self._midi_all():
+                player.update(self._backing_ms(self._playback_ms))
         self._update_mp3()
 
         # Loop check — jump back to start marker when reaching end marker
@@ -831,15 +847,15 @@ class PlayingScreen:
         if (self._loop_enabled and self._loop_end_ms is not None
                 and self._loop_start_ms is not None
                 and self._playback_ms >= self._loop_end_ms):
-            if self._midi_player is not None:
-                self._midi_player.pause()
+            for player in self._midi_all():
+                player.pause()
             self._playback_ms = self._loop_start_ms
             self._last_tick = time.perf_counter()
             if self._matcher:
                 self._matcher.reset()
             self._feedback.reset()
-            if self._midi_player is not None:
-                self._midi_player.seek(self._backing_ms(self._loop_start_ms))
+            for player in self._midi_all():
+                player.seek(self._backing_ms(self._loop_start_ms))
             if self._mp3_player is not None and self._mp3_plays():
                 self._mp3_player.seek(self._mp3_ms(self._loop_start_ms))
             if self._audio_enabled and self._playing:
@@ -850,8 +866,8 @@ class PlayingScreen:
             self._playback_ms = self._timeline.duration_ms
             self._playing = False
             self._last_tick = None
-            if self._midi_player is not None:
-                self._midi_player.pause()
+            for player in self._midi_all():
+                player.pause()
             if self._mp3_player is not None:
                 self._mp3_player.pause()
             self._stop_audio()
@@ -919,7 +935,10 @@ class PlayingScreen:
         elif event.key == pygame.K_p:
             self._toggle_loop()
         elif event.key == pygame.K_b:
-            self._toggle_backing()
+            if event.mod & pygame.KMOD_SHIFT:
+                self._toggle_guide_track()
+            else:
+                self._toggle_backing()
         elif event.key == pygame.K_x:
             self.set_noise_gate_db(self._noise_gate_db - 5)
         elif event.key == pygame.K_c:
@@ -1222,8 +1241,8 @@ class PlayingScreen:
         else:
             self._config.backing_offset_ms = new
         self._config.save()
-        if self._midi_player is not None:
-            self._midi_player.seek(self._backing_ms(self._playback_ms))
+        for player in self._midi_all():
+            player.seek(self._backing_ms(self._playback_ms))
 
     def set_track_options(self, options: list[tuple[int, str]],
                           current: int | None) -> None:
@@ -1856,6 +1875,10 @@ class PlayingScreen:
             backing_state = "—"
         else:
             backing_state = "off" if self._backing_muted else "ON"
+        if self._guide_player is None:
+            guide_state = "—"
+        else:
+            guide_state = "off" if self._guide_muted else "ON"
         if not self._wait_mode:
             wait_state = "off" if self._audio_enabled else "—"
         else:
@@ -1864,7 +1887,8 @@ class PlayingScreen:
         transport = (
             f"{state}  |  SPACE: play/pause  |  LEFT/RIGHT: seek  "
             f"|  HOME: restart  |  PgDn/PgUp: tempo  |  A: audio {audio_state}  "
-            f"|  B: backing {backing_state}  |  W: wait {wait_state}  "
+            f"|  B: backing {backing_state}  |  Shift+B: my part {guide_state}  "
+            f"|  W: wait {wait_state}  "
             f"|  I/O: loop {loop_state}  |  P: toggle  |  ESC: menu"
         )
         tools = (
@@ -3366,9 +3390,10 @@ class PlayingScreen:
         self.close_session()
         self._stop_audio()
         self._audio_enabled = False
-        if self._midi_player is not None:
-            self._midi_player.close()
-            self._midi_player = None
+        for player in self._midi_all():
+            player.close()
+        self._midi_player = None
+        self._guide_player = None
         if self._mp3_player is not None:
             self._mp3_player.close()
             self._mp3_player = None
@@ -3714,6 +3739,45 @@ class PlayingScreen:
                     f"— {self._mp3_stretch_progress:.0%} — {name}")
         return (f"Audio: {_offset_text(self._mp3_offset())} "
                 f"(Shift+N/M ±10ms, Ctrl ±1s, Ctrl+Shift ±10s) — {name}")
+
+    def _midi_all(self) -> list:
+        """Both MIDI players, in the order they were made.
+
+        Everything that moves the song -- a seek, a pause, a loop turn, a
+        tempo change -- has to reach BOTH or they drift apart, and a guide
+        that is a bar out is worse than no guide. Going through one list is
+        what stops a new transport call being added to only one of them.
+        """
+        return [p for p in (self._midi_player, self._guide_player) if p is not None]
+
+    def _init_guide_player(self, guide_track: BackingTrack) -> None:
+        """The written part of the track being played, as something to hear."""
+        try:
+            player = MidiPlayer(guide_track)
+            if player.open():
+                player.set_muted(self._guide_muted)
+                self._guide_player = player
+            else:
+                player.close()
+        except Exception as exc:
+            print(f"Guide track unavailable: {exc}")
+
+    def _toggle_guide_track(self) -> None:
+        """Hear the part you are meant to play, or stop hearing it (Shift+B)."""
+        if self._guide_player is None:
+            return
+        self._guide_muted = not self._guide_muted
+        self._guide_player.set_muted(self._guide_muted)
+        self._config.guide_track_enabled = not self._guide_muted
+        self._config.save()
+        # It is seeked rather than simply unmuted: the cursor advanced while
+        # it was silent, so unmuting alone would carry on from wherever the
+        # song happens to be -- which is right -- but a mute leaves notes
+        # hanging, and pause() is how they are let go.
+        if self._guide_muted:
+            self._guide_player.pause()
+        else:
+            self._guide_player.seek(self._backing_ms(self._playback_ms))
 
     def _init_midi_player(self, backing_track: BackingTrack) -> None:
         """Create and open MidiPlayer. Silently continues if MIDI unavailable."""

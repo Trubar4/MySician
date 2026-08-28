@@ -487,6 +487,20 @@ tuning — which is not a thing to ask of someone who plays metal. They answered
 - The existing session's manifest was corrected by hand rather than re-recorded (the audio is untouched, and the correction says so in a
   `corrected` field).
 
+## Three Things You Can Hear, Switched Separately
+
+The MIDI backing is what the OTHER instruments play; `Shift+B` is the mirror of it — the written notes of the track being PLAYED, so the part
+you are meant to produce can be heard while you learn it. They are separate toggles because they answer different questions, and somebody
+learning a solo wants the second without the first.
+
+- **Off by default.** Producing that part is the whole point of the app, and hearing it play itself on the first run would teach the wrong
+  thing. The setting is remembered per player, not per song.
+- **Built by running the same extraction the other way round** — the backing excludes the chosen track, the guide excludes every other one. No
+  second code path to keep in step, and it costs no MIDI device: the output is shared.
+- **`_midi_all()` is the only way the transport reaches them.** A seek, a pause, a loop turn, a tempo change has to move both or they drift
+  apart, and a guide a bar out is worse than no guide. Going through one list is what stops the next transport call being added to only one.
+- **A song without one says `—`**, the same as the backing, because a dash is the answer to "why does pressing it do nothing".
+
 ## Two Backing Tracks, Switched Separately
 
 The MIDI backing is generated from the same timeline as the notes, so it cannot drift: it is told a position and plays the events at it. A

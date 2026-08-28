@@ -287,14 +287,29 @@ class App:
             return
         self._load_error = None
 
-        # Extract backing track (non-guitar tracks as MIDI)
+        # Extract backing track (everything EXCEPT the track being played)
+        chosen = timeline.metadata.track_index
         backing_track = None
         try:
             backing_track = extract_backing_track(
-                path, exclude_track_indices={timeline.metadata.track_index},
+                path, exclude_track_indices={chosen},
             )
         except Exception as e:
             print(f"Backing track extraction failed: {e}")
+
+        # And the mirror of it: ONLY the track being played, so the part the
+        # player is meant to produce can be heard while learning it. Built by
+        # excluding every other track, which is the same extraction run the
+        # other way round -- no second code path to keep in step.
+        guide_track = None
+        try:
+            others = {t["index"] for t in self._tracks_of(path)} - {chosen}
+            if others or chosen is not None:
+                guide_track = extract_backing_track(
+                    path, exclude_track_indices=others,
+                )
+        except Exception as e:
+            print(f"Guide track extraction failed: {e}")
 
         dc = self._config.display
         self._playing_screen = PlayingScreen(
@@ -303,6 +318,7 @@ class App:
             hit_zone_fraction=dc.hit_zone_fraction,
             config=self._config,
             backing_track=backing_track,
+            guide_track=guide_track,
             progress_tracker=self._progress,
             song_key=path.stem,
         )
