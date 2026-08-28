@@ -801,3 +801,62 @@ class TestTwoStepSizes:
         screen = self._screen(tmp_path, monkeypatch)
         screen._adjust_mp3_offset(-120.0)
         assert "-120 ms" in screen._mp3_hud_text()
+
+
+class TestACorrectionThatDoesNotCorrect:
+    """Reported as the recording stuttering now and then while playing, worse
+    with a larger offset. Each re-seek is a decode up to that point, so a
+    correction that has to be repeated every 1.5 s is a stutter bought with
+    nothing."""
+
+    def _stuck(self, music, song_file, monkeypatch):
+        """A recording whose clock never moves, however often it is seeked."""
+        player = Mp3Player(song_file)
+        player.open()
+        player.update(0.0)
+        # position_ms is a method here, not a property.
+        monkeypatch.setattr(player, "position_ms", lambda: 0.0)
+        return player
+
+    def test_a_drift_that_will_not_close_stops_being_chased(
+            self, music, song_file, monkeypatch):
+        from pickhero.audio import mp3_playback
+        player = self._stuck(music, song_file, monkeypatch)
+        before = len(music.started_at)
+        at = 0.0
+        for _ in range(400):                       # 40 seconds of song
+            at += 100.0
+            player.update(at)
+        # Unchecked this is one seek every 1.5 s -- 26 of them.
+        assert len(music.started_at) - before < 10
+        assert player._resync_gap_ms > mp3_playback.MIN_RESYNC_GAP_MS
+
+    def test_the_first_correction_still_happens_at_once(
+            self, music, song_file, monkeypatch):
+        player = self._stuck(music, song_file, monkeypatch)
+        before = len(music.started_at)
+        player.update(2000.0)
+        assert len(music.started_at) == before + 1
+
+    def test_holding_sync_puts_it_back_to_the_short_gap(
+            self, music, song_file, monkeypatch):
+        from pickhero.audio import mp3_playback
+        player = self._stuck(music, song_file, monkeypatch)
+        for at in (2000.0, 6000.0, 12000.0, 30000.0):
+            player.update(at)
+        assert player._resync_gap_ms > mp3_playback.MIN_RESYNC_GAP_MS
+        monkeypatch.setattr(player, "position_ms", lambda: 40000.0)
+        player.update(40000.0)                     # in sync again
+        assert player._resync_gap_ms == mp3_playback.MIN_RESYNC_GAP_MS
+
+    def test_how_long_the_seek_took_is_recorded(self, music, song_file,
+                                                monkeypatch):
+        """A decode deep into an MP3 is the stall the player sees, and without
+        a number it cannot be told from the drift it was meant to cure."""
+        import time as _t
+        player = self._stuck(music, song_file, monkeypatch)
+        real = player._start_at
+        monkeypatch.setattr(player, "_start_at",
+                            lambda ms: (_t.sleep(0.01), real(ms))[1])
+        player.update(2000.0)
+        assert player.worst_seek_ms >= 5.0

@@ -22,6 +22,7 @@ before reaching for it:
   requirement rather than a convenience.
 """
 
+import time
 from pathlib import Path
 
 import pygame
@@ -35,6 +36,13 @@ RESYNC_MS = 90.0
 # different rate would otherwise stutter continuously instead of drifting
 # quietly, and quiet drift is the lesser fault.
 MIN_RESYNC_GAP_MS = 1500.0
+
+# A correction that does not correct anything must not be repeated forever.
+# If the recording is still as far out after a re-seek as it was before it,
+# the two clocks genuinely run at different rates and seeking every 1.5 s is
+# a stutter bought with nothing -- so the gap doubles each time, up to this.
+# It goes back to the minimum as soon as the recording holds sync again.
+MAX_RESYNC_GAP_MS = 24_000.0
 
 
 class Mp3Player:
@@ -71,6 +79,10 @@ class Mp3Player:
         # whether the sync the player feels is drift or something else.
         self.resyncs = 0
         self.worst_drift_ms = 0.0
+        # The slowest re-seek, and how far out it was trying to pull back.
+        self.worst_seek_ms = 0.0
+        self._resync_gap_ms = MIN_RESYNC_GAP_MS
+        self._last_resync_drift_ms: float | None = None
         self.error: str | None = None
 
     @property
@@ -160,16 +172,34 @@ class Mp3Player:
         drift = position_ms - self.position_ms()
         self.worst_drift_ms = max(self.worst_drift_ms, abs(drift))
         if abs(drift) < RESYNC_MS:
+            # Holding sync, so whatever made it wander has passed.
+            self._resync_gap_ms = MIN_RESYNC_GAP_MS
+            self._last_resync_drift_ms = None
             return
         # Correcting is audible, so it is rate-limited. A file whose clock
         # genuinely runs at a different rate would otherwise stutter
         # continuously rather than drift quietly, and quiet drift is the
         # lesser fault. Only real corrections count against the limit -- the
         # first start and an explicit seek are not corrections.
-        if position_ms - self._last_resync_ms < MIN_RESYNC_GAP_MS:
+        if position_ms - self._last_resync_ms < self._resync_gap_ms:
             return
+        # Did the last one help? If the gap is no better than it was, seeking
+        # again will not fix it either, and each attempt costs a decode.
+        if self._last_resync_drift_ms is not None:
+            if abs(drift) > abs(self._last_resync_drift_ms) * 0.5:
+                self._resync_gap_ms = min(MAX_RESYNC_GAP_MS,
+                                          self._resync_gap_ms * 2)
+            else:
+                self._resync_gap_ms = MIN_RESYNC_GAP_MS
+        started = time.perf_counter()
         self._start_at(position_ms)
+        # How long the seek itself took. A decode deep into an MP3 is the
+        # stall the player sees, and without a number it is indistinguishable
+        # from the drift it was meant to cure.
+        self.worst_seek_ms = max(self.worst_seek_ms,
+                                 (time.perf_counter() - started) * 1000.0)
         self._last_resync_ms = position_ms
+        self._last_resync_drift_ms = drift
         self.resyncs += 1
 
     def position_ms(self) -> float:

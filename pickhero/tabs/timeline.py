@@ -105,6 +105,15 @@ class Timeline:
         self.metadata = metadata or SongMetadata()
         self._measures = measures or []
         self._cursor = 0
+        # Both computed once, because the notes never change after this and
+        # both were being recomputed over every note in the song, several
+        # times a frame. On a dense song that was the single biggest cost in
+        # the whole loop.
+        self._duration_ms = max((n.end_ms for n in self._notes), default=0.0)
+        # How far back a note can START and still be sounding now. Notes are
+        # sorted by their start, so this is what turns "which notes are
+        # sounding" from a scan of the whole song into a slice of it.
+        self._longest_ms = max((n.duration_ms for n in self._notes), default=0.0)
 
     def __len__(self) -> int:
         return len(self._notes)
@@ -123,9 +132,7 @@ class Timeline:
 
     @property
     def duration_ms(self) -> float:
-        if not self._notes:
-            return 0.0
-        return max(n.end_ms for n in self._notes)
+        return self._duration_ms
 
     def get_notes_in_range(self, start_ms: float, end_ms: float) -> list[NoteEvent]:
         """Return notes whose timestamp_ms falls within [start_ms, end_ms)."""
@@ -141,11 +148,19 @@ class Timeline:
         window_start = time_ms - window_ms
         window_end = time_ms + window_ms
 
-        # Find candidates: notes that start before window_end
+        # Candidates start before the window ends AND late enough to still be
+        # sounding in it. The second bound is the one that matters: this used
+        # to scan from the first note of the song every time, so the cost grew
+        # the further in the player got -- and the matcher asks it up to five
+        # times per strike. Three minutes into a dense song that is tens of
+        # thousands of comparisons per note played, arriving in bursts exactly
+        # when the hands are busiest.
         right = bisect.bisect_right(self._timestamps, window_end)
+        left = bisect.bisect_left(self._timestamps,
+                                  window_start - self._longest_ms)
 
         result = []
-        for i in range(right):
+        for i in range(left, right):
             note = self._notes[i]
             if note.end_ms >= window_start and note.timestamp_ms <= window_end:
                 result.append(note)

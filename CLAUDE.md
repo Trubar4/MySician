@@ -769,6 +769,30 @@ it once and remembers.
 - **The row is laid out from the right edge inwards** and the song name is cut to what is left. A long title would otherwise run under the
   score, and the thing it collides with is the thing being compared.
 
+## What Grew With The Length Of The Song
+
+After the text cache the frame was fine and the app still stuttered "now and then while playing" — and worse the longer the song had been
+running, which is the whole clue. Two loops started at the beginning of the song every time they ran, and both are asked once per STRIKE, so
+the cost arrived in bursts exactly when the hands were busiest. Measured on 4200 notes of sixteenths:
+
+| | at 5 s | at 60 s | at 150 s |
+|---|---|---|---|
+| `get_active_notes_at_time` (up to 5 per strike) | 13 µs | 144 µs | **374 µs** |
+| after | 2.1 µs | 2.5 µs | **2.4 µs** |
+| `_mark_missed_notes` (1 per strike) | — | — | **5.6 ms** |
+| after | — | — | **0.023 ms** |
+
+- **A note that is sounding cannot have started before the longest note in the song.** That bound turns "which notes are sounding" from a scan
+  of everything so far into a slice, and it is exact rather than a guess — `_longest_ms` is computed once at construction.
+- **The missed-note sweep only looks at what has gone past since the last look.** Nothing before the mark can still be PENDING: that loop is
+  what resolves them, and a note only becomes PENDING again on `reset()` — which puts the mark back to zero. A song position that moves
+  BACKWARDS without a reset also resets it, rather than trusting a mark that describes a different moment.
+- **`Timeline.duration_ms` was a property that scanned every note**, called twice a frame. Cached at construction with the rest.
+- **The MP3's re-seek backs off when it is not working.** Each one decodes the file up to that point, so a correction repeated every 1.5 s is
+  a stutter bought with nothing — and a bigger offset makes each attempt more expensive, which is what the player noticed. If the drift after
+  a correction is no better than before it, the gap doubles up to `MAX_RESYNC_GAP_MS`; holding sync puts it straight back. `mp3_worst_seek_ms`
+  in the run log says what a seek actually costs, because without it the stall cannot be told from the drift it was meant to cure.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain

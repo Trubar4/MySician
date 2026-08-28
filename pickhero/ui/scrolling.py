@@ -2784,6 +2784,8 @@ class PlayingScreen:
         if player is not None:
             fh.write(f"mp3_worst_drift_ms\t{player.worst_drift_ms:.0f}\n")
             fh.write(f"mp3_resyncs\t{player.resyncs}\n")
+            fh.write(f"mp3_worst_seek_ms\t"
+                     f"{getattr(player, 'worst_seek_ms', 0.0):.0f}\n")
             fh.write(f"mp3_time_scale\t{player.time_scale:.3f}\n")
         self._frame_line(fh)
         fh.write(f"timing_samples\t{len(matcher.timing_samples)}\n")

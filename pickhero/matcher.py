@@ -224,6 +224,10 @@ class NoteMatcher:
         self._timeline = timeline
         self._timing_window_ms = timing_window_ms
         self._audio_offset_ms = audio_offset_ms
+        # How far the missed-note sweep has already looked. See
+        # _mark_missed_notes: without it, every strike re-judged the whole
+        # song up to that point.
+        self._missed_swept_ms = 0.0
         self._chord_threshold_ms = chord_threshold_ms
         # Strike notes arrive up to ~70 ms after their timestamp (the onset
         # collector waits for the pitch to settle) — delay miss-marking so
@@ -465,14 +469,29 @@ class NoteMatcher:
         return False
 
     def _mark_missed_notes(self, playback_ms: float) -> list[MatchResult]:
-        """Mark PENDING notes that have passed the timing window as MISS."""
+        """Mark PENDING notes that have passed the timing window as MISS.
+
+        Only the notes that have gone past since the last look. This ran from
+        millisecond zero every time, so every note already judged was judged
+        again on every strike -- 3600 state lookups per strike three minutes
+        into a dense song, arriving in bursts exactly when the hands are
+        busiest. Nothing before the mark can still be PENDING: this loop is
+        what resolves them, and a note only goes back to PENDING on reset().
+        """
         results = []
         cutoff = playback_ms - self._timing_window_ms - self._late_window_ms
         if cutoff <= 0:
             return results
+        if cutoff < self._missed_swept_ms:
+            # The song moved backwards without a reset. Look at all of it
+            # again rather than trusting a mark that describes a different
+            # moment.
+            self._missed_swept_ms = 0.0
 
         # Check notes that should have been played by now
-        candidates = self._timeline.get_notes_in_range(0, cutoff)
+        candidates = self._timeline.get_notes_in_range(
+            self._missed_swept_ms, cutoff)
+        self._missed_swept_ms = cutoff
         for note in candidates:
             if self._is_filtered(note):
                 continue
@@ -1421,6 +1440,9 @@ class NoteMatcher:
 
     def reset(self) -> None:
         """Clear all state. Call on seek/restart."""
+        # Every note is PENDING again, so the missed-note sweep has to start
+        # from the beginning again too. See _mark_missed_notes.
+        self._missed_swept_ms = 0.0
         self._note_states.clear()
         self.hits = 0
         self.close = 0
