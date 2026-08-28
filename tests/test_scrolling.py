@@ -1582,6 +1582,96 @@ class TestAStalledFrameDoesNotTeleportTheSong:
         assert screen._playback_ms == pytest.approx(10_016.0, abs=12.0)
 
 
+class TestReadingTheFretNumber:
+    """Reported as not being able to tell 11 from 12 in a fast solo.
+
+    Measured on the app as it stood: a ONE-digit fret was drawn at 42 px and
+    a TWO-digit one at 21 px in the same song -- half the size -- because the
+    head was squeezed sideways to buy look-ahead and a number is wider than
+    it is tall. The head's width is sized for the widest label in the song
+    now, so only the case that was broken pays for it.
+    """
+
+    def _song(self, spacing_ms, frets):
+        notes = []
+        t = 0.0
+        for i, fret in enumerate(frets * 12):
+            notes.append(NoteEvent(timestamp_ms=t, duration_ms=spacing_ms * 0.8,
+                                   midi_note=40 + fret, string=(i % 3) + 1,
+                                   fret=fret, measure=i // 8))
+            t += spacing_ms
+        return _make_timeline(notes=notes)
+
+    def _measure(self, spacing_ms, frets):
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = PlayingScreen(self._song(spacing_ms, frets), config=Config())
+        screen.render(surface)
+        layout = screen._last_layout
+        head = screen._head_px or layout.note_h
+        half_h = (screen._head_h_px or layout.note_h) / 2
+        font = screen._fret_font(head / 2, half_h, screen._fret_digits)
+        return head, font.get_height(), screen._visible_window_ms
+
+    def test_a_two_digit_fret_gets_a_head_wide_enough_for_it(self):
+        head, digit, _ = self._measure(111.0, [10, 13, 12, 11, 15, 13])
+        assert digit >= 30
+
+    def test_a_song_of_single_digit_frets_is_left_alone(self):
+        """It never had the problem, so it must not pay for the cure."""
+        wide, _, window = self._measure(111.0, [3, 5, 2, 7, 0, 4])
+        assert wide < 30
+        assert window >= 3500.0
+
+    def test_the_look_ahead_it_costs_is_bounded(self):
+        """Trading time for size is allowed; trading away the warning is not."""
+        from pickhero.ui.scrolling import MIN_VISIBLE_WINDOW_MS
+        _, _, window = self._measure(111.0, [10, 13, 12, 11, 15, 13])
+        assert window > MIN_VISIBLE_WINDOW_MS
+
+    def test_a_roomy_song_is_unchanged(self):
+        head, digit, window = self._measure(300.0, [10, 13, 12, 11, 15, 13])
+        assert digit >= 38 and window > 5000.0
+
+    def test_the_head_never_grows_past_its_lane(self):
+        """Wider than tall buys nothing: the height is already free."""
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = PlayingScreen(self._song(111.0, [10, 13, 12]), config=Config())
+        screen.render(surface)
+        assert screen._head_px <= screen._last_layout.note_h + 0.001
+
+    def test_the_digits_are_bold(self):
+        """A thin stroke is the first thing to go at speed, which is exactly
+        when the fret number matters most."""
+        pygame.init()
+        pygame.display.set_mode((100, 100))
+        from pickhero.ui.scrolling import _get_font
+        plain = _get_font("consolas", 30, False)
+        heavy = _get_font("consolas", 30, True)
+        assert plain is not heavy
+        assert heavy.size("12")[0] >= plain.size("12")[0]
+
+
+class TestAnOpenStringLooksLikeOne:
+    """The lane already says WHICH string, so the colour is free to say the
+    thing the position cannot -- and "nothing to fret" is the most useful
+    thing it can say."""
+
+    def test_an_open_string_is_grey(self):
+        from pickhero.ui.colors import OPEN_STRING_COLOR, STRING_COLORS
+        assert OPEN_STRING_COLOR not in STRING_COLORS.values()
+
+    def test_it_is_not_one_of_the_feedback_colours(self):
+        """The two palettes must never be confusable -- green, yellow and red
+        say how it went, not what to play."""
+        from pickhero.ui.colors import OPEN_STRING_COLOR, get_theme
+        pygame.init()
+        theme = get_theme()
+        for name in ("feedback_hit", "feedback_close", "feedback_miss"):
+            assert getattr(theme, name) != OPEN_STRING_COLOR
+
+
 class TestDrawingTheSameTextAgain:
     """Measured: one frame of the playing screen rasterised 62 text surfaces,
     and that was 79 % of the frame -- against 8 % for drawing the notes. The

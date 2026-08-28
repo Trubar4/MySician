@@ -173,6 +173,16 @@ STRING_COLORS: dict[int, tuple[int, int, int]] = {
     6: (150, 70, 210),   # purple
 }
 
+# An open string is grey, whichever string it is. The lane already says WHICH
+# string -- that is what the six lanes are for -- so the colour is free to say
+# something the position cannot, and "nothing to fret" is the most useful
+# thing it can say. It is also what makes a chord read at a glance: the open
+# strings drop back and the shape the hand has to make stands out.
+#
+# It is not a feedback colour and not a string colour, so it cannot be
+# confused with either -- the separation the rest of this file is about.
+OPEN_STRING_COLOR: tuple[int, int, int] = (150, 155, 165)
+
 
 def dimmed(color: tuple[int, int, int], factor: float = 0.4) -> tuple[int, int, int]:
     """Darken a color by multiplying each channel by factor."""

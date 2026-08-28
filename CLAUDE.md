@@ -599,6 +599,34 @@ Two things worth keeping straight, because the first version of the write-up got
 - **Every fret number in a song is sized for the widest label in it.** Sized to its own label instead, a lone "5" towers over the "15"
   beside it, which reads as emphasis the music never asked for.
 
+## Eleven Or Twelve
+
+"In a fast solo I can barely see whether it says 11 or 12." Measured on the app as it stood, in the same song:
+
+| | |
+|---|---|
+| a ONE-digit fret | **42 px** of type |
+| a TWO-digit fret | **21 px** — half of it |
+| the head it sits in | 33 px wide, 49 px tall |
+
+A number is wider than it is tall, and the head is squeezed **sideways** to buy look-ahead (see the chapter above) — so the digit was limited
+by the one dimension the song was spending. The height was already free and could not help.
+
+- **The head's WIDTH is sized for the widest label the song contains**, the same rule the FONT already followed. `_fret_digits` is therefore
+  computed before the head rather than after it — it was set at the end of `_recompute_scroll_speed` and read at the start, which would have
+  resized every note one frame in, and a note that changes size while scrolling is the one thing this display must not do.
+- **Only the broken case pays.** Measured: a fast two-digit song goes 21 px → **34 px** of type and 4.0 s → 2.5 s of look-ahead; a fast
+  single-digit song and a roomy song are bit-for-bit unchanged. Trading time for size is allowed here; trading away the warning is not, so the
+  floor is still `MIN_VISIBLE_WINDOW_MS`.
+- **The digits are bold.** A thin stroke is the first thing to disappear at speed, which is exactly when the fret number matters most.
+- **An open string is grey, whichever string it is.** The lane already says WHICH string — that is what the six lanes are for — so the colour
+  is free to say something the position cannot, and "nothing to fret" is the most useful thing it can say. It is what makes a chord read at a
+  glance: the open strings drop back and the shape the hand has to make stands out. Grey is neither a string colour nor a feedback colour, so
+  the separation the palette is built on holds.
+- **Fingering cannot be coloured, and the reason is worth writing down.** Guitar Pro DOES carry a left-hand and a right-hand finger per note.
+  Both were `Fingering.open` — "not given" — on **6193 of 6193** notes in the player's own tabs. So the field exists and transcribers leave it
+  empty; inferring it from fret position would be a guess dressed up as data, which is what this project refuses everywhere else.
+
 ## Practice Speed Belongs To The Song
 
 `tempo_factor` was one number for the whole app, so the solo being learned at 70 % opened the next song at 70 % too, and the song you had

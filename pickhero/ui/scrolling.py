@@ -29,6 +29,7 @@ from pickhero.audio.note_utils import (
     tuning_notes,
 )
 from pickhero.ui.colors import (
+    OPEN_STRING_COLOR,
     STRING_COLORS,
     cycle_theme,
     dimmed,
@@ -134,9 +135,25 @@ MIN_VISIBLE_WINDOW_MS = 1500.0
 # this the display shrinks its notes to buy more time rather than scrolling
 # faster; a dense tab otherwise arrives at several hundred pixels a second.
 READABLE_WINDOW_MS = 4000.0
-# Smallest note head to shrink to. The fret font is sized at radius * 1.1, so
-# this still renders a two-digit number at 14 px.
+# The smallest fret digit worth calling readable, in pixels of type.
+#
+# This is the number the whole size question is really about. Measured on the
+# app as it stood: a ONE-digit fret was drawn at 42 px and a TWO-digit one at
+# 27 px -- 64 % of it -- because the head was 33 px wide and 49 px tall, and
+# a number is wider than it is tall. "11 or 12?" in a fast solo is that 27 px.
+#
+# So the head's WIDTH is now sized for the widest label the song contains,
+# not for a single digit. It costs look-ahead, and that is the honest trade:
+# a number you cannot read is not worth the second of warning it bought.
+MIN_FRET_DIGIT_PX = 34.0
+
+# Smallest note head to shrink to, for a song whose frets are all one digit.
 MIN_HEAD_PX = 26.0
+
+# Turning a wanted digit size into the head width that produces it, given
+# _fret_font's own arithmetic (width / digits / 0.55 * 0.9).
+def _head_px_for_digits(digit_px: float, digits: int) -> float:
+    return digit_px * 0.55 * max(1, digits) / 0.9
 
 # The window is set from a low percentile of the note spacing rather than its
 # minimum. Real tabs contain the odd near-simultaneous pair — grace notes,
@@ -298,8 +315,8 @@ class _CachedFont:
         return getattr(self._font, name)
 
 
-@functools.lru_cache(maxsize=64)
-def _get_font(name: str, size: int) -> "_CachedFont":
+@functools.lru_cache(maxsize=96)
+def _get_font(name: str, size: int, bold: bool = False) -> "_CachedFont":
     """Try to load a system font with fallbacks.
 
     Cached because SysFont is a font-file lookup every call, and the playing
@@ -308,7 +325,7 @@ def _get_font(name: str, size: int) -> "_CachedFont":
     fresh one each time would throw that away.
     """
     for family in (name, "Courier New", "monospace"):
-        font = pygame.font.SysFont(family, size)
+        font = pygame.font.SysFont(family, size, bold=bold)
         if font:
             return _CachedFont(font)
     return _CachedFont(pygame.font.Font(None, size))
@@ -1084,7 +1101,10 @@ class PlayingScreen:
         size = max(9, int(min(by_width, by_height)))
         font = self._fret_fonts.get(size)
         if font is None:
-            font = _get_font("consolas", size)
+            # Bold. The digit sits on a saturated colour with a dark outline
+            # around it, and a thin stroke is the first thing to disappear at
+            # speed -- which is exactly when the fret number matters most.
+            font = _get_font("consolas", size, True)
             self._fret_fonts[size] = font
         return font
 
@@ -1119,6 +1139,17 @@ class PlayingScreen:
         idx = min(len(gaps) - 1, int(len(gaps) * percentile / 100.0))
         return gaps[idx]
 
+    def _min_head_px(self, layout: _Layout) -> float:
+        """How narrow a head may get before the fret number stops reading.
+
+        A two-digit fret needs roughly twice the width of a one-digit one to
+        show the same size of type, and the head was squeezed to a single
+        digit's worth for every song. Never wider than the lane: past that the
+        head would be wider than tall for no gain, and the height is free.
+        """
+        wanted = _head_px_for_digits(MIN_FRET_DIGIT_PX, self._fret_digits)
+        return min(max(MIN_HEAD_PX, wanted), layout.note_h)
+
     def _recompute_scroll_speed(self, layout: _Layout | None = None) -> None:
         """Pick this song's one scroll speed and one note size.
 
@@ -1137,6 +1168,15 @@ class PlayingScreen:
         layout = layout or self._last_layout
         if layout is None or layout.usable_width <= 0:
             return
+
+        # FIRST, because the head width is sized for it below. Every fret
+        # number in the song is sized for the widest one in it, so they are
+        # all the same size: sizing each to its own label makes a lone "5"
+        # tower over the "15" beside it, which reads as emphasis the music
+        # never asked for.
+        frets = [len(str(n.fret)) for n in self._timeline.notes
+                 if self._note_passes_filter(n)]
+        self._fret_digits = max(frets) if frets else 2
 
         head = layout.note_h
         spacing = self._spacing_percentile(SPACING_PERCENTILE)
@@ -1159,7 +1199,7 @@ class PlayingScreen:
             if window < READABLE_WINDOW_MS:
                 needed = (spacing * layout.usable_width
                           / (READABLE_WINDOW_MS * (1.0 + SUSTAIN_GAP_FRACTION)))
-                head = max(MIN_HEAD_PX, min(head, needed))
+                head = max(self._min_head_px(layout), min(head, needed))
                 window = (spacing * layout.usable_width
                           / (head * (1.0 + SUSTAIN_GAP_FRACTION)))
 
@@ -1183,13 +1223,6 @@ class PlayingScreen:
         # unused. Keeping the full height costs no look-ahead at all, because
         # look-ahead is bought and sold in width.
         self._head_h_px = max(head, layout.note_h)
-        # Every fret number in the song is sized for the widest one in it, so
-        # they are all the same size. Sizing each to its own label makes a
-        # lone "5" tower over the "15" beside it, which reads as emphasis the
-        # music never asked for.
-        frets = [len(str(n.fret)) for n in self._timeline.notes
-                 if self._note_passes_filter(n)]
-        self._fret_digits = max(frets) if frets else 2
         self._scroll_speed_signature = self._filter_signature()
 
     def _backing_ms(self, playback_ms: float) -> float:
@@ -1762,7 +1795,10 @@ class PlayingScreen:
             cy = layout.lane_top + (note.string - 0.5) * layout.lane_height
 
             # Color: feedback color if matched, dimmed if past the hit zone
-            base_color = STRING_COLORS.get(note.string, (180, 180, 180))
+            # Grey for an open string: the lane already says which string it
+            # is, so the colour can say the thing the position cannot.
+            base_color = (OPEN_STRING_COLOR if note.fret == 0 and not note.dead
+                          else STRING_COLORS.get(note.string, (180, 180, 180)))
             past_hit_zone = note.timestamp_ms < self._playback_ms
             if self._audio_enabled:
                 color = self._feedback.get_note_color(
