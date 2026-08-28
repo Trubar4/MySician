@@ -788,6 +788,12 @@ the cost arrived in bursts exactly when the hands were busiest. Measured on 4200
   what resolves them, and a note only becomes PENDING again on `reset()` — which puts the mark back to zero. A song position that moves
   BACKWARDS without a reset also resets it, rather than trusting a mark that describes a different moment.
 - **`Timeline.duration_ms` was a property that scanned every note**, called twice a frame. Cached at construction with the rest.
+- **The MIDI seek copied every event up to the seek point.** `get_program_changes_before` did `self._events[:end]` and scanned it, to find
+  the handful of instrument assignments — 0.87 ms three minutes into a full arrangement, per player, on every seek, and a held arrow key is 25
+  of them a second. The program changes are picked out once at construction instead.
+- **What was profiled and found healthy**, so nobody looks there twice: the audio callback takes **3 % of its 11.6 ms hop** (aubio's own
+  `process` is nearly all of it); MIDI's per-frame `update` is 3 µs; the MP3's per-frame path is O(1) arithmetic — its cost is entirely in the
+  seeks below. A whole frame of a dense song at 2.5 minutes, update and render together, is **3.2 ms of 16.7**.
 - **The MP3's re-seek backs off when it is not working.** Each one decodes the file up to that point, so a correction repeated every 1.5 s is
   a stutter bought with nothing — and a bigger offset makes each attempt more expensive, which is what the player noticed. If the drift after
   a correction is no better than before it, the gap doubles up to `MAX_RESYNC_GAP_MS`; holding sync puts it straight back. `mp3_worst_seek_ms`

@@ -37,6 +37,10 @@ class BackingTrack:
         self._events = sorted(events or [])
         self._timestamps = [e.timestamp_ms for e in self._events]
         self._cursor = 0
+        # Instrument assignments, in order. A handful in a whole song, and
+        # they never change, so they are picked out once.
+        self._program_changes = [e for e in self._events
+                                 if e.event_type == PROGRAM_CHANGE]
 
     def __len__(self) -> int:
         return len(self._events)
@@ -68,11 +72,16 @@ class BackingTrack:
         # a count-in, which is negative) sent no instrument assignments at all
         # and every melodic backing track played on whatever the synth
         # happened to have on that channel.
-        end = bisect.bisect_right(self._timestamps, max(0.0, time_ms))
+        cutoff = max(0.0, time_ms)
         latest: dict[int, MidiEvent] = {}
-        for event in self._events[:end]:
-            if event.event_type == PROGRAM_CHANGE:
-                latest[event.channel] = event
+        # Only the program changes, which are a handful, rather than a copy of
+        # every event up to here and a scan of it. That copy grew with the
+        # song: 0.87 ms three minutes in, per player, on every seek -- and a
+        # held arrow key is 25 seeks a second.
+        for event in self._program_changes:
+            if event.timestamp_ms > cutoff:
+                break
+            latest[event.channel] = event
         return list(latest.values())
 
 
