@@ -1,3 +1,4 @@
+##Songs
 Billy Talent - Red Flag
 Three days Grace - I hate everything about you
 Shinedown - Sound of Madness
@@ -15,7 +16,12 @@ I Prevail - Rise above it
 Everest - Darkness always wins
 Everest - Everest
 
+##Statistik zusammenführen
+git fetch origin && git switch claude/mysician-timing-remeasure-uaj3t8 && git pull
 
+python tools\merge_stats.py --from D:\pickhero-vom-notebook --dry-run
+python tools\merge_stats.py --from D:\pickhero-vom-notebook
+python tools\make_dashboard.py --open
 
 
 cd C:\\Users\\Admin.vscode\\MySician\\mysician\\mysician
