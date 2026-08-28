@@ -12,6 +12,7 @@ import pygame
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import Config
 from pickhero.progress import ProgressTracker
+from pickhero.tabs.song_index import SongIndex
 from pickhero.ui.colors import cycle_theme, get_theme
 
 # .gpx is Guitar Pro 6. It was missing here for as long as the app has
@@ -53,6 +54,10 @@ class MenuScreen:
         # that looks like nothing happened is indistinguishable from a dead
         # key, and this one usually finds exactly one new file.
         self._reload_note: str = ""
+        # How many instruments each song holds and how each is tuned, read on
+        # a thread and remembered between sessions. See tabs/song_index.py.
+        self._index = SongIndex()
+        self._tuning_filter: str = ""
         self._search_text: str = ""
         self._search_active: bool = False
         self._filtered_files: list[Path] = []
@@ -92,7 +97,7 @@ class MenuScreen:
         return self._search_active
 
     def _apply_filter(self) -> None:
-        """Filter _files by search text, apply sort, and reset selection."""
+        """Filter _files by search text and tuning, sort, reset selection."""
         if self._search_text:
             query = self._search_text.lower()
             self._filtered_files = [
@@ -100,6 +105,14 @@ class MenuScreen:
             ]
         else:
             self._filtered_files = list(self._files)
+        if self._tuning_filter:
+            # A song still being indexed is kept OUT rather than shown: while
+            # the filter is on, a row with no answer yet would look like an
+            # answer of "yes", and the count beside it would be wrong.
+            self._filtered_files = [
+                p for p in self._filtered_files
+                if self._index.has(p, self._tuning_filter)
+            ]
         self._sort_files()
         self._selected = 0
         self._scroll_offset = 0
@@ -148,6 +161,7 @@ class MenuScreen:
         )
         self._search_text = ""
         self._search_active = False
+        self._index.scan_in_background(self._files)
         self._apply_filter()
 
     def reload_files(self) -> str:
@@ -186,6 +200,28 @@ class MenuScreen:
         if not added and not gone:
             parts.append("nothing changed")
         return "Reloaded: " + ", ".join(parts)
+
+    def _cycle_tuning_filter(self) -> None:
+        """All songs -> each tuning in turn -> all songs again.
+
+        Built from the tunings actually present, so it can never offer one
+        that would empty the list, and it is rebuilt on every press: a song
+        indexed since the last one has to be able to join.
+        """
+        selected = self._selected_path()
+        options = self._index.tunings_present(self._files)
+        if not options:
+            self._tuning_filter = ""
+            self._reload_note = ("Tunings are still being read"
+                                 if self._index.busy else "No tunings known yet")
+            return
+        try:
+            position = options.index(self._tuning_filter) + 1
+        except ValueError:
+            position = 0
+        self._tuning_filter = "" if position >= len(options) else options[position]
+        self._apply_filter()
+        self._select_path(selected)
 
     def _selected_path(self):
         """The song under the cursor, or None when the list is empty."""
@@ -234,6 +270,14 @@ class MenuScreen:
                 self._search_active = True
                 self._search_text = ""
                 self._apply_filter()
+                return None
+
+            # TAB steps through the tunings the folder actually contains,
+            # ending back at all of them. Not a letter, for the same reason
+            # as F5 -- and the same key that steps through a song's tracks
+            # once one is open, which is the same idea one level up.
+            if event.key == pygame.K_TAB:
+                self._cycle_tuning_filter()
                 return None
 
             # F5, the key everybody already reaches for. It cannot be a
@@ -365,10 +409,24 @@ class MenuScreen:
         if self._reload_note:
             note_surf = hint_font.render(self._reload_note, True, t.hud_accent)
             surface.blit(note_surf, (box.right + 12, box.y + 6))
+        elif self._tuning_filter:
+            # A filter nobody can see is a list that has lost songs. It says
+            # what is being shown AND how many, next to the box that is the
+            # other reason a list can be short.
+            label = (f"{self._tuning_filter}  —  {len(files)} of "
+                     f"{len(self._files)} songs")
+            surface.blit(hint_font.render(label, True, t.hud_accent),
+                         (box.right + 12, box.y + 6))
         elif self._search_text:
             count_label = f"{len(files)} of {len(self._files)} songs"
             count_surf = hint_font.render(count_label, True, t.hud_text)
             surface.blit(count_surf, (box.right + 12, box.y + 6))
+        elif self._index.busy:
+            # Rows fill themselves in, so the empty ones need explaining.
+            done, total = self._index.scanned, self._index.to_scan
+            surface.blit(hint_font.render(
+                f"reading songs… {done}/{total}", True, t.hud_text),
+                (box.right + 12, box.y + 6))
         list_top = 124
 
         # Empty states
@@ -378,7 +436,13 @@ class MenuScreen:
                     f"No songs found — add .gp3/.gp4/.gp5 files to {self._songs_dir}/"
                 )
             else:
-                empty_msg = f'No songs match "{self._search_text}"'
+                bits = []
+                if self._search_text:
+                    bits.append(f'"{self._search_text}"')
+                if self._tuning_filter:
+                    bits.append(self._tuning_filter)
+                empty_msg = f"No songs match {' + '.join(bits)}" if bits else \
+                    "No songs match"
             msg_surf = item_font.render(empty_msg, True, t.menu_item)
             surface.blit(msg_surf, (w // 2 - msg_surf.get_width() // 2, h // 2))
         else:
@@ -397,25 +461,42 @@ class MenuScreen:
                 else:
                     color = t.menu_item
 
-                # Show relative path for subfolder files, just name for root
-                rel = files[i].relative_to(self._songs_dir)
-                label = str(rel) if len(rel.parts) > 1 else files[i].name
-                text_surf = item_font.render(label, True, color)
-                surface.blit(text_surf, (list_left, y + 4))
+                # Everything on a row is laid out from the RIGHT edge
+                # inwards, and the song name is cut to whatever is left. A
+                # long title would otherwise run under the score, and the
+                # thing it collides with is the thing being compared.
+                right = list_left + list_width - 8
 
-                # Show attempts + best accuracy if available
                 if self._progress is not None:
                     record = self._progress.get_best(files[i].stem)
                     if record is not None and record.attempts > 0:
                         pct = f"{record.best_accuracy:.0f}%"
                         pct_surf = item_font.render(pct, True, t.hud_accent)
-                        pct_x = list_left + list_width - pct_surf.get_width() - 8
-                        surface.blit(pct_surf, (pct_x, y + 4))
+                        right -= pct_surf.get_width()
+                        surface.blit(pct_surf, (right, y + 4))
 
                         att = f"{record.attempts}x"
                         att_surf = item_font.render(att, True, t.hud_text)
-                        att_x = pct_x - att_surf.get_width() - 12
-                        surface.blit(att_surf, (att_x, y + 4))
+                        right -= att_surf.get_width() + 12
+                        surface.blit(att_surf, (right, y + 4))
+                        right -= 16
+
+                info = self._index.get(files[i])
+                summary = info.summary() if info else ""
+                if summary:
+                    sum_surf = hint_font.render(summary, True, t.hud_text)
+                    right -= sum_surf.get_width()
+                    surface.blit(sum_surf, (right, y + 8))
+                    right -= 16
+
+                # Show relative path for subfolder files, just name for root
+                rel = files[i].relative_to(self._songs_dir)
+                label = str(rel) if len(rel.parts) > 1 else files[i].name
+                room = max(40, right - list_left)
+                while label and item_font.size(label)[0] > room:
+                    label = label[:-1]
+                text_surf = item_font.render(label, True, color)
+                surface.blit(text_surf, (list_left, y + 4))
 
             # Scroll indicators
             if self._scroll_offset > 0:
@@ -438,10 +519,11 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to search  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  TAB: tuning  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
-            hint = f"F or /: search  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  G: calibrate  |  T: theme  |  ESC: quit"
+            tune_label = self._tuning_filter or "all"
+            hint = f"F or /: search  |  TAB: tuning ({tune_label})  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  G: calibrate  |  T: theme  |  ESC: quit"
         hint_surf = hint_font.render(hint, True, t.hud_text)
         surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
 

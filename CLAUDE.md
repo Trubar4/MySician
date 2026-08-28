@@ -727,6 +727,28 @@ what it does not have is an old screen.
   now and kept, keyed by the file: a song's tracks cannot change while it sits there being played. Measured: 2 reads per open → 1, and per
   instrument change → 0.
 
+## What Is In A Song, Without Opening It
+
+The song list says how many instruments a file holds and how each is tuned. Both answers need the file unpacked — and for a GP6 container,
+decompressed first — which is far too slow to do for a whole folder while the player waits for a list to appear. So `tabs/song_index.py` reads
+it once and remembers.
+
+- **Kept on disk**, keyed by the file's size and modification time. A file that has not changed is never opened again; one that HAS changed is
+  read afresh rather than believed — the same rule as every other cache here.
+- **Read on a thread, newest file first**, so the list is on screen from the first frame and fills itself in. A song copied in a minute ago is
+  the one being looked for. While it runs the header says `reading songs… 12/240`, because rows that fill themselves in need explaining.
+- **A song not yet read shows nothing, and is filtered OUT rather than in.** With the filter on, a row with no answer yet would read as an
+  answer of "yes" and the count beside it would be wrong.
+- **The same tuning six times is said once.** Six guitar tracks in standard tuning is one answer, not six; past two distinct tunings the rest
+  are counted (`+2`) rather than listed.
+- **`TAB` steps through the tunings the folder actually contains** and back to all of them — built fresh on every press, so a song indexed
+  since the last one can join, and never offering a tuning that would empty the list. Not a letter, because the search box takes those; and the
+  same key that steps through a song's tracks once one is open, which is the same idea one level up.
+- **Letters, not names.** `tuning_name` knows "Drop D", but an unnamed tuning has to fall back to the letters anyway, so the letters are the
+  answer here and the name is left to the tuning HUD. They read low string first — "E A D G B E" — which is the order a player tunes in.
+- **The row is laid out from the right edge inwards** and the song name is cut to what is left. A long title would otherwise run under the
+  score, and the thing it collides with is the thing being compared.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain

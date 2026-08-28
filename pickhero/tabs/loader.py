@@ -229,7 +229,11 @@ def list_tracks(path: str | Path) -> list[dict]:
     """List all tracks in a GP file with metadata.
 
     Returns a list of dicts with keys: index, name, strings, instrument,
-    is_percussion, is_guitar.
+    is_percussion, is_guitar, tuning.
+
+    `tuning` is {string number: MIDI note} with string 1 the HIGH e, the same
+    shape as `note_utils.STANDARD_TUNING` -- so `tuning_notes` names it low to
+    high the way a player says it, "E A D G B E".
     """
     if _is_gpif_file(path):
         return _list_gpif_tracks(path)
@@ -245,6 +249,7 @@ def list_tracks(path: str | Path) -> list[dict]:
                 "instrument": track.channel.instrument,
                 "is_percussion": track.channel.isPercussionChannel,
                 "is_guitar": is_guitar_track(track),
+                "tuning": _extract_tuning(track),
             }
         )
     return tracks
@@ -283,6 +288,8 @@ def _list_gpif_tracks(path: str | Path) -> list[dict]:
             "is_guitar": (len(pitches) == 6 and not is_drum
                           and GUITAR_INSTRUMENT_MIN <= program
                           <= GUITAR_INSTRUMENT_MAX),
+            # GPIF writes the pitches low string first; string 1 is the high e.
+            "tuning": {len(pitches) - i: v for i, v in enumerate(pitches)},
         })
     return tracks
 
