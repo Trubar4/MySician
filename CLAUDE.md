@@ -827,6 +827,24 @@ the cost arrived in bursts exactly when the hands were busiest. Measured on 4200
   a correction is no better than before it, the gap doubles up to `MAX_RESYNC_GAP_MS`; holding sync puts it straight back. `mp3_worst_seek_ms`
   in the run log says what a seek actually costs, because without it the stall cannot be told from the drift it was meant to cure.
 
+## The Board The Notes Sit On
+
+Compared side by side with the reference the player reads without thinking, the gap was not the notes — it was that ours had nowhere to sit.
+Six lines in an empty band give the eye nothing to rest on, so the only way to know where you are is to READ the number, which is the thing
+that is hard to read in the first place.
+
+- **The bar lines are drawn as fret wires** across the whole board. The bar, not the beat: every beat is a picket fence behind the notes, and
+  the bar is the unit a player counts in anyway. Drawn BEFORE the strings, so the strings lie over them the way they do on a guitar.
+- **A fret wire is nickel-silver, never white.** The hit line is white, full height, and the one vertical that means anything; a second white
+  vertical reads as a second hit line. Same separation rule as the palette below, one level down.
+- **The three lowest strings are brass and visibly thicker** (`STRING_THICKNESS` 1-6, `WOUND_TINT`), each drawn as a dark core with a lighter
+  highlight so it reads as round rather than as a thick line. That is the cue that tells the low half of the board apart without reading
+  anything — which is the entire point of drawing a fretboard instead of six rows.
+- **The string palette was re-sampled from the reference itself**, and the check is what makes it safe: its RED sits at (248, 98, 98), within
+  a few points of `feedback_miss`. A string that looks like a missed note is exactly the collision this project already fixed once, so that
+  hue is not in the set and two colours of the same family stand in for it. Neighbouring lanes never share a hue, because the lane above is
+  the one a note can be confused with — asserted, not eyeballed.
+
 ## Colour
 
 Two palettes share the screen and must never be confusable: `STRING_COLORS` says WHICH STRING, `feedback_*` says HOW IT WENT. The plain

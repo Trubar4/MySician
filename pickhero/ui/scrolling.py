@@ -52,7 +52,18 @@ MAX_LANE_HEIGHT_FRACTION = 0.072
 
 # Wound strings are visibly thicker than plain ones; drawing them at one
 # weight loses the strongest cue for which lane is which. Index 0 = high e.
-STRING_THICKNESS = (1, 1, 2, 2, 3, 4)
+STRING_THICKNESS = (1, 2, 3, 4, 5, 6)
+
+# The three lowest are wound and read as brass rather than steel. It is the
+# cue that lets the low half of the board be told apart without reading
+# anything, which is the whole point of drawing a fretboard instead of rows.
+WOUND_STRINGS = 3
+WOUND_TINT = (196, 158, 92)
+PLAIN_TINT = (208, 212, 220)
+
+# Fret wire. Warm and grey rather than white, so it cannot be mistaken for the
+# hit line -- which is white, full height, and the one vertical that matters.
+FRET_WIRE_COLOR = (150, 142, 122)
 
 # Gap left between a sustain and the next note, as a fraction of note height.
 # A capsule is drawn from the head's left edge to one radius before the next
@@ -1692,15 +1703,27 @@ class PlayingScreen:
             surface, t.lane_bg_even,
             (0, int(layout.lane_top), layout.screen_w, int(board_h)),
         )
-        # The strings themselves, down the middle of each lane, thicker toward
-        # the low E so the lanes are told apart at a glance
-        string_color = lightened(t.lane_line, 0.35)
+        # Fret wires FIRST, so the strings lie over them the way they do on a
+        # guitar. They are the landmarks the eye was missing: without them the
+        # notes float in an empty band and the only way to know where you are
+        # is to read the number, which is the thing that is hard to read.
+        self._draw_frets(surface, layout, board_h)
+
+        # The strings themselves, down the middle of each lane. Thicker AND
+        # warmer toward the low E: one weight and one colour throws away the
+        # strongest cue for which lane is which.
         for i in range(6):
             y = int(layout.lane_top + (i + 0.5) * layout.lane_height)
-            pygame.draw.line(
-                surface, string_color, (0, y), (layout.screen_w, y),
-                STRING_THICKNESS[i],
-            )
+            tint = WOUND_TINT if i >= 6 - WOUND_STRINGS else PLAIN_TINT
+            width = STRING_THICKNESS[i]
+            # A wound string is drawn as a dark core with a lighter highlight
+            # on top, which is what makes it read as round rather than as a
+            # thick line.
+            pygame.draw.line(surface, dimmed(tint, 0.45), (0, y),
+                             (layout.screen_w, y), width)
+            pygame.draw.line(surface, tint, (0, y - max(0, width // 3)),
+                             (layout.screen_w, y - max(0, width // 3)),
+                             max(1, width // 2))
         # Edges of the board, deliberately DARKER than the strings. Drawn in
         # the string colour they read as a seventh and a zeroth string.
         edge_color = dimmed(t.lane_line, 0.45)
@@ -1709,6 +1732,44 @@ class PlayingScreen:
                 surface, edge_color,
                 (0, int(edge_y)), (layout.screen_w, int(edge_y)), 2,
             )
+
+    def _draw_frets(self, surface: pygame.Surface, layout: _Layout,
+                    board_h: float) -> None:
+        """The bar lines, drawn as fret wires across the board.
+
+        A real fretboard's wires do not move; these do, because the board is
+        what scrolls. What they give is the same thing: somewhere for the eye
+        to rest between notes, and a sense of where in the bar you are without
+        reading anything.
+
+        The BAR is what gets a wire. Every beat would be a picket fence behind
+        the notes, and the bar is the unit a player counts in anyway.
+        """
+        measures = self._timeline.measures
+        if not measures:
+            return
+        t = get_theme()
+        view_start = self._playback_ms - LEFT_MARGIN_MS
+        view_end = self._playback_ms + self._visible_window_ms + RIGHT_MARGIN_MS
+        # Nickel-silver, not white: the hit line is white and full height, and
+        # a second white vertical would read as a second hit line.
+        # On a light theme the same wire vanishes into the board, so it is
+        # darkened rather than given a colour of its own.
+        wire = (FRET_WIRE_COLOR if sum(t.lane_bg_even) < 300
+                else dimmed(FRET_WIRE_COLOR, 0.55))
+        top, bottom = int(layout.lane_top), int(layout.lane_top + board_h)
+        for measure in measures:
+            if measure.start_ms < view_start or measure.start_ms > view_end:
+                continue
+            x = int(self.note_x(measure.start_ms, self._playback_ms,
+                                layout.hit_zone_x, layout.pixels_per_ms))
+            if x < -4 or x > layout.screen_w + 4:
+                continue
+            # A wire has a dark side and a bright side; flat grey reads as a
+            # gridline, which is what this is trying to stop being.
+            pygame.draw.line(surface, dimmed(wire, 0.5), (x + 1, top),
+                             (x + 1, bottom), 3)
+            pygame.draw.line(surface, wire, (x, top), (x, bottom), 2)
 
     def _draw_hit_zone(self, surface: pygame.Surface, layout: _Layout) -> None:
         """The line a note's LEADING edge has to reach, plus the slack around it.

@@ -1672,6 +1672,101 @@ class TestAnOpenStringLooksLikeOne:
             assert getattr(theme, name) != OPEN_STRING_COLOR
 
 
+class TestTheBoardTheNotesSitOn:
+    """Without landmarks the notes float in an empty band and the only way to
+    know where you are is to read the number -- which is the thing that is
+    hard to read."""
+
+    def _screen(self, bars=8):
+        from pickhero.tabs.timeline import MeasureInfo
+        notes = [NoteEvent(timestamp_ms=i * 500.0, duration_ms=200.0,
+                           midi_note=40, string=(i % 6) + 1, fret=3,
+                           measure=i // 4) for i in range(40)]
+        measures = [MeasureInfo(index=i, start_ms=i * 2000.0,
+                                end_ms=(i + 1) * 2000.0) for i in range(bars)]
+        timeline = Timeline(notes, SongMetadata(title="x", tempo=120),
+                            measures=measures)
+        return PlayingScreen(timeline, config=Config())
+
+    def test_the_bar_lines_are_drawn_as_fret_wires(self):
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = self._screen()
+        drawn = []
+        real = pygame.draw.line
+        import pickhero.ui.scrolling as scr
+        screen.render(surface)          # a layout to work from
+        screen._playback_ms = 1000.0
+        try:
+            pygame.draw.line = lambda s, c, a, b, w=1: drawn.append((a, b)) or None
+            screen._draw_frets(surface, screen._last_layout,
+                               6 * screen._last_layout.lane_height)
+        finally:
+            pygame.draw.line = real
+        # Vertical lines: same x at both ends.
+        assert drawn and all(a[0] == b[0] for a, b in drawn)
+
+    def test_a_song_with_no_bars_draws_none_rather_than_guessing(self):
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen.render(surface)
+        screen._draw_frets(surface, screen._last_layout, 300.0)   # must not raise
+
+    def test_a_fret_wire_is_not_white_like_the_hit_line(self):
+        """A second white vertical would read as a second hit line."""
+        from pickhero.ui.scrolling import FRET_WIRE_COLOR
+        pygame.init()
+        from pickhero.ui.colors import get_theme
+        assert FRET_WIRE_COLOR != get_theme().hit_zone
+        assert min(FRET_WIRE_COLOR) < 200
+
+    def test_the_low_strings_are_thicker_than_the_high_ones(self):
+        """One weight throws away the strongest cue for which lane is which."""
+        from pickhero.ui.scrolling import STRING_THICKNESS
+        assert STRING_THICKNESS[0] < STRING_THICKNESS[-1]
+        assert list(STRING_THICKNESS) == sorted(STRING_THICKNESS)
+
+    def test_the_wound_strings_are_warm_and_the_plain_ones_are_not(self):
+        from pickhero.ui.scrolling import PLAIN_TINT, WOUND_TINT
+        assert WOUND_TINT[0] - WOUND_TINT[2] > 60      # brass: red over blue
+        assert abs(PLAIN_TINT[0] - PLAIN_TINT[2]) < 20  # steel: neutral
+
+
+class TestTheStringColoursStayApartFromTheFeedback:
+    """Two palettes share the screen and must never be confusable: one says
+    WHICH STRING, the other says HOW IT WENT."""
+
+    def test_no_string_colour_is_near_a_feedback_colour(self):
+        pygame.init()
+        from pickhero.ui.colors import STRING_COLORS, get_theme
+        theme = get_theme()
+        feedback = (theme.feedback_hit, theme.feedback_close, theme.feedback_miss)
+        for string, colour in STRING_COLORS.items():
+            for fb in feedback:
+                distance = sum(abs(a - b) for a, b in zip(colour, fb))
+                assert distance > 120, f"string {string} is too close to {fb}"
+
+    def test_neighbouring_lanes_do_not_share_a_hue(self):
+        """The lane above is the one a note can be confused with."""
+        import colorsys
+        from pickhero.ui.colors import STRING_COLORS
+        def hue(c):
+            return colorsys.rgb_to_hsv(*[v / 255 for v in c])[0] * 360
+        for s in range(1, 6):
+            a, b = hue(STRING_COLORS[s]), hue(STRING_COLORS[s + 1])
+            apart = min(abs(a - b), 360 - abs(a - b))
+            assert apart > 25, f"strings {s} and {s + 1} share a hue"
+
+    def test_every_string_colour_carries_white_text(self):
+        from pickhero.ui.colors import STRING_COLORS
+        for string, colour in STRING_COLORS.items():
+            # Rec. 601 luma: the digit is white with a dark outline, so a
+            # colour that is nearly white would lose the digit entirely.
+            luma = 0.299 * colour[0] + 0.587 * colour[1] + 0.114 * colour[2]
+            assert luma < 200, f"string {string} is too pale for white type"
+
+
 class TestDrawingTheSameTextAgain:
     """Measured: one frame of the playing screen rasterised 62 text surfaces,
     and that was 79 % of the frame -- against 8 % for drawing the notes. The

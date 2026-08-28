@@ -164,13 +164,23 @@ def cycle_theme() -> str:
 # rather than pure red, B leans amber. The feedback colours in turn are far
 # brighter and lighter than any string, so the two read as different kinds of
 # colour even where the hue is nearest.
+# Sampled from the reference the player reads without thinking, then checked
+# against the rule this file exists for. Four of these are that palette's own
+# values; its RED is deliberately NOT here, because at (248, 98, 98) it is
+# within a few points of `feedback_miss` -- a string that looks like a missed
+# note is exactly the collision the separation below is about. The two
+# replacements sit in the same family: high saturation, high value, and out of
+# the green and red bands the feedback colours own.
+#
+# Ordered so that NEIGHBOURING lanes never share a hue family: the lane above
+# is the one a note can be confused with.
 STRING_COLORS: dict[int, tuple[int, int, int]] = {
-    1: (215, 65, 100),   # crimson
-    2: (215, 170, 40),   # amber
-    3: (50, 120, 220),   # blue
-    4: (225, 120, 35),   # orange
-    5: (35, 175, 165),   # teal
-    6: (150, 70, 210),   # purple
+    1: (200, 32, 255),   # magenta
+    2: (247, 169, 6),    # amber
+    3: (0, 175, 254),    # cyan
+    4: (124, 104, 250),  # violet
+    5: (0, 195, 175),    # teal
+    6: (62, 106, 224),   # blue
 }
 
 # An open string is grey, whichever string it is. The lane already says WHICH
