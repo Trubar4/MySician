@@ -57,8 +57,13 @@ class TestTheLineTheListHasRoomFor:
                                            "C G C F A D", "D# G# C# F# A# D#"])
         assert info.summary().endswith("+2")
 
-    def test_a_file_that_could_not_be_read_says_nothing(self):
-        assert SongInfo().summary() == ""
+    def test_a_file_that_could_not_be_read_says_that(self):
+        assert SongInfo(readable=False).summary() == "could not be read"
+
+    def test_a_file_with_no_guitar_in_it_says_that_instead(self):
+        """A blank row means "not read yet". These two must never look the
+        same, or every unindexed song looks like a piano piece."""
+        assert SongInfo(tracks=0).summary() == "no guitar track"
 
 
 class TestReadingARealFile:
@@ -76,6 +81,45 @@ class TestReadingARealFile:
         index = SongIndex(tmp_path / "i.json")
         index.scan([SONG])
         assert index.get(SONG).tracks == 1
+
+
+class TestOnlyGuitars:
+    def test_a_bass_or_a_piano_is_not_counted_as_an_instrument_to_play(self,
+                                                                       tmp_path,
+                                                                       monkeypatch):
+        """Counting them makes the number answer a different question."""
+        from pickhero.tabs import loader
+        monkeypatch.setattr(loader, "list_tracks", lambda p: [
+            {"index": 0, "name": "Guitar", "is_guitar": True,
+             "is_percussion": False, "tuning": STANDARD},
+            {"index": 1, "name": "Bass", "is_guitar": False,
+             "is_percussion": False, "tuning": {1: 43, 2: 38, 3: 33, 4: 28}},
+            {"index": 2, "name": "Drums", "is_guitar": False,
+             "is_percussion": True, "tuning": {}},
+        ])
+        info = song_index.describe_file(tmp_path / "x.gp5")
+        assert info.tracks == 1 and info.tunings == ["E A D G B E"]
+
+    def test_a_file_with_no_guitar_at_all_is_readable_and_empty(self, tmp_path,
+                                                                monkeypatch):
+        from pickhero.tabs import loader
+        monkeypatch.setattr(loader, "list_tracks", lambda p: [
+            {"index": 0, "name": "Piano", "is_guitar": False,
+             "is_percussion": False, "tuning": {}}])
+        info = song_index.describe_file(tmp_path / "x.gp5")
+        assert info.tracks == 0 and info.readable is True
+        assert info.summary() == "no guitar track"
+
+    def test_an_index_from_before_this_is_read_again(self, tmp_path):
+        """Its number counted more than guitars, so it answers a different
+        question and must not be believed."""
+        song = tmp_path / "a.gp5"
+        song.write_bytes(b"x")
+        old = {str(song): {"stamp": song_index.file_stamp(song),
+                           "tracks": 5, "tunings": ["E A D G B E"],
+                           "names": []}}
+        (tmp_path / "i.json").write_text(json.dumps(old))
+        assert SongIndex(tmp_path / "i.json").get(song) is None
 
 
 class TestNotReadingItTwice:

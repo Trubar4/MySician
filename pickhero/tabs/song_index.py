@@ -16,9 +16,16 @@ So it is read once and remembered:
 - **Saved as it goes.** A folder of two hundred songs is seconds of work, and
   quitting halfway through must not throw all of it away.
 
-Only the tracks worth playing are described -- the guitars, or everything if
-a file has no guitar at all, which is the same rule the track picker uses.
-A drum track's "tuning" is not a tuning and saying so would be noise.
+Only GUITAR tracks are described. A drum track's "tuning" is not a tuning,
+a bass has four strings, and a piano has none -- counting any of them as an
+instrument to play makes the number answer a different question than the one
+being asked. A file that turns out to hold no guitar at all says so in as
+many words: "no guitar track" is an answer, where a blank row means the file
+has not been read yet, and those two must never look the same.
+
+(The track picker inside a song still falls back to offering everything when
+a file has no guitar, so such a file can be opened. This is the song LIST
+saying what is in it, which is a different question.)
 """
 
 from __future__ import annotations
@@ -41,14 +48,23 @@ def index_file() -> Path:
 # Saved this often while scanning, so a folder read halfway is not lost.
 SAVE_EVERY = 25
 
+# Bumped when what an entry MEANS changes, so old ones are re-read rather
+# than believed. It went to 2 when only guitar tracks began to be counted:
+# an older entry's number answers a different question.
+ENTRY_VERSION = 2
+
 
 @dataclass
 class SongInfo:
-    """The playable tracks of one file, in the order the file lists them."""
+    """The guitar tracks of one file, in the order the file lists them."""
 
     tracks: int = 0
     tunings: list[str] = field(default_factory=list)   # "E A D G B E" each
     names: list[str] = field(default_factory=list)     # track names
+    # Whether the file could be opened at all. Without this, a file that
+    # failed to parse and a file holding no guitar are the same empty record,
+    # and the row would blame the wrong one.
+    readable: bool = True
 
     @property
     def distinct_tunings(self) -> list[str]:
@@ -65,8 +81,12 @@ class SongInfo:
 
     def summary(self) -> str:
         """The one line the song list has room for."""
+        if not self.readable:
+            return "could not be read"
         if not self.tracks:
-            return ""
+            # Read, and there is no guitar in it. Distinct from a blank row,
+            # which means it has not been read yet.
+            return "no guitar track"
         word = "track" if self.tracks == 1 else "tracks"
         tunings = self.distinct_tunings
         if not tunings:
@@ -95,15 +115,13 @@ def describe_file(path: Path) -> SongInfo:
     try:
         tracks = list_tracks(path)
     except Exception:
-        return SongInfo()
-    playable = [t for t in tracks
-                if t.get("is_guitar") and not t.get("is_percussion")]
-    if not playable:
-        playable = [t for t in tracks if not t.get("is_percussion")] or tracks
+        return SongInfo(readable=False)
+    guitars = [t for t in tracks
+               if t.get("is_guitar") and not t.get("is_percussion")]
     return SongInfo(
-        tracks=len(playable),
-        tunings=[describe_tuning(t.get("tuning")) for t in playable],
-        names=[t.get("name", "") for t in playable],
+        tracks=len(guitars),
+        tunings=[describe_tuning(t.get("tuning")) for t in guitars],
+        names=[t.get("name", "") for t in guitars],
     )
 
 
@@ -136,9 +154,14 @@ class SongIndex:
         entry = self._entries.get(str(file))
         if not entry or entry.get("stamp") != file_stamp(file):
             return None
+        if entry.get("v") != ENTRY_VERSION:
+            # Written before guitar tracks became the only ones counted, so
+            # its number answers a question nobody asked any more.
+            return None
         return SongInfo(tracks=entry.get("tracks", 0),
                         tunings=list(entry.get("tunings", [])),
-                        names=list(entry.get("names", [])))
+                        names=list(entry.get("names", [])),
+                        readable=bool(entry.get("readable", True)))
 
     def tunings_present(self, files: list[Path]) -> list[str]:
         """Every tuning that appears in these songs, commonest first.
@@ -199,10 +222,12 @@ class SongIndex:
     def _record(self, file: Path, info: SongInfo) -> None:
         with self._lock:
             self._entries[str(file)] = {
+                "v": ENTRY_VERSION,
                 "stamp": file_stamp(file),
                 "tracks": info.tracks,
                 "tunings": info.tunings,
                 "names": info.names,
+                "readable": info.readable,
             }
 
     # -- disk --------------------------------------------------------------

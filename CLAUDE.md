@@ -739,6 +739,12 @@ it once and remembers.
   the one being looked for. While it runs the header says `reading songs… 12/240`, because rows that fill themselves in need explaining.
 - **A song not yet read shows nothing, and is filtered OUT rather than in.** With the filter on, a row with no answer yet would read as an
   answer of "yes" and the count beside it would be wrong.
+- **Only GUITAR tracks are counted.** A drum track's "tuning" is not a tuning, a bass has four strings and a piano none, so counting any of
+  them makes the number answer a different question. A file holding no guitar says **"no guitar track"** in as many words, and one that would
+  not parse says "could not be read" — three states that must never look alike, because a blank row already means "not read yet". The track
+  picker INSIDE a song still falls back to offering everything, so such a file can still be opened; the list is answering a different question.
+- **`ENTRY_VERSION` is bumped when what an entry MEANS changes**, not when the code does. It went to 2 here: entries written while non-guitar
+  tracks were counted hold a number nobody asked for, and are re-read rather than believed.
 - **The same tuning six times is said once.** Six guitar tracks in standard tuning is one answer, not six; past two distinct tunings the rest
   are counted (`+2`) rather than listed.
 - **`TAB` steps through the tunings the folder actually contains** and back to all of them — built fresh on every press, so a song indexed
