@@ -62,9 +62,17 @@ WOUND_STRINGS = 3
 WOUND_TINT = (196, 158, 92)
 PLAIN_TINT = (208, 212, 220)
 
-# Fret wire. Warm and grey rather than white, so it cannot be mistaken for the
-# hit line -- which is white, full height, and the one vertical that matters.
-FRET_WIRE_COLOR = (150, 142, 122)
+# Bar line. Barely above the board and slightly COOLER than it, which is what
+# makes it read as a line on the wood rather than as an object of its own.
+# It was drawn as a lit nickel-silver wire and that was too loud: the eye went
+# to it instead of to the notes, which is the opposite of what a landmark is
+# for. A landmark is noticed when looked for and not otherwise.
+BAR_LINE_COLOR = (52, 54, 66)
+
+# No two bar lines closer together than this. A fast song puts bars a few
+# pixels apart and the board turns into a picket fence behind the notes, so
+# past this every second bar is drawn, then every fourth.
+MIN_BAR_LINE_GAP_PX = 90
 
 # How far the hit line stands proud of the board, top and bottom. Flush with
 # the edge it is one more vertical among the fret wires; past it, it is the
@@ -1810,25 +1818,33 @@ class PlayingScreen:
         t = get_theme()
         view_start = self._playback_ms - LEFT_MARGIN_MS
         view_end = self._playback_ms + self._visible_window_ms + RIGHT_MARGIN_MS
-        # Nickel-silver, not white: the hit line is white and full height, and
-        # a second white vertical would read as a second hit line.
-        # On a light theme the same wire vanishes into the board, so it is
-        # darkened rather than given a colour of its own.
-        wire = (FRET_WIRE_COLOR if sum(t.lane_bg_even) < 300
-                else dimmed(FRET_WIRE_COLOR, 0.55))
+        # On a light board the same near-invisible line really is invisible,
+        # so there it is darkened instead of lightened.
+        wire = (BAR_LINE_COLOR if sum(t.lane_bg_even) < 300
+                else dimmed(t.lane_line, 0.75))
         top, bottom = int(layout.lane_top), int(layout.lane_top + board_h)
-        for measure in measures:
+
+        # Thin them out rather than drawing a picket fence. Every second bar,
+        # then every fourth: halving keeps the lines on real bar boundaries,
+        # where a fixed pixel spacing would drift off the beat and stop
+        # meaning anything.
+        step = 1
+        if len(measures) > 1:
+            spacing = ((measures[1].start_ms - measures[0].start_ms)
+                       * layout.pixels_per_ms)
+            while spacing > 0 and spacing * step < MIN_BAR_LINE_GAP_PX:
+                step *= 2
+
+        for index, measure in enumerate(measures):
+            if index % step:
+                continue
             if measure.start_ms < view_start or measure.start_ms > view_end:
                 continue
             x = int(self.note_x(measure.start_ms, self._playback_ms,
                                 layout.hit_zone_x, layout.pixels_per_ms))
             if x < -4 or x > layout.screen_w + 4:
                 continue
-            # A wire has a dark side and a bright side; flat grey reads as a
-            # gridline, which is what this is trying to stop being.
-            pygame.draw.line(surface, dimmed(wire, 0.5), (x + 1, top),
-                             (x + 1, bottom), 3)
-            pygame.draw.line(surface, wire, (x, top), (x, bottom), 2)
+            pygame.draw.line(surface, wire, (x, top), (x, bottom), 1)
 
     def _draw_hit_zone(self, surface: pygame.Surface, layout: _Layout) -> None:
         """The line a note's LEADING edge has to reach, plus the slack around it.

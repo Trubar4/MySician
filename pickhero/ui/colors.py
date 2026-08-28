@@ -97,9 +97,12 @@ DARK_THEME = Theme(
 )
 
 LIGHT_THEME = Theme(
-    bg=(235, 235, 240),
-    lane_bg_even=(225, 225, 232),
-    lane_bg_odd=(218, 218, 228),
+    # Same relationship as the dark theme, the other way up: the board is an
+    # object and only reads as one if it differs from what it lies on. Ten
+    # points apart, it dissolved here too.
+    bg=(242, 243, 248),
+    lane_bg_even=(206, 199, 194),
+    lane_bg_odd=(199, 192, 187),
     lane_line=(180, 180, 195),
     hit_zone=(40, 40, 50),
     note_text=(255, 255, 255),

@@ -1713,13 +1713,65 @@ class TestTheBoardTheNotesSitOn:
         screen.render(surface)
         screen._draw_frets(surface, screen._last_layout, 300.0)   # must not raise
 
-    def test_a_fret_wire_is_not_white_like_the_hit_line(self):
-        """A second white vertical would read as a second hit line."""
-        from pickhero.ui.scrolling import FRET_WIRE_COLOR
+    def test_a_bar_line_is_barely_above_the_board(self):
+        """A landmark is noticed when looked for and not otherwise. Drawn as a
+        lit wire it pulled the eye off the notes, which is the opposite of
+        what it is there for."""
         pygame.init()
         from pickhero.ui.colors import get_theme
-        assert FRET_WIRE_COLOR != get_theme().hit_zone
-        assert min(FRET_WIRE_COLOR) < 200
+        from pickhero.ui.scrolling import BAR_LINE_COLOR
+        board = get_theme().lane_bg_even
+        lift = sum(BAR_LINE_COLOR) - sum(board)
+        assert 0 < lift < 120, "a bar line must whisper, not shout"
+        assert BAR_LINE_COLOR != get_theme().hit_zone
+
+    def test_bars_too_close_together_are_thinned_out(self):
+        """A fast song puts bars a few pixels apart and the board turns into a
+        picket fence behind the notes."""
+        from pickhero.tabs.timeline import MeasureInfo
+        from pickhero.ui.scrolling import MIN_BAR_LINE_GAP_PX
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        notes = [NoteEvent(timestamp_ms=i * 120.0, duration_ms=100.0,
+                           midi_note=40, string=1, fret=3, measure=i)
+                 for i in range(400)]
+        measures = [MeasureInfo(index=i, start_ms=i * 120.0,
+                                end_ms=(i + 1) * 120.0) for i in range(400)]
+        screen = PlayingScreen(
+            Timeline(notes, SongMetadata(title="x", tempo=200), measures=measures),
+            config=Config())
+        screen.render(surface)
+        drawn = []
+        real = pygame.draw.line
+        try:
+            pygame.draw.line = lambda s, c, a, b, w=1: drawn.append(a[0])
+            screen._draw_frets(surface, screen._last_layout, 300.0)
+        finally:
+            pygame.draw.line = real
+        gaps = [b - a for a, b in zip(sorted(drawn), sorted(drawn)[1:])]
+        assert not gaps or min(gaps) >= MIN_BAR_LINE_GAP_PX * 0.5
+
+    def test_a_roomy_song_keeps_every_bar(self):
+        from pickhero.tabs.timeline import MeasureInfo
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        notes = [NoteEvent(timestamp_ms=i * 500.0, duration_ms=200.0,
+                           midi_note=40, string=1, fret=3, measure=i // 4)
+                 for i in range(40)]
+        measures = [MeasureInfo(index=i, start_ms=i * 2000.0,
+                                end_ms=(i + 1) * 2000.0) for i in range(10)]
+        screen = PlayingScreen(
+            Timeline(notes, SongMetadata(title="x", tempo=120), measures=measures),
+            config=Config())
+        screen.render(surface)
+        drawn = []
+        real = pygame.draw.line
+        try:
+            pygame.draw.line = lambda s, c, a, b, w=1: drawn.append(a[0])
+            screen._draw_frets(surface, screen._last_layout, 300.0)
+        finally:
+            pygame.draw.line = real
+        assert len(drawn) >= 2
 
     def test_the_low_strings_are_thicker_than_the_high_ones(self):
         """One weight throws away the strongest cue for which lane is which."""
@@ -1760,12 +1812,12 @@ class TestTheHitLineStandsProudOfTheBoard:
 class TestTheBoardIsAnObjectOnABackground:
     def test_the_board_and_the_surround_are_told_apart(self):
         """They were ten points apart -- near-black on near-black -- so the
-        board dissolved into the screen and the notes floated."""
-        pygame.init()
-        from pickhero.ui.colors import get_theme
-        theme = get_theme()
-        distance = sum(abs(a - b) for a, b in zip(theme.bg, theme.lane_bg_even))
-        assert distance > 40
+        board dissolved into the screen and the notes floated. BOTH themes:
+        the light one had the identical problem the other way up."""
+        from pickhero.ui.colors import DARK_THEME, LIGHT_THEME
+        for theme in (DARK_THEME, LIGHT_THEME):
+            distance = sum(abs(a - b) for a, b in zip(theme.bg, theme.lane_bg_even))
+            assert distance > 40, theme.bg
 
 
 class TestTheStringColoursStayApartFromTheFeedback:

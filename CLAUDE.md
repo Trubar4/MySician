@@ -833,10 +833,14 @@ Compared side by side with the reference the player reads without thinking, the 
 Six lines in an empty band give the eye nothing to rest on, so the only way to know where you are is to READ the number, which is the thing
 that is hard to read in the first place.
 
-- **The bar lines are drawn as fret wires** across the whole board. The bar, not the beat: every beat is a picket fence behind the notes, and
-  the bar is the unit a player counts in anyway. Drawn BEFORE the strings, so the strings lie over them the way they do on a guitar.
-- **A fret wire is nickel-silver, never white.** The hit line is white, full height, and the one vertical that means anything; a second white
-  vertical reads as a second hit line. Same separation rule as the palette below, one level down.
+- **The bar lines are drawn across the board**, before the strings so the strings lie over them the way they do on a guitar. The bar, not the
+  beat: every beat is a picket fence behind the notes, and the bar is the unit a player counts in anyway.
+- **A bar line whispers.** It was drawn as a lit nickel-silver wire and that was too loud — the eye went to it instead of to the notes, which
+  is the opposite of what a landmark is for. `BAR_LINE_COLOR` is barely above the board and slightly COOLER than it, so it reads as a line ON
+  the wood rather than as an object of its own. A landmark is noticed when looked for and not otherwise.
+- **And they are thinned out rather than drawn at any spacing.** A fast song puts bars a few pixels apart. Past `MIN_BAR_LINE_GAP_PX` every
+  second bar is drawn, then every fourth — halving, so the lines stay on real bar boundaries, where a fixed pixel spacing would drift off the
+  beat and stop meaning anything.
 - **The three lowest strings are brass and visibly thicker** (`STRING_THICKNESS` 1-6, `WOUND_TINT`), each drawn as a dark core with a lighter
   highlight so it reads as round rather than as a thick line. That is the cue that tells the low half of the board apart without reading
   anything — which is the entire point of drawing a fretboard instead of six rows.
