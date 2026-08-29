@@ -1,15 +1,12 @@
 
+#Import
 python tools\merge_stats.py --from D:\pickhero-von-NB1 --into %USERPROFILE%\.pickhero
 
+#Stats erstellen
+python tools/make_dashboard.py --open
+
 ##Songs
-Billy Talent - Red Flag
-Three days Grace - I hate everything about you
-Shinedown - Sound of Madness
 Shinedown - Lost in the crowd
-Billy Talent - Swallowed up by the Ocean
-Papa Roach - Leave a light on
-Atreyu - Glass eater
-Atreyu - Afterglow
 Asking Alexandria - When the lights go on
 Asking Alexandria - Dark Void
 Bon Jovi - Dry Country
