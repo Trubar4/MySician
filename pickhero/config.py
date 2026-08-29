@@ -52,6 +52,12 @@ class AudioConfig:
     confidence_threshold: float = 0.8
     onset_threshold: float = 0.3
     noise_gate_db: float = -60.0  # ignore signals below this dB level
+    # Let the app set the gate from the room it can hear, rather than
+    # leaving a number nobody can judge by ear. See MAX_GATE_DB and the
+    # sweep in tools/sweep_noise_gate.py: the gate buys nothing anywhere
+    # in its safe range, so there is no optimum to hunt for -- only a
+    # ceiling to stay under, and that ceiling moves with the interface.
+    auto_gate: bool = True
     yin_tolerance: float = 0.15  # YIN dip threshold, NOT the confidence filter
 
 

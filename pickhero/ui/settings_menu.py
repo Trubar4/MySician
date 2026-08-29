@@ -100,7 +100,14 @@ class SettingsMenuScreen:
                 pass
             return f"device #{index}"
 
+        def toggle_auto_gate() -> None:
+            c.audio.auto_gate = not c.audio.auto_gate
+
         def adjust_gate(step: int) -> None:
+            # Setting it by hand is a decision, the same as pressing X in the
+            # song: an automatic that silently undoes it the next time a song
+            # starts is worse than one that was never offered.
+            c.audio.auto_gate = False
             c.audio.noise_gate_db = max(MIN_GATE_DB, min(
                 MAX_GATE_DB, c.audio.noise_gate_db + step))
 
@@ -155,11 +162,23 @@ class SettingsMenuScreen:
                     note="Plays each open string once and learns your noise "
                          "floor. ENTER to run it.",
                     is_default=lambda: True),
+            Setting("auto_gate", "Automatic gate",
+                    lambda: "on" if c.audio.auto_gate else "off",
+                    lambda step: toggle_auto_gate(),
+                    note="Sets the noise gate from the room it hears while "
+                         "the song is not running. X or C switch it off.",
+                    is_default=lambda: c.audio.auto_gate == default.audio.auto_gate),
             Setting("gate", "Noise gate",
-                    lambda: f"{c.audio.noise_gate_db:.0f} dB", adjust_gate,
-                    note="Below this, sound is ignored. Higher shuts out room "
-                         "noise; too high swallows quiet notes.",
-                    is_default=lambda: c.audio.noise_gate_db == default.audio.noise_gate_db),
+                    lambda: f"{c.audio.noise_gate_db:.0f} dB"
+                            + (" (automatic)" if c.audio.auto_gate else ""),
+                    adjust_gate,
+                    note="Below this, sound is ignored. Too high swallows the "
+                         "quiet notes -- which is most of a clean verse.",
+                    # With the automatic on this value is derived, not chosen,
+                    # so a dot beside it would flag something nobody set.
+                    is_default=lambda: (c.audio.auto_gate
+                                        or c.audio.noise_gate_db
+                                        == default.audio.noise_gate_db)),
             Setting("window", "Hit window",
                     lambda: f"{c.timing_window_ms:.0f} ms", adjust_window,
                     note="How far off the beat a note still counts. Wider is "

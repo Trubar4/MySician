@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import functools
 import math
+import statistics
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -302,6 +304,19 @@ def suggested_gate_db(peak: float, floor: float) -> float:
 # Per frame, so one loud accident does not fix the advice in place for the
 # rest of the song.
 LEVEL_DECAY_DB = 0.05
+
+# The room is what the microphone hears while the song is NOT running, which
+# is the only moment it can be read: a low percentile of a take that is being
+# PLAYED is not the room. Measured across one session's reference takes, the
+# 2nd percentile ranged from -35 dB on a dense passage with no gaps to -94 dB
+# on a sparse one, against a recorded room of -73 -- so a percentile says how
+# busy the playing was, not how quiet the room is.
+#
+# A median over the most recent readings, so a session that changes (a fan, a
+# different guitar) is followed and one frame of the guitar being put down is
+# not. At 60 frames a second the minimum is about a second and a half.
+ROOM_WINDOW = 300
+ROOM_SAMPLES = 90
 
 # Auto-sync confidence. Scatter does not invalidate the median — a player is
 # simply not a metronome — it only means more strikes are needed before the
@@ -597,6 +612,13 @@ class PlayingScreen:
         # to do about the input rather than only what it is.
         self._signal_peak_db: float = SIGNAL_UNKNOWN_DB
         self._signal_floor_db: float = 0.0
+        # What the room sounds like, and the loudest thing this run has heard.
+        # The peak above decays on purpose; this one does not, because a gate
+        # is judged against the whole run rather than the last two seconds.
+        self._room_samples: deque[float] = deque(maxlen=ROOM_WINDOW)
+        self._loudest_db: float = SIGNAL_UNKNOWN_DB
+        self._auto_gate: bool = bool(getattr(self._config.audio, "auto_gate", True))
+        self._auto_gate_note: str = ""
         # Every level seen while the song ran, for the run log.
         self._level_samples: list[float] = []
 
@@ -1028,11 +1050,13 @@ class PlayingScreen:
             else:
                 self._toggle_backing()
         elif event.key == pygame.K_x:
+            self._take_gate_by_hand()
             self.set_noise_gate_db(self._noise_gate_db - 5)
         elif event.key == pygame.K_c:
             # C is the key that walked this player's gate to the old ceiling,
             # five decibels at a time, on advice the app kept repeating --
             # see gate_band. set_noise_gate_db is what bounds it.
+            self._take_gate_by_hand()
             self.set_noise_gate_db(self._noise_gate_db + 5)
         elif event.key == pygame.K_t:
             self._cycle_theme()
@@ -2231,7 +2255,9 @@ class PlayingScreen:
         line_h = hint_font.get_height() + 4
         if self._audio_enabled:
             gate_surf = hint_font.render(
-                f"Gate: {int(self._noise_gate_db)} dB (X/C)", True, t.hud_accent)
+                f"Gate: {int(self._noise_gate_db)} dB"
+                + (" (auto)" if self._auto_gate else " (X/C)"),
+                True, t.hud_accent)
             surface.blit(gate_surf, (w - gate_surf.get_width() - 12, right_y))
             right_y += line_h
             if self._audio_capture is not None:
@@ -2420,6 +2446,11 @@ class PlayingScreen:
             # playing and is not.
             return ("Input too quiet for reliable pitch — turn the interface "
                     "up (notes will come back as the wrong note)")
+        if self._auto_gate:
+            # The gate is not the player's job any more. What is left here is
+            # the interface's gain, which no gate can fix and only a hand on
+            # the knob can -- the two cases above.
+            return ""
         # One direction at a time, and only ever toward the band. X fires
         # while the gate is above it and C only while a real band exists to
         # raise the gate INTO, so following the advice always terminates --
@@ -2442,15 +2473,90 @@ class PlayingScreen:
         silence the advice for the rest of the song. Only while the song is
         running: silence between takes is not a reading.
         """
-        if db <= SIGNAL_UNKNOWN_DB or not self._playing:
+        if db <= SIGNAL_UNKNOWN_DB:
+            return
+        if not self._playing or self._playback_ms < 0:
+            # Not a reading of the playing -- a reading of the room, which is
+            # what the gate has to clear and what nothing else can measure.
+            # The count-in counts as room: the song is not running and the
+            # player is not meant to be playing yet, which makes it the
+            # longest clean window a run ever offers.
+            self._room_samples.append(db)
             return
         self._signal_peak_db = max(db, self._signal_peak_db - LEVEL_DECAY_DB)
         self._signal_floor_db = min(db, self._signal_floor_db + LEVEL_DECAY_DB)
+        self._loudest_db = max(self._loudest_db, db)
+        self._auto_gate_while_playing()
         # Kept for the run log, which is where a level problem is proved
         # rather than suspected. Bounded so a long session cannot grow it
         # without limit.
         if len(self._level_samples) < 40_000:
             self._level_samples.append(db)
+
+    def room_db(self) -> float | None:
+        """What the room measures, or None while too little has been heard."""
+        if len(self._room_samples) < ROOM_SAMPLES:
+            return None
+        return statistics.median(self._room_samples)
+
+    def _take_gate_by_hand(self) -> None:
+        """Touching X or C switches the automatic off, and says so.
+
+        Otherwise the next song would silently undo the adjustment that was
+        just made by hand, and a setting that will not stay set is worse than
+        one that was never offered. It goes back on from the settings screen.
+        """
+        if not self._auto_gate:
+            return
+        self._auto_gate = False
+        self._config.audio.auto_gate = False
+        self._config.save()
+        self._auto_gate_note = "Gate von Hand — Automatik aus (O zum Zurueckschalten)"
+
+    def _auto_gate_from_room(self) -> None:
+        """Set the gate from the room, when a song starts.
+
+        Derived every time rather than accumulated: a gate that only ever
+        walks in one direction ends up wherever the last session left it, and
+        the value that suits this interface at this gain is not something the
+        player can judge by ear. Nothing is lost by putting it low -- swept
+        over four real play-along takes, every gate from -80 dB up to the
+        knee reads exactly the same number of notes, and a fully processed hop
+        costs 2 % of its 11.6 ms, so there is no work to be saved either.
+        """
+        if not self._auto_gate:
+            return
+        room = self.room_db()
+        if room is None:
+            return
+        wanted = min(room + NOISE_MARGIN_DB, MAX_GATE_DB)
+        if round(wanted) != round(self._noise_gate_db):
+            self.set_noise_gate_db(wanted)
+
+    def _auto_gate_while_playing(self) -> None:
+        """Lower a gate that is sitting inside the playing. Never raise one.
+
+        The safety net for a room measured while the player happened to be
+        noodling, or a gain turned down mid-session. It is one-sided because
+        the two mistakes are not equals: a gate under the room costs spurious
+        onsets, which the confidence filter and the candidate search already
+        throw away, while a gate over the playing costs the strikes
+        themselves, and a strike that never arrives cannot be recovered by
+        anything downstream.
+
+        `_loudest_db` only rises, so the level it demands only rises with it:
+        once satisfied this can never fire again, and it cannot oscillate the
+        way the ADVICE it replaces did.
+        """
+        if not self._auto_gate or self._loudest_db < QUIET_PEAK_DB:
+            # Too quiet to judge a gate against -- that is the interface's
+            # gain, which _level_advice names and no gate can fix.
+            return
+        highest = min(self._loudest_db - QUIET_MARGIN_DB, MAX_GATE_DB)
+        if self._noise_gate_db > highest:
+            self.set_noise_gate_db(highest)
+            self._auto_gate_note = (
+                f"Gate automatisch auf {self._noise_gate_db:.0f} dB gesenkt")
 
     def _draw_signal_meter(self, surface: pygame.Surface, font: pygame.font.Font,
                            screen_w: int, y: int) -> None:
@@ -2991,7 +3097,8 @@ class PlayingScreen:
         describe = getattr(capture, "describe_device", None)
         fh.write(f"input_device\t{describe() if describe else '(unknown)'}\n")
         fh.write(f"dropped_buffers\t{getattr(capture, 'dropped_buffers', 0)}\n")
-        fh.write(f"noise_gate_db\t{ac.noise_gate_db:.0f}\n")
+        fh.write(f"noise_gate_db\t{ac.noise_gate_db:.0f}"
+                 f"\t{'auto' if self._auto_gate else 'von Hand'}\n")
         # The input level, in the same units the HUD shows (RMS of one hop).
         # A weak input does not lose strikes, it corrupts their PITCH -- which
         # looks exactly like bad playing from the score alone. Measured on the
@@ -3004,22 +3111,28 @@ class PlayingScreen:
             playing = [db for db in levels if db > loudest - 30.0]
             median = playing[len(playing) // 2] if playing else loudest
             under = sum(1 for db in levels if db < ac.noise_gate_db)
-            # The quietest 2 %, not the single quietest hop: over three
-            # minutes that one sample is an accident, and the room between
-            # phrases is what a gate has to clear.
-            room = levels[max(0, int(0.02 * len(levels)) - 1)]
             fh.write(f"level_loudest_db\t{loudest:.1f}\n")
             fh.write(f"level_median_playing_db\t{median:.1f}\n")
-            fh.write(f"level_room_db\t{room:.1f}\n")
             fh.write(f"level_under_gate_percent\t{100 * under / len(levels):.0f}\n")
-            # A percentage of discarded audio is only readable next to the
-            # value that would not have discarded it -- the same rule as
-            # "up to 40 s" beside a half-finished run. Same two helpers the
-            # HUD advice uses, so the log and the panel cannot disagree.
-            low, high = gate_band(loudest, room)
-            fh.write(f"gate_suggested_db\t{suggested_gate_db(loudest, room):.0f}"
-                     f"\t(band {low:.0f} to {high:.0f}"
-                     f"{', empty' if low > high else ''})\n")
+            # The room is measured while the song is NOT running, never as a
+            # low percentile of the playing: across one session's reference
+            # takes that percentile ran from -35 dB on a dense passage to
+            # -94 dB on a sparse one against a recorded room of -73, so it
+            # reports how busy the playing was. Without it there is no honest
+            # gate to suggest, and none is printed.
+            room = self.room_db()
+            if room is None:
+                fh.write("level_room_db\t(nicht gemessen)\n")
+            else:
+                low, high = gate_band(loudest, room)
+                fh.write(f"level_room_db\t{room:.1f}\n")
+                # A percentage of discarded audio is only readable next to
+                # the value that would not have discarded it -- the same rule
+                # as "up to 40 s" beside a half-finished run.
+                fh.write(f"gate_suggested_db"
+                         f"\t{suggested_gate_db(loudest, room):.0f}"
+                         f"\t(band {low:.0f} to {high:.0f}"
+                         f"{', empty' if low > high else ''})\n")
         else:
             fh.write("level_loudest_db\t(nothing measured)\n")
         fh.write(f"confidence_threshold\t{ac.confidence_threshold}\n")
@@ -3560,6 +3673,7 @@ class PlayingScreen:
         again and the strikes stamped while the picture stood still are
         dropped, because they belong to no moment in the song.
         """
+        self._auto_gate_from_room()
         if self._audio_capture is None or self._matcher is None:
             self._start_audio()
             return
@@ -3582,6 +3696,8 @@ class PlayingScreen:
             # strike after that is stamped further into the future.
             self._audio_capture.stop()
             self._audio_capture.start()
+            # The count-in has just been listened to; that is the room.
+            self._auto_gate_from_room()
             # A fresh stream restarts the sample counter, so the two clocks
             # agree here by construction.
             self._audio_anchor_ms = 0.0

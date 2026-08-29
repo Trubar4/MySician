@@ -11,6 +11,7 @@ from pickhero.config import MAX_GATE_DB, MIN_GATE_DB, Config
 from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
 from pickhero.ui.scrolling import (
     MIN_NOTE_WIDTH_PX,
+    ROOM_SAMPLES,
     PlayingScreen,
     format_time,
     gate_band,
@@ -2169,6 +2170,9 @@ class TestLevelAdvice:
         screen._noise_gate_db = gate
         screen._signal_peak_db = peak
         screen._signal_floor_db = floor
+        # The advice is the MANUAL path: with the automatic gate on there is
+        # no key to press, and the app does it. See TestTheAutomaticGate.
+        screen._auto_gate = False
         return screen
 
     def test_a_healthy_level_says_nothing(self):
@@ -2255,6 +2259,7 @@ class TestTheAdviceCannotContradictItself:
         screen._signal_peak_db = peak
         screen._signal_floor_db = floor
         screen._noise_gate_db = gate
+        screen._auto_gate = False
         return screen._level_advice()
 
     def _follow(self, peak, floor, gate):
@@ -2314,6 +2319,145 @@ class TestTheAdviceCannotContradictItself:
             screen.handle_event(
                 pygame.event.Event(pygame.KEYDOWN, key=pygame.K_x, mod=0))
         assert screen._noise_gate_db == MIN_GATE_DB
+
+
+
+class TestTheAutomaticGate:
+    """The gate sets itself from the room, and only ever comes down.
+
+    Swept over four real play-along takes (tools/sweep_noise_gate.py): every
+    gate from -80 dB up to the knee reads exactly the same notes, and the knee
+    itself moves 15 dB between takes -- -55 dB on one, -40 dB on another --
+    because it follows the interface gain, which the player cannot see. So
+    there is no optimum to hunt for, only a ceiling to stay under, and a
+    ceiling that moves is exactly what a person cannot be asked to track.
+    """
+
+    def _screen(self, gate=-60.0, auto=True):
+        config = Config()
+        config.audio.noise_gate_db = gate
+        config.audio.auto_gate = auto
+        screen = PlayingScreen(_make_timeline(), config=config)
+        screen._noise_gate_db = gate
+        return screen
+
+    def _hear_room(self, screen, db, frames=ROOM_SAMPLES):
+        screen._playing = False
+        for _ in range(frames):
+            screen._track_levels(db)
+
+    def test_the_room_is_what_it_hears_while_the_song_is_not_running(self):
+        screen = self._screen()
+        self._hear_room(screen, -70.0)
+        assert screen.room_db() == pytest.approx(-70.0)
+
+    def test_the_count_in_counts_as_room(self):
+        """The song is not running and the player is not meant to be playing:
+        the longest clean window a run ever offers."""
+        screen = self._screen()
+        screen._playing = True
+        screen._playback_ms = -2000.0
+        for _ in range(ROOM_SAMPLES):
+            screen._track_levels(-72.0)
+        assert screen.room_db() == pytest.approx(-72.0)
+
+    def test_playing_is_never_mistaken_for_room(self):
+        screen = self._screen()
+        screen._playing = True
+        screen._playback_ms = 100.0
+        for _ in range(ROOM_SAMPLES * 2):
+            screen._track_levels(-12.0)
+        assert screen.room_db() is None
+
+    def test_too_little_heard_is_no_answer(self):
+        """Better no gate than one set from four frames of silence."""
+        screen = self._screen()
+        self._hear_room(screen, -70.0, frames=ROOM_SAMPLES - 1)
+        assert screen.room_db() is None
+
+    def test_a_quiet_room_gets_a_gate_under_it(self):
+        screen = self._screen(gate=-30.0)
+        self._hear_room(screen, -70.0)
+        screen._auto_gate_from_room()
+        assert screen._noise_gate_db == -64.0
+
+    def test_a_loud_room_does_not_lift_the_gate_past_the_ceiling(self):
+        """A gate over the playing costs the strikes themselves; room noise
+        costs spurious onsets the confidence filter already throws away."""
+        screen = self._screen()
+        self._hear_room(screen, -20.0)
+        screen._auto_gate_from_room()
+        assert screen._noise_gate_db == MAX_GATE_DB
+
+    def test_it_does_nothing_when_switched_off(self):
+        screen = self._screen(gate=-30.0, auto=False)
+        self._hear_room(screen, -70.0)
+        screen._auto_gate_from_room()
+        assert screen._noise_gate_db == -30.0
+
+    def test_a_gate_inside_the_playing_is_lowered(self):
+        screen = self._screen(gate=-30.0)
+        screen._playing = True
+        screen._playback_ms = 100.0
+        screen._track_levels(-4.0)
+        assert screen._noise_gate_db == MAX_GATE_DB
+
+    def test_it_is_never_raised_while_a_song_runs(self):
+        """Raising it mid-song can only delete strikes, and a strike that
+        never arrives cannot be recovered by anything downstream."""
+        screen = self._screen(gate=-75.0)
+        screen._playing = True
+        screen._playback_ms = 100.0
+        for db in (-4.0, -20.0, -60.0, -8.0):
+            screen._track_levels(db)
+        assert screen._noise_gate_db == -75.0
+
+    def test_it_settles_and_cannot_flap(self):
+        """The loudest heard only rises, so the level it demands only rises:
+        once satisfied this can never fire again."""
+        screen = self._screen(gate=-30.0)
+        screen._playing = True
+        screen._playback_ms = 100.0
+        seen = [screen._noise_gate_db]
+        for db in (-4.0, -35.0, -12.0, -50.0, -6.0, -41.0):
+            screen._track_levels(db)
+            seen.append(screen._noise_gate_db)
+        assert seen == sorted(seen, reverse=True)      # never goes back up
+        assert len(set(seen)) == 2                     # one change, then still
+        assert seen[1:] == [MAX_GATE_DB] * 6           # and it settled at once
+
+    def test_a_signal_too_weak_to_judge_moves_nothing(self):
+        """Below the detector's own limit the fault is the interface's gain,
+        which _level_advice names and no gate can fix."""
+        screen = self._screen(gate=-45.0)
+        screen._playing = True
+        screen._playback_ms = 100.0
+        screen._track_levels(-55.0)
+        assert screen._noise_gate_db == -45.0
+
+    def test_pressing_a_key_takes_the_gate_by_hand(self):
+        """An automatic that silently undoes the next song what you just set
+        is worse than one that was never offered."""
+        screen = self._screen()
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, key=pygame.K_x, mod=0))
+        assert not screen._auto_gate
+        assert not screen._config.audio.auto_gate
+
+    def test_and_the_advice_says_nothing_while_it_is_automatic(self):
+        """It would name a key the app is already pressing for you."""
+        screen = self._screen()
+        screen._playing = True
+        screen._signal_peak_db = -20.0
+        screen._signal_floor_db = -58.0
+        assert screen._level_advice() == ""
+
+    def test_but_the_gain_is_still_the_players_job(self):
+        screen = self._screen()
+        screen._playing = True
+        screen._signal_peak_db = -2.0
+        screen._signal_floor_db = -70.0
+        assert "Too loud" in screen._level_advice()
 
 
 class TestTopRightHudDoesNotOverlap:

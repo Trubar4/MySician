@@ -307,6 +307,45 @@ not" and had nothing to do with either.
   prints the same number next to `level_under_gate_percent` — a percentage of discarded audio is only readable beside the value that would
   not have discarded it.
 
+## The Gate Sets Itself, And Only Ever Downwards
+
+"Can we build it so the gate adjusts itself?" Yes — but the measurement changed what it should adjust TO. Swept over the four real play-along
+takes (`tools/sweep_noise_gate.py`, alignment and tempo fitted ONCE at -80 dB so a gate that deletes strikes cannot also choose the grid it is
+judged against):
+
+| gate | 20260824 | 20260818 | 20260819a | 20260819b |
+|---|---|---|---|---|
+| -80 … -55 dB | 43/62 | 42/62 | 27/62 | 44/62 |
+| -50 dB | 43 | 40 | 27 | 41 |
+| -40 dB | 42 | 41 | 27 | 35 |
+| -30 dB | 39 | 24 | 12 | 16 |
+| **-20 dB** | **24** | **0** | **0** | **0** |
+
+**The response is flat across the whole safe range and then falls off a cliff**, and at -20 dB three of the four takes produce literally
+nothing. So there is no optimum to hunt for — only a ceiling to stay under, which means a controller that hunts up and down is optimising
+something with no gradient and can only do harm on the way up.
+
+**The knee moves 15 dB between takes** — -55 dB on one, -40 dB on another — because it follows the interface gain, which is a knob on a box
+the app cannot see. That is what makes this worth automating: not that the right value is hard to compute, but that it is different every
+session and the player has no way to know it. And a gate costs nothing to keep low: a fully processed hop is **0.23 ms of its 11.6 ms**, so
+there is no work being saved by discarding audio either.
+
+- **The room is what the microphone hears while the song is NOT running**, including the count-in — the longest clean window a run offers,
+  since the player is not meant to be playing yet. `gate = room + NOISE_MARGIN_DB`, capped at `MAX_GATE_DB`.
+- **A low percentile of the PLAYING is not the room, and that was wrong for a day.** The run log estimated it as the quietest 2 % of the level
+  samples. Measured across one session's takes, that percentile runs from **-35 dB on a dense passage to -94 dB on a sparse one**, against a
+  recorded room of -73: it reports how busy the playing was. The log now prints the measured room or says `(nicht gemessen)`, and without one
+  it suggests no gate at all.
+- **Derived every song, not accumulated.** A value that only ever walks one way ends up wherever the last session left it.
+- **Mid-song it can only ever come DOWN.** `_loudest_db` only rises, so the level it demands only rises with it: once satisfied the correction
+  can never fire again, and it cannot flap the way the ADVICE it replaces did. Raising it mid-song could only delete strikes, and a strike that
+  never arrives cannot be recovered by anything downstream.
+- **Verified against the sweep it came from**: the rule picks -64, -78, -63 and -80 dB on the four takes and scores **43, 42, 27 and 44** —
+  the best value in the entire sweep, on every take, not one note lost. `sweep_noise_gate.py` exits non-zero if that ever stops being true.
+- **X or C switch the automatic off**, and so does the settings screen's own gate row. An automatic that silently undoes what you just set by
+  hand is worse than one that was never offered. With it on, `_level_advice` says nothing about the gate at all — it would be naming a key the
+  app is already pressing for you — and what is left there is the interface's GAIN, which no gate can fix and only a hand on the knob can.
+
 ## Ringing Strings Defeat Detection
 
 Measured with one note per string at a time (a new note on a string physically stops the old one — a summed test that lets both ring is
