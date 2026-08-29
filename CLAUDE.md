@@ -442,6 +442,25 @@ already existed, so there is no second loader and a fix for one generation is a 
 - **`list_tracks` reads GPIF too.** Without it the track picker was empty for every GP6/7/8 file, because the caller asked the GP3-5 parser,
   the exception was swallowed, and "no tracks" looks like a song with one track rather than like a format nobody read.
 
+## Seven Strings On A Six-String App
+
+Metal is written for seven and eight strings and this app plays six. The usual answer is "you need a seven-string"; the honest one is that the
+notes usually fit anyway, because a seven-string in B standard and a six-string in **drop B share their lowest note**. `tools/retune.py`
+rewrites the tab: every note keeps its exact MIDI pitch and only its string and fret change, which is arithmetic rather than arrangement.
+
+Measured on the file that prompted it (I Prevail, "Blank Space", a real seven-string tab): both rhythm guitars, **1179 and 1884 notes, every
+one of them fits**. The lead track loses four notes above the 24th fret and says which.
+
+- **The tool checks its own claim.** It compares the multiset of pitches before and after: anything missing must have been reported as out of
+  reach, and a pitch that appears where it did not before fails the run. A quietly transposed tab is worse than no tab.
+- **A beat is placed as a whole, never note by note.** Two notes of one chord landed on the same string — impossible on a guitar, and
+  undescribable in GP5: the played-strings byte has one bit per string, so one note is written and never read back and every byte after it is
+  garbage. **The file would not open at all**, which is how it was found; reason alone had not.
+- **A TIE has to follow the note it continues.** GP5 reconstructs a tied note's pitch from whatever that STRING was last playing, so a tie
+  left behind when its predecessor moved reads back as a different note — one came out an octave low. The old-to-new string mapping is carried
+  from beat to beat for exactly this.
+- **The notes of a beat are written in string order**, because that is the order the reader walks them in.
+
 ## Muting (palm mutes, dead notes)
 
 `NoteEvent.palm_mute` and `NoteEvent.dead` carry what the tab wrote; both come out of pyguitarpro AND out of the GP7 XML path, where they are

@@ -251,6 +251,21 @@ Sittings are merged by when they started and which song, so running it twice
 changes nothing the second time. Backups are left as `.bak`.
 
 
+## Seven-string tabs
+
+The app plays six strings. A seven-string tab usually fits anyway, because a
+seven-string in B standard and a six-string in drop B share their lowest note:
+
+```bash
+python tools/retune.py "song.gp5" --dry-run
+python tools/retune.py "song.gp5"            # writes "song (drop-b).gp5"
+python tools/retune.py "song.gp5" --tuning drop-a
+```
+
+Every note keeps its exact pitch — only the string and fret change. Notes above
+the 24th fret of the new tuning are dropped and named; the tool compares the
+pitches before and after and fails rather than hand over a transposed tab.
+
 ## Reading the display
 
 - Six lanes, one per string, high E on top. A note's colour is its string.
