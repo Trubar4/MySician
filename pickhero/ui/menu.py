@@ -58,6 +58,7 @@ class MenuScreen:
         # a thread and remembered between sessions. See tabs/song_index.py.
         self._index = SongIndex()
         self._tuning_filter: str = ""
+        self._favourites_only: bool = False
         self._search_text: str = ""
         self._search_active: bool = False
         self._filtered_files: list[Path] = []
@@ -105,6 +106,11 @@ class MenuScreen:
             ]
         else:
             self._filtered_files = list(self._files)
+        if self._favourites_only and self._config is not None:
+            self._filtered_files = [
+                p for p in self._filtered_files
+                if self._config.is_favourite(p.stem)
+            ]
         if self._tuning_filter:
             # A song still being indexed is kept OUT rather than shown: while
             # the filter is on, a row with no answer yet would look like an
@@ -201,6 +207,41 @@ class MenuScreen:
             parts.append("nothing changed")
         return "Reloaded: " + ", ".join(parts)
 
+    def _toggle_favourite(self) -> None:
+        """Star the selected song, or take the star off (M)."""
+        if self._config is None:
+            return
+        song = self._selected_path()
+        if song is None:
+            return
+        starred = not self._config.is_favourite(song.stem)
+        self._config.set_favourite(song.stem, starred)
+        self._config.save()
+        self._reload_note = (("Favourite: " if starred
+                              else "No longer a favourite: ") + song.stem[:40])
+        if self._favourites_only:
+            # It has just left the list it is being shown in, so the list has
+            # to be rebuilt and the cursor put somewhere that still exists.
+            self._apply_filter()
+            self._select_path(song)
+
+    def _toggle_favourites_only(self) -> None:
+        """Show only the starred songs, or all of them again (Shift+M).
+
+        Refuses when nothing is starred: a filter that empties the list looks
+        exactly like a list that has lost its songs.
+        """
+        if self._config is None:
+            return
+        if not self._favourites_only and not any(
+                self._config.is_favourite(p.stem) for p in self._files):
+            self._reload_note = "No favourites yet — M marks the selected song"
+            return
+        selected = self._selected_path()
+        self._favourites_only = not self._favourites_only
+        self._apply_filter()
+        self._select_path(selected)
+
     def _cycle_tuning_filter(self) -> None:
         """All songs -> each tuning in turn -> all songs again.
 
@@ -270,6 +311,16 @@ class MenuScreen:
                 self._search_active = True
                 self._search_text = ""
                 self._apply_filter()
+                return None
+
+            # M marks, Shift+M filters. A letter is fine here because it is
+            # only reached when the search box is closed -- and "merken" is
+            # what the player calls it.
+            if event.key == pygame.K_m and not self._search_active:
+                if event.mod & pygame.KMOD_SHIFT:
+                    self._toggle_favourites_only()
+                else:
+                    self._toggle_favourite()
                 return None
 
             # TAB steps through the tunings the folder actually contains,
@@ -409,6 +460,10 @@ class MenuScreen:
         if self._reload_note:
             note_surf = hint_font.render(self._reload_note, True, t.hud_accent)
             surface.blit(note_surf, (box.right + 12, box.y + 6))
+        elif self._favourites_only:
+            label = f"* favourites — {len(files)} of {len(self._files)} songs"
+            surface.blit(hint_font.render(label, True, t.hud_accent),
+                         (box.right + 12, box.y + 6))
         elif self._tuning_filter:
             # A filter nobody can see is a list that has lost songs. It says
             # what is being shown AND how many, next to the box that is the
@@ -439,6 +494,8 @@ class MenuScreen:
                 bits = []
                 if self._search_text:
                     bits.append(f'"{self._search_text}"')
+                if self._favourites_only:
+                    bits.append("favourites")
                 if self._tuning_filter:
                     bits.append(self._tuning_filter)
                 empty_msg = f"No songs match {' + '.join(bits)}" if bits else \
@@ -489,14 +546,24 @@ class MenuScreen:
                     surface.blit(sum_surf, (right, y + 8))
                     right -= 16
 
+                # The star sits LEFT of the name, in a column of its own, so
+                # the eye scans one edge instead of hunting along each row --
+                # and so a long title cannot push it off the screen.
+                star_w = 0
+                if self._config is not None and self._config.is_favourite(
+                        files[i].stem):
+                    star = item_font.render("*", True, t.hud_accent)
+                    surface.blit(star, (list_left, y + 4))
+                    star_w = star.get_width() + 6
+
                 # Show relative path for subfolder files, just name for root
                 rel = files[i].relative_to(self._songs_dir)
                 label = str(rel) if len(rel.parts) > 1 else files[i].name
-                room = max(40, right - list_left)
+                room = max(40, right - list_left - star_w)
                 while label and item_font.size(label)[0] > room:
                     label = label[:-1]
                 text_surf = item_font.render(label, True, color)
-                surface.blit(text_surf, (list_left, y + 4))
+                surface.blit(text_surf, (list_left + star_w, y + 4))
 
             # Scroll indicators
             if self._scroll_offset > 0:
@@ -523,7 +590,8 @@ class MenuScreen:
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"
-            hint = f"F or /: search  |  TAB: tuning ({tune_label})  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  G: calibrate  |  T: theme  |  ESC: quit"
+            fav = "on" if self._favourites_only else "off"
+            hint = f"F or /: search  |  M: favourite (Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  G: calibrate  |  T: theme  |  ESC: quit"
         hint_surf = hint_font.render(hint, True, t.hud_text)
         surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
 

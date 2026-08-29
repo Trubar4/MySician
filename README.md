@@ -217,7 +217,7 @@ Every key is also listed in the app's own footer, and explained under **H**.
 | `F` | fret limit · `F1`–`F6` mute a string |
 | `T` | theme · `H` help · `ESC` song list |
 
-On the song list: `F` or `/` searches, `TAB` filters by tuning, `F5` reloads the list after copying a file in, `O` opens the settings screen — everything that is set once (device, noise gate, hit window, fret limit, muted strings, chord scoring, backing tracks, theme), with anything away from its standard value marked.
+On the song list: `F` or `/` searches, `M` stars a song and `Shift+M` shows only the starred ones, `TAB` filters by tuning, `F5` reloads the list after copying a file in, `O` opens the settings screen — everything that is set once (device, noise gate, hit window, fret limit, muted strings, chord scoring, backing tracks, theme), with anything away from its standard value marked.
 
 ## Practice diary
 
@@ -249,6 +249,12 @@ python tools/merge_stats.py --from D:/pickhero-vom-notebook
 
 Sittings are merged by when they started and which song, so running it twice
 changes nothing the second time. Backups are left as `.bak`.
+
+It also brings the **per-song settings** across — practice speed, backing
+track, both offsets and the favourites — and deliberately leaves the audio
+device, the calibration and the latency offset alone: those describe an
+interface and a sound card, not a player. Anything the receiving machine
+already has wins.
 
 
 ## Seven-string tabs

@@ -109,10 +109,28 @@ class Config:
     song_mp3_offsets: dict = field(default_factory=dict)
     wait_mode: bool = False
     sort_mode: str = "name_asc"
+    # Song keys the player has starred. A list rather than a set because it
+    # has to survive a trip through JSON, and in the order they were added --
+    # which is a small record of what was being worked on when.
+    favourites: list = field(default_factory=list)
     calibration: dict = field(default_factory=dict)
 
     # Store default for HUD comparison (not serialized)
     _default_chord_partial_credit: bool = field(default=True, repr=False)
+
+    def is_favourite(self, song_key: str) -> bool:
+        return song_key in (self.favourites or [])
+
+    def set_favourite(self, song_key: str, favourite: bool) -> None:
+        """Star a song, or take the star off. Idempotent either way."""
+        if not song_key:
+            return
+        if self.favourites is None:
+            self.favourites = []
+        if favourite and song_key not in self.favourites:
+            self.favourites.append(song_key)
+        elif not favourite and song_key in self.favourites:
+            self.favourites.remove(song_key)
 
     def tempo_factor_for(self, song_key: str) -> float:
         """The speed this song was last practised at, or full speed."""

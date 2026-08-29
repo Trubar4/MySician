@@ -22,6 +22,13 @@ a history that doubles is worse than one that is missing:
   the two records wins, whole, with its own history. `attempts` is the
   larger of the two rather than the sum: a sum cannot be done twice safely,
   and the honest count of sittings is in the practice log anyway.
+- `settings.json` is merged **selectively, and that is the whole point.**
+  What belongs to the SONG comes across -- its practice speed, its backing
+  track and both offsets, and the favourites. What belongs to the MACHINE
+  must not: the audio device index, the calibration and the latency offset
+  describe an interface and a sound card, and carrying them over would break
+  the other computer's input while looking like a settings problem. Copying
+  the whole file is the obvious move and the wrong one.
 
 A backup of anything changed is written next to it as `.bak` first.
 """
@@ -85,6 +92,49 @@ def merge_progress(mine: dict, theirs: dict) -> tuple[dict, list[str]]:
     return out, improved
 
 
+# The per-song settings, and nothing else. Everything absent from this list
+# stays as the receiving machine has it -- see the module docstring.
+SONG_SETTINGS = ("song_tempo_factors", "song_mp3_paths", "song_mp3_offsets",
+                 "song_backing_offsets")
+
+
+def merge_settings(mine: dict, theirs: dict) -> tuple[dict, list[str]]:
+    """(merged, what changed). Per-song entries and favourites only.
+
+    An entry this machine already has WINS. It was set here, on this
+    instrument, in this room -- and a sync that silently overwrites what you
+    just adjusted is worse than no sync.
+    """
+    out = dict(mine)
+    changed = []
+    for field in SONG_SETTINGS:
+        ours = dict(out.get(field) or {})
+        added = 0
+        for song, value in (theirs.get(field) or {}).items():
+            if song not in ours:
+                ours[song] = value
+                added += 1
+        if added:
+            out[field] = ours
+            changed.append(f"{field}: {added} Songs dazu")
+    stars = list(out.get("favourites") or [])
+    new_stars = [s for s in (theirs.get("favourites") or []) if s not in stars]
+    if new_stars:
+        out["favourites"] = stars + new_stars
+        changed.append(f"favourites: {len(new_stars)} dazu")
+    return out, changed
+
+
+def _read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _read_progress(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -133,6 +183,10 @@ def main() -> int:
     my_progress = _read_progress(target / "progress.json")
     progress, improved = merge_progress(my_progress, their_progress)
 
+    my_settings = _read_json(target / "settings.json")
+    settings, setting_changes = merge_settings(
+        my_settings, _read_json(source / "settings.json"))
+
     print(f"Von:  {source}")
     print(f"Nach: {target}")
     print()
@@ -148,10 +202,18 @@ def main() -> int:
     if len(improved) > 10:
         print(f"   ... und {len(improved) - 10} weitere")
 
+    if setting_changes:
+        print()
+        print("Einstellungen pro Song:")
+        for line in setting_changes:
+            print(f"   {line}")
+        print("   (Audiogeraet, Kalibrierung und Latenz bleiben, wie sie hier "
+              "sind — die gehoeren zum Rechner)")
+
     if args.dry_run:
         print("\n--dry-run: nichts geschrieben.")
         return 0
-    if not added and not improved:
+    if not added and not improved and not setting_changes:
         print("\nNichts Neues - die Dateien bleiben, wie sie sind.")
         return 0
 
@@ -165,6 +227,11 @@ def main() -> int:
         _backup(target / "progress.json")
         (target / "progress.json").write_text(
             json.dumps(progress, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+    if setting_changes:
+        _backup(target / "settings.json")
+        (target / "settings.json").write_text(
+            json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
     print("\nZusammengefuehrt. Sicherungskopien liegen als .bak daneben.")
     print("Dashboard neu bauen:  python tools/make_dashboard.py --open")

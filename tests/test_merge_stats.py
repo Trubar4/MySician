@@ -25,9 +25,11 @@ def _session(started, song="solo", seconds=600.0, strikes=100, **kw):
                    strikes=strikes, tempo_percent=100, **kw)
 
 
-def _folder(tmp_path, name, sessions=(), progress=None):
+def _folder(tmp_path, name, sessions=(), progress=None, settings=None):
     folder = tmp_path / name
     folder.mkdir()
+    if settings is not None:
+        (folder / "settings.json").write_text(json.dumps(settings))
     for session in sessions:
         practice_log.append(session, folder / "practice_log.jsonl")
     if progress is not None:
@@ -171,3 +173,81 @@ class TestDoingItTwice:
         target = _folder(tmp_path, "home", [_session("2026-08-24T10:00:00")])
         assert self._run(tmp_path, monkeypatch, target, target) == 1
         assert "derselbe Ordner" in capsys.readouterr().out
+
+
+class TestTheSettingsThatBelongToTheSONG:
+    """The per-song settings live in settings.json, which this did not touch
+    at all -- so the practice speed, the backing track and both offsets were
+    left behind on the other machine."""
+
+    def test_a_song_only_set_up_over_there_comes_across(self):
+        merged, changed = merge_stats.merge_settings(
+            {"song_tempo_factors": {"a": 0.8}},
+            {"song_tempo_factors": {"b": 0.7}})
+        assert merged["song_tempo_factors"] == {"a": 0.8, "b": 0.7}
+        assert changed
+
+    def test_what_this_machine_already_has_wins(self):
+        """It was set HERE, on this instrument, in this room. A sync that
+        silently overwrites what you just adjusted is worse than no sync."""
+        merged, _ = merge_stats.merge_settings(
+            {"song_tempo_factors": {"a": 0.8}},
+            {"song_tempo_factors": {"a": 0.5}})
+        assert merged["song_tempo_factors"]["a"] == 0.8
+
+    def test_all_four_per_song_settings_travel(self):
+        theirs = {f: {"song": "x"} for f in merge_stats.SONG_SETTINGS}
+        merged, _ = merge_stats.merge_settings({}, theirs)
+        for field in merge_stats.SONG_SETTINGS:
+            assert merged[field] == {"song": "x"}, field
+
+    def test_favourites_are_added_never_removed(self):
+        merged, _ = merge_stats.merge_settings(
+            {"favourites": ["a", "b"]}, {"favourites": ["b", "c"]})
+        assert merged["favourites"] == ["a", "b", "c"]
+
+    def test_what_belongs_to_the_MACHINE_stays_put(self):
+        """The device index, the calibration and the latency offset describe
+        an interface and a sound card. Carrying them over would break the
+        other computer's input while looking like a settings problem."""
+        mine = {"audio": {"device_index": 7}, "calibration": {"1": 82.4},
+                "audio_latency_offset_ms": -220.0, "theme": "dark"}
+        merged, _ = merge_stats.merge_settings(mine, {
+            "audio": {"device_index": 3}, "calibration": {"1": 99.9},
+            "audio_latency_offset_ms": 0.0, "theme": "light"})
+        assert merged["audio"]["device_index"] == 7
+        assert merged["calibration"] == {"1": 82.4}
+        assert merged["audio_latency_offset_ms"] == -220.0
+        assert merged["theme"] == "dark"
+
+    def test_nothing_new_reports_nothing(self):
+        merged, changed = merge_stats.merge_settings(
+            {"favourites": ["a"]}, {"favourites": ["a"]})
+        assert changed == []
+
+    def test_a_second_merge_changes_nothing(self, tmp_path, monkeypatch, capsys):
+        source = _folder(tmp_path, "stick",
+                         settings={"song_tempo_factors": {"b": 0.7},
+                                   "favourites": ["b"]})
+        target = _folder(tmp_path, "home",
+                         settings={"song_tempo_factors": {"a": 0.8},
+                                   "favourites": ["a"], "theme": "dark"})
+        argv = ["x", "--from", str(source), "--into", str(target)]
+        monkeypatch.setattr(sys, "argv", argv)
+        assert merge_stats.main() == 0
+        after = (target / "settings.json").read_text()
+        capsys.readouterr()
+        assert merge_stats.main() == 0
+        assert (target / "settings.json").read_text() == after
+        assert "Nichts Neues" in capsys.readouterr().out
+
+    def test_the_settings_really_land_on_disk(self, tmp_path, monkeypatch):
+        source = _folder(tmp_path, "stick",
+                         settings={"song_mp3_offsets": {"solo": -1200.0}})
+        target = _folder(tmp_path, "home", settings={"theme": "dark"})
+        monkeypatch.setattr(sys, "argv",
+                            ["x", "--from", str(source), "--into", str(target)])
+        merge_stats.main()
+        got = json.loads((target / "settings.json").read_text())
+        assert got["song_mp3_offsets"]["solo"] == -1200.0
+        assert got["theme"] == "dark"

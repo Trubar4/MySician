@@ -715,6 +715,11 @@ other half: one line of JSON per session, appended, never rewritten, read by `to
   twice. `progress.json` is a high score, not a statistic: the better record wins WHOLE (mixing one run's hits with another's accuracy
   describes a run that never happened) and `attempts` takes the larger rather than the sum, because a sum is exactly what cannot be done
   twice — the honest count of sittings is in the practice log.
+- **What a sync must NOT carry is the interesting half.** `merge_stats.py` brings the per-song settings across — practice speed, backing
+  track, both offsets, favourites — and deliberately leaves the audio device index, the calibration and the latency offset alone. Those
+  describe an interface and a sound card, not a player; copying the whole `settings.json` is the obvious move and would break the other
+  machine's input while looking like a settings problem. An entry the receiving machine already has always wins: it was set there, on that
+  instrument, and a sync that silently overwrites what you just adjusted is worse than no sync.
 - **A song name lands inside a `<script>` tag**, and a song called `</script>` closes it. The embedded JSON escapes `<` and `>`; the test that
   found that is the reason it is written down here.
 

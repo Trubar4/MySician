@@ -121,3 +121,95 @@ class TestTheKey:
         assert menu._reload_note
         menu.handle_event(_key(pygame.K_DOWN))
         assert menu._reload_note == ""
+
+
+def _shift(key):
+    return pygame.event.Event(pygame.KEYDOWN, key=key, unicode="",
+                              mod=pygame.KMOD_LSHIFT)
+
+
+class TestFavourites:
+    """M marks, Shift+M shows only the marked ones."""
+
+    def test_m_stars_the_selected_song(self, menu):
+        song = menu._display_files[menu._selected]
+        menu.handle_event(_key(pygame.K_m))
+        assert menu._config.is_favourite(song.stem)
+
+    def test_m_again_takes_the_star_off(self, menu):
+        song = menu._display_files[menu._selected]
+        menu.handle_event(_key(pygame.K_m))
+        menu.handle_event(_key(pygame.K_m))
+        assert not menu._config.is_favourite(song.stem)
+
+    def test_it_says_which_song_it_starred(self, menu):
+        """A key that looks dead is a key nobody presses twice."""
+        menu.handle_event(_key(pygame.K_m))
+        assert "Favourite" in menu._reload_note
+
+    def test_the_star_survives_the_session(self, menu):
+        menu.handle_event(_key(pygame.K_m))
+        assert menu._config.favourites          # written into the config
+
+    def test_typing_m_into_the_search_does_not_star_anything(self, menu):
+        """The search box owns every letter the moment it is open."""
+        menu.handle_event(_key(pygame.K_f))
+        menu.handle_event(_typed("m"))
+        assert menu._config.favourites == []
+        assert menu._search_text == "m"
+
+
+class TestTheFavouritesFilter:
+    def _star(self, menu, *stems):
+        for stem in stems:
+            menu._config.set_favourite(stem, True)
+        menu._apply_filter()
+
+    def test_shift_m_shows_only_the_starred_ones(self, menu):
+        self._star(menu, "alpha", "charlie")
+        menu.handle_event(_shift(pygame.K_m))
+        assert {p.stem for p in menu._display_files} == {"alpha", "charlie"}
+
+    def test_shift_m_again_shows_them_all(self, menu):
+        self._star(menu, "alpha")
+        menu.handle_event(_shift(pygame.K_m))
+        menu.handle_event(_shift(pygame.K_m))
+        assert len(menu._display_files) == 3
+
+    def test_it_refuses_when_nothing_is_starred(self, menu):
+        """A filter that empties the list looks exactly like a list that has
+        lost its songs."""
+        menu.handle_event(_shift(pygame.K_m))
+        assert menu._favourites_only is False
+        assert len(menu._display_files) == 3
+        assert "No favourites" in menu._reload_note
+
+    def test_the_search_and_the_star_filter_both_apply(self, menu):
+        self._star(menu, "alpha", "bravo")
+        menu.handle_event(_shift(pygame.K_m))
+        menu.handle_event(_key(pygame.K_f))
+        for ch in "alp":
+            menu.handle_event(_typed(ch))
+        assert [p.stem for p in menu._display_files] == ["alpha"]
+
+    def test_unstarring_the_song_you_are_on_keeps_the_cursor_somewhere_real(
+            self, menu):
+        self._star(menu, "alpha", "bravo")
+        menu.handle_event(_shift(pygame.K_m))
+        menu.handle_event(_key(pygame.K_m))          # unstar the selected one
+        assert 0 <= menu._selected < max(1, len(menu._display_files))
+        assert len(menu._display_files) == 1
+
+    def test_the_cursor_stays_on_its_song_when_the_filter_goes_on(self, menu):
+        self._star(menu, "bravo", "charlie")
+        menu._selected = [p.stem for p in menu._display_files].index("charlie")
+        menu.handle_event(_shift(pygame.K_m))
+        assert menu._display_files[menu._selected].stem == "charlie"
+
+    def test_a_reload_does_not_lose_the_filter(self, menu, songs):
+        self._star(menu, "alpha")
+        menu.handle_event(_shift(pygame.K_m))
+        (songs / "delta.gp5").write_bytes(b"x")
+        menu.reload_files()
+        assert menu._favourites_only is True
+        assert [p.stem for p in menu._display_files] == ["alpha"]
