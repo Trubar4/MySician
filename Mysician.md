@@ -1,3 +1,6 @@
+
+python tools\merge_stats.py --from D:\pickhero-von-NB1 --into %USERPROFILE%\.pickhero
+
 ##Songs
 Billy Talent - Red Flag
 Three days Grace - I hate everything about you
