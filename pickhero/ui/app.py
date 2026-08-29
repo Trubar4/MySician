@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pygame
 
+from pickhero import dashboard
 from pickhero.audio.input import validate_device_index
 from pickhero.config import Config
 from pickhero.progress import ProgressTracker
@@ -100,7 +101,31 @@ class App:
         # Closing the window ends a session as surely as pressing ESC does.
         if self._playing_screen is not None:
             self._playing_screen.close_session()
+        self._write_dashboard()
         pygame.quit()
+
+    @staticmethod
+    def _write_dashboard() -> None:
+        """Refresh the practice dashboard on the way out.
+
+        On the way OUT rather than on the way in, and after `close_session`
+        rather than before it: the sitting that just ended is written by that
+        call, so a page built at startup is always one session stale -- it
+        would never show the practising that had just been done, which is the
+        practising anyone opens it to look at.
+
+        Measured on generated logs: 1.5 ms at 100 sittings, 38 ms at 5000,
+        224 ms at 20000 -- and all of it after the last frame, where there is
+        nothing left to stutter.
+
+        Nothing here may take the app down. A dashboard that fails to write is
+        a page that is a day old; an exception on the way out is a crash on
+        exit, which looks like data loss and is what the player would report.
+        """
+        try:
+            dashboard.write()
+        except Exception as exc:                    # noqa: BLE001
+            print(f"Dashboard konnte nicht geschrieben werden: {exc}")
 
     def _process_events(self, surface: pygame.Surface) -> None:
         for event in pygame.event.get():

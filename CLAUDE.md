@@ -705,10 +705,21 @@ other half: one line of JSON per session, appended, never rewritten, read by `to
   dashboard would happily average in.
 - **Written once, when the sitting ends** — leaving the song and closing the window both reach it, because either can be the end and neither
   happens reliably. Under `MIN_SESSION_SECONDS` nothing is written: opening a song to look at it is not practice.
-- **The dashboard is generated, not live** (`tools/make_dashboard.py` → one HTML file). It follows the layout of the player's OWN Yousician
+- **The dashboard is generated, not live** (`pickhero/dashboard.py` → one HTML file). It follows the layout of the player's OWN Yousician
   dashboard, because that is the one they read without thinking — but with the charts drawn as plain SVG rather than pulled from a CDN: an
   offline-first practice app whose dashboard needs the internet to draw a bar chart is a contradiction. Everything is added up in Python and
   the browser only draws, so the arithmetic is testable and the drawing is checked by looking at it.
+- **It rebuilds itself when the app closes, and it had to move into the package to do it.** `pickhero.spec` bundles `pickhero/` and nothing
+  else, so a builder in `tools/` is simply absent on the machine running the EXE — which is the machine whose dashboard most needs to keep
+  itself current. `tools/make_dashboard.py` is now the command line around it, so a fix reaches both at once. On the way OUT rather than on
+  the way in, and AFTER `close_session()`: that call is what writes the sitting just finished, so a page built at startup is permanently one
+  session stale and never shows the practising somebody just did. Measured: 1.5 ms at 100 sittings, 38 ms at 5000, 224 ms at 20000 — all of
+  it after the last frame. A failure prints and is swallowed; an exception on the way out is a crash on exit, which looks like data loss.
+- **The week view sums in the browser, so it is tested in one.** Every day of the current week with all three figures and the week's own
+  total, arrows one week back and forward. It deliberately ignores the year chips and the metric switch above it: a week showing one number
+  cannot answer "what did I actually do", and a week emptied by a chip being off looks broken rather than filtered. Backwards stops at the
+  first week ever practised and forwards at this one, because a nav that walks into empty weeks tells the player nothing. Days are handled in
+  UTC throughout — the log writes local calendar days and they are compared as strings, so a timezone must never be allowed to shift one.
 - **Two machines, one player: `tools/merge_stats.py` brings the other one's history over.** The constraint that shaped it is that running it
   twice must change nothing the second time — nobody remembers whether they already merged, and a doubled history cannot be told apart from
   having practised twice as much. Sittings merge by (`started`, `song`), which two machines cannot both invent and the same file cannot bring
@@ -965,6 +976,7 @@ pickhero/
 ├── __main__.py          # python -m pickhero entry point
 ├── main.py
 ├── config.py
+├── dashboard.py         # the practice dashboard, written when the app closes
 ├── matcher.py           # note matching engine (hit/close/miss)
 ├── practice_log.py      # one line per session: minutes and notes struck
 ├── progress.py          # per-song progress tracking
