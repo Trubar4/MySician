@@ -266,6 +266,47 @@ stops, so the completion screen used to report a level fault that was not there.
 strikes arriving with the wrong pitch. With the input turned up (`level_loudest_db` -10.2, median while playing -23.1) the same player,
 same song, same code: **98.4 %, 61 of 62**, 45 timing samples, nothing ambiguous. The level was the whole of it.
 
+## The Advice Was Telling Them To Press Two Keys That Undo Each Other
+
+"It always shows me C and then X again. I am playing too quietly and too loudly." Both halves of that were true, and neither was about the
+playing. `_level_advice` had two rules naming opposite keys — "barely above the gate, press X" (X lowers the gate 5 dB) and "background noise
+reaches the gate, press C" (C raises it) — and a gate satisfying both needs `peak - floor >= QUIET_MARGIN_DB + NOISE_MARGIN_DB`, **18 dB**.
+The tracked peak decays 3 dB/s and the floor recovers upward at the same rate, so between strikes a distorted rock signal is well inside 18 dB
+and **no gate value exists**. Simulated over the player's own numbers: `X C X C X C…`, for ever.
+
+C had no bound and the ceiling was **-20 dB**, so following the advice ratcheted the gate to the top in eight presses. What that cost, measured
+on their run of a real song (1384 notes, 549 picks):
+
+| | |
+|---|---|
+| audio discarded by the gate | **40 %** (8 % at -30 dB) |
+| loudest hop / median while playing | -3.8 dB / -18.4 dB — the gate sat **1.6 dB under the median** |
+| picks that produced a strike at all | 377 of 549 |
+| **single-note picks heard** | **153 / 282 — 54 %** |
+| **chord picks heard** | **224 / 267 — 84 %** |
+| notes credited | 831 / 1384 — 60 % |
+
+**The gate was set for the loudest thing in the song and it deleted the quietest.** Section by section the hit rate simply follows how many
+strikes arrived: the clean single-note verses ran 0.39-0.56 strikes per pick and scored 11-30 %, the distorted chorus 0.78-1.07 and scored
+55-89 %. A six-string strum survives a gate that a single clean note cannot reach, which is why the score looked like "chords work, solos do
+not" and had nothing to do with either.
+
+- **The gate has a band, and the band can be empty.** `gate_band()` returns above-the-room and below-the-playing, and `lowest > highest` is a
+  real state — a hot, compressed signal has less than 18 dB to put a gate in. It has to be a state the advice can EXPRESS; being unable to say
+  it is what made the panel ask for both keys.
+- **When no gate satisfies both, the notes win.** A gate under the room costs spurious onsets, which the confidence filter and the candidate
+  search already throw away. A gate over the playing costs the strikes themselves, and a strike that never arrives cannot be recovered by
+  anything downstream. So X fires while the gate is above the band and C only while a real band exists to raise it INTO.
+- **The property is asserted, not the wording.** Press whatever key the advice names, from any gate, over a grid of levels: it always stops,
+  and never reverses direction. That is the thing that was broken; the sentence was only how it showed.
+- **The ceiling is where the DETECTOR gives up** (`MAX_GATE_DB`, -50 dB). At a -44 dB loudest hop the pitch still comes back right 83 % of the
+  time — see the table above — so there is nothing to be won by gating away audio that could still have been read. One clamp, in
+  `set_noise_gate_db`, so the keys, the settings screen and a saved file all land in the same range; a stored gate above the ceiling is
+  repaired on load, because it was only reachable through the bug.
+- **The advice names the value to reach**, not just the key. `suggested_gate_db` puts it on the 5 dB grid the keys move in, and the run log
+  prints the same number next to `level_under_gate_percent` — a percentage of discarded audio is only readable beside the value that would
+  not have discarded it.
+
 ## Ringing Strings Defeat Detection
 
 Measured with one note per string at a time (a new note on a string physically stops the old one — a summed test that lets both ring is

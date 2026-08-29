@@ -7,6 +7,7 @@ to a playback clock. Optionally captures audio and shows hit/miss feedback.
 from __future__ import annotations
 
 import functools
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -18,7 +19,8 @@ from pickhero.audio.midi_playback import BackingTrack, MidiPlayer
 from pickhero.audio.mp3_playback import Mp3Player, pick_audio_file
 from pickhero.audio import timestretch
 from pickhero import config as config_module
-from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
+from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
+                             MIN_GATE_DB, Config)
 from pickhero.matcher import (FINE_MS, STRING_MIN_SAMPLES, MatchType,
                               NoteMatcher)
 from pickhero import practice_log
@@ -261,6 +263,42 @@ QUIET_MARGIN_DB = 12.0
 # How far the quietest moment must stay UNDER the gate before background hum
 # starts firing onsets of its own.
 NOISE_MARGIN_DB = 6.0
+
+
+def gate_band(peak: float, floor: float) -> tuple[float, float]:
+    """The window a noise gate may sit in, as (lowest, highest).
+
+    Above the room by NOISE_MARGIN_DB so hum does not fire onsets of its own,
+    and below the playing by QUIET_MARGIN_DB so a decaying note survives --
+    capped by `MAX_GATE_DB`, which is the level at which the DETECTOR gives
+    up and therefore the point past which gating wins nothing.
+
+    The band can be EMPTY (lowest > highest) and that is a real state, not an
+    error: a hot, compressed signal has less than NOISE_MARGIN_DB +
+    QUIET_MARGIN_DB of range to put a gate in. It has to be a state the
+    advice can express, because for one cycle it was not -- the two pieces of
+    advice named keys that undo each other, and with no gate able to satisfy
+    both, the panel asked for X, then C, then X for ever. Which is what the
+    player saw, and they pressed C until the gate reached the old ceiling and
+    the clean half of the song stopped being heard.
+    """
+    return floor + NOISE_MARGIN_DB, min(peak - QUIET_MARGIN_DB, MAX_GATE_DB)
+
+
+def suggested_gate_db(peak: float, floor: float) -> float:
+    """A gate inside the band, on the 5 dB grid the X and C keys move in.
+
+    As LOW in the band as still clears the room: the two failures are not
+    each other's equals. A gate under the room costs spurious onsets, which
+    the confidence filter and the matcher's candidate search already throw
+    away; a gate over the playing costs the strikes themselves, and a strike
+    that never arrives cannot be recovered by anything downstream.
+    """
+    lowest, highest = gate_band(peak, floor)
+    target = math.ceil(lowest / 5.0) * 5.0
+    if target > highest:
+        target = math.floor(highest / 5.0) * 5.0
+    return max(MIN_GATE_DB, min(MAX_GATE_DB, target))
 # Per frame, so one loud accident does not fix the advice in place for the
 # rest of the song.
 LEVEL_DECAY_DB = 0.05
@@ -729,8 +767,14 @@ class PlayingScreen:
         )
 
     def set_noise_gate_db(self, db: float) -> None:
-        """Set noise gate threshold, clamped to [-80, -20] and rounded to int."""
-        db = max(-80, min(-20, round(db)))
+        """Set the noise gate, clamped to the useful range and rounded.
+
+        The clamp lives here and nowhere else, so every route to the gate --
+        the X and C keys, the settings screen, a saved file -- lands in the
+        same range. The ceiling used to be -20 dB, which is 30 dB inside the
+        band where the gate deletes the quiet half of a song; see MAX_GATE_DB.
+        """
+        db = max(MIN_GATE_DB, min(MAX_GATE_DB, round(db)))
         self._noise_gate_db = db
         self._config.audio.noise_gate_db = db
         if self._audio_capture is not None:
@@ -986,6 +1030,9 @@ class PlayingScreen:
         elif event.key == pygame.K_x:
             self.set_noise_gate_db(self._noise_gate_db - 5)
         elif event.key == pygame.K_c:
+            # C is the key that walked this player's gate to the old ceiling,
+            # five decibels at a time, on advice the app kept repeating --
+            # see gate_band. set_noise_gate_db is what bounds it.
             self.set_noise_gate_db(self._noise_gate_db + 5)
         elif event.key == pygame.K_t:
             self._cycle_theme()
@@ -2373,10 +2420,19 @@ class PlayingScreen:
             # playing and is not.
             return ("Input too quiet for reliable pitch — turn the interface "
                     "up (notes will come back as the wrong note)")
-        if peak < gate + QUIET_MARGIN_DB:
-            return "Barely above the gate — play louder, turn up, or press X"
-        if floor > gate - NOISE_MARGIN_DB:
-            return "Background noise reaches the gate — press C"
+        # One direction at a time, and only ever toward the band. X fires
+        # while the gate is above it and C only while a real band exists to
+        # raise the gate INTO, so following the advice always terminates --
+        # the property the test asserts, because the wording is not the thing
+        # that was broken.
+        lowest, highest = gate_band(peak, floor)
+        target = suggested_gate_db(peak, floor)
+        if gate > highest:
+            return (f"Gate {gate:.0f} dB is eating your notes — "
+                    f"press X down to {target:.0f} dB")
+        if lowest <= highest and gate < lowest:
+            return (f"Background noise reaches the gate — "
+                    f"press C up to {target:.0f} dB")
         return ""
 
     def _track_levels(self, db: float) -> None:
@@ -2948,9 +3004,22 @@ class PlayingScreen:
             playing = [db for db in levels if db > loudest - 30.0]
             median = playing[len(playing) // 2] if playing else loudest
             under = sum(1 for db in levels if db < ac.noise_gate_db)
+            # The quietest 2 %, not the single quietest hop: over three
+            # minutes that one sample is an accident, and the room between
+            # phrases is what a gate has to clear.
+            room = levels[max(0, int(0.02 * len(levels)) - 1)]
             fh.write(f"level_loudest_db\t{loudest:.1f}\n")
             fh.write(f"level_median_playing_db\t{median:.1f}\n")
+            fh.write(f"level_room_db\t{room:.1f}\n")
             fh.write(f"level_under_gate_percent\t{100 * under / len(levels):.0f}\n")
+            # A percentage of discarded audio is only readable next to the
+            # value that would not have discarded it -- the same rule as
+            # "up to 40 s" beside a half-finished run. Same two helpers the
+            # HUD advice uses, so the log and the panel cannot disagree.
+            low, high = gate_band(loudest, room)
+            fh.write(f"gate_suggested_db\t{suggested_gate_db(loudest, room):.0f}"
+                     f"\t(band {low:.0f} to {high:.0f}"
+                     f"{', empty' if low > high else ''})\n")
         else:
             fh.write("level_loudest_db\t(nothing measured)\n")
         fh.write(f"confidence_threshold\t{ac.confidence_threshold}\n")

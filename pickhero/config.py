@@ -14,6 +14,25 @@ CONFIG_FILE = CONFIG_DIR / "settings.json"
 # a stored runaway can be repaired on load, before any screen exists.
 MAX_LATENCY_OFFSET_MS = 300.0
 
+# The noise gate's useful range. The gate exists to stop the detector chasing
+# room noise -- it is not a volume control, and one set ABOVE the level at
+# which the DETECTOR itself gives up simply throws away strikes that could
+# still have been read. The measured table behind QUIET_PEAK_DB says a strike
+# whose loudest hop reaches -44 dB is still heard with the right pitch 83 % of
+# the time, and the hops either side of that peak are quieter than the peak
+# itself, so the gate stays a margin below it.
+#
+# The ceiling was -20 dB for one cycle and the HUD's own advice could walk a
+# gate there five decibels at a time. At -20 dB a run of this song discarded
+# 40 % of its audio: the distorted chorus survived and the clean verse was
+# deleted, 54 % of single-note picks never producing a strike at all against
+# 84 % of chord picks. A gate above the ceiling is that bug's residue rather
+# than a choice, and is corrected on load.
+MAX_GATE_DB = -50.0
+# Below this a gate is indistinguishable from no gate, and it is where the
+# HUD's own level meter starts, so a marker outside it could not be drawn.
+MIN_GATE_DB = -80.0
+
 
 @dataclass
 class StringCalibration:
@@ -244,6 +263,13 @@ class Config:
             offset = data.get("audio_latency_offset_ms")
             if offset is not None and abs(offset) > MAX_LATENCY_OFFSET_MS:
                 data["audio_latency_offset_ms"] = 0.0
+            # Repair: same story for the noise gate, which had no bound on
+            # the keys that move it and a ceiling 30 dB inside the range
+            # where it deletes the quiet half of a song. See MAX_GATE_DB.
+            gate = audio_data.get("noise_gate_db")
+            if gate is not None:
+                audio_data["noise_gate_db"] = max(MIN_GATE_DB,
+                                                  min(MAX_GATE_DB, gate))
             # The fret filter never survives a restart. It removes notes from
             # the song silently -- not drawn, not scored, not even counted as
             # missed -- so a limit left on from a previous session shows a

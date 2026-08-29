@@ -7,12 +7,14 @@ a running PyGame display.
 import pygame
 import pytest
 
-from pickhero.config import Config
+from pickhero.config import MAX_GATE_DB, MIN_GATE_DB, Config
 from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
 from pickhero.ui.scrolling import (
     MIN_NOTE_WIDTH_PX,
     PlayingScreen,
     format_time,
+    gate_band,
+    suggested_gate_db,
 )
 
 
@@ -2175,9 +2177,9 @@ class TestLevelAdvice:
     def test_nothing_is_claimed_before_anything_was_heard(self):
         assert self._screen(peak=-120.0, floor=0.0)._level_advice() == ""
 
-    def test_a_signal_that_barely_clears_the_gate_says_so(self):
+    def test_a_gate_above_the_playing_says_so(self):
         advice = self._screen(peak=-35.0, floor=-75.0, gate=-40.0)._level_advice()
-        assert "X" in advice and "louder" in advice
+        assert "X" in advice and "eating your notes" in advice
 
     def test_a_signal_too_weak_for_the_detector_says_so(self):
         """Measured rather than assumed: below about -40 dB the strikes keep
@@ -2205,8 +2207,14 @@ class TestLevelAdvice:
     def test_raising_the_gate_can_silence_the_noise_advice(self):
         screen = self._screen(peak=-20.0, floor=-58.0)
         assert screen._level_advice() != ""
-        screen._noise_gate_db = -45.0
+        screen._noise_gate_db = suggested_gate_db(-20.0, -58.0)
         assert screen._level_advice() == ""
+
+    def test_it_names_the_value_to_reach(self):
+        """Pressing a key an unknown number of times is not an instruction."""
+        advice = self._screen(peak=-35.0, floor=-75.0, gate=-40.0)._level_advice()
+        assert f"{suggested_gate_db(-35.0, -75.0):.0f} dB" in advice
+
 
     def test_levels_are_only_tracked_while_the_song_runs(self):
         screen = self._screen(peak=-120.0, floor=0.0)
@@ -2226,6 +2234,86 @@ class TestLevelAdvice:
         screen._track_levels(-20.0)
         screen._track_levels(-70.0)
         assert screen._signal_peak_db == pytest.approx(-20.05)
+
+
+class TestTheAdviceCannotContradictItself:
+    """It could, and the player followed it in circles.
+
+    "Barely above the gate -- press X" and "background noise reaches the gate
+    -- press C" name keys that undo each other, and a gate satisfying both
+    needed 18 dB between the loudest and quietest recent hop. Under that --
+    which is most of a distorted rock song, since the tracked peak decays and
+    the floor recovers between strikes -- no gate existed and the panel asked
+    for X, then C, then X, for ever. The player pressed C until the gate hit
+    the old -20 dB ceiling, where it discarded 40 % of the audio and deleted
+    every quiet single note in the song.
+    """
+
+    def _advice(self, peak, floor, gate):
+        screen = PlayingScreen.__new__(PlayingScreen)
+        screen._playing = True
+        screen._signal_peak_db = peak
+        screen._signal_floor_db = floor
+        screen._noise_gate_db = gate
+        return screen._level_advice()
+
+    def _follow(self, peak, floor, gate):
+        """Press whatever key the advice names, until it stops naming one."""
+        pressed = []
+        for _ in range(60):
+            advice = self._advice(peak, floor, gate)
+            if "press X" in advice:
+                gate = max(MIN_GATE_DB, gate - 5)
+                pressed.append("X")
+            elif "press C" in advice:
+                gate = min(MAX_GATE_DB, gate + 5)
+                pressed.append("C")
+            else:
+                return "".join(pressed), gate
+        return "".join(pressed) + "...", gate
+
+    @pytest.mark.parametrize("peak,floor", [
+        (-10.0, -28.0),      # 18 dB of range: the boundary case
+        (-14.0, -26.0),      # what a distorted rock signal really looks like
+        (-18.0, -30.0),
+        (-12.0, -24.0),
+        (-30.0, -36.0),      # barely any range at all
+    ])
+    def test_following_it_always_stops(self, peak, floor):
+        pressed, _ = self._follow(peak, floor, -20.0)
+        assert not pressed.endswith("...")
+
+    @pytest.mark.parametrize("start", [-90.0, -75.0, -60.0, -50.0])
+    def test_and_never_reverses_direction(self, start):
+        pressed, _ = self._follow(-14.0, -26.0, start)
+        assert "XC" not in pressed and "CX" not in pressed
+
+    def test_a_gate_no_band_can_hold_still_protects_the_notes(self):
+        """When the signal has too little range for any gate to satisfy both,
+        the two failures are not equals: a gate under the room costs spurious
+        onsets that the confidence filter throws away, a gate over the playing
+        costs the strikes themselves."""
+        lowest, highest = gate_band(-14.0, -26.0)
+        assert lowest > highest                      # no gate satisfies both
+        _, settled = self._follow(-14.0, -26.0, -20.0)
+        assert settled <= highest
+
+    def test_the_ceiling_is_where_the_detector_gives_up(self):
+        """There is nothing to be won by gating away audio that could still
+        have been read: at a -44 dB loudest hop the pitch is right 83 % of
+        the time."""
+        assert gate_band(0.0, -120.0)[1] == MAX_GATE_DB
+
+    def test_the_keys_cannot_walk_outside_the_useful_range(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        for _ in range(40):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, key=pygame.K_c, mod=0))
+        assert screen._noise_gate_db == MAX_GATE_DB
+        for _ in range(40):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, key=pygame.K_x, mod=0))
+        assert screen._noise_gate_db == MIN_GATE_DB
 
 
 class TestTopRightHudDoesNotOverlap:

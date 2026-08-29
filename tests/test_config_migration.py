@@ -1,5 +1,7 @@
 """Tests for settings migration on load."""
 
+import json
+
 import pickhero.config as config_mod
 from pickhero.config import Config
 
@@ -63,3 +65,21 @@ def test_custom_timing_window_not_touched(tmp_path, monkeypatch):
 
     loaded = Config.load()
     assert loaded.timing_window_ms == 80.0
+
+
+def test_a_gate_above_the_ceiling_is_repaired(tmp_path, monkeypatch):
+    """-20 dB was the old ceiling and the HUD's own advice could walk a gate
+    there five decibels at a time. At -20 dB a run of a real song discarded
+    40 % of its audio: the distorted chorus survived and the clean verse was
+    deleted. A saved value up there is that bug's residue, not a choice."""
+    _redirect_config(monkeypatch, tmp_path)
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"audio": {"noise_gate_db": -20.0}}))
+    assert config_mod.Config.load().audio.noise_gate_db == config_mod.MAX_GATE_DB
+
+
+def test_a_gate_inside_the_range_is_left_alone(tmp_path, monkeypatch):
+    _redirect_config(monkeypatch, tmp_path)
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"audio": {"noise_gate_db": -65.0}}))
+    assert config_mod.Config.load().audio.noise_gate_db == -65.0

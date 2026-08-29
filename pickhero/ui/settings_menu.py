@@ -28,7 +28,8 @@ from typing import Callable
 import pygame
 
 from pickhero.audio.input import list_audio_devices
-from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
+from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
+                             MIN_GATE_DB, Config)
 from pickhero.ui.scrolling import MAX_BACKING_OFFSET_MS
 from pickhero.ui.colors import cycle_theme, get_theme
 
@@ -100,8 +101,8 @@ class SettingsMenuScreen:
             return f"device #{index}"
 
         def adjust_gate(step: int) -> None:
-            c.audio.noise_gate_db = max(-90.0, min(-20.0,
-                                                   c.audio.noise_gate_db + step))
+            c.audio.noise_gate_db = max(MIN_GATE_DB, min(
+                MAX_GATE_DB, c.audio.noise_gate_db + step))
 
         def adjust_window(step: int) -> None:
             c.timing_window_ms = max(50.0, min(500.0,
