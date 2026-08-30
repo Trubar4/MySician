@@ -419,6 +419,54 @@ So when a strike arrives unpitched and a **single** note is written there, the m
 - It closes about half the gap, not all of it (57 % → 71 %, against 81 % damped). The two strikes it cannot recover are the high A4, whose
   partials sit among the ringing lower strings' harmonics at a margin of 3-5 dB — too little to act on.
 
+## An Arpeggio Comes Back As One Note, And It Is Not Any Of Them
+
+The gate was fixed and the same song still scored 29 %. The run log said `level_under_gate_percent 0`, so nothing was being discarded — and
+yet **53 of the 62 strikes that matched nothing written were flagged `subharmonic`**. That flag is the whole answer.
+
+A subharmonic pitch is not a reading of one string. The detector folds it up from BELOW the guitar's range because several strings that are
+ringing together share that period — so its value names the chord sounding in the room, not the note just struck. Reconstructed from the log
+(a note rings until the next note on its own string, which the log gives):
+
+| what was ringing | what came back |
+|---|---|
+| A2 + E3 + B3 | **A2** |
+| G2 + D3 + B3 | **G2** |
+
+Fifteen of the twenty-three testable cases are exactly the common period of the sounding set. It appears here and not in block 5 because
+block 5 is a melodic LINE: consecutive notes are often dissonant and share no strong period. An arpeggio is the opposite — the tab writes
+single notes that are meant to ring into a chord, and consonant intervals have a very strong missing fundamental. So the same passage that
+sounds best is the one the detector reads worst.
+
+- **Where the pitch says nothing, ask the audio.** A subharmonic matching nothing written is worth as much about the note just struck as no
+  pitch at all, so it now goes where a pitchless strike already goes: `_hold_for_rescue`, and `ChordVerifier.confirms` reads the raw window
+  and says whether the written pitch is really there. No new mechanism — the one built for ringing strings, offered a case it was never shown.
+- **A subharmonic that DOES fit keeps its own rule.** It proves the strum outright and needs no audio; only the unmatched ones are held.
+- **An ordinary wrong pitch stays wrong.** A clean reading of one string is evidence, and the presumption of innocence does not extend to
+  ignoring it. The flag is what separates the two.
+- **The controls are what make it safe, and they are not this song.** `check_ringing_rescue.py` (damped takes gain +0, +0) and
+  `check_chord_credit.py` (every deliberate one-fret error still caught) both come back unchanged. `check_subharmonic_rescue.py` scores the
+  four play-along takes through the real matcher with the rule on and off: nothing lost, one note gained.
+- **That +1 is not the size of the effect and must not be quoted as one.** The timing test is single notes on one string, where the case
+  barely arises; the player's own song is 53 unmatched subharmonic strikes, 51 of them sitting on a written note that missed. **The gain on
+  that song is not measured** — there is no recording of it. Ask for `record_reference.py --play-along` before believing any number.
+- **The control has to hold the rule against ITSELF.** The first version of `check_subharmonic_rescue.py` compared the rule against a matcher
+  with no chord verifier at all, and reported a take losing a note to a rule that had not fired once — it was measuring the chord verdicts.
+  `subharmonic_rescue=False` exists for that one purpose.
+
+## The Room Could Never Be Heard
+
+The automatic gate shipped inert, and the run log said so in as many words: `level_room_db (nicht gemessen)`. The room is what the microphone
+hears while the song is NOT running — and the input stream was opened by `_start_audio`, which runs when the count-in ENDS. There was never a
+moment with the device open and the song stopped, so the estimate never reached its minimum sample count and the gate never moved.
+
+- **The stream opens when the count-in BEGINS.** That is the window the design was written around; it just was not open yet.
+- **And `_start_audio` reuses it instead of reopening.** A device open on Windows is seconds — the freeze this project has now paid for at
+  seeks, at the pause and at the instrument change. The two clocks are agreed by anchoring to `elapsed_ms()` rather than by restarting the
+  counter, which is what `_reanchor_audio_clock` already did for every other case.
+- **A feature that cannot be seen working is indistinguishable from one that does not work**, and the only reason this was caught in a day is
+  that the log prints `(nicht gemessen)` instead of quietly printing a number.
+
 ## Timing Diagnosis
 
 Two numbers cannot say which timing problem a player has, so `matcher.timing_report()` (shown by **Y**) keeps the samples apart and names

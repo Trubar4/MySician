@@ -696,6 +696,11 @@ class PlayingScreen:
             # hardware. See _resume_audio.
             if self._audio_enabled and self._playback_ms >= 0:
                 self._resume_audio()
+            elif self._audio_enabled:
+                # The count-in is starting. Open the input now so the room is
+                # heard before the first note -- the automatic gate has no
+                # other window, and this is the longest clean one a run gets.
+                self._start_capture_only()
             if self._playback_ms >= 0:
                 for player in self._midi_all():
                     player.seek(self._backing_ms(self._playback_ms))
@@ -3694,18 +3699,32 @@ class PlayingScreen:
             # stream is never closed and goes on writing into the same ring,
             # so the sample counter advances at twice real time and every
             # strike after that is stamped further into the future.
-            self._audio_capture.stop()
-            self._audio_capture.start()
+            if getattr(self._audio_capture, "is_running", lambda: False)():
+                # The stream has been open since the count-in began, which is
+                # the whole point: the room can only be measured while the
+                # song is not running, and before this it was opened here --
+                # after the count-in -- so there was never anything to
+                # measure and the automatic gate had nothing to go on.
+                # Reusing it also saves a device open, which on Windows is
+                # the freeze this project has now paid for three times.
+                self._audio_capture.get_notes()
+                self._audio_capture.get_strike_windows()
+                self._audio_anchor_ms = self._audio_capture.elapsed_ms()
+            else:
+                self._audio_capture.stop()
+                self._audio_capture.start()
+                # A fresh stream restarts the sample counter, so the two
+                # clocks agree here by construction.
+                self._audio_anchor_ms = 0.0
             # The count-in has just been listened to; that is the room.
             self._auto_gate_from_room()
-            # A fresh stream restarts the sample counter, so the two clocks
-            # agree here by construction.
-            self._audio_anchor_ms = 0.0
             self._audio_anchor_song_ms = self._playback_ms
             self._matcher = NoteMatcher(
                 self._timeline,
                 timing_window_ms=self._config.timing_window_ms,
-                audio_offset_ms=self._playback_ms + self._sync_offset_song_ms(),
+                audio_offset_ms=(self._audio_anchor_song_ms
+                                 - self._audio_anchor_ms * self._tempo_factor
+                                 + self._sync_offset_song_ms()),
                 chord_threshold_ms=self._config.chord_threshold_ms,
                 note_filter=self._note_passes_filter if self._is_filter_active() else None,
                 chord_partial_credit=self._chord_partial_credit,
@@ -3719,11 +3738,22 @@ class PlayingScreen:
             self._audio_enabled = False
 
     def _start_capture_only(self) -> None:
-        """Start audio capture for signal monitoring (no matcher)."""
+        """Open the input without a matcher, to listen to the room.
+
+        This is what makes the automatic gate possible: the room is what the
+        microphone hears while the song is NOT running, and until the stream
+        is open there is nothing to hear. Also what the signal meter needs.
+        """
         try:
             from pickhero.audio.input import AudioCapture
             if self._audio_capture is None:
                 self._audio_capture = AudioCapture(self._config)
+            if getattr(self._audio_capture, "is_running", lambda: False)():
+                return
+            # start() builds a new stream and a new ring every time; called on
+            # one already running, the old stream keeps writing into the same
+            # ring and the sample counter advances at twice real time.
+            self._audio_capture.stop()
             self._audio_capture.start()
         except Exception as e:
             print(f"Audio capture start failed: {e}")

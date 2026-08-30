@@ -220,6 +220,7 @@ class NoteMatcher:
         late_window_ms: float = 0.0,
         chord_verifier: ChordVerifier | None = None,
         bend_check: bool = True,
+        subharmonic_rescue: bool = True,
     ):
         self._timeline = timeline
         self._timing_window_ms = timing_window_ms
@@ -235,6 +236,11 @@ class NoteMatcher:
         self._late_window_ms = late_window_ms
         self.note_filter = note_filter
         self.chord_partial_credit = chord_partial_credit
+        # Off only in the control run of tools/check_subharmonic_rescue.py,
+        # which has to compare the rule against itself with the verifier
+        # present on both sides -- comparing it against no verifier at all
+        # measures the chord verdicts instead, and did on the first attempt.
+        self.subharmonic_rescue = subharmonic_rescue
 
         # State per note event, keyed by (timestamp_ms, string)
         self._note_states: dict[tuple[float, int], MatchType] = {}
@@ -705,6 +711,17 @@ class NoteMatcher:
                 dead_result = self._dead_note_credit(adjusted_ms)
                 if dead_result is not None:
                     results.append(dead_result)
+                elif (self.subharmonic_rescue
+                      and getattr(ts_note.note, "subharmonic", False)):
+                    # A subharmonic is not a reading of one string. The
+                    # detector folded it up from BELOW the guitar's range
+                    # because several strings that are ringing together share
+                    # that period, so its value names the chord sounding in
+                    # the room and not the note just struck -- and when it
+                    # matches nothing written it is exactly as much evidence
+                    # about that note as no pitch at all. So it goes where a
+                    # pitchless strike goes: held, and put to the audio.
+                    self._hold_for_rescue(adjusted_ms, ts_note.sample_pos)
                 self._trace(ts_note, adjusted_ms, playback_ms,
                             "dead" if dead_result is not None else "unmatched",
                             dead_result.matched_events[0] if dead_result

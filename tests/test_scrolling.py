@@ -2444,6 +2444,30 @@ class TestTheAutomaticGate:
         assert not screen._auto_gate
         assert not screen._config.audio.auto_gate
 
+    def test_the_room_is_heard_before_the_first_note(self):
+        """The input used to be opened when the count-in ENDED, so there was
+        never a moment of room to measure and the automatic had nothing to go
+        on -- a run log said "(nicht gemessen)" and the gate never moved."""
+        screen = self._screen()
+        screen._audio_enabled = True
+        opened = []
+        screen._start_capture_only = lambda: opened.append("open")
+        screen._resume_audio = lambda: opened.append("resume")
+        screen._playback_ms = 0.0
+        screen._count_in_ms = 2400.0
+        screen.toggle_play()
+        assert screen._playback_ms < 0                  # counting in
+        assert opened == ["open"]
+
+    def test_and_the_stream_is_not_reopened_when_the_song_starts(self):
+        """A device open on Windows is seconds; the count-in already has one
+        and the clocks are agreed by anchoring instead of by restarting."""
+        import inspect
+        from pickhero.ui.scrolling import PlayingScreen as PS
+        source = inspect.getsource(PS._start_audio)
+        assert "is_running" in source
+        assert source.index("is_running") < source.index("self._audio_capture.start()")
+
     def test_and_the_advice_says_nothing_while_it_is_automatic(self):
         """It would name a key the app is already pressing for you."""
         screen = self._screen()

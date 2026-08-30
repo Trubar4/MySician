@@ -1309,6 +1309,80 @@ class TestRescuingAPitchlessSingleNote:
             [self._unpitched(1000.0, sample_pos=8192)], 1000.0)
         assert matcher._pending_rescues == {}
 
+    def _subharmonic(self, midi: int, timestamp_ms: float, sample_pos: int):
+        """A strike whose pitch the detector folded up from below the guitar's
+        range, because several ringing strings share that period."""
+        return TimestampedNote(
+            note=DetectedNote(midi_note=midi, frequency=98.0, confidence=0.95,
+                              name="G2", is_onset=True, subharmonic=True),
+            timestamp_ms=timestamp_ms, sample_pos=sample_pos,
+        )
+
+    def test_a_subharmonic_that_fits_nothing_written_is_put_to_the_audio(self):
+        """On an arpeggio the tab writes single notes meant to ring into each
+        other, and what comes back is the common period of the whole sounding
+        shape -- G2 under a ringing B2/D3/B3. That value names the chord in
+        the room, not the note just struck, so it is worth exactly as much
+        about that note as no pitch at all."""
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == [59]
+        assert matcher.get_note_state(note) == MatchType.HIT
+
+    def test_and_is_not_credited_when_the_audio_does_not_show_it(self):
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        matcher.chord_verifier = self._Verifier(confirm=False)
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert matcher.get_note_state(note) == MatchType.PENDING
+
+    def test_a_subharmonic_that_DOES_fit_keeps_its_own_rule(self):
+        """It proves the strum outright and needs no audio: a monophonic
+        detector can never report a second chord tone to reach a majority."""
+        notes = [_note_event(1000.0, midi_note=43, string=6),
+                 _note_event(1000.0, midi_note=50, string=4)]
+        matcher = _make_matcher(notes)
+        verifier = self._Verifier(confirm=False)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+        assert verifier.asked == []
+
+    def test_an_ordinary_wrong_pitch_is_still_just_wrong(self):
+        """A clean reading of one string that does not match is evidence, and
+        the presumption of innocence does not extend to ignoring it."""
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        wrong = TimestampedNote(
+            note=DetectedNote(midi_note=43, frequency=98.0, confidence=0.95,
+                              name="G2", is_onset=True, subharmonic=False),
+            timestamp_ms=1000.0, sample_pos=8192)
+        matcher.process_detected_notes([wrong], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == []
+        assert matcher.get_note_state(note) == MatchType.PENDING
+
+    def test_the_rule_can_be_switched_off_for_the_control_run(self):
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        matcher.subharmonic_rescue = False
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == []
+
     def test_a_rescue_is_written_into_the_run_log(self):
         matcher, _, _ = self._played(confirm=True)
         matcher.process_strike_windows([self._window(8192)])
