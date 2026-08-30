@@ -8,7 +8,8 @@ import pygame
 import pytest
 
 from pickhero.config import MAX_GATE_DB, MIN_GATE_DB, Config
-from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
+from pickhero.tabs.timeline import (MeasureInfo, NoteEvent, SongMetadata,
+                                    Timeline)
 from pickhero.ui.scrolling import (
     MIN_NOTE_WIDTH_PX,
     ROOM_SAMPLES,
@@ -2483,6 +2484,110 @@ class TestTheAutomaticGate:
         screen._signal_floor_db = -70.0
         assert "Too loud" in screen._level_advice()
 
+
+
+class TestSeekingInSteps:
+    """A beat places a loop marker; it does not reach the chorus.
+
+    At 273 ms a beat, four minutes of song is nine hundred presses, and key
+    repeat is 40 ms -- half a minute of holding the key while the picture
+    scrolls past. So the same ladder the backing-track offset uses.
+    """
+
+    def _screen(self):
+        notes = [NoteEvent(timestamp_ms=t, duration_ms=200.0, midi_note=40,
+                           string=6, fret=0)
+                 for t in range(0, 120_000, 500)]
+        meta = SongMetadata(title="x", artist="y", tempo=120)
+        measures = [MeasureInfo(index=i, start_ms=i * 2000.0,
+                                end_ms=(i + 1) * 2000.0) for i in range(60)]
+        timeline = Timeline(notes, meta, measures=measures)
+        return PlayingScreen(timeline, config=Config())
+
+    def _press(self, screen, key, mod=0):
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, key=key, mod=mod))
+        return screen.position_ms()
+
+    def test_a_plain_arrow_still_moves_one_beat(self):
+        screen = self._screen()
+        screen.seek(30_000.0)
+        assert self._press(screen, pygame.K_RIGHT) == pytest.approx(
+            30_000.0 + screen._ms_per_beat)
+
+    def test_shift_lands_on_the_bar_line(self):
+        """Snapped, not a fixed number of beats: it stays on the bars through
+        a time-signature change and lands where the tab is drawn."""
+        screen = self._screen()
+        screen.seek(30_500.0)
+        assert self._press(screen, pygame.K_RIGHT, pygame.KMOD_SHIFT) == 32_000.0
+
+    def test_and_back_reaches_the_bar_before_this_one(self):
+        screen = self._screen()
+        screen.seek(32_000.0)
+        assert self._press(screen, pygame.K_LEFT, pygame.KMOD_SHIFT) == 30_000.0
+
+    def test_shift_back_from_just_after_a_bar_line_does_not_stand_still(self):
+        screen = self._screen()
+        screen.seek(32_010.0)
+        assert self._press(screen, pygame.K_LEFT, pygame.KMOD_SHIFT) == 30_000.0
+
+    def test_ctrl_moves_half_a_minute(self):
+        screen = self._screen()
+        screen.seek(30_000.0)
+        assert self._press(screen, pygame.K_RIGHT, pygame.KMOD_CTRL) == 60_000.0
+
+    def test_it_cannot_walk_off_either_end(self):
+        screen = self._screen()
+        screen.seek(0.0)
+        assert self._press(screen, pygame.K_LEFT, pygame.KMOD_CTRL) == 0.0
+        screen.seek(screen._timeline.duration_ms)
+        assert (self._press(screen, pygame.K_RIGHT, pygame.KMOD_CTRL)
+                <= screen._timeline.duration_ms)
+
+    def test_a_song_with_no_bars_still_seeks(self):
+        """A tab that parsed without measure info must not make the key dead."""
+        notes = [NoteEvent(timestamp_ms=0.0, duration_ms=20_000.0,
+                           midi_note=40, string=6, fret=0)]
+        screen = PlayingScreen(
+            Timeline(notes, SongMetadata(title="x", tempo=120)),
+            config=Config())
+        screen.seek(1_000.0)
+        moved = self._press(screen, pygame.K_RIGHT, pygame.KMOD_SHIFT)
+        assert moved > 1_000.0
+
+    def test_the_footer_names_all_three(self):
+        """A key that is bound but undocumented is a key nobody finds."""
+        footer = " ".join(self._screen()._footer_lines())
+        assert "Shift: bar" in footer and "Ctrl: 30s" in footer
+
+
+class TestChangingTrackKeepsThePlace:
+    """The tracks of one file share a clock: bar 40 of the rhythm guitar is
+    bar 40 of the lead. Somebody comparing two versions of a passage changes
+    track precisely BECAUSE they are at that passage."""
+
+    def test_the_screen_can_say_where_it_is(self):
+        notes = [NoteEvent(timestamp_ms=t, duration_ms=200.0, midi_note=40,
+                           string=6, fret=0) for t in range(0, 60_000, 500)]
+        screen = PlayingScreen(
+            Timeline(notes, SongMetadata(title="x", tempo=120)),
+            config=Config())
+        screen.seek(12_345.0)
+        assert screen.position_ms() == pytest.approx(12_345.0)
+
+    def test_the_app_carries_it_across_the_reload(self):
+        import inspect
+        from pickhero.ui.app import App
+        source = inspect.getsource(App._handle_playing_event)
+        assert "position_ms()" in source and "resume_at_ms" in source
+        assert "resume_at_ms" in inspect.signature(App._load_song).parameters
+
+    def test_and_clamps_it_to_a_shorter_track(self):
+        import inspect
+        from pickhero.ui.app import App
+        source = inspect.getsource(App._load_song)
+        assert "min(resume_at_ms" in source
 
 class TestTopRightHudDoesNotOverlap:
     """The gate used to be drawn straight over the hit count.

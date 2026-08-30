@@ -976,6 +976,21 @@ them.
   string number minus one, so index 0 is the HIGH e while a guitarist names the low E first; the row is drawn low-first and the test pins the
   mapping, because an off-by-one here mutes the wrong string and reads as a detection fault.
 
+## Two Keys That Were Right For One Job And Useless For The Other
+
+- **An arrow key moved one BEAT, and nothing else.** That is the right step for placing a loop marker and useless for reaching the chorus of a
+  four-minute song: at 273 ms a beat that is nine hundred presses, and with key repeat at 40 ms it is half a minute of holding the key while
+  the picture scrolls past. So the same ladder the backing-track offset already uses — plain, Shift, Ctrl — with each step chosen from what it
+  is FOR: a beat to place a loop, a **bar** to walk a phrase, **30 s** to reach a section.
+  - **Shift SNAPS to the bar line**, rather than adding a fixed number of beats. The timeline carries real measures, so this stays on the bars
+    through a time-signature change and lands where the tab is drawn rather than near it. A margin either side, because pressing back from just
+    after a bar line has to reach the PREVIOUS bar and not stand still on the one just crossed.
+  - A tab that parsed without measure info falls back to the beat, because a key that silently does nothing is worse than one that does less.
+- **Changing instrument threw the position away.** The tracks of one file share a clock — bar 40 of the rhythm guitar is bar 40 of the lead —
+  so restarting at the first note is not a fresh start, it is losing your place. And somebody comparing two versions of a passage changes track
+  precisely BECAUSE they are at that passage. `_load_song` takes `resume_at_ms`, clamped to the new track's length, since it may be shorter.
+  The screen is rebuilt from scratch on that path, so the position has to be carried over by hand.
+
 ## Two Kinds Of History, And They Answer Different Questions
 
 `progress.py` keeps the BEST a song has ever been played — one record per song, overwritten as it improves. That answers "am I getting better

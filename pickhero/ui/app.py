@@ -178,7 +178,11 @@ class App:
     def _handle_playing_event(self, event: pygame.event.Event) -> None:
         result = self._playing_screen.handle_event(event)
         if isinstance(result, tuple) and result[0] == "select_track":
-            self._load_song(self._current_song_path, result[1])
+            # Stay where the song is. The screen is rebuilt from scratch, so
+            # the position has to be carried over by hand.
+            where = self._playing_screen.position_ms()
+            self._load_song(self._current_song_path, result[1],
+                            resume_at_ms=where)
             return
         if result == "menu":
             self._playing_screen.stop_audio()
@@ -287,8 +291,16 @@ class App:
                       (0, y - 4, surface.get_width(), surf.get_height() + 8))
         surface.blit(surf, (12, y))
 
-    def _load_song(self, path: Path, track_index: int | None = None) -> None:
+    def _load_song(self, path: Path, track_index: int | None = None,
+                   resume_at_ms: float | None = None) -> None:
         """Load a GP file and switch to playing state.
+
+        `resume_at_ms` keeps the position across an instrument change. The
+        tracks of one file share a clock -- bar 40 of the rhythm guitar is
+        bar 40 of the lead -- so throwing the position away and starting at
+        the first note again is not a fresh start, it is losing your place.
+        Somebody comparing two versions of a passage changes track precisely
+        BECAUSE they are at that passage.
 
         The screen being replaced is torn down FIRST. Changing instrument
         reaches this too, and it used to leave the old one holding the input
@@ -354,8 +366,12 @@ class App:
             self._track_options(path), timeline.metadata.track_index
         )
 
+        if resume_at_ms is not None:
+            # Clamped, because the new track may be shorter than the old one.
+            self._playing_screen.seek(
+                max(0.0, min(resume_at_ms, timeline.duration_ms)))
         # Skip ahead so the first note is just entering the visible window
-        if timeline.notes:
+        elif timeline.notes:
             first_note_ms = timeline.notes[0].timestamp_ms
             seek_to = max(0.0, first_note_ms - self._playing_screen._visible_window_ms)
             if seek_to > 0:

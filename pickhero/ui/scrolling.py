@@ -345,6 +345,13 @@ MAX_FRAME_STALL_S = 0.25
 # only a run of them is collapsed into one.
 MP3_SEEK_SETTLE_S = 0.15
 
+# What Ctrl + arrow moves. Half a minute is a section of a song -- a verse, a
+# chorus -- which is the unit somebody skipping through one actually thinks in.
+SEEK_SECTION_MS = 30_000.0
+# Pressing back from just after a bar line must reach the PREVIOUS bar, not
+# stand still on the one just crossed.
+BAR_SNAP_MARGIN_MS = 30.0
+
 
 class _CachedFont:
     """A font that keeps the text surfaces it has already drawn.
@@ -727,6 +734,48 @@ class PlayingScreen:
             if self._mp3_player is not None:
                 self._mp3_player.set_suspended(True)
 
+    def _seek_target_ms(self, event: pygame.event.Event, direction: int) -> float:
+        """Where one arrow key press lands, by modifier.
+
+        A beat is the right step for placing a loop marker and useless for
+        reaching the chorus of a four-minute song: at 273 ms a beat that is
+        nine hundred presses, and with key repeat at 40 ms it is half a minute
+        of holding the key while the picture scrolls past. So the same ladder
+        the backing-track offset already uses -- plain, Shift, Ctrl -- with
+        each step chosen from what it is FOR: a beat to place a loop, a BAR to
+        walk a phrase, half a minute to reach a section.
+
+        Shift snaps to the bar line rather than adding a fixed number of
+        beats, so it stays on the bars through a time-signature change and
+        lands where the tab is drawn rather than near it.
+        """
+        now = self._playback_ms
+        if event.mod & pygame.KMOD_CTRL:
+            return now + direction * SEEK_SECTION_MS
+        if event.mod & pygame.KMOD_SHIFT:
+            starts = [m.start_ms for m in self._timeline.measures]
+            if starts:
+                # A margin, so pressing back from just after a bar line goes
+                # to the PREVIOUS bar instead of standing still.
+                if direction > 0:
+                    later = [t for t in starts if t > now + BAR_SNAP_MARGIN_MS]
+                    if later:
+                        return later[0]
+                else:
+                    earlier = [t for t in starts if t < now - BAR_SNAP_MARGIN_MS]
+                    if earlier:
+                        return earlier[-1]
+                    return 0.0
+        return now + direction * self._ms_per_beat
+
+    def position_ms(self) -> float:
+        """Where the song is, in song milliseconds.
+
+        Negative during the count-in, which callers that carry the position
+        across a reload have to clamp rather than reproduce.
+        """
+        return self._playback_ms
+
     def seek(self, ms: float) -> None:
         """Seek to an absolute position in ms, clamped to [0, duration]."""
         self._playback_ms = max(0.0, min(ms, self._timeline.duration_ms))
@@ -1032,9 +1081,9 @@ class PlayingScreen:
             self.stop_audio()
             return "menu"
         elif event.key == pygame.K_LEFT:
-            self.seek(self._playback_ms - self._ms_per_beat)
+            self.seek(self._seek_target_ms(event, -1))
         elif event.key == pygame.K_RIGHT:
-            self.seek(self._playback_ms + self._ms_per_beat)
+            self.seek(self._seek_target_ms(event, +1))
         elif event.key == pygame.K_HOME:
             self.seek(0)
         elif event.key == pygame.K_a:
@@ -2154,7 +2203,8 @@ class PlayingScreen:
             wait_state = "WAIT" if self._wait_mode_frozen else "ON"
 
         transport = (
-            f"{state}  |  SPACE: play/pause  |  LEFT/RIGHT: seek  "
+            f"{state}  |  SPACE: play/pause  "
+            f"|  LEFT/RIGHT: beat (Shift: bar, Ctrl: 30s)  "
             f"|  HOME: restart  |  PgDn/PgUp: tempo  |  A: audio {audio_state}  "
             f"|  B: backing {backing_state}  |  Shift+B: my part {guide_state}  "
             f"|  W: wait {wait_state}  "
