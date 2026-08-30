@@ -47,8 +47,13 @@ HOP = 512
 # How near a strike has to be to a written onset to count as that note. Wide
 # enough for real input latency, narrow enough not to reach the next eighth.
 MATCH_MS = 140.0
-# Alignment search: the recording is started by hand, so the song may begin
-# anywhere in the first half minute.
+# Alignment search. The recording is started by hand, so the song may begin
+# anywhere in the first half minute -- but the recording may also START in the
+# MIDDLE of the song, when the player jumps to a chorus and records that. The
+# offset is then NEGATIVE and as large as the song is long, which the old
+# search could not express at all: a 45-second take of the last verse was
+# forced to the only offset in range, matched the opening, and was reported as
+# "the intro again". A take of anything but the beginning could not be read.
 ALIGN_MAX_MS = 30_000.0
 ALIGN_STEP_MS = 5.0
 # Practice speeds the app can be in when the take was played (PgDn/PgUp go
@@ -108,11 +113,28 @@ def best_offset_at(strike_ms, onsets, tempo):
     # offset inside it scores the same, the first one wins, and the whole
     # report is then read against a grid sitting up to 100 ms off. Among the
     # offsets that tie on hits, the tightest fit is the real one.
+    # Searching every offset from -len(song) to +30 s at 5 ms would be
+    # forty thousand passes over the whole matrix. The optimum always sits
+    # near some (strike - onset) difference, so those are the candidates:
+    # histogram them, then search finely around the busiest regions only.
+    diffs = (times[:, None] - grid[None, :]).ravel()
+    diffs = diffs[(diffs >= -grid.max() - 1000.0) & (diffs <= ALIGN_MAX_MS)]
+    if not diffs.size:
+        return 0.0, 0, float("inf")
+    edges = np.arange(diffs.min() - MATCH_MS, diffs.max() + 2 * MATCH_MS,
+                      MATCH_MS)
+    counts, _ = np.histogram(diffs, bins=edges)
+    # A few regions, not one: the true offset can lose the raw count to a
+    # dense passage that happens to line up with a different bar.
+    regions = np.argsort(counts)[::-1][:8]
+
     best_offset, best_hits, best_error = 0.0, -1, float("inf")
-    for offset in np.arange(0.0, ALIGN_MAX_MS, ALIGN_STEP_MS):
-        hits, error = score(float(offset))
-        if hits > best_hits or (hits == best_hits and error < best_error):
-            best_offset, best_hits, best_error = float(offset), hits, error
+    for region in regions:
+        lo, hi = edges[region] - MATCH_MS, edges[region + 1] + MATCH_MS
+        for offset in np.arange(lo, hi, ALIGN_STEP_MS):
+            hits, error = score(float(offset))
+            if hits > best_hits or (hits == best_hits and error < best_error):
+                best_offset, best_hits, best_error = float(offset), hits, error
     return best_offset, best_hits, best_error
 
 
@@ -205,7 +227,27 @@ def main() -> int:
         if tempo is None and take.get("tempo_percent"):
             tempo = float(take["tempo_percent"]) / 100.0
 
-    song = args.song or (REPO_ROOT / "songs" / (song_name or "timing_test_100bpm.gp5"))
+    if args.song:
+        song = Path(args.song)
+    else:
+        if not song_name:
+            # No default. A take whose manifest cannot say what was played is
+            # not a take, it is 45 seconds of audio -- and a guessed default
+            # once made a take of a different piece read as 3 of 46 notes,
+            # which looks exactly like a detector that has stopped working.
+            print("Im Manifest steht nicht, welcher Song gespielt wurde. "
+                  "Mit --song angeben.")
+            return 1
+        song = REPO_ROOT / "songs" / song_name
+        if not song.exists():
+            for suffix in (".gp5", ".gp", ".gpx"):
+                candidate = song.with_name(song.name + suffix)
+                if candidate.exists():
+                    song = candidate
+                    break
+    if not Path(song).exists():
+        print(f"Songdatei nicht gefunden: {song}")
+        return 1
     timeline = load_gp_file(song)
     by_onset: dict[float, list] = {}
     for note in timeline.notes:

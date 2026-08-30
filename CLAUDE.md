@@ -502,6 +502,22 @@ Both were caught only because a control came back wrong, which is the third time
   appear to gain a note — the tool's own definition of inventing one. It pins `FITTED_ONSET_THRESHOLD` now: it tests the rescue, at the settings
   the rescue was fitted at, and cannot be read as a verdict on those settings.
 
+## A Take Of The Chorus Could Not Be Read At All
+
+The player recorded the section that was asked for and it came back reported as "the intro again". The recording was right; the alignment
+could not express what it was. `best_offset_at` searched offsets from 0 to 30 s — where the SONG starts inside the recording — on the
+assumption that a take always begins at the beginning. A take that starts in the MIDDLE of the song needs the opposite: an offset as negative
+as the song is long. Forced into the only range it had, the search put a 45-second take of the last verse at the opening, where 48 of its 134
+strikes happened to land, and every number after that was read against the wrong bars.
+
+- **The search covers the whole song now**, and cheaply: the optimum always sits at some (strike − onset) difference, so those are the
+  candidates. Histogram them at the match width, then search finely around the busiest few regions — eight, not one, because the true offset
+  can lose the raw count to a dense passage that lines up with a different bar.
+- **Re-read, the take is the chorus**: song 133-177 s, **153 of 153 strikes on the grid**, 555 written notes over 149 picks. The material
+  that every chord question in this file needed and no recording had.
+- **The old numbers for that take are void**, not merely imprecise. This is the second time a default in the alignment path turned a good
+  recording into evidence of a broken detector, after `--play-along` guessed the song.
+
 ## A Take Is Only Worth Its Manifest, Part Two
 
 `record_reference.py --play-along` took the song as an OPTIONAL argument defaulting to `timing_test_100bpm.gp5`. Run without it — which is how
