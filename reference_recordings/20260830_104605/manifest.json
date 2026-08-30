@@ -9,17 +9,18 @@
     {
       "id": "play_along",
       "block": 99,
-      "title": "Durchgespielt: timing_test_100bpm.gp5",
+      "title": "Durchgespielt: unbekannt (siehe corrected)",
       "file": "play_along.wav",
       "technique": "free",
       "intentional_error": "",
       "shapes": [],
       "expected_midi": [],
-      "song": "timing_test_100bpm.gp5",
+      "song": null,
       "tempo_percent": 100,
       "seconds": 45.0,
       "peak_dbfs": -6.6,
-      "rms_dbfs": -27.2
+      "rms_dbfs": -27.2,
+      "corrected": "song stand auf timing_test_100bpm.gp5, weil --play-along ohne Argument diesen Standard hatte. Gespielt wurde etwas anderes: gegen den Timing-Test passen nur 23 von 59 Anschlaegen aufs Raster und 3 von 46 Noten stimmen, gegen die aus dem Run-Log vom 30.08. 10:49 rekonstruierten Noten 58 von 60. Es ist der Anfang von 'Papa Roach - Leave A Light On'. Die Tab-Datei liegt nicht im Repo, deshalb steht song auf null statt auf einem Namen, den kein Werkzeug oeffnen kann."
     }
   ]
 }

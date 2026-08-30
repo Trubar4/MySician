@@ -963,10 +963,25 @@ class NoteMatcher:
         ))
 
     def _hold_for_rescue(self, adjusted_ms: float, sample_pos: int | None) -> None:
-        """Remember a pitchless strike so its audio can be checked later.
+        """Remember a strike with no usable pitch, so its audio can be asked.
 
-        Only for a single written note: a chord of two or more is already
-        credited outright, and a dead note has no pitch to look for.
+        The note to ask about is the pending one whose own onset is NEAREST
+        the strike. Requiring exactly one was right for the case this was
+        built for -- a line across the strings, where the tab writes one note
+        at a time -- and silently wrong for an arpeggio, where the written
+        notes overlap by design: measured on the player's own take, the rule
+        reached this point 25 times and held nothing, because the window
+        always contained two or three notes. A strike belongs to one note and
+        the tab says which; the others are earlier notes still ringing or
+        later ones not yet due.
+
+        Holding a note does not consume it. A strike that arrives later and
+        matches it outright still wins, because `_apply_rescue` only credits
+        a note that is still not HIT or CLOSE when the audio window lands.
+
+        A dead note is excluded (it has no pitch to look for) and so is a
+        chord written at one instant, which is credited outright and needs no
+        audio.
         """
         if self._chord_verifier is None or sample_pos is None:
             return
@@ -978,9 +993,15 @@ class NoteMatcher:
             if self._get_state(n) == MatchType.PENDING
             and not self._is_filtered(n) and not n.dead
         ]
-        if len(pending) != 1:
+        if not pending:
             return
-        self._pending_rescues[sample_pos] = pending[0]
+        nearest = min(pending, key=lambda n: abs(n.timestamp_ms - adjusted_ms))
+        # A chord at that instant is not a single note and has its own rule.
+        if sum(1 for n in pending
+               if abs(n.timestamp_ms - nearest.timestamp_ms)
+               <= self._chord_threshold_ms) > 1:
+            return
+        self._pending_rescues[sample_pos] = nearest
         if len(self._pending_rescues) > 32:
             oldest = sorted(self._pending_rescues)[:-32]
             for key in oldest:

@@ -57,10 +57,20 @@ def capture(path: Path, sample_rate: int):
     cap.detector.reset()
     cap._onset_collector.reset()
     cap._ring = _AudioRing(int(sample_rate * RING_SECONDS))
+    strikes, windows = [], []
     for i in range(0, len(audio) - HOP + 1, HOP):
         cap._audio_callback(audio[i:i + HOP].reshape(-1, 1), HOP, None, None)
-    return ([s for s in cap.get_notes() if s.note.is_onset],
-            cap.get_strike_windows())
+        # Drained as it goes, the way the app drains it every frame. The
+        # queue holds MAX_QUEUED_WINDOWS (16) and drops the oldest to stay
+        # bounded, so pushing a whole take through and collecting once keeps
+        # only the LAST sixteen strikes -- on a 45-second take that is a
+        # quarter of them, and the tool then reports the verifier doing
+        # nothing when it was never given anything to do.
+        strikes.extend(s for s in cap.get_notes() if s.note.is_onset)
+        windows.extend(cap.get_strike_windows())
+    strikes.extend(s for s in cap.get_notes() if s.note.is_onset)
+    windows.extend(cap.get_strike_windows())
+    return strikes, windows
 
 
 def score(timeline, strikes, windows, offset_ms, tempo, rescue: bool):
@@ -113,7 +123,13 @@ def main() -> int:
         manifest = json.loads((session / "manifest.json").read_text())
         take = next((t for t in manifest["takes"]
                      if t.get("file") == "play_along.wav"), {})
-        name = take.get("song", "")
+        name = take.get("song") or ""
+        if not name:
+            # A take whose manifest cannot say what was played is not a take,
+            # it is 45 seconds of audio. See its `corrected` note.
+            print(f"{session.name:20s}  Manifest sagt nicht, was gespielt "
+                  f"wurde — uebersprungen")
+            continue
         song = REPO_ROOT / "songs" / (
             name if name.endswith(".gp5") else name + ".gp5")
         if not song.exists():

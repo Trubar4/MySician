@@ -133,6 +133,10 @@ def main() -> int:
     take = next((t for t in manifest.get("takes", [])
                  if t.get("file") == "play_along.wav"), {})
     song = args.song
+    if song is None and not take.get("song"):
+        print("Im Manifest steht nicht, welcher Song gespielt wurde. "
+              "Mit --song angeben.")
+        return 1
     if song is None and take.get("song"):
         name = take["song"]
         song = str(REPO_ROOT / "songs" /

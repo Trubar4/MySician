@@ -454,6 +454,75 @@ sounds best is the one the detector reads worst.
   with no chord verifier at all, and reported a take losing a note to a rule that had not fired once — it was measuring the chord verdicts.
   `subharmonic_rescue=False` exists for that one purpose.
 
+## The Onset Detector Never Heard The Arpeggio At All
+
+With the gate fixed and the subharmonic rule shipped, the same song scored 29 %. The rule had fired 25 times and credited **nothing**, and the
+reason was one line: `_hold_for_rescue` required **exactly one** pending written note. That was right for the case it was built for — a line
+across the strings, where the tab writes one note at a time — and silently wrong for an arpeggio, whose written notes overlap by design. On the
+player's take the window held two or three notes every single time. It now asks about the pending note whose own onset is NEAREST the strike;
+holding one does not consume it, since `_apply_rescue` only credits a note still not HIT or CLOSE when the window lands.
+
+That was worth +3 notes. The thing underneath it was worth ten times more, and it is not in the matcher at all.
+
+**`onset_threshold` was 0.3 — aubio's default — and at that value the detector hears 37 % of the picks in an arpeggio.** A new note under a
+ringing chord is a small change in spectral flux, so the onset never fires, and a strike that never arrives cannot be recovered by the matcher,
+the verifier or any rescue. Swept over the player's own take (`tools/sweep_onset_threshold.py`):
+
+| threshold | picks heard | right pitch |
+|---|---|---|
+| 0.40 | 29 % | 11 % |
+| **0.30** (was) | **37 %** | 12 % |
+| 0.15 | 57 % | 19 % |
+| **0.05** (now) | **83 %** | 26 % |
+| 0.02 | 87 % | 28 % |
+
+**A single-note line is indifferent to all of it** — the timing-test takes read 93-100 % of their picks at every value from 0.02 to 0.40, and
+only the count of spurious strikes moves. So the old value cost nothing on the material it was chosen against and most of the song on material
+nobody had recorded.
+
+Measured through the real matcher on that passage: **18 % → 39 %** from the threshold alone, **→ 44 %** with the rescue fix on top. On the four
+timing-test takes with a fixed tab: 60/62 unchanged, **38 → 45**, **36 → 44**, 62 → 61. Every deliberate one-fret error is still caught, and
+the palm-muted takes are unchanged.
+
+- **`onset_min_interval_ms` was built, measured and removed in the same hour.** The theory was that a low threshold lets a decay re-trigger, so
+  aubio's 50 ms minimum should rise. Above 100 ms it starts merging real chugs (the fast palm-mute take's 5th percentile gap is 75 ms), and at
+  50 ms nothing needed fixing: every fixed-tab control passes. A knob that changes nothing is a knob nobody can calibrate.
+- **A stored 0.3 is migrated**, the way a stored `buf_size` of 2048 is: there is no UI to set it, so the value came from the old default.
+
+## Two Tools Measured Themselves, Again
+
+Both were caught only because a control came back wrong, which is the third time in this project.
+
+- **`MAX_QUEUED_WINDOWS` is 16, and every offline harness ignored it.** The app drains `get_strike_windows()` once a frame; the check tools
+  pushed a whole take through `_audio_callback` and collected once at the end, so the queue dropped everything but the **last sixteen** strikes.
+  On a 45-second take that is a quarter of them, and the verifier then appears to do nothing when it was never given anything to do — which is
+  exactly what the first run of `check_subharmonic_rescue.py` reported. All four check tools now drain as they go.
+- **`check_ringing_rescue.py` builds its tab out of the strikes** (`intended()` aligns what was detected against the line that was asked for),
+  so a detector setting that changes how many strikes there are also changes the ground truth. Lowering the onset threshold made a DAMPED take
+  appear to gain a note — the tool's own definition of inventing one. It pins `FITTED_ONSET_THRESHOLD` now: it tests the rescue, at the settings
+  the rescue was fitted at, and cannot be read as a verdict on those settings.
+
+## A Take Is Only Worth Its Manifest, Part Two
+
+`record_reference.py --play-along` took the song as an OPTIONAL argument defaulting to `timing_test_100bpm.gp5`. Run without it — which is how
+it was explained to the player — it recorded 45 seconds of a completely different piece and wrote the timing test's name into the manifest.
+Read against that tab the take scores **3 of 46 notes**, which looks precisely like a detector that has stopped working; read against the notes
+reconstructed from the run log, **58 of its 60 strikes** land on the grid. The song argument is required now.
+
+**A run log is a tab.** It prints every written note with its time, string and pitch, which is all that is needed to score a take of a song that
+is not in `songs/` — `sweep_onset_threshold.py --run-log` reads one, and that is how the arpeggio above was measured at all.
+
+## The Calibration Was Wrong And It Did Not Matter
+
+Worth writing down because the obvious conclusion was the wrong one. The player's stored calibration had the A string at **54.87 Hz (A1, an
+octave low)** and the high E at **109.83 Hz (A2 — the A string's pitch)**. `_correct_octave_jump` halves a frequency whose half lands within a
+semitone of a calibrated string, so a clean A2 would be pushed below the guitar's range and come back flagged as a subharmonic. It looked like
+the source of the subharmonic flood.
+
+**Measured on the take, with and without that calibration: 29 subharmonic strikes either way, and one note different in sixty.** The halving
+needs `confidence < 0.9` and the readings here are confident. So the calibration is a latent trap and should be re-run, but it explains none of
+this — and a fix shipped for it would have been a fix for nothing.
+
 ## The Room Could Never Be Heard
 
 The automatic gate shipped inert, and the run log said so in as many words: `level_room_db (nicht gemessen)`. The room is what the microphone

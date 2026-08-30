@@ -50,7 +50,15 @@ class AudioConfig:
     buf_size: int = 4096
     hop_size: int = 512
     confidence_threshold: float = 0.8
-    onset_threshold: float = 0.3
+    # Measured, not guessed. At aubio's 0.3 an ARPEGGIO loses most of its
+    # picks: a new note under a ringing chord is a small change in spectral
+    # flux, so the onset never fires and the strike never reaches anything
+    # downstream. On the player's own take, picks heard went 37 % -> 88 %
+    # between 0.30 and 0.05, and the score of that passage 20 % -> 30 %. A
+    # single-note line is indifferent (93-100 % at every value from 0.02 to
+    # 0.40); only the count of spurious strikes moves, and those cost nothing
+    # -- see tools/sweep_onset_threshold.py.
+    onset_threshold: float = 0.05
     noise_gate_db: float = -60.0  # ignore signals below this dB level
     # Let the app set the gate from the room it can hear, rather than
     # leaving a number nobody can judge by ear. See MAX_GATE_DB and the
@@ -262,6 +270,11 @@ class Config:
             # Migration: same for the old 100 ms timing window default
             if data.get("timing_window_ms") == 100.0:
                 data["timing_window_ms"] = 150.0
+            # Migration: 0.3 was the old onset threshold and there is no UI
+            # to set it, so any stored 0.3 came from that default. It loses
+            # most of the picks in an arpeggio -- see AudioConfig.
+            if audio_data.get("onset_threshold") == 0.3:
+                audio_data["onset_threshold"] = 0.05
             # Repair: auto-sync used to be unbounded and could measure against
             # the wrong note in a repeating riff, walking the offset out to
             # values no real latency can explain. Anything past a plausible

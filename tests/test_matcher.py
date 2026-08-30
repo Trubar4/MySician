@@ -1383,6 +1383,52 @@ class TestRescuingAPitchlessSingleNote:
         matcher.process_strike_windows([self._window(8192)])
         assert verifier.asked == []
 
+    def test_the_nearest_written_note_is_the_one_asked_about(self):
+        """An arpeggio has two or three written notes in flight at any moment
+        -- they are meant to ring into each other. Requiring exactly one was
+        right for a line across the strings and silently wrong here: measured
+        on the player's own take, the rule reached this point 25 times and
+        held nothing. A strike belongs to one note and the tab says which."""
+        early = _note_event(700.0, midi_note=50, string=4)
+        struck = _note_event(1000.0, midi_note=59, string=3)
+        later = _note_event(1300.0, midi_note=47, string=5)
+        matcher = _make_matcher([early, struck, later], timing_window_ms=400.0)
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == [59]
+
+    def test_a_chord_in_flight_is_still_not_rescued(self):
+        """Two strings written at one instant have their own rule, which
+        needs no audio -- even with an earlier note still ringing."""
+        early = _note_event(700.0, midi_note=50, string=4)
+        chord = [_note_event(1000.0, midi_note=43, string=6),
+                 _note_event(1000.0, midi_note=47, string=5)]
+        matcher = _make_matcher([early] + chord, timing_window_ms=400.0)
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher._hold_for_rescue(1000.0, sample_pos=8192)
+        assert matcher._pending_rescues == {}
+
+    def test_holding_a_note_does_not_take_it_from_a_later_strike(self):
+        """A strike that matches it outright still wins: _apply_rescue only
+        credits a note still not HIT or CLOSE when the window lands."""
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_detected_notes([TimestampedNote(
+            note=DetectedNote(midi_note=59, frequency=247.0, confidence=0.95,
+                              name="B3", is_onset=True),
+            timestamp_ms=1050.0, sample_pos=9000)], 1050.0)
+        assert matcher.get_note_state(note) == MatchType.HIT
+        matcher.process_strike_windows([self._window(8192)])
+        assert matcher.rescued_notes == 0        # not counted twice
+
     def test_a_rescue_is_written_into_the_run_log(self):
         matcher, _, _ = self._played(confirm=True)
         matcher.process_strike_windows([self._window(8192)])

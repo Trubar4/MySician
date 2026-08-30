@@ -83,3 +83,21 @@ def test_a_gate_inside_the_range_is_left_alone(tmp_path, monkeypatch):
     (tmp_path / "settings.json").write_text(
         json.dumps({"audio": {"noise_gate_db": -65.0}}))
     assert config_mod.Config.load().audio.noise_gate_db == -65.0
+
+
+def test_the_old_onset_threshold_is_migrated(tmp_path, monkeypatch):
+    """0.3 was aubio's default and there is no UI to change it, so a stored
+    0.3 came from that default. It hears 37 % of the picks in an arpeggio
+    against 88 % at 0.05, because a new note under a ringing chord is a small
+    change in spectral flux."""
+    _redirect_config(monkeypatch, tmp_path)
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"audio": {"onset_threshold": 0.3}}))
+    assert Config.load().audio.onset_threshold == 0.05
+
+
+def test_an_onset_threshold_someone_chose_is_left_alone(tmp_path, monkeypatch):
+    _redirect_config(monkeypatch, tmp_path)
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"audio": {"onset_threshold": 0.22}}))
+    assert Config.load().audio.onset_threshold == 0.22

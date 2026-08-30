@@ -707,10 +707,15 @@ def main():
     ap.add_argument("--block", type=int, action="append",
                     help="nur diese Bloecke aufnehmen (mehrfach moeglich)")
     ap.add_argument("--out", default=None, help="Zielordner")
-    ap.add_argument("--play-along", metavar="SONG", nargs="?",
-                    const="timing_test_100bpm.gp5", default=None,
+    # No default song. A take is only worth its metadata: this one silently
+    # said "timing_test_100bpm.gp5" for a take of a completely different
+    # piece, and the analysis then reported 3 of 46 notes -- which reads
+    # exactly like a detector that has stopped working. Same lesson as the
+    # tuning: ask for what varies, never assume it.
+    ap.add_argument("--play-along", metavar="SONG", default=None,
                     help="statt der Uebungen einen Mitschnitt beim "
-                         "Durchspielen aufnehmen (Standard: der Timing-Test)")
+                         "Durchspielen aufnehmen; SONG ist die Tab-Datei, "
+                         "die dabei gespielt wird (Pflichtangabe)")
     ap.add_argument("--seconds", type=float, default=45.0,
                     help="Dauer des Mitschnitts (Standard 45)")
     args = ap.parse_args()

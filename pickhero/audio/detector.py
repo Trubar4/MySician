@@ -47,7 +47,7 @@ class PitchDetector:
         hop_size: int = 512,
         sample_rate: int = 44100,
         confidence_threshold: float = 0.8,
-        onset_threshold: float = 0.3,
+        onset_threshold: float = 0.05,
         noise_gate_db: float = -60.0,
         yin_tolerance: float = 0.15,
         calibration: dict | None = None,
