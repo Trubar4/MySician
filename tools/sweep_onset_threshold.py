@@ -120,6 +120,23 @@ def score(strikes, notes, offset, tempo):
     return heard, right, max(0, len(times) - heard), len(within)
 
 
+def _find_song(name: str) -> Path:
+    """The tab a manifest names, whether or not it spells the extension.
+
+    A manifest may say "timing_test_100bpm" or "x.gp"; appending ".gp5" to
+    either produced a path nothing could open, and the take was then reported
+    as missing rather than as a take of a song this repo does not carry.
+    """
+    song = REPO_ROOT / "songs" / name
+    if song.exists():
+        return song
+    for suffix in (".gp5", ".gp", ".gpx"):
+        candidate = song.with_name(song.name + suffix)
+        if candidate.exists():
+            return candidate
+    return song
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -147,8 +164,7 @@ def main() -> int:
                 print(f"{session.name}: im Manifest steht nicht, welcher "
                       f"Song gespielt wurde — uebersprungen\n")
                 continue
-            song = REPO_ROOT / "songs" / (
-                name if name.endswith(".gp5") else name + ".gp5")
+            song = _find_song(name)
             if not song.exists():
                 print(f"{session.name}: Songdatei fehlt ({name})\n")
                 continue

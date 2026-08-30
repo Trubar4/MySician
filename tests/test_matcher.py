@@ -1219,9 +1219,11 @@ class TestRescuingAPitchlessSingleNote:
         def __init__(self, confirm: bool):
             self._confirm = confirm
             self.asked = []
+            self.told = []
 
-        def confirms(self, audio, sample_rate, midi_note):
+        def confirms(self, audio, sample_rate, midi_note, sounding=()):
             self.asked.append(midi_note)
+            self.told = list(sounding)
             return self._confirm
 
         def verify(self, audio, sample_rate, expected_midi):
@@ -1428,6 +1430,37 @@ class TestRescuingAPitchlessSingleNote:
         assert matcher.get_note_state(note) == MatchType.HIT
         matcher.process_strike_windows([self._window(8192)])
         assert matcher.rescued_notes == 0        # not counted twice
+
+    def test_the_verifier_is_told_what_else_is_ringing(self):
+        """A partial identifies a note only if no other sounding string
+        produces it. Without that, every rival hypothesis a semitone away
+        feeds on the neighbours' partials -- measured on the player's own
+        arpeggio, 14 of 16 refusals had the written note winning at -0.7 to
+        -10 dB and failing on the margin alone."""
+        ringing = NoteEvent(timestamp_ms=700.0, duration_ms=900.0,
+                            midi_note=45, string=5, fret=0)
+        struck = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0,
+                           midi_note=59, string=3, fret=4)
+        matcher = _make_matcher([ringing, struck], timing_window_ms=120.0)
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == [59]
+        assert 45 in verifier.told
+
+    def test_but_never_the_note_being_asked_about(self):
+        """Its own partials are the evidence; excluding them would ask the
+        verifier to confirm a note from everything except itself."""
+        struck = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([struck])
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert 59 not in verifier.told
 
     def test_a_rescue_is_written_into_the_run_log(self):
         matcher, _, _ = self._played(confirm=True)

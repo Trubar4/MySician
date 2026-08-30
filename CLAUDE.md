@@ -489,6 +489,36 @@ the palm-muted takes are unchanged.
   50 ms nothing needed fixing: every fixed-tab control passes. A knob that changes nothing is a knob nobody can calibrate.
 - **A stored 0.3 is migrated**, the way a stored `buf_size` of 2048 is: there is no UI to set it, so the value came from the old default.
 
+## The Rescue Was Asking A Question With Half The Facts
+
+With the onset threshold fixed, the arpeggio's error budget is no longer about strikes arriving: 145 written picks, 134 strikes, **129 of them
+on the grid**. Of the 86 notes that still failed, **53 are "a strike is there and its pitch is subharmonic"** and only 12 have no strike at all.
+So the whole remaining question is what `ChordVerifier.confirms` does with those.
+
+The funnel said 32 held, 24 asked, **8 confirmed** — and the reason for the 16 refusals is not what it looked like:
+
+| why `confirms` said no | how many |
+|---|---|
+| the margin over the runner-up was under 8 dB | **14** |
+| a different note won outright | 2 |
+
+In those 14 the written note **won**, at -0.7 to -10.4 dB — practically the loudest thing in the window. It failed only because a rival
+hypothesis a semitone or two away scored nearly as high.
+
+**It scored high on partials that were not its own.** `confirms` passed `others=[]`, so every candidate could claim any partial in its bands,
+including those of the strings still ringing. It was built for a line played across the strings, where the neighbours are decaying and it
+hardly matters; in an arpeggio they are the loudest thing in the window.
+
+- **The tab already knows what is ringing** — a note sounds until the next note on its own string — so the matcher passes it
+  (`_sounding_beside`), and `_score` excludes those partials from every candidate. The same rule `verify` has always applied to the tones of a
+  chord, now applied to the tones that happen to be sounding.
+- **It cuts both ways, which is what makes it safe.** The written note's own score loses its shared partials too, and where its partials are
+  entirely a subset of what is already ringing, it becomes unconfirmable and the rescue abstains. That is the presumption of innocence, not a
+  loophole.
+- **Measured: the arpeggio goes 43 % → 49 %**, rescues 8 → 16, on the player's own recording against the real tab. The chorus take is
+  unchanged at 68 %, the damped control takes gain **+0**, every deliberate one-fret error is still caught, and no play-along take loses a
+  note.
+
 ## Two Tools Measured Themselves, Again
 
 Both were caught only because a control came back wrong, which is the third time in this project.

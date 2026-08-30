@@ -40,6 +40,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from collections.abc import Sequence
 
 from pickhero.audio.note_utils import midi_to_freq
 
@@ -271,6 +272,7 @@ class ChordVerifier:
 
     def confirms(
         self, audio: np.ndarray, sample_rate: int, midi_note: int,
+        sounding: Sequence[int] = (),
     ) -> bool:
         """Is this ONE written note actually present in the audio?
 
@@ -286,6 +288,17 @@ class ChordVerifier:
         be masked by, so "something else is louder" says only that another
         string is still ringing, which is the premise rather than evidence.
         Only a direct confirmation counts.
+
+        `sounding` is what the TAB says is still ringing on the other strings.
+        Without it every rival hypothesis a semitone or two away may claim any
+        partial in its bands, including the partials of the neighbours -- and
+        in an arpeggio the neighbours are loud, so the margin between the
+        written note and its rivals collapses even where the written note is
+        plainly the strongest thing there. Measured on the player's own take:
+        of 16 refusals, 14 had the written note winning at -0.7 to -10 dB and
+        failing on the margin alone. A partial identifies a note only if no
+        other sounding string produces it, which is the rule `verify` already
+        applies to the tones of a chord.
         """
         if len(audio) < min_window_samples(sample_rate):
             return False
@@ -296,8 +309,11 @@ class ChordVerifier:
         peak = float(mags.max()) + 1e-12
         min_hz = min_hz_for(len(audio), sample_rate)
         scores: dict[int, float] = {}
+        others = [m for m in dict.fromkeys(sounding) if m != midi_note]
         for cand in range(midi_note - self.span, midi_note + self.span + 1):
-            score = self._score(freqs, mags, peak, cand, [], sample_rate, min_hz)
+            score = self._score(freqs, mags, peak, cand,
+                                [m for m in others if m != cand],
+                                sample_rate, min_hz)
             if score is not None:
                 scores[cand] = score
         verdict = self._decide(midi_note, scores, allow_intruder=False)

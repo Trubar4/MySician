@@ -1038,6 +1038,18 @@ class NoteMatcher:
             for key in oldest:
                 del self._pending_rescues[key]
 
+    def _sounding_beside(self, note: NoteEvent, at_ms: float) -> list[int]:
+        """What the tab says is ringing on the OTHER strings at that moment.
+
+        A partial identifies a note only if no other sounding string produces
+        it. In a line played across the strings the neighbours are decaying
+        and it hardly matters; in an arpeggio they are the loudest thing in
+        the window, and without this the rival hypotheses next to the written
+        note feed on their partials until nothing can be confirmed.
+        """
+        active = self._timeline.get_active_notes_at_time(at_ms, 0.0)
+        return sorted({n.midi_note for n in active if n.string != note.string})
+
     def _apply_rescue(self, window: StrikeWindow) -> MatchResult | None:
         """Credit a held strike if the audio shows the written note present.
 
@@ -1054,7 +1066,8 @@ class NoteMatcher:
         if self._get_state(note) in (MatchType.HIT, MatchType.CLOSE):
             return None
         if not self._chord_verifier.confirms(
-                window.audio, window.sample_rate, note.midi_note):
+                window.audio, window.sample_rate, note.midi_note,
+                self._sounding_beside(note, window.timestamp_ms)):
             return None
         self._rerecord_match(note, MatchType.HIT)
         self.rescued_notes += 1
