@@ -3189,6 +3189,26 @@ class PlayingScreen:
         fh.write(f"misses\t{stats['misses']}\n")
         # What the score rests on. A six-string chord is credited from one
         # strike, so hits alone cannot say how much was actually heard.
+        # Where the score comes from, split by how many strings the tab
+        # writes at that instant. A chord is credited from one strike, so a
+        # single number cannot say whether 80 % was played or strummed: on
+        # the run that raised the question, single notes read 20 % and
+        # four-string chords 94 %.
+        from collections import Counter
+        per_onset = Counter(n.timestamp_ms for n in self._timeline.notes)
+        sizes: dict[int, list[int]] = {}
+        for note in self._timeline.notes:
+            state = matcher.get_note_state(note)
+            if state is MatchType.PENDING:
+                continue
+            row = sizes.setdefault(per_onset[note.timestamp_ms], [0, 0])
+            row[1] += 1
+            if state in (MatchType.HIT, MatchType.CLOSE):
+                row[0] += 1
+        for size in sorted(sizes):
+            green, total = sizes[size]
+            fh.write(f"chord_of_{size}\t{green}/{total}"
+                     f"\t{100 * green / total:.0f}%\n")
         fh.write(f"notes_heard_as_themselves\t{matcher.notes_proved}\n")
         fh.write(f"notes_credited_to_a_strum\t{matcher.notes_by_strum}\n")
         fh.write(f"strings_taken_back\t{matcher.chord_strings_corrected}\n")

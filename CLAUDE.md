@@ -561,7 +561,17 @@ partials are not a subset of a lower one — which in an open chord is most of t
 - **The two are counted apart now and reported apart.** `notes_heard_as_themselves` and `notes_credited_to_a_strum` in the run log, and a line
   under the score: *"389 of them were heard as themselves, 729 credited to a strum that was heard"*. On the player's run that is the whole
   answer — two thirds of the green rests on strums, not on notes. A percentage that mixes them cannot answer "was I really that good", and a
-  player who feels the score is too kind is reading something real.
+  player who feels the score is too kind is reading something real. Confirmed on the next run by the app's own instrumentation: **220 heard,
+  657 credited to a strum**, from 239 productive strikes.
+- **The run log now splits the score by chord size**, which is the line that makes it obvious: on that run, single notes **20 %**,
+  four-string chords **94 %**. The percentage was never a lie; it was adding two different things.
+- **And it cannot be lowered by checking the strings, because a missing string is not measurable.** The takes recorded for exactly this
+  question say so (`tools/check_missing_string.py`): scored against the CORRECT shape, a power chord's omitted fifth reads **-48 dB against
+  -21 dB** for one that was played — 27 dB apart, plainly separable. The same test on a six-string E major, with the high e left out, reads
+  **-37 dB against -45 dB at the tenth percentile of the played ones**: a **14 dB overlap**, and the omitted string scores HIGHER than the
+  played one does in the correct take. In a full chord the high strings' own partials are buried under the harmonics of the low ones, so
+  there is nothing left to measure. No threshold exists, and "a chord with a string left out still passes" is therefore not a policy that can
+  simply be reversed.
 - **The number was not lowered, because nothing measurable says by how much.** The takes that fitted the chord credit are ISOLATED chords with
   long gaps, where a verification window always arrives; in a dense song at 273 ms spacing it often does not. Tightening the credit is
   therefore unmeasurable with the recordings that exist — and this project does not ship a threshold it cannot re-fit. What is needed is a
