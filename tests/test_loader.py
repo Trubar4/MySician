@@ -133,8 +133,15 @@ class TestLoadGPFile:
         assert tl.metadata.tempo == 120
 
     def test_demo_v5_track0(self):
+        """771, not the 729 this asserted before repeats were played.
+
+        The file opens with |: over bars 0-2 and a first/second-time ending;
+        the loader walked every bar once and silently dropped the repeat AND
+        the second ending, so bar 4 was never played at all. The old number
+        was the bug written down.
+        """
         tl = load_gp_file(FIXTURES / "Demo_v5.gp5", track_index=0)
-        assert len(tl) == 729
+        assert len(tl) == 771
         assert tl.metadata.tempo == 165
         assert tl.metadata.track_name == "Rhythm Guitar"
 
@@ -303,3 +310,55 @@ class TestLegato:
         for note in load_gp_file(FIXTURES / "notes.gp5").notes:
             assert not note.hammer_to_next
             assert not note.leads_into_next
+
+
+class TestRepeatsAreActuallyPlayed:
+    """A tab that lines up with a recording only because it repeats.
+
+    Demo_v5.gp5 opens with |: over bars 0-2 and a first/second-time ending,
+    which is exactly the structure that used to be dropped: the section played
+    once and the second ending never at all.
+    """
+
+    def _plan(self):
+        import guitarpro
+        from pickhero.tabs.loader import (_bar_repeat, _build_tempo_map,
+                                          repeat_order)
+        song = guitarpro.parse(str(FIXTURES / "Demo_v5.gp5"))
+        headers = list(song.measureHeaders)
+        return headers, repeat_order([_bar_repeat(h) for h in headers])
+
+    def test_the_repeated_section_is_played_twice(self):
+        headers, order = self._plan()
+        assert order[:8] == [0, 1, 2, 3, 0, 1, 2, 4]
+
+    def test_no_written_bar_is_left_unplayed(self):
+        headers, order = self._plan()
+        assert set(order) == set(range(len(headers)))
+
+    def test_the_song_is_longer_than_what_is_written(self):
+        headers, order = self._plan()
+        assert len(order) > len(headers)
+
+    def test_the_measures_are_numbered_in_playing_order(self):
+        """A repeated section is two passes on screen, so saying "bar 12"
+        twice would make the weakest-section report name a place nobody can
+        find."""
+        tl = load_gp_file(FIXTURES / "Demo_v5.gp5", track_index=0)
+        assert [m.index for m in tl.measures] == list(range(len(tl.measures)))
+        assert all(b.start_ms >= a.start_ms
+                   for a, b in zip(tl.measures, tl.measures[1:]))
+
+    def test_the_backing_track_follows_the_same_plan(self):
+        """Two walks of their own is the same drift one level down."""
+        from pickhero.tabs.loader import extract_backing_track
+        tl = load_gp_file(FIXTURES / "Demo_v5.gp5", track_index=0)
+        backing = extract_backing_track(FIXTURES / "Demo_v5.gp5",
+                                        exclude_track_indices={0})
+        last = max(e.timestamp_ms for e in backing.events)
+        assert abs(last - tl.duration_ms) < 2000.0
+
+    def test_a_file_without_repeats_is_untouched(self):
+        """The control: canon.gp5 has none, and must read exactly as before."""
+        tl = load_gp_file(FIXTURES / "canon.gp5", track_index=0)
+        assert len(tl) == 1489

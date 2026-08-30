@@ -7,6 +7,7 @@ stdlib xml.etree. Builds note timelines for both formats.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 import xml.etree.ElementTree as ET
 import zipfile
@@ -73,6 +74,114 @@ class TempoMap:
         """Convert a relative duration (in ticks) to ms using the tempo at at_tick."""
         bpm = self.tempo_at_tick(at_tick)
         return (ticks / TICKS_PER_QUARTER) * (60_000 / bpm)
+
+
+@dataclass(frozen=True)
+class BarRepeat:
+    """What one bar says about repeats, in the terms both formats share.
+
+    GP3-5 and GPIF spell this differently -- `isRepeatOpen` / `repeatClose` /
+    `repeatAlternative` against `<Repeat start= end= count=>` and
+    `<AlternateEndings>` -- but they mean the same three things, so the order
+    is worked out once and every reader of a file is handed the same answer.
+    """
+
+    open: bool = False        # the bar carries |:
+    close_count: int = 0      # the bar carries :| and the section plays N times
+    alternatives: int = 0     # bitmask, bit k set = this bar belongs to ending k+1
+
+
+# A malformed file must not hang the app. No real song is longer than this in
+# bars, and a tab that claims to be is a tab nobody can play anyway.
+MAX_PLAYED_BARS = 20_000
+
+
+def repeat_order(bars: Sequence[BarRepeat]) -> list[int]:
+    """The order the bars are actually PLAYED in, as written-bar indices.
+
+    The loader used to walk the bars once each and ignore repeat signs
+    entirely. A tab that syncs to a recording only because it repeats is then
+    shorter in the app than the music is: the picture and the backing start
+    together and drift apart by the length of every repeat that was skipped.
+    Independent of practice speed, because that stretches both alike -- which
+    is exactly how the player described it.
+
+    Alternate endings are a bitmask per bar: bit k means the bar is played on
+    the (k+1)-th pass. A bar whose mask excludes the current pass is skipped,
+    which is what makes "[1. ... :|] [2. ...]" come out right.
+    """
+    order: list[int] = []
+    index = 0
+    start = 0            # where the current repeated section begins
+    pass_no = 1          # which time through that section this is
+    while index < len(bars) and len(order) < MAX_PLAYED_BARS:
+        bar = bars[index]
+        # Re-entering the SAME section must not reset the pass counter; only
+        # arriving at a new |: does.
+        if bar.open and index != start:
+            start, pass_no = index, 1
+        if bar.alternatives and not bar.alternatives & (1 << (pass_no - 1)):
+            index += 1                      # an ending meant for another pass
+            continue
+        order.append(index)
+        if bar.close_count > 1 and pass_no < bar.close_count:
+            pass_no += 1
+            index = start
+            continue
+        if bar.close_count:
+            # A later :| with no |: of its own repeats from here, which is what
+            # GP means by a close without an open.
+            start, pass_no = index + 1, 1
+        index += 1
+    return order
+
+
+@dataclass(frozen=True)
+class PlayedBar:
+    """One pass through one written bar.
+
+    Repeats mean a written bar can be played more than once, at different
+    times. Everything that walks a song -- the notes, the measure ranges, the
+    backing track -- needs the same answer to "when is this bar played", so
+    the answer is produced once and handed to all of them. Four call sites
+    each doing their own arithmetic is how the notes and the backing would
+    come to disagree, which is the same drift one level down.
+    """
+
+    play_index: int          # position in the played song
+    written_index: int       # which bar of the FILE this is
+    start_ms: float          # when it is played
+    written_start_ms: float  # where it sits in written time
+
+
+def played_bars(repeats: Sequence[BarRepeat],
+                written_starts: Sequence[float],
+                written_ends: Sequence[float]) -> list[PlayedBar]:
+    """Lay the written bars out in playing order, with real times."""
+    out: list[PlayedBar] = []
+    now = 0.0
+    for written in repeat_order(repeats):
+        out.append(PlayedBar(len(out), written, now, written_starts[written]))
+        now += max(0.0, written_ends[written] - written_starts[written])
+    return out
+
+
+def _bar_repeat(header) -> BarRepeat:
+    """Read one pyguitarpro measure header's repeat signs.
+
+    GP3-5 counts REPEATS, not passes: `repeatClose == 1` means "go back once",
+    so the section is played twice. The distinction is not cosmetic -- read as
+    a pass count it means "play once", and a first/second-time ending then
+    never reaches its second bar. The reference demo file lost exactly one bar
+    that way, which is how this was caught.
+    """
+    close = getattr(header, "repeatClose", -1)
+    close = 0 if close is None or close < 1 else close + 1
+    return BarRepeat(
+        open=bool(getattr(header, "isRepeatOpen", False)),
+        close_count=close,
+        alternatives=int(getattr(header, "repeatAlternative", 0) or 0),
+    )
 
 
 def is_guitar_track(track: guitarpro.Track) -> bool:
@@ -152,13 +261,33 @@ def _extract_slides(note) -> tuple[bool, int, int]:
     return to_next, slide_in, slide_out
 
 
-def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap) -> list[NoteEvent]:
-    """Extract all playable notes from a track."""
+def _song_plan(song: guitarpro.Song, tempo_map: TempoMap) -> list[PlayedBar]:
+    """When each written bar of this song is played.
+
+    The repeat signs live on the measure HEADERS, which every track shares, so
+    one plan serves the notes, the measure ranges and the backing track alike.
+    """
+    headers = list(getattr(song, "measureHeaders", []) or [])
+    if not headers:
+        return []
+    starts = [tempo_map.tick_to_ms(h.start) for h in headers]
+    ends = [tempo_map.tick_to_ms(h.start + h.length) for h in headers]
+    return played_bars([_bar_repeat(h) for h in headers], starts, ends)
+
+
+def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap,
+                   plan: Sequence[PlayedBar]) -> list[NoteEvent]:
+    """Extract all playable notes from a track, in playing order."""
     notes = []
-    for measure_idx, measure in enumerate(track.measures):
+    for bar in plan:
+        if bar.written_index >= len(track.measures):
+            continue        # a track shorter than the song's bar count
+        measure = track.measures[bar.written_index]
+        # A repeated bar is the same written music at a different time.
+        shift = bar.start_ms - bar.written_start_ms
         for voice in measure.voices:
             for beat in voice.beats:
-                timestamp_ms = tempo_map.tick_to_ms(beat.start)
+                timestamp_ms = tempo_map.tick_to_ms(beat.start) + shift
                 duration_ms = tempo_map.duration_ticks_to_ms(
                     beat.duration.time, beat.start
                 )
@@ -175,7 +304,7 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap) -> list[NoteEven
                             midi_note=note.realValue,
                             string=note.string,
                             fret=note.value,
-                            measure=measure_idx,
+                            measure=bar.play_index,
                             bend=_extract_bend(note),
                             slide_to_next=to_next,
                             slide_in=slide_in,
@@ -197,31 +326,35 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap) -> list[NoteEven
     return notes
 
 
-def _extract_measures(track: guitarpro.Track, tempo_map: TempoMap) -> list[MeasureInfo]:
-    """Extract measure time ranges from a track."""
+def _extract_measures(track: guitarpro.Track, tempo_map: TempoMap,
+                     plan: Sequence[PlayedBar]) -> list[MeasureInfo]:
+    """Measure time ranges, in playing order.
+
+    Numbered by where they are PLAYED rather than by where they are written,
+    because that is the bar the player is looking at: a repeated section is
+    two passes on screen and saying "bar 12" twice would make the weakest-
+    section report name a place nobody can find.
+    """
     measures = []
-    for idx, measure in enumerate(track.measures):
-        # Each measure has a header with start tick. We compute start/end from beats.
+    for bar in plan:
         beats_in_measure = []
-        for voice in measure.voices:
-            for beat in voice.beats:
-                beats_in_measure.append(beat.start)
-                beats_in_measure.append(beat.start + beat.duration.time)
+        if bar.written_index < len(track.measures):
+            for voice in track.measures[bar.written_index].voices:
+                for beat in voice.beats:
+                    beats_in_measure.append(beat.start)
+                    beats_in_measure.append(beat.start + beat.duration.time)
 
         if beats_in_measure:
-            start_tick = min(beats_in_measure)
-            end_tick = max(beats_in_measure)
-            start_ms = tempo_map.tick_to_ms(start_tick)
-            end_ms = tempo_map.tick_to_ms(end_tick)
+            shift = bar.start_ms - bar.written_start_ms
+            start_ms = tempo_map.tick_to_ms(min(beats_in_measure)) + shift
+            end_ms = tempo_map.tick_to_ms(max(beats_in_measure)) + shift
         else:
             # Empty measure — use previous end or 0
-            if measures:
-                start_ms = measures[-1].end_ms
-            else:
-                start_ms = 0.0
+            start_ms = measures[-1].end_ms if measures else bar.start_ms
             end_ms = start_ms
 
-        measures.append(MeasureInfo(index=idx, start_ms=start_ms, end_ms=end_ms))
+        measures.append(MeasureInfo(index=bar.play_index,
+                                    start_ms=start_ms, end_ms=end_ms))
     return measures
 
 
@@ -478,6 +611,60 @@ def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
     return notes
 
 
+def _gpif_bar_times(master_bars: Sequence[ET.Element],
+                    tempos: dict[int, float],
+                    initial_bpm: float) -> tuple[list[float], list[float],
+                                                 list[float]]:
+    """(bpm, written start, length) for every written bar."""
+    bpm = initial_bpm
+    starts: list[float] = []
+    lengths: list[float] = []
+    bpms: list[float] = []
+    now = 0.0
+    for idx, mb in enumerate(master_bars):
+        if idx in tempos:
+            bpm = tempos[idx]
+        parts = mb.findtext("Time", "4/4").split("/")
+        ts_num = int(parts[0]) if len(parts) == 2 else 4
+        ts_den = int(parts[1]) if len(parts) == 2 else 4
+        length = ts_num * (4.0 / ts_den) * (60_000.0 / bpm)
+        bpms.append(bpm)
+        starts.append(now)
+        lengths.append(length)
+        now += length
+    return bpms, starts, lengths
+
+
+def _gpif_bar_repeat(mb: ET.Element) -> BarRepeat:
+    """Read one GPIF MasterBar's repeat signs.
+
+    GPIF counts PASSES where GP3-5 counts repeats: `<Repeat end="true"
+    count="2">` is played twice, while GP5's `repeatClose == 1` also means
+    twice. The two conventions are off by one from each other, which is why
+    each format converts in its own reader and `BarRepeat.close_count` is
+    documented as the number of times the section is PLAYED. A count below 2
+    is not a repeat at all, and is read as none.
+    """
+    open_ = False
+    count = 0
+    rep = mb.find("Repeat")
+    if rep is not None:
+        open_ = str(rep.get("start", "false")).lower() == "true"
+        if str(rep.get("end", "false")).lower() == "true":
+            try:
+                count = int(rep.get("count", "2") or 2)
+            except ValueError:
+                count = 2
+            count = count if count >= 2 else 0
+    alternatives = 0
+    for part in (mb.findtext("AlternateEndings") or "").replace(",", " ").split():
+        try:
+            alternatives |= 1 << (int(part) - 1)
+        except ValueError:
+            continue
+    return BarRepeat(open=open_, close_count=count, alternatives=alternatives)
+
+
 def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline:
     """Load a GPIF score — GP6 (.gpx), GP7 or GP8 (.gp)."""
     root = ET.fromstring(_read_gpif(path))
@@ -608,22 +795,24 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
     # ── Walk MasterBars → extract notes and measures ─────────────────────
 
     master_bars = root.findall(".//MasterBar")
-    current_bpm = initial_bpm
-    current_ms = 0.0
+    # Written time first: a bar's tempo and length are properties of where it
+    # is WRITTEN, and the repeat signs only decide the order it is played in.
+    bar_bpm, bar_start, bar_length = _gpif_bar_times(master_bars, tempos,
+                                                     initial_bpm)
+    plan = played_bars([_gpif_bar_repeat(mb) for mb in master_bars],
+                       bar_start,
+                       [a + b for a, b in zip(bar_start, bar_length)])
+
     note_events: list[NoteEvent] = []
     measure_infos: list[MeasureInfo] = []
 
-    for mb_idx, mb in enumerate(master_bars):
-        if mb_idx in tempos:
-            current_bpm = tempos[mb_idx]
-
-        time_sig = mb.findtext("Time", "4/4")
-        parts = time_sig.split("/")
-        ts_num = int(parts[0]) if len(parts) == 2 else 4
-        ts_den = int(parts[1]) if len(parts) == 2 else 4
-
+    for played in plan:
+        mb_idx = played.written_index
+        mb = master_bars[mb_idx]
+        current_bpm = bar_bpm[mb_idx]
+        current_ms = played.start_ms
         measure_start_ms = current_ms
-        measure_duration_ms = ts_num * (4.0 / ts_den) * (60_000.0 / current_bpm)
+        measure_duration_ms = bar_length[mb_idx]
 
         # Get bar IDs for this master bar (one per track)
         bar_ids_text = mb.findtext("Bars", "").strip()
@@ -667,7 +856,7 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                             midi_note=midi_note,
                             string=our_string,
                             fret=fret,
-                            measure=mb_idx,
+                            measure=played.play_index,
                             bend=gpif_note.bend,
                             slide_to_next=gpif_note.slide_to_next,
                             slide_in=gpif_note.slide_in,
@@ -680,11 +869,10 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                     beat_pos_ms += dur_ms
 
         measure_infos.append(MeasureInfo(
-            index=mb_idx,
+            index=played.play_index,
             start_ms=measure_start_ms,
             end_ms=measure_start_ms + measure_duration_ms,
         ))
-        current_ms += measure_duration_ms
 
     # ── Build metadata and timeline ──────────────────────────────────────
 
@@ -829,14 +1017,18 @@ def _extract_gp7_backing_track(
     current_bpm = initial_bpm
     current_ms = 0.0
 
-    for mb_idx, mb in enumerate(master_bars):
-        if mb_idx in tempos:
-            current_bpm = tempos[mb_idx]
+    # The SAME plan _load_gp7_file lays the notes out on. A second walk of its
+    # own is how the picture and the backing would come to disagree.
+    bar_bpm, bar_start, bar_length = _gpif_bar_times(master_bars, tempos,
+                                                     initial_bpm)
+    plan = played_bars([_gpif_bar_repeat(mb) for mb in master_bars],
+                       bar_start,
+                       [a + b for a, b in zip(bar_start, bar_length)])
 
-        time_sig = mb.findtext("Time", "4/4")
-        parts = time_sig.split("/")
-        ts_num = int(parts[0]) if len(parts) == 2 else 4
-        ts_den = int(parts[1]) if len(parts) == 2 else 4
+    for played in plan:
+        mb = master_bars[played.written_index]
+        current_bpm = bar_bpm[played.written_index]
+        current_ms = played.start_ms
 
         bar_ids_text = mb.findtext("Bars", "").strip()
         bar_ids = bar_ids_text.split()
@@ -891,8 +1083,6 @@ def _extract_gp7_backing_track(
 
                     beat_pos_ms += dur_ms
 
-        measure_dur = ts_num * (4.0 / ts_den) * (60_000.0 / current_bpm)
-        current_ms += measure_dur
 
     return BackingTrack(events)
 
@@ -924,8 +1114,9 @@ def load_gp_file(path: str | Path, track_index: int | None = None) -> Timeline:
                 track = t
                 break
 
-    notes = _extract_notes(track, tempo_map)
-    measures = _extract_measures(track, tempo_map)
+    plan = _song_plan(song, tempo_map)
+    notes = _extract_notes(track, tempo_map, plan)
+    measures = _extract_measures(track, tempo_map, plan)
 
     metadata = SongMetadata(
         title=song.title or "",
@@ -959,6 +1150,10 @@ def extract_backing_track(
 
     song = guitarpro.parse(str(path))
     tempo_map = _build_tempo_map(song)
+    # The SAME plan the notes are laid out on. Two walks of their own is how
+    # the picture and the backing would come to disagree -- the very drift
+    # this expansion exists to remove, reintroduced one level down.
+    plan = _song_plan(song, tempo_map)
 
     if exclude_track_indices is None:
         exclude_track_indices = {
@@ -988,10 +1183,13 @@ def extract_backing_track(
             ))
 
         # Extract note events
-        for measure in track.measures:
-            for voice in measure.voices:
+        for bar in plan:
+            if bar.written_index >= len(track.measures):
+                continue
+            shift = bar.start_ms - bar.written_start_ms
+            for voice in track.measures[bar.written_index].voices:
                 for beat in voice.beats:
-                    timestamp_ms = tempo_map.tick_to_ms(beat.start)
+                    timestamp_ms = tempo_map.tick_to_ms(beat.start) + shift
                     duration_ms = tempo_map.duration_ticks_to_ms(
                         beat.duration.time, beat.start,
                     )

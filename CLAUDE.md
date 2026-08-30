@@ -730,6 +730,32 @@ already existed, so there is no second loader and a fix for one generation is a 
 - **`list_tracks` reads GPIF too.** Without it the track picker was empty for every GP6/7/8 file, because the caller asked the GP3-5 parser,
   the exception was swallowed, and "no tracks" looks like a song with one track rather than like a format nobody read.
 
+## Every Bar Was Played Exactly Once
+
+The player reported the picture and the backing recording drifting apart — synced at the start, about 25 s apart by 3:30, and **the same at 70 %
+as at 100 %**. That last detail is the one that matters: practice speed stretches the picture and the stretched recording alike, so it cannot
+open a growing gap. Something was missing from the song itself.
+
+Searching the loader for `repeat`, `alternate ending`, `coda`, `segno`, `D.C.` returned **nothing at all**. Every bar was played once. A tab that
+lines up with a recording only because it repeats is then shorter in the app than the music is, and the gap grows by the length of every repeat
+that was skipped.
+
+- **One plan, four readers.** The notes, the measure ranges and both backing-track extractions used to walk the bars themselves. `played_bars`
+  answers "when is this written bar played" once and hands the same answer to all of them — four walks of their own is exactly how the picture
+  and the backing would come to disagree, which is the same drift one level down.
+- **The two formats are off by one from each other.** GP3-5 counts REPEATS (`repeatClose == 1` means go back once, so twice through); GPIF
+  counts PASSES (`count="2"` means twice through). Read as a pass count, GP5's 1 means "play once" and a first/second-time ending never reaches
+  its second bar. `Demo_v5.gp5` lost exactly one bar that way, which is how it was caught — so each format converts in its own reader and
+  `BarRepeat.close_count` is documented as the number of times the section is PLAYED.
+- **Bars are numbered by where they are PLAYED**, not where they are written. A repeated section is two passes on screen, and saying "bar 12"
+  twice would make the weakest-section report name a place nobody can find.
+- **Measured on the reference fixture**, which turns out to contain exactly the structure that was being dropped: `Demo_v5.gp5` opens with `|:`
+  over bars 0-2 and a first/second-time ending. It now reads **771 notes over 52 bars against 729 over 49** — and bar 4, the second ending, was
+  previously never played at all. The old number in the test was the bug written down. `canon.gp5`, which has no repeats, is unchanged to the
+  note.
+- **The GPIF side is verified by injection**: `|:` and `:|` added to bars 4-7 of a real file lengthens it by exactly four bars and 8.7 s, and the
+  hand-built container in `tests/test_repeats.py` pins each convention.
+
 ## Seven Strings On A Six-String App
 
 Metal is written for seven and eight strings and this app plays six. The usual answer is "you need a seven-string"; the honest one is that the
