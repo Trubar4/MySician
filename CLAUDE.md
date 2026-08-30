@@ -536,6 +536,41 @@ moment with the device open and the song stopped, so the estimate never reached 
 - **A feature that cannot be seen working is indistinguishable from one that does not work**, and the only reason this was caught in a day is
   that the log prints `(nicht gemessen)` instead of quietly printing a number.
 
+## Eighty Percent That Does Not Feel Like Eighty Percent
+
+"I think it is better now, but not good. From what turns green I have the feeling I was far worse than the 80 % it shows." That reading is
+correct, and the run log says why. Between two runs of the same song, twenty minutes apart, only the onset threshold changed:
+
+| notes in the chord | written | at 0.30 | at 0.05 | gain |
+|---|---|---|---|---|
+| 1 | 282 | 18 % | **50 %** | +91 |
+| 2 | 88 | 58 % | 81 % | +20 |
+| 4 | 532 | 73 % | **91 %** | +97 |
+| 5 | 290 | 78 % | 82 % | +14 |
+| **6** | **192** | **55 %** | **94 %** | **+74** |
+| | 1384 | 59 % | 81 % | +296 |
+
+The single-note gain is the arpeggio and it is real — scored against the true tab on the player's own recording, that passage reads 43 %
+where it read 18 %. **The chord gain is a different thing entirely**, and it is not a measurement of the playing.
+
+**A four- to six-string chord is credited from ONE strike.** The strum is heard; the fretting of the other five strings is not, and monophonic
+detection can never report a second chord tone to confirm them. `chord_verify.py` is what polices that, and it can only convict a string whose
+partials are not a subset of a lower one — which in an open chord is most of them. Over the whole song it took back **6 strings**. So at
+711 strikes instead of 359, nearly every written chord has a qualifying strike near it, and nearly every chord goes fully green.
+
+- **The two are counted apart now and reported apart.** `notes_heard_as_themselves` and `notes_credited_to_a_strum` in the run log, and a line
+  under the score: *"389 of them were heard as themselves, 729 credited to a strum that was heard"*. On the player's run that is the whole
+  answer — two thirds of the green rests on strums, not on notes. A percentage that mixes them cannot answer "was I really that good", and a
+  player who feels the score is too kind is reading something real.
+- **The number was not lowered, because nothing measurable says by how much.** The takes that fitted the chord credit are ISOLATED chords with
+  long gaps, where a verification window always arrives; in a dense song at 273 ms spacing it often does not. Tightening the credit is
+  therefore unmeasurable with the recordings that exist — and this project does not ship a threshold it cannot re-fit. What is needed is a
+  play-along recording of a strummed CHORUS, not another arpeggio.
+- **Two candidate fixes were built and thrown away for changing nothing measurable.** Narrowing the hit window from 200 ms to 80 ms moves the
+  arpeggio by one note (43 % → 42 %). Refusing to let a strum's own second onset trim its verification window — a real effect, since an
+  isolated strum fires again 53 to 181 ms later — leaves the window count on that recording at exactly 109 either way. A constant that changes
+  nothing is a constant nobody can calibrate, the same reason `onset_min_interval_ms` lasted an hour.
+
 ## Timing Diagnosis
 
 Two numbers cannot say which timing problem a player has, so `matcher.timing_report()` (shown by **Y**) keeps the samples apart and names

@@ -2720,10 +2720,20 @@ class PlayingScreen:
             surface.blit(heard_surf,
                          (w // 2 - heard_surf.get_width() // 2, center_y + 92))
 
+            # And what the SCORE rests on. One strike credits a whole chord,
+            # so a number that mixes "heard" with "credited to the strum"
+            # cannot answer "was I really that good".
+            credit = self._credit_line()
+            if credit:
+                credit_surf = hint_font.render(credit, True, t.hud_text)
+                surface.blit(credit_surf,
+                             (w // 2 - credit_surf.get_width() // 2,
+                              center_y + 110))
+
             # "New Best!" indicator
             if self._is_new_best:
                 best_surf = stat_font.render("New Best!", True, (255, 220, 50))
-                surface.blit(best_surf, (w // 2 - best_surf.get_width() // 2, center_y + 100))
+                surface.blit(best_surf, (w // 2 - best_surf.get_width() // 2, center_y + 132))
 
             # Weakest sections
             weak = getattr(self, "_weakest_sections", [])
@@ -2774,6 +2784,31 @@ class PlayingScreen:
                 f"a written note")
         if taken_back:
             line += f"; {taken_back} strings taken back by the string check"
+        return line
+
+    def _credit_line(self) -> str:
+        """What the score rests on, said apart from the score itself.
+
+        A six-string chord is credited from ONE strike: the strum is heard,
+        the fretting of the other five is not. The chord verifier is what
+        polices that, and it can only convict a string whose partials are not
+        masked by a lower one -- which in an open chord is most of them. So a
+        percentage that mixes the two cannot answer "was I really that good",
+        and a player who feels the score is too kind is reading something
+        real. This says how much of it was actually heard.
+        """
+        if self._matcher is None:
+            return ""
+        proved = self._matcher.notes_proved
+        strum = self._matcher.notes_by_strum
+        if proved + strum == 0:
+            return ""
+        line = f"{proved} of them were heard as themselves"
+        if strum:
+            line += f", {strum} credited to a strum that was heard"
+        rescued = self._matcher.rescued_notes
+        if rescued:
+            line += f" ({rescued} confirmed from the audio)"
         return line
 
     # -- Timing report (Y) --
@@ -3152,6 +3187,10 @@ class PlayingScreen:
         fh.write(f"hits\t{stats['hits']}\n")
         fh.write(f"close\t{stats['close']}\n")
         fh.write(f"misses\t{stats['misses']}\n")
+        # What the score rests on. A six-string chord is credited from one
+        # strike, so hits alone cannot say how much was actually heard.
+        fh.write(f"notes_heard_as_themselves\t{matcher.notes_proved}\n")
+        fh.write(f"notes_credited_to_a_strum\t{matcher.notes_by_strum}\n")
         fh.write(f"strings_taken_back\t{matcher.chord_strings_corrected}\n")
         fh.write(f"chord_windows_judged\t{matcher.chord_verifications}\n")
         fh.write(f"rescued_notes\t{matcher.rescued_notes}\n")

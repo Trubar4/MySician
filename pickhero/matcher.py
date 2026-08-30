@@ -247,6 +247,10 @@ class NoteMatcher:
 
         # Statistics
         self.hits = 0
+        # How the credited notes were credited -- see _record_match.
+        self.notes_proved = 0
+        self.notes_by_strum = 0
+        self._credit_proved: dict[tuple[float, int], bool] = {}
         self.close = 0
         self.misses = 0
 
@@ -432,6 +436,11 @@ class NoteMatcher:
 
     def _undo_match(self, event: NoteEvent, match_type: MatchType) -> None:
         """Reverse the counters a previous _record_match applied."""
+        if match_type in (MatchType.HIT, MatchType.CLOSE):
+            if self._credit_proved.pop(self._note_key(event), True):
+                self.notes_proved -= 1
+            else:
+                self.notes_by_strum -= 1
         if match_type == MatchType.HIT:
             self.hits -= 1
             self._measure_stats[event.measure]["hits"] -= 1
@@ -450,9 +459,29 @@ class NoteMatcher:
         self._undo_match(event, previous)
         self._record_match(event, match_type)
 
-    def _record_match(self, event: NoteEvent, match_type: MatchType) -> None:
-        """Record a match for a note, updating stats and measure stats."""
+    def _record_match(self, event: NoteEvent, match_type: MatchType,
+                      proved: bool = True) -> None:
+        """Record a match for a note, updating stats and measure stats.
+
+        `proved` says what the credit rests on. A note whose own written pitch
+        was heard is proved; a chord sibling credited because the STRUM was
+        heard is not -- the evidence is that something was strummed there, and
+        monophonic detection can never report a second chord tone to confirm
+        the rest. The chord verifier is what is supposed to police that, and
+        it convicts only strings whose partials are not masked by a lower one
+        -- which in an open chord is most of them.
+
+        So the two are counted apart and reported apart. A percentage that
+        mixes them cannot answer "was I really that good", which is the
+        question a six-string chord scoring 94 % raises.
+        """
         self._set_state(event, match_type)
+        if match_type in (MatchType.HIT, MatchType.CLOSE):
+            self._credit_proved[self._note_key(event)] = proved
+            if proved:
+                self.notes_proved += 1
+            else:
+                self.notes_by_strum += 1
         if match_type == MatchType.HIT:
             self.hits += 1
             self._measure_stats[event.measure]["hits"] += 1
@@ -505,7 +534,7 @@ class NoteMatcher:
                 continue
             inherited = self._legato_credit(note)
             if inherited is not None:
-                self._record_match(note, inherited)
+                self._record_match(note, inherited, proved=False)
                 results.append(MatchResult(
                     match_type=inherited,
                     matched_events=[note],
@@ -605,7 +634,7 @@ class NoteMatcher:
         if len(struck) < MIN_UNPITCHED_CHORD_STRINGS:
             return None
         for note in struck:
-            self._record_match(note, MatchType.HIT)
+            self._record_match(note, MatchType.HIT, proved=False)
         if self._chord_verifier is not None and sample_pos is not None:
             self._pending_verifications[sample_pos] = struck
         return MatchResult(
@@ -744,7 +773,8 @@ class NoteMatcher:
                 matched_events = []
                 for sibling in siblings:
                     if self._get_state(sibling) == MatchType.PENDING:
-                        self._record_match(sibling, match_type)
+                        self._record_match(sibling, match_type,
+                                           proved=sibling is best)
                         matched_events.append(sibling)
             elif self.chord_partial_credit and len(siblings) > 1:
                 # Partial credit mode: only mark the matched note
@@ -764,14 +794,15 @@ class NoteMatcher:
                     # Auto-complete remaining pending notes
                     for s in siblings:
                         if self._get_state(s) == MatchType.PENDING:
-                            self._record_match(s, match_type)
+                            self._record_match(s, match_type, proved=False)
                             matched_events.append(s)
             else:
                 # Easy mode (old behavior): mark all chord siblings
                 matched_events = []
                 for sibling in siblings:
                     if self._get_state(sibling) == MatchType.PENDING:
-                        self._record_match(sibling, match_type)
+                        self._record_match(sibling, match_type,
+                                           proved=sibling is best)
                         matched_events.append(sibling)
 
                 # Ensure the best note itself is included
@@ -1485,6 +1516,9 @@ class NoteMatcher:
         self.hits = 0
         self.close = 0
         self.misses = 0
+        self.notes_proved = 0
+        self.notes_by_strum = 0
+        self._credit_proved.clear()
         self._measure_stats.clear()
         self.reset_timing_samples()
         # Chords awaiting their audio window belong to the abandoned position

@@ -1440,3 +1440,74 @@ class TestRescuingAPitchlessSingleNote:
         matcher.reset()
         assert matcher._pending_rescues == {}
         assert matcher.rescued_notes == 0
+
+
+class TestWhatTheScoreRestsOn:
+    """A six-string chord is credited from ONE strike.
+
+    The strum is heard; the fretting of the other five is not. The chord
+    verifier is what polices that, and it can only convict a string whose
+    partials are not masked by a lower one -- in an open chord, most of them.
+    So a percentage that mixes the two cannot answer "was I really that
+    good", which is exactly what the player asked when a run came back at
+    81 % and felt far kinder than the playing had been.
+    """
+
+    def _chord(self, n):
+        return [_note_event(1000.0, midi_note=m, string=s)
+                for m, s in [(40, 6), (47, 5), (52, 4), (56, 3), (59, 2),
+                             (64, 1)][:n]]
+
+    def _strum(self, midi, subharmonic=True, unpitched=False):
+        note = DetectedNote(midi_note=midi, frequency=82.0, confidence=0.95,
+                            name="E2", is_onset=True, unpitched=unpitched)
+        note.subharmonic = subharmonic
+        return TimestampedNote(note=note, timestamp_ms=1000.0, sample_pos=0)
+
+    def test_one_strike_credits_six_notes_and_says_so(self):
+        notes = self._chord(6)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._strum(40)], 1000.0)
+        assert matcher.hits == 6
+        assert matcher.notes_proved == 1
+        assert matcher.notes_by_strum == 5
+
+    def test_a_single_note_is_proved_by_its_own_pitch(self):
+        note = _note_event(1000.0, midi_note=55, string=3)
+        matcher = _make_matcher([note])
+        matcher.process_detected_notes(
+            [self._strum(55, subharmonic=False)], 1000.0)
+        assert (matcher.notes_proved, matcher.notes_by_strum) == (1, 0)
+
+    def test_an_unpitched_strum_proves_nothing_about_any_string(self):
+        notes = self._chord(4)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes(
+            [self._strum(0, subharmonic=False, unpitched=True)], 1000.0)
+        assert matcher.hits == 4
+        assert (matcher.notes_proved, matcher.notes_by_strum) == (0, 4)
+
+    def test_the_two_always_add_up_to_what_is_green(self):
+        notes = self._chord(6)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._strum(40)], 1000.0)
+        matcher.process_detected_notes([], 9000.0)
+        stats = matcher.get_statistics()
+        assert (matcher.notes_proved + matcher.notes_by_strum
+                == stats["hits"] + stats["close"])
+
+    def test_a_verdict_taken_back_is_taken_off_the_count_too(self):
+        """The verifier convicts a string after the fact; the tally that says
+        what the score rests on has to follow it."""
+        notes = self._chord(4)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._strum(40)], 1000.0)
+        before = matcher.notes_proved + matcher.notes_by_strum
+        matcher._rerecord_match(notes[2], MatchType.MISS)
+        assert matcher.notes_proved + matcher.notes_by_strum == before - 1
+
+    def test_a_reset_clears_it(self):
+        matcher = _make_matcher(self._chord(6))
+        matcher.process_detected_notes([self._strum(40)], 1000.0)
+        matcher.reset()
+        assert (matcher.notes_proved, matcher.notes_by_strum) == (0, 0)
