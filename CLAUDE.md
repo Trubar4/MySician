@@ -627,6 +627,42 @@ partials are not a subset of a lower one — which in an open chord is most of t
   isolated strum fires again 53 to 181 ms later — leaves the window count on that recording at exactly 109 either way. A constant that changes
   nothing is a constant nobody can calibrate, the same reason `onset_min_interval_ms` lasted an hour.
 
+## The Key That Wrote The File And Said Nothing
+
+"Mit D passiert nichts." It was doing its job perfectly and never saying so. `_run_log_note` was drawn **only inside
+`_draw_completion_overlay`**, so pressing `D` in the middle of a song wrote the file and put its confirmation on a screen the player would not
+see for another four minutes. The same fault, twice over: `_auto_gate_note` was assigned in two places and **read nowhere at all** — the
+automatic gate moved silently every song.
+
+- **A note that expires, over the footer.** `_say()` puts one line on screen for `STATUS_NOTE_SECONDS`; `_status_note_text()` returns it only
+  while it is still news. Both halves matter — a status message that outlives its situation is the fault this project already shipped for the
+  MP3 offset, and one that is never shown is this one.
+- **Leaving the song writes the run too.** Until now only reaching the last bar did, and nobody plays four minutes to the end while something is
+  being diagnosed — so the run most worth reading was reliably the one that produced no file. `stop_audio` writes it unless the song already
+  finished (which wrote its own). It says how far it got; that is what `notes_reached` is for.
+- **This is the fourth time.** A backing track that silently does not play, a `U` with no line to name `Shift+U`, an automatic gate that shipped
+  inert with `(nicht gemessen)` as its only tell, and now this. **A feature that cannot be seen working is indistinguishable from one that does
+  not work** — and here it cost a week of diagnosis, because the file the whole investigation depended on was never being produced.
+
+## Does The Picture Keep Real Time?
+
+"Bei Takt 9 liege ich mit der Visualisierung bereits 300 ms zurück. Bis Takt 17 sind es nochmals ca. 300 ms." At 132 BPM in 4/4 that is bar 9 at
+14.5 s and bar 17 at 29.1 s — **a linear 2.1 %**, from the first bars, not something that starts later. Two mechanisms produce exactly that and
+they are fixed in different places: the tab and the recording disagreeing (measured at −1.08 % for this song — see the chapter above), or the
+app's own clock losing time.
+
+The picture advances by `perf_counter` deltas capped at `MAX_FRAME_STALL_S` (250 ms), so **every stalled frame is song time discarded** — a
+machine that stalls scrolls slower than the wall, and the recording, which keeps its own clock in the sound card, walks away from it. That is a
+picture falling behind sound, and it had no number.
+
+- **`clock_real_s`, `clock_song_s`, `clock_ratio`, `clock_lost_ms`, `clock_stalls`** in the run log. Uncapped elapsed on one side, what was
+  actually credited on the other, so the difference IS the time the cap threw away. A ratio of 0.98 says the picture ran 2 % slow and names the
+  stalls that did it; a ratio of 1.000 says the app is honest and the divergence is in the files or in the recording's own transport
+  (`mp3_worst_drift_ms`, `mp3_resyncs`, `mp3_worst_seek_ms`).
+- **Not reset by a seek or a loop.** The question is what the machine did over the whole sitting, not since the last arrow key.
+- Same rule as strikes-heard beside notes-credited, and as `frame_ms_median` beside `frames_over_budget_percent`: a percentage cannot be
+  debugged, and two causes that look identical on screen have to be counted apart.
+
 ## Timing Diagnosis
 
 Two numbers cannot say which timing problem a player has, so `matcher.timing_report()` (shown by **Y**) keeps the samples apart and names

@@ -625,7 +625,6 @@ class PlayingScreen:
         self._room_samples: deque[float] = deque(maxlen=ROOM_WINDOW)
         self._loudest_db: float = SIGNAL_UNKNOWN_DB
         self._auto_gate: bool = bool(getattr(self._config.audio, "auto_gate", True))
-        self._auto_gate_note: str = ""
         # Every level seen while the song ran, for the run log.
         self._level_samples: list[float] = []
 
@@ -647,6 +646,20 @@ class PlayingScreen:
         self._show_timing: bool = False
         self._timing_export_note: str = ""
         self._run_log_note: str = ""
+        # What just happened, for the few seconds it is still news. The run
+        # log's own note was drawn ONLY on the completion screen, so pressing
+        # D in the middle of a song wrote the file and said nothing at all --
+        # which is what the player reported as "D does nothing". A feature
+        # that cannot be seen working is indistinguishable from one that does
+        # not work, and this project has now shipped that fault four times.
+        self._status_note: str = ""
+        self._status_note_until: float = 0.0
+        # What the picture's clock did against real time -- see the advance
+        # in update(). Not reset by a seek or a loop: the question is what
+        # the machine did over the whole sitting.
+        self._clock_real_ms: float = 0.0
+        self._clock_song_ms: float = 0.0
+        self._clock_stalls: int = 0
         # Whether K has already been applied in this run. A residual after a
         # sync means something different to the player than an unmeasured one:
         # the first says "press K", the second says "press it again".
@@ -931,7 +944,18 @@ class PlayingScreen:
             # the "it stands still and then jumps" they reported. Losing the
             # time is the cheaper of the two: the recording is pulled back
             # into line by the ordinary sync a frame later.
-            real_elapsed = min(now - self._last_tick, MAX_FRAME_STALL_S)
+            raw_elapsed = now - self._last_tick
+            real_elapsed = min(raw_elapsed, MAX_FRAME_STALL_S)
+            # The picture's own clock, measured against the wall it is
+            # supposed to be keeping. A player reporting the notes falling
+            # behind the sound is reporting exactly this ratio, and without it
+            # the app cannot be told apart from the recording running away.
+            # Uncapped on one side, what was actually spent on the other, so
+            # the difference is the time the cap discarded.
+            self._clock_real_ms += raw_elapsed * 1000.0
+            self._clock_song_ms += real_elapsed * 1000.0
+            if raw_elapsed > MAX_FRAME_STALL_S:
+                self._clock_stalls += 1
             self._playback_ms += real_elapsed * 1000.0 * self._tempo_factor
             # REAL seconds, not song time: at 70 % speed the song is shorter
             # than the time you spent on it, and it is the time you spent that
@@ -2337,6 +2361,13 @@ class PlayingScreen:
                 surface.blit(advice_surf,
                              (w - advice_surf.get_width() - 12, right_y))
 
+        # What just happened, over the footer, while it is still news.
+        note = self._status_note_text()
+        if note:
+            note_surf = hint_font.render(note, True, t.hud_accent)
+            surface.blit(note_surf,
+                         (w // 2 - note_surf.get_width() // 2, h - 74))
+
         # Bottom-center: play state + controls
         self._blit_footer_lines(surface, layout, self._footer_lines(), t.hud_text)
         if self._mp3_dialog_due:
@@ -2566,7 +2597,7 @@ class PlayingScreen:
         self._auto_gate = False
         self._config.audio.auto_gate = False
         self._config.save()
-        self._auto_gate_note = "Gate von Hand — Automatik aus (O zum Zurueckschalten)"
+        self._say("Gate von Hand — Automatik aus (O zum Zurueckschalten)")
 
     def _auto_gate_from_room(self) -> None:
         """Set the gate from the room, when a song starts.
@@ -2610,8 +2641,7 @@ class PlayingScreen:
         highest = min(self._loudest_db - QUIET_MARGIN_DB, MAX_GATE_DB)
         if self._noise_gate_db > highest:
             self.set_noise_gate_db(highest)
-            self._auto_gate_note = (
-                f"Gate automatisch auf {self._noise_gate_db:.0f} dB gesenkt")
+            self._say(f"Gate automatisch auf {self._noise_gate_db:.0f} dB gesenkt")
 
     def _draw_signal_meter(self, surface: pygame.Surface, font: pygame.font.Font,
                            screen_w: int, y: int) -> None:
@@ -3120,6 +3150,25 @@ class PlayingScreen:
         fh.write(f"frames_over_budget_percent\t{100 * late / len(frames):.0f}\n")
         fh.write(f"frames_measured\t{len(frames)}\n")
 
+    STATUS_NOTE_SECONDS = 8.0
+
+    def _say(self, text: str) -> None:
+        """Put one line on screen for a few seconds.
+
+        For what the live HUD cannot say by itself -- a file that was just
+        written, a gate that just moved. It expires rather than being cleared
+        by hand, because a status message that outlives its situation is the
+        other half of the same fault.
+        """
+        self._status_note = text
+        self._status_note_until = time.monotonic() + self.STATUS_NOTE_SECONDS
+
+    def _status_note_text(self) -> str:
+        """The note, while it is still news."""
+        if self._status_note and time.monotonic() < self._status_note_until:
+            return self._status_note
+        return ""
+
     def _export_run_log(self) -> None:
         """Write everything the audio path did this run, as one text file.
 
@@ -3133,6 +3182,7 @@ class PlayingScreen:
         """
         if self._matcher is None:
             self._run_log_note = "Nothing to write — audio was off (A)."
+            self._say(self._run_log_note)
             return
         stamp = time.strftime("%Y%m%d_%H%M%S")
         song = "".join(c if c.isalnum() else "_" for c in (self._song_key or "song"))[:40]
@@ -3146,10 +3196,12 @@ class PlayingScreen:
                 self._write_run_log(fh)
         except OSError as exc:
             self._run_log_note = f"Could not write the file: {exc}"
+            self._say(self._run_log_note)
             return
         done = self._song_completed or self._playback_ms >= self._timeline.duration_ms
         where = "" if done else f" — up to {self._playback_ms / 1000:.0f} s"
         self._run_log_note = f"Run written to {path}{where}"
+        self._say(self._run_log_note)
 
     def _write_run_log(self, fh) -> None:
         """The body of the run log. Split out so a test can read it back."""
@@ -3277,6 +3329,14 @@ class PlayingScreen:
                      f"{getattr(player, 'worst_seek_ms', 0.0):.0f}\n")
             fh.write(f"mp3_time_scale\t{player.time_scale:.3f}\n")
         self._frame_line(fh)
+        if self._clock_real_ms > 0:
+            ratio = self._clock_song_ms / self._clock_real_ms
+            fh.write(f"clock_real_s\t{self._clock_real_ms / 1000:.1f}\n")
+            fh.write(f"clock_song_s\t{self._clock_song_ms / 1000:.1f}\n")
+            fh.write(f"clock_ratio\t{ratio:.4f}\n")
+            fh.write(f"clock_lost_ms\t"
+                     f"{self._clock_real_ms - self._clock_song_ms:.0f}\n")
+            fh.write(f"clock_stalls\t{self._clock_stalls}\n")
         fh.write(f"timing_samples\t{len(matcher.timing_samples)}\n")
         fh.write(f"timing_ambiguous\t{matcher.timing_ambiguous}\n")
 
@@ -3906,6 +3966,13 @@ class PlayingScreen:
 
     def stop_audio(self) -> None:
         """Public method to stop audio (called on state transitions)."""
+        # Leaving the song is the end of the run, and until now it wrote
+        # nothing: only reaching the last bar did. A four-minute song is
+        # almost never played to its end while something is being diagnosed,
+        # so the one run worth reading was the one that produced no file. It
+        # says how far it got -- that is what notes_reached is for.
+        if self._matcher is not None and not self._song_completed:
+            self._export_run_log()
         self.close_session()
         self._stop_audio()
         self._audio_enabled = False

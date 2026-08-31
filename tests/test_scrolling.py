@@ -4,6 +4,7 @@ Tests the pure computation functions in PlayingScreen without needing
 a running PyGame display.
 """
 
+import time
 import pygame
 import pytest
 
@@ -2789,3 +2790,133 @@ class TestHeadUsesTheHeightItHas:
         flat = screen._fret_font(40.0, 8.0, 2)
         assert flat.get_height() <= 16
         pygame.display.quit()
+
+
+class TestDMustLookLikeItDidSomething:
+    """The run log was written and never mentioned unless the song ended.
+
+    Pressing D in the middle of a song wrote the file and put its note only
+    on the completion screen, so on a four-minute song the key was
+    indistinguishable from a dead one -- which is exactly what the player
+    reported. And leaving the song wrote nothing at all, so the run most
+    worth reading was the one that produced no file.
+    """
+
+    def _screen(self, tmp_path, monkeypatch):
+        import pickhero.config as config_module
+        from pickhero.matcher import NoteMatcher
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / ".pickhero")
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=200.0,
+                           midi_note=64, string=1, fret=0)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline)
+        screen._matcher = NoteMatcher(timeline)
+        screen._song_key = "a song"
+        return screen
+
+    def test_d_mid_song_says_where_the_file_went(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._playback_ms = 500.0
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_d, mod=0))
+        written = list((tmp_path / ".pickhero").glob("run_*.txt"))
+        assert len(written) == 1
+        note = screen._status_note_text()
+        # The name AND that it is only half a run: a number is readable only
+        # next to what it is a number of.
+        assert written[0].name in note and "up to" in note
+
+    def test_the_note_expires_rather_than_outliving_the_moment(
+        self, tmp_path, monkeypatch
+    ):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._say("something happened")
+        assert screen._status_note_text() == "something happened"
+        screen._status_note_until = time.monotonic() - 1.0
+        assert screen._status_note_text() == ""
+
+    def test_audio_off_says_so_on_screen_too(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._matcher = None
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_d, mod=0))
+        assert "audio was off" in screen._status_note_text()
+        assert not list((tmp_path / ".pickhero").glob("run_*.txt"))
+
+    def test_leaving_a_song_writes_the_run(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._playback_ms = 500.0
+        screen.stop_audio()
+        written = list((tmp_path / ".pickhero").glob("run_*.txt"))
+        assert len(written) == 1
+        assert "notes_reached" in written[0].read_text()
+
+    def test_a_finished_song_is_not_written_twice(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._song_completed = True
+        screen._export_run_log()
+        screen.stop_audio()
+        assert len(list((tmp_path / ".pickhero").glob("run_*.txt"))) == 1
+
+    def test_nothing_is_written_when_audio_was_never_on(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._matcher = None
+        screen.stop_audio()
+        assert not list((tmp_path / ".pickhero").glob("run_*.txt"))
+
+
+class TestThePicturesOwnClock:
+    """Whether the notes keep real time is a number, not an impression.
+
+    A player reporting the visualisation falling behind the sound is
+    reporting one ratio, and without it in the log the app cannot be told
+    apart from the recording running away -- which is fixed somewhere else
+    entirely.
+    """
+
+    def _screen(self, tmp_path, monkeypatch):
+        import pickhero.config as config_module
+        from pickhero.matcher import NoteMatcher
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / ".pickhero")
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=200.0,
+                           midi_note=64, string=1, fret=0)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline)
+        screen._matcher = NoteMatcher(timeline)
+        screen._song_key = "a song"
+        return screen
+
+    def test_a_stall_is_counted_and_the_lost_time_named(self, tmp_path,
+                                                        monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._playing = True
+        ticks = iter([0.0, 0.016, 1.016])
+        monkeypatch.setattr(time, "perf_counter", lambda: next(ticks))
+        screen.update()   # sets _last_tick
+        screen.update()   # an ordinary frame
+        screen.update()   # a one-second stall
+        assert screen._clock_stalls == 1
+        lost = screen._clock_real_ms - screen._clock_song_ms
+        assert 740 < lost < 760      # 1000 ms spent, 250 ms of it credited
+        assert screen._clock_song_ms / screen._clock_real_ms < 0.3
+
+    def test_an_honest_machine_reads_one(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._playing = True
+        ticks = iter([0.0, 0.016, 0.032, 0.048])
+        monkeypatch.setattr(time, "perf_counter", lambda: next(ticks))
+        for _ in range(4):
+            screen.update()
+        assert screen._clock_stalls == 0
+        assert screen._clock_song_ms == screen._clock_real_ms
+
+    def test_the_run_log_carries_it(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._clock_real_ms = 30_000.0
+        screen._clock_song_ms = 29_400.0
+        screen._clock_stalls = 3
+        screen._export_run_log()
+        text = list((tmp_path / ".pickhero").glob("run_*.txt"))[0].read_text()
+        assert "clock_ratio\t0.9800" in text
+        assert "clock_lost_ms\t600" in text
+        assert "clock_stalls\t3" in text
