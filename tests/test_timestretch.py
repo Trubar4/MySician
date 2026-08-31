@@ -152,3 +152,28 @@ class TestTheCache:
             (cache / f"{i:03d}.wav").write_bytes(b"x")
         timestretch._prune(cache)
         assert len(list(cache.glob("*.wav"))) == timestretch.MAX_CACHED
+
+
+class TestNearbySpeedsAreDifferentFiles:
+    """The readable part of the name is rounded to whole percent.
+
+    That was enough while the speed moved in 5 % steps. A per-song speed
+    correction moves in fractions of one, so two corrections a third of a
+    percent apart both read "099" -- and without the tempo in the hash they
+    would share a file, so a second attempt at syncing a recording would
+    silently play the copy built for the first.
+    """
+
+    def test_a_third_of_a_percent_apart_do_not_collide(self, tmp_path):
+        f = tmp_path / "song.mp3"
+        f.write_bytes(b"x" * 10)
+        a = timestretch.cache_name(f, 0.9891)
+        b = timestretch.cache_name(f, 0.9932)
+        assert a != b
+        assert a.split("_")[1] == b.split("_")[1] == "099"
+
+    def test_the_same_speed_is_the_same_file(self, tmp_path):
+        f = tmp_path / "song.mp3"
+        f.write_bytes(b"x" * 10)
+        assert (timestretch.cache_name(f, 0.9891)
+                == timestretch.cache_name(f, 0.9891))

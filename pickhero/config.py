@@ -28,6 +28,15 @@ MAX_LATENCY_OFFSET_MS = 300.0
 # deleted, 54 % of single-note picks never producing a strike at all against
 # 84 % of chord picks. A gate above the ceiling is that bug's residue rather
 # than a choice, and is corrected on load.
+# How far the recording's speed may be corrected against the tab. A real
+# mismatch is around a percent -- 1.09 % on the song this was built for --
+# so ten percent is far outside anything a tab and its recording produce,
+# and a value past it means the two sync points were not what they looked
+# like. Refusing is better than silently playing the song at the wrong
+# speed, which is indistinguishable from a broken recording.
+MIN_MP3_RATE = 0.9
+MAX_MP3_RATE = 1.1
+
 MAX_GATE_DB = -50.0
 # Below this a gate is indistinguishable from no gate, and it is where the
 # HUD's own level meter starts, so a marker outside it could not be drawn.
@@ -140,6 +149,13 @@ class Config:
     # offset because an MP3 decoder emits encoder padding before the music
     # and how much depends on the encoder, so this cannot be derived.
     song_mp3_offsets: dict = field(default_factory=dict)
+    # How fast the recording runs against the tab, per song. A tab is a fixed
+    # grid; a band is not, so a downloaded tab and a recording of the real
+    # performance walk apart -- measured at 1.09 % on the song that prompted
+    # this, which is 2.7 s over four minutes. Set by lining the recording up
+    # at two places and letting the app fit the line between them. 1.0 means
+    # untouched, which is what every song starts at.
+    song_mp3_rates: dict = field(default_factory=dict)
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     # Song keys the player has starred. A list rather than a set because it
@@ -224,6 +240,26 @@ class Config:
     def set_mp3_offset_for(self, song_key: str, offset_ms: float) -> None:
         if song_key:
             self.song_mp3_offsets[song_key] = float(offset_ms)
+
+    def mp3_rate_for(self, song_key: str) -> float:
+        """This song's recording speed against the tab; 1.0 is untouched."""
+        if not song_key:
+            return 1.0
+        try:
+            rate = float(self.song_mp3_rates.get(song_key, 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+        return rate if MIN_MP3_RATE <= rate <= MAX_MP3_RATE else 1.0
+
+    def set_mp3_rate_for(self, song_key: str, rate: float) -> None:
+        """Store it, or forget it when it says nothing (1.0 is no setting)."""
+        if not song_key:
+            return
+        rate = max(MIN_MP3_RATE, min(MAX_MP3_RATE, float(rate)))
+        if abs(rate - 1.0) < 1e-6:
+            self.song_mp3_rates.pop(song_key, None)
+        else:
+            self.song_mp3_rates[song_key] = rate
 
     def get_string_calibration(self, string: int) -> StringCalibration | None:
         """Return calibration for a string (1-6), or None if not calibrated."""

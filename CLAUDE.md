@@ -821,6 +821,26 @@ So the files agree and the 21 s the player sees is made in the app. Three things
 
 `mp3_worst_drift_ms` is updated on every frame, not only at a correction, so a run log can carry the answer for the remaining case.
 
+## The Offset Says Where It Starts, Not How Fast It Runs
+
+A recording gets a per-song offset, and an offset is a constant: it can put the first bar in the right place and nothing else. When the tab and the recording run at different speeds — 1.09 % on the song this was built for, 2.7 s over four minutes — the offset that is right at the start is wrong by two and a half seconds at the end, and there is no value that is right at both.
+
+**Shift+S takes the two.** Line the recording up near the start, line it up near the end, and the line between them is the speed. From offsets `O1` at song `S1` and `O2` at `S2`, `rate = rate_old x (1 - (O2-O1)/(S2-S1))`, and the offset is rewritten so the first point the player demonstrated does not move.
+
+- **It goes into the LENGTH of the built copy, never into `time_scale`.** The scale is what makes one real second advance the song by `tempo` seconds — put a correction there and the notes scroll at the wrong speed, which is the one thing this must not do. `_mp3_build_tempo()` is `tempo x rate`, so the practice speed and the correction both land in `timestretch.build` and nothing else changes.
+- **Measured end to end on the player's own files**, tab against recording by chroma:
+
+| | Wanderung | gesamt | groesster Rest |
+|---|---|---|---|
+| original | **-10.85 ms/s** | **-2.67 s** | 423 ms |
+| after the correction | **+0.00 ms/s** | **+0.00 s** | 464 ms |
+
+  The systematic walk is gone completely; what is left is the band's own tempo moving, which nothing can follow. **A repair, not a cure** — and the HUD and this file both say so rather than promising sync.
+- **`_mp3_source_fits` could not see it.** A rate correction changes the file while leaving `time_scale` exactly where it was, so the old check reported a fit and the copy was never built. `_mp3_loaded_build` records what the loaded source was made for; where it is unknown (a source this screen did not load) the scale still answers, but only while no correction is wanted.
+- **And the stretch cache would have served the wrong file.** `cache_name` put the tempo in the readable part rounded to whole percent and hashed only the path — fine while the speed moved in 5 % steps, silently wrong the moment corrections move in fractions of one: 0.9891 and 0.9932 both read `099` and shared a file, so a second attempt at syncing a recording would have played the first attempt's copy. The tempo is in the hash now.
+- **Two points closer than `MIN_SYNC_SPAN_MS` (30 s) are refused**, and the first point is KEPT — the offset moves in 10 ms steps, so over five seconds one keypress is 0.2 %, a fifth of the whole effect invented by the last key pressed. A rate outside 0.9-1.1 is refused outright and named: a real mismatch is about a percent, and playing a song at 80 % of its speed is indistinguishable from a broken recording.
+- **Below 0.1 % nothing is built.** That is the threshold `stretch` itself gives up at, so a build would return the audio unchanged — five seconds of work bought with nothing.
+
 ## The Band Did Not Play To A Click
 
 The player measured the picture against the recording bar by bar — and then measured it again at 70 % speed, where **the same bars were the same number of milliseconds out**. That one comparison settles what three sessions of guessing could not: anything the app loses (a stalled frame, a late resync) is proportional to REAL time, so at 70 % it would be 1.43x larger in song time. An offset that is unchanged in song milliseconds is a property of the FILES.

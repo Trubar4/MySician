@@ -152,7 +152,15 @@ def cache_name(path: Path, tempo_factor: float) -> str:
         stamp = f"{stat.st_size}_{int(stat.st_mtime)}"
     except OSError:
         stamp = "0_0"
-    key = hashlib.sha1(f"{path.resolve()}|{stamp}".encode()).hexdigest()[:12]
+    # The tempo goes in the HASH, not only in the readable part. That part
+    # is rounded to whole percent, which was enough while the speed moved in
+    # 5 % steps -- and silently wrong the moment a per-song speed correction
+    # arrived: 0.9891 and 0.9932 both read "099" and would have shared one
+    # file, so a second attempt at syncing a recording would quietly play
+    # the first attempt's copy.
+    key = hashlib.sha1(
+        f"{path.resolve()}|{stamp}|{tempo_factor:.6f}".encode()
+    ).hexdigest()[:12]
     return f"{path.stem[:32]}_{int(round(tempo_factor * 100)):03d}_{key}.wav"
 
 

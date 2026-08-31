@@ -22,7 +22,7 @@ from pickhero.audio.mp3_playback import Mp3Player, pick_audio_file
 from pickhero.audio import timestretch
 from pickhero import config as config_module
 from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
-                             MIN_GATE_DB, Config)
+                             MAX_MP3_RATE, MIN_GATE_DB, MIN_MP3_RATE, Config)
 from pickhero.matcher import (FINE_MS, STRING_MIN_SAMPLES, MatchType,
                               NoteMatcher)
 from pickhero import practice_log
@@ -337,6 +337,12 @@ FRAME_BUDGET_MS = 1000.0 / 60.0
 # only teleports the picture.
 MAX_FRAME_STALL_S = 0.25
 
+# How far apart the two sync points must be. The offset is dialled in 10 ms
+# steps, so one keypress over a short span is a large speed error: over 30 s
+# it is 0.03 %, against the ~1 % the correction is for; over 5 s it would be
+# 0.2 %. The start and the end of the song are what this wants.
+MIN_SYNC_SPAN_MS = 30_000.0
+
 # How long seeks have to stop arriving before the recording follows them.
 # A held arrow key repeats every 40 ms and every repeat used to be a
 # play(start=), which decodes the file up to that point -- 25 of them a
@@ -434,6 +440,12 @@ def format_time(ms: float) -> str:
     minutes = total_seconds // 60
     seconds = total_seconds % 60
     return f"{minutes}:{seconds:02d}"
+
+
+def _clock_text(ms: float) -> str:
+    """A song position as a player reads it off a transport."""
+    total = max(0, int(ms // 1000))
+    return f"{total // 60}:{total % 60:02d}"
 
 
 def _offset_text(ms: float) -> str:
@@ -602,6 +614,13 @@ class PlayingScreen:
         # seconds of work and the player hears nothing for all of it -- "one
         # moment" with nothing moving is indistinguishable from broken.
         self._mp3_stretch_progress = 0.0
+        # The build the loaded source was made for, so a rate change is seen
+        # even though it leaves time_scale untouched.
+        self._mp3_loaded_build: float | None = None
+        # The first of the two places the player lines the recording up at,
+        # as (song ms, offset ms). Not remembered across songs: it describes
+        # one act of syncing, not a setting.
+        self._sync_anchor: tuple[float, float] | None = None
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         if guide_track is not None and len(guide_track) > 0:
@@ -1128,6 +1147,11 @@ class PlayingScreen:
             self._set_loop_end(self._playback_ms)
         elif event.key == pygame.K_p:
             self._toggle_loop()
+        elif event.key == pygame.K_s and event.mod & pygame.KMOD_SHIFT:
+            if event.mod & pygame.KMOD_CTRL:
+                self._clear_sync_rate()
+            else:
+                self._set_sync_point()
         elif event.key == pygame.K_b:
             if event.mod & pygame.KMOD_SHIFT:
                 self._toggle_guide_track()
@@ -2244,6 +2268,7 @@ class PlayingScreen:
             "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
             "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
+            "|  Shift+S: audio speed from 2 points (Ctrl+Shift+S: clear)  "
             "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
             "|  Y: timing report  |  D: run log  |  H: help"
@@ -3363,6 +3388,8 @@ class PlayingScreen:
             fh.write(f"mp3_worst_seek_ms\t"
                      f"{getattr(player, 'worst_seek_ms', 0.0):.0f}\n")
             fh.write(f"mp3_time_scale\t{player.time_scale:.3f}\n")
+        fh.write(f"mp3_rate\t{self._mp3_rate():.4f}"
+                 f"\t({(1 / self._mp3_rate() - 1) * 100:+.2f} % gedehnt)\n")
         self._frame_line(fh)
         if self._clock_real_ms > 0:
             ratio = self._clock_song_ms / self._clock_real_ms
@@ -3516,6 +3543,9 @@ class PlayingScreen:
             "Shift+N / Shift+M: shift the recording by 10 ms",
             "Ctrl+N / Ctrl+M: by a second   Ctrl+Shift: by ten seconds",
             "  (reaches 8 minutes, for a tab that is only the solo)",
+            "Shift+S: line the recording up at two places and let the app",
+            "  work out its speed — the offset says where it starts, this",
+            "  says how fast it runs. Ctrl+Shift+S puts it back.",
             "+/-: scroll faster / slower     G: hit window",
             "N/M: MIDI backing earlier / later   Alt+N/M: by a second",
             "TAB: choose track     H: this help     ESC: song list",
@@ -4033,6 +4063,10 @@ class PlayingScreen:
         player = Mp3Player(path)
         if player.open():
             self._mp3_player = player
+            # The file as it was made: build tempo 1.0. Without this the
+            # source never counts as fitting, and the app rebuilds a copy of
+            # a song that needed none.
+            self._mp3_loaded_build = 1.0
             self._mp3_note = ""
         else:
             # Named rather than swallowed: a file that has been moved or
@@ -4123,14 +4157,48 @@ class PlayingScreen:
                 and self._mp3_source_fits())
 
     def _mp3_scale(self) -> float:
-        """File milliseconds per song millisecond at the current speed."""
+        """File milliseconds per song millisecond at the current speed.
+
+        Set by the practice speed ALONE, and the speed correction below does
+        not belong in it: the file plays at real time, so this is what makes
+        one real second advance the song by `tempo` seconds. A correction put
+        here would change how fast the song scrolls, which is the one thing
+        it must not do. It goes into the length of the BUILT copy instead.
+        """
         return 1.0 / self._tempo_factor if self._tempo_factor > 0 else 1.0
 
+    def _mp3_rate(self) -> float:
+        """How fast this recording runs against the tab; 1.0 is untouched."""
+        getter = getattr(self._config, "mp3_rate_for", None)
+        return getter(self._song_key) if getter else 1.0
+
+    def _mp3_build_tempo(self) -> float:
+        """What `timestretch.build` has to be asked for.
+
+        It returns a copy `1 / tempo` times as long, and two independent
+        things want a say in that length: the practice speed, and how far the
+        recording runs away from the tab. At full speed with no correction
+        this is 1.0 and the original file is used untouched.
+        """
+        return self._tempo_factor * self._mp3_rate()
+
     def _mp3_source_fits(self) -> bool:
-        """Whether the loaded file plays this song at this practice speed."""
+        """Whether the loaded file plays this song at this speed AND rate.
+
+        The scale alone cannot answer it: a rate correction changes the file
+        while leaving the scale exactly where it was, so a check on the scale
+        would report a fit and the correction would never be built.
+        """
         if self._mp3_player is None:
             return False
-        return abs(self._mp3_player.time_scale - self._mp3_scale()) < 1e-6
+        if abs(self._mp3_player.time_scale - self._mp3_scale()) >= 1e-6:
+            return False
+        if self._mp3_loaded_build is None:
+            # A source this screen did not load itself. All that is known is
+            # what the player reports, which is the scale -- enough while no
+            # correction is wanted, and never enough once one is.
+            return abs(self._mp3_rate() - 1.0) < 1e-6
+        return abs(self._mp3_loaded_build - self._mp3_build_tempo()) < 1e-6
 
     def _ensure_mp3_source(self) -> None:
         """Load the file this speed needs, building it if it does not exist.
@@ -4145,13 +4213,18 @@ class PlayingScreen:
         """
         if self._mp3_player is None or self._mp3_muted or self._mp3_source_fits():
             return
-        wanted = self._tempo_factor
-        if wanted >= 1.0:
-            self._mp3_player.set_source(self._mp3_path(), 1.0)
+        wanted = self._mp3_build_tempo()
+        # The same threshold `stretch` itself gives up at: below it the build
+        # returns the audio unchanged, so spending five seconds on a copy of
+        # the original would be work bought with nothing.
+        if abs(wanted - 1.0) < 1e-3:
+            self._mp3_player.set_source(self._mp3_path(), self._mp3_scale())
+            self._mp3_loaded_build = wanted
             return
         if self._mp3_stretch_matches(self._mp3_stretch_done, wanted):
             self._mp3_player.set_source(self._mp3_stretch_done[2],
                                         self._mp3_scale())
+            self._mp3_loaded_build = wanted
             return
         if self._mp3_stretch_matches(self._mp3_stretch_failed, wanted):
             return                             # already said so on screen
@@ -4176,7 +4249,7 @@ class PlayingScreen:
             self._mp3_stretch_progress = fraction
             # Stepping the tempo down three times should not build three
             # copies before reaching the one that was asked for.
-            return self._tempo_factor == tempo
+            return abs(self._mp3_build_tempo() - tempo) < 1e-6
 
         def work() -> None:
             try:
@@ -4307,6 +4380,82 @@ class PlayingScreen:
         """
         self._mp3_note = ""
 
+    def _set_sync_point(self) -> None:
+        """Two places lined up by hand become a speed for the whole song.
+
+        The offset can only say WHERE the recording starts. A tab is a fixed
+        grid and a band is not, so a downloaded tab and a recording of the
+        real performance walk apart -- 1.09 % on the song this was built for,
+        2.7 s over four minutes, which no single offset can follow. Given the
+        offset that is right at two places, the line between them is the
+        speed, and that the app can play.
+
+        It is a repair and not a cure, and it has to be offered as one: on
+        that song the local rate runs from 0.5 to 1.8 % section by section,
+        because nobody played to a click. The best single correction leaves
+        about 400 ms standing, against 2700 without it.
+        """
+        if self._mp3_player is None:
+            self._say("No backing track — Shift+U to pick one")
+            return
+        here = (self._playback_ms, self._mp3_offset())
+        if self._sync_anchor is None:
+            self._sync_anchor = here
+            self._say(f"Sync point 1 at {_clock_text(here[0])} — go near the "
+                      f"end, line it up with Shift+N/M, press Shift+S again")
+            return
+        s1, o1 = self._sync_anchor
+        s2, o2 = here
+        if abs(s2 - s1) < MIN_SYNC_SPAN_MS:
+            # The offset is dialled in 10 ms steps, so a short span turns
+            # one keypress into a large speed error. Kept rather than
+            # dropped: the player only has to move further away.
+            self._say(f"Too close to sync point 1 — at least "
+                      f"{MIN_SYNC_SPAN_MS / 1000:.0f} s apart, "
+                      f"the start and the end are best")
+            return
+        old_rate = self._mp3_rate()
+        rate = old_rate * (1.0 - (o2 - o1) / (s2 - s1))
+        if not (MIN_MP3_RATE <= rate <= MAX_MP3_RATE):
+            self._sync_anchor = None
+            self._say(f"That would play the recording at "
+                      f"{rate * 100:.0f} % — the two points cannot both be "
+                      f"right; start again with Shift+S")
+            return
+        setter = getattr(self._config, "set_mp3_rate_for", None)
+        if setter is None:
+            return
+        setter(self._song_key, rate)
+        # The offset has to move with it, or fixing the drift throws away the
+        # alignment the player just demonstrated at the first point.
+        self._set_mp3_offset(s1 - (s1 - o1) * old_rate / rate)
+        self._sync_anchor = None
+        self._config.save()
+        self._say(f"Recording stretched by {(1.0 / rate - 1.0) * 100:+.2f} % "
+                  f"— building it now")
+
+    def _clear_sync_rate(self) -> None:
+        """Back to the recording as it was made."""
+        self._sync_anchor = None
+        setter = getattr(self._config, "set_mp3_rate_for", None)
+        if setter is not None:
+            setter(self._song_key, 1.0)
+            self._config.save()
+        self._say("Recording speed correction cleared")
+
+    def _set_mp3_offset(self, offset_ms: float) -> None:
+        """Store the recording's offset and move the recording to match."""
+        new = max(-MAX_MP3_OFFSET_MS, min(MAX_MP3_OFFSET_MS, offset_ms))
+        setter = getattr(self._config, "set_mp3_offset_for", None)
+        if setter is None or not self._song_key:
+            return
+        setter(self._song_key, new)
+        self._config.save()
+        # Whatever the note said, the number is the news now.
+        self._clear_mp3_note()
+        if self._mp3_player is not None and self._mp3_plays():
+            self._mp3_player.seek(self._mp3_ms(self._playback_ms))
+
     def _adjust_mp3_offset(self, delta_ms: float) -> None:
         """Shift the recording against the notes (Shift+N earlier, Shift+M later).
 
@@ -4322,17 +4471,7 @@ class PlayingScreen:
         """
         if not self._song_key:
             return
-        new = max(-MAX_MP3_OFFSET_MS,
-                  min(MAX_MP3_OFFSET_MS, self._mp3_offset() + delta_ms))
-        setter = getattr(self._config, "set_mp3_offset_for", None)
-        if setter is None:
-            return
-        setter(self._song_key, new)
-        self._config.save()
-        # Whatever the note said, the number is the news now.
-        self._clear_mp3_note()
-        if self._mp3_player is not None and self._mp3_plays():
-            self._mp3_player.seek(self._mp3_ms(self._playback_ms))
+        self._set_mp3_offset(self._mp3_offset() + delta_ms)
 
     def _mp3_hud_text(self) -> str:
         """What the HUD says about the recording, or "" when there is nothing."""
@@ -4354,12 +4493,24 @@ class PlayingScreen:
         if self._mp3_is_stuck():
             return (f"Audio: not following the song — this file cannot be "
                     f"seeked into; try OGG or WAV — {name}")
-        if self._mp3_stretch_matches(self._mp3_stretch_failed, self._tempo_factor):
+        if self._mp3_stretch_matches(self._mp3_stretch_failed,
+                                     self._mp3_build_tempo()):
             return f"Audio: {self._mp3_stretch_failed[2]} — {name}"
         if not self._mp3_source_fits():
-            return (f"Audio: fitting to {int(self._tempo_factor * 100)} % speed "
+            # Two different reasons for the same wait, and a line saying
+            # "fitting to 100 % speed" would name neither.
+            if abs(self._tempo_factor - 1.0) < 1e-6:
+                what = f"to this tab ({(1 / self._mp3_rate() - 1) * 100:+.2f} %)"
+            else:
+                what = f"to {int(self._tempo_factor * 100)} % speed"
+            return (f"Audio: fitting {what} "
                     f"— {self._mp3_stretch_progress:.0%} — {name}")
-        return (f"Audio: {_offset_text(self._mp3_offset())} "
+        rate = self._mp3_rate()
+        speed = ("" if abs(rate - 1.0) < 1e-6
+                 else f"  [{(1 / rate - 1) * 100:+.2f} % Shift+S] ")
+        if self._sync_anchor is not None:
+            speed = "  [sync point 1 set — line up near the end, Shift+S] "
+        return (f"Audio: {_offset_text(self._mp3_offset())}{speed} "
                 f"(Shift+N/M ±10ms, Ctrl ±1s, Ctrl+Shift ±10s) — {name}")
 
     def _midi_all(self) -> list:
