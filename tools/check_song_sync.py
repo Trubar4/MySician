@@ -46,7 +46,13 @@ FRAME = 8192
 # Windows this long are compared against the recording. Long enough to carry a
 # phrase, short enough that a real drift shows as a slope rather than a blur.
 WINDOW_S = 20.0
-STEP_S = 15.0
+STEP_S = 6.0
+# One row printed per this many windows. The step above is what the LOCAL
+# rate check needs -- at 15 s a whole minute held three windows and the
+# uniformity test silently fell back to a single bucket, which is how a
+# rate that doubles came back reported as steady. The table on screen is a
+# different question and stays readable at every fourth row.
+PRINT_EVERY = 4
 MAX_LAG_S = 40.0
 # How far from the best lag a rival has to be to count as a rival at all.
 RUNNER_UP_GUARD_S = 5.0
@@ -57,6 +63,19 @@ RUNNER_UP_GUARD_S = 5.0
 # instead of the drift. The estimator tolerates outliers; nothing pretends to
 # identify them in advance.
 OUTLIER_S = 3.0
+
+# What counts as "apart". The old verdict called anything under 3 SECONDS
+# "in sync" -- a threshold nobody fitted, and this song landed at 2.9 s and
+# was reported as agreeing while the player was watching the picture walk
+# a beat and a half away from the sound. 100 ms is the usual limit for
+# picture and sound being taken as one event, and it is close to the app's
+# own hit window; the app corrects its recording at 90 ms.
+AUDIBLE_MS = 100.0
+
+# Two local rates differing by more than this are not one tempo. A single
+# stretch factor can only follow a constant rate, so this is what decides
+# whether a correction exists at all.
+RATE_SPREAD_MS = 4.0
 
 
 def decode(path: Path) -> tuple[np.ndarray, int]:
@@ -240,9 +259,14 @@ def main() -> int:
 
     print(f"\nVERSATZ  ({used} von {len(rows)} Fenstern auf der Geraden)")
     print(f"  {'Tab-Zeit':>9}{'Versatz':>10}{'erwartet':>11}{'Rest':>8}")
-    for (t, lag, _), fitted, res in zip(rows, slope * times + intercept,
-                                        residual):
-        mark = "" if abs(res) <= OUTLIER_S else "   Ausreisser"
+    for i, ((t, lag, _), fitted, res) in enumerate(
+            zip(rows, slope * times + intercept, residual)):
+        out = abs(res) > OUTLIER_S
+        # Every window is FITTED; only the table is thinned, and an outlier
+        # is always shown -- it is the thing worth seeing.
+        if i % PRINT_EVERY and not out:
+            continue
+        mark = "   Ausreisser" if out else ""
         print(f"  {int(t) // 60:6d}:{int(t) % 60:02d}{lag:9.1f}s"
               f"{fitted:10.1f}s{res:8.1f}{mark}")
     if used < 4:
@@ -253,15 +277,53 @@ def main() -> int:
 
     print(f"\n  Anfang {intercept:+.1f}s, Wanderung {slope * 1000:+.1f} ms "
           f"pro Sekunde ({slope * 100:+.2f} %)")
+
+    # Is the rate CONSTANT? That is the whole question behind "can one
+    # number fix this", and a single fitted line cannot answer it -- it
+    # reports an average and hides a rate that doubles halfway through. A
+    # band playing without a click does exactly that, and no correction
+    # factor, offset or stretch can follow it.
+    print("\n  Abschnitt        lokale Wanderung")
+    locals_ = []
+    # Inliers only. A window that matched the wrong chorus is 14 s out and
+    # would invent a rate change wherever it happens to fall.
+    ok = np.abs(residual) <= OUTLIER_S
+    for lo in range(0, int(times[-1]), 45):
+        sel = ok & (times >= lo) & (times < lo + 60)
+        if sel.sum() >= 5:
+            m = float(np.polyfit(times[sel], lags[sel], 1)[0])
+            locals_.append(m)
+            print(f"  {lo:4d}-{lo + 60:4d}s      {m * 1000:+8.2f} ms/s")
+
     total = slope * (times[-1] - times[0])
-    if abs(total) < 3.0:
+    worst = float(np.abs(residual[ok]).max()) if ok.any() else 0.0
+    print(f"\n  Insgesamt {total:+.1f}s ueber den Song.")
+    if abs(total) * 1000 < AUDIBLE_MS:
         print("  -> Tab und Aufnahme laufen zusammen. Was in der App "
               "auseinanderlaeuft,\n     entsteht in der App: Offset, "
               "Resync oder verlorene Frames.")
+        return 0
+
+    reaches = AUDIBLE_MS / 1000.0 / abs(slope) if slope else float("inf")
+    print(f"  -> Tab und Aufnahme laufen auseinander. {AUDIBLE_MS:.0f} ms "
+          f"sind nach {reaches:.0f}s erreicht.")
+    if len(locals_) < 3:
+        # Not enough clean windows to say either way, and saying "steady"
+        # for want of data is how the first version of this reported a rate
+        # that doubles as constant.
+        print("     Ob die Wanderung gleichmaessig ist, laesst sich mit "
+              "so wenigen sauberen\n     Fenstern nicht sagen.")
+    elif (max(locals_) - min(locals_)) * 1000 > RATE_SPREAD_MS:
+        print(f"     Die Wanderung ist NICHT gleichmaessig "
+              f"({min(locals_) * 1000:+.1f} bis {max(locals_) * 1000:+.1f} "
+              f"ms/s), also\n     wurde die Aufnahme nicht zu einem Klick "
+              f"gespielt. Eine einzige Korrektur\n     von "
+              f"{-slope * 100:+.2f} % liesse bis zu {worst * 1000:.0f} ms "
+              f"stehen -- besser, aber nicht sauber.")
     else:
-        print(f"  -> Tab und Aufnahme selbst laufen um {total:.1f}s "
-              f"auseinander.\n     Das kann keine Einstellung in der App "
-              f"ausgleichen.")
+        print(f"     Die Wanderung ist gleichmaessig, also reicht eine "
+              f"Korrektur von {-slope * 100:+.2f} %\n     "
+              f"(Restfehler bis {worst * 1000:.0f} ms).")
     return 0
 
 

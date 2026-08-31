@@ -2973,3 +2973,40 @@ class TestAnInputThatHearsTheRoom:
         screen = self._screen(peak=-9.2, room=-37.3)
         screen._playing = False
         assert screen._level_advice() == ""
+
+
+class TestLeavingWritesOneLogNotTwo:
+    """stop_audio is reached more than once on the way out.
+
+    The player's upload had two logs a second apart for one run, and the
+    second was written after the recording had been closed -- so it was
+    missing every mp3 line while claiming to describe the same run.
+    """
+
+    def _screen(self, tmp_path, monkeypatch):
+        import pickhero.config as config_module
+        from pickhero.matcher import NoteMatcher
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / ".pickhero")
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=200.0,
+                           midi_note=64, string=1, fret=0)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline)
+        screen._matcher = NoteMatcher(timeline)
+        screen._song_key = "a song"
+        screen._playback_ms = 500.0
+        return screen
+
+    def test_two_calls_write_one_file(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.stop_audio()
+        screen.stop_audio()
+        assert len(list((tmp_path / ".pickhero").glob("run_*.txt"))) == 1
+
+    def test_the_guard_never_silences_d(self, tmp_path, monkeypatch):
+        """The guard is for the way out, not for the key. D is a request."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.stop_audio()
+        screen._run_log_note = ""
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_d, mod=0))
+        assert "Run written" in screen._run_log_note

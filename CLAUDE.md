@@ -821,6 +821,32 @@ So the files agree and the 21 s the player sees is made in the app. Three things
 
 `mp3_worst_drift_ms` is updated on every frame, not only at a correction, so a run log can carry the answer for the remaining case.
 
+## The Band Did Not Play To A Click
+
+The player measured the picture against the recording bar by bar — and then measured it again at 70 % speed, where **the same bars were the same number of milliseconds out**. That one comparison settles what three sessions of guessing could not: anything the app loses (a stalled frame, a late resync) is proportional to REAL time, so at 70 % it would be 1.43x larger in song time. An offset that is unchanged in song milliseconds is a property of the FILES.
+
+The app's own numbers say the same thing from the other side: `mp3_worst_drift_ms 53`, `mp3_resyncs 0`, `clock_ratio 0.9968` with all 1052 lost ms and all 7 stalls spent at startup. **The recording is played within 53 ms of where the song says it should be, and the picture keeps real time.** What is 1.7 s out is the tab against the music — which no clock in the app touches.
+
+Re-measured on the chroma curve at a 6-second step:
+
+| Abschnitt | lokale Wanderung |
+|---|---|
+| 0-60 s | -10.4 ms/s |
+| 45-105 s | **-5.2** |
+| 90-150 s | -7.0 |
+| 135-195 s | **-17.7** |
+| 180-240 s | -14.0 |
+
+**The rate varies by a factor of three, so no single correction exists.** A 1995 rock band played to no click and the tab is a fixed grid at 132 BPM; the best possible stretch factor (+1.09 %) still leaves **423 ms** standing. That is worth having — it beats 2.7 s — but it is a repair, not a cure, and it must be offered as one.
+
+- **The old verdict called this song "in sync".** `check_song_sync.py` compared the total drift against a guessed **3 seconds** and the song landed at 2.9 — so it printed "Tab und Aufnahme laufen zusammen" while measuring -1.08 %, and sent the whole investigation into the app. The threshold is `AUDIBLE_MS` (100 ms) now, which is where picture and sound stop reading as one event and is near the app's own 90 ms resync trigger. **A threshold nobody fitted is a threshold that will one day answer the opposite of the measurement it is made of.**
+- **And the uniformity test measured itself first.** At `STEP_S = 15` a 60-second bucket held three windows, too few to fit, so the check fell back to a single bucket and reported a rate that triples as **steady**. The step is 6 s now and fewer than three buckets says "cannot tell" rather than "steady". Same lesson as `analyze_ringing.py` and `check_ringing_rescue.py`, for the fourth time.
+- **The printed table is thinned, not the fit.** Every window is fitted; every fourth is shown, plus every outlier, because an outlier is the thing worth seeing.
+
+## Leaving A Song Wrote The Log Twice
+
+The player's upload had two logs one second apart for one run, and the second was **missing every mp3 line** while claiming to describe the same run. `stop_audio` is reached more than once on the way out — the screen is torn down and the state change calls it again — and by the second call the recording had been closed. `_run_log_written` guards the leaving path only: `D` is a request and must always produce a file.
+
 ## Every Bar Was Played Exactly Once
 
 The player reported the picture and the backing recording drifting apart — synced at the start, about 25 s apart by 3:30, and **the same at 70 %

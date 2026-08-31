@@ -660,6 +660,12 @@ class PlayingScreen:
         self._clock_real_ms: float = 0.0
         self._clock_song_ms: float = 0.0
         self._clock_stalls: int = 0
+        # Leaving a song reaches stop_audio more than once -- the app tears
+        # the screen down and the state change calls it again -- and the
+        # second call came after the recording was closed, so it wrote a
+        # SECOND log missing every mp3 line. Two files a second apart, one
+        # of them worse, is the run log arguing with itself.
+        self._run_log_written: bool = False
         # Whether K has already been applied in this run. A residual after a
         # sync means something different to the player than an unmeasured one:
         # the first says "press K", the second says "press it again".
@@ -3219,6 +3225,7 @@ class PlayingScreen:
             return
         done = self._song_completed or self._playback_ms >= self._timeline.duration_ms
         where = "" if done else f" — up to {self._playback_ms / 1000:.0f} s"
+        self._run_log_written = True
         self._run_log_note = f"Run written to {path}{where}"
         self._say(self._run_log_note)
 
@@ -3999,7 +4006,8 @@ class PlayingScreen:
         # almost never played to its end while something is being diagnosed,
         # so the one run worth reading was the one that produced no file. It
         # says how far it got -- that is what notes_reached is for.
-        if self._matcher is not None and not self._song_completed:
+        if (self._matcher is not None and not self._song_completed
+                and not self._run_log_written):
             self._export_run_log()
         self.close_session()
         self._stop_audio()
