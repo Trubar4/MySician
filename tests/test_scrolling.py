@@ -2264,8 +2264,9 @@ class TestTheAdviceCannotContradictItself:
         screen._noise_gate_db = gate
         screen._auto_gate = False
         # No room measured: this class is about the gate keys, and a room
-        # loud enough to outrank them is a different rule.
+        # the input cannot hear past is a different rule.
         screen._room_samples = []
+        screen._level_samples = []
         return screen._level_advice()
 
     def _follow(self, peak, floor, gate):
@@ -2938,7 +2939,13 @@ class TestAnInputThatHearsTheRoom:
     shown nothing at all.
     """
 
-    def _screen(self, peak, room):
+    def _screen(self, peak, room, playing):
+        """A screen whose room and playing level are both what they say.
+
+        The level samples are what the median is taken from, so they are fed
+        the playing level with the peak on top -- the same shape the real
+        collector produces.
+        """
         screen = PlayingScreen(_make_timeline(), config=Config())
         screen._playing = True
         screen._signal_peak_db = peak
@@ -2946,32 +2953,49 @@ class TestAnInputThatHearsTheRoom:
         screen._noise_gate_db = -50.0
         for _ in range(ROOM_SAMPLES):
             screen._room_samples.append(room)
+            screen._level_samples.append(playing)
+        screen._level_samples.append(peak)
         return screen
 
     def test_the_run_that_produced_the_rule_is_named(self):
-        advice = self._screen(peak=-9.2, room=-37.3)._level_advice()
+        """The laptop microphone array: 0.1 dB between room and playing."""
+        advice = self._screen(peak=-9.2, room=-37.3,
+                              playing=-37.2)._level_advice()
         assert "hearing the room" in advice and "D in the song list" in advice
+
+    def test_the_players_interface_is_not_convicted(self):
+        """The first version used the gate ceiling as a proxy for the gap and
+        convicted a Focusrite on the very next run: -50.4 room against -29.6
+        playing is 21 dB apart and perfectly healthy."""
+        assert self._screen(peak=-14.6, room=-50.4,
+                            playing=-29.6)._level_advice() == ""
 
     def test_it_outranks_the_automatic_gate(self):
         """With the automatic on the advice says nothing about the gate --
         but this is not about the gate, and no key on the screen fixes it."""
-        screen = self._screen(peak=-9.2, room=-37.3)
+        screen = self._screen(peak=-9.2, room=-37.3, playing=-37.2)
         screen._auto_gate = True
         assert "hearing the room" in screen._level_advice()
 
     @pytest.mark.parametrize("room", [-70.0, -86.0, -69.0, -84.0])
     def test_it_never_fires_on_the_reference_takes(self, room):
         """The four takes the automatic gate was fitted against measure rooms
-        of about -70 to -86 dB -- more than 13 dB of margin."""
-        assert self._screen(peak=-14.0, room=room)._level_advice() == ""
+        of about -70 to -86 dB against playing around -25."""
+        assert self._screen(peak=-14.0, room=room,
+                            playing=-25.0)._level_advice() == ""
 
     def test_an_unmeasured_room_claims_nothing(self):
-        screen = self._screen(peak=-14.0, room=-37.3)
+        screen = self._screen(peak=-14.0, room=-37.3, playing=-37.2)
         screen._room_samples.clear()
         assert screen._level_advice() == ""
 
+    def test_nothing_played_yet_claims_nothing(self):
+        screen = self._screen(peak=-14.0, room=-37.3, playing=-37.2)
+        screen._level_samples.clear()
+        assert screen._level_advice() == ""
+
     def test_a_stopped_song_stays_silent(self):
-        screen = self._screen(peak=-9.2, room=-37.3)
+        screen = self._screen(peak=-9.2, room=-37.3, playing=-37.2)
         screen._playing = False
         assert screen._level_advice() == ""
 
@@ -3011,3 +3035,38 @@ class TestLeavingWritesOneLogNotTwo:
         screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_d, mod=0))
         assert "Run written" in screen._run_log_note
+
+
+class TestTheEndScreenIsNotADeadEnd:
+    """Reaching the last bar put the score up and nothing took it down.
+
+    An arrow key then moved the song under a picture still showing the
+    score, so the player had to leave and start over to hear the last bars
+    again -- which is exactly what syncing a recording asks them to do.
+    """
+
+    def _screen(self):
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=200.0,
+                           midi_note=64, string=1, fret=0)]
+        screen = PlayingScreen(_make_timeline(notes=notes))
+        screen._song_completed = True
+        screen._playback_ms = screen._timeline.duration_ms
+        return screen
+
+    def test_seeking_back_leaves_the_completion_screen(self):
+        screen = self._screen()
+        screen.seek(0.0)
+        assert not screen._song_completed
+
+    def test_the_arrow_key_is_enough(self):
+        screen = self._screen()
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_LEFT, mod=pygame.KMOD_CTRL))
+        assert not screen._song_completed
+        assert screen._playback_ms < screen._timeline.duration_ms
+
+    def test_staying_at_the_end_keeps_the_score_up(self):
+        """Seeking to the very end is not leaving it."""
+        screen = self._screen()
+        screen.seek(screen._timeline.duration_ms + 5_000)
+        assert screen._song_completed

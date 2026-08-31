@@ -8,6 +8,7 @@ feature honest: a recording cannot be slowed down, and its encoder padding
 cannot be derived.
 """
 
+import time
 import threading
 
 import pygame
@@ -941,7 +942,7 @@ class TestTheRecordingsOwnSpeed:
         screen = self._screen(tmp_path, monkeypatch)
         self._sync(screen, 10_000.0, 0.0, 15_000.0, 200.0)
         assert screen._mp3_rate() == 1.0
-        assert "Too close" in screen._status_note_text()
+        assert "at least" in " ".join(screen._sync_lines)
 
     def test_the_first_point_survives_a_refusal(self, tmp_path, monkeypatch):
         """The player only has to move further away, not start again."""
@@ -961,7 +962,7 @@ class TestTheRecordingsOwnSpeed:
         screen = self._screen(tmp_path, monkeypatch)
         self._sync(screen, 10_000.0, 0.0, 100_000.0, 20_000.0)
         assert screen._mp3_rate() == 1.0
-        assert "cannot both be right" in screen._status_note_text()
+        assert "cannot both be right" in " ".join(screen._sync_lines)
 
     def test_clearing_puts_the_recording_back(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
@@ -984,8 +985,54 @@ class TestTheRecordingsOwnSpeed:
         screen = self._screen(tmp_path, monkeypatch)
         screen._playback_ms = 12_000.0
         screen._set_sync_point()
-        note = screen._status_note_text()
-        assert "0:12" in note and "Shift+S" in note
+        panel = " ".join(screen._sync_lines)
+        assert "0:12" in panel and "Shift+S" in panel
+
+    def test_the_panel_stays_up_while_the_player_navigates(
+        self, tmp_path, monkeypatch
+    ):
+        """An expiring note is long gone by the time the second point is
+        set -- the player spends a minute seeking to the end in between."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._playback_ms = 12_000.0
+        screen._set_sync_point()
+        screen._status_note_until = time.monotonic() - 1.0
+        assert screen._status_note_text() == ""
+        assert screen._sync_lines
+
+    def test_both_points_are_shown_once_it_is_done(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._sync(screen, 10_000.0, 0.0, 250_000.0, 2725.0)
+        panel = " ".join(screen._sync_lines)
+        assert "0:10" in panel and "4:10" in panel and "%" in panel
+
+    def test_a_held_key_is_not_a_second_press(self, tmp_path, monkeypatch):
+        """Key repeat is 300 ms then 40 ms, and a repeated KEYDOWN looks
+        exactly like a real one. Holding Shift+S at the second point took
+        the point, set the rate, and then opened a new point 1 on top of
+        it -- which is what the player saw."""
+        screen = self._screen(tmp_path, monkeypatch)
+        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_s,
+                                  mod=pygame.KMOD_SHIFT)
+        screen._playback_ms = 10_000.0
+        screen.handle_event(down)
+        screen.handle_event(down)              # the repeat
+        screen.handle_event(down)
+        assert screen._sync_anchor is not None
+        assert "point 1" in " ".join(screen._sync_lines)
+
+    def test_letting_go_allows_the_next_press(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_s,
+                                  mod=pygame.KMOD_SHIFT)
+        up = pygame.event.Event(pygame.KEYUP, key=pygame.K_s)
+        screen._playback_ms = 10_000.0
+        screen.handle_event(down)
+        screen.handle_event(up)
+        screen._config.set_mp3_offset_for("song", 2725.0)
+        screen._playback_ms = 250_000.0
+        screen.handle_event(down)
+        assert screen._mp3_rate() != 1.0
 
     def test_a_song_with_no_recording_says_so(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)

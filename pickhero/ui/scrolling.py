@@ -621,6 +621,11 @@ class PlayingScreen:
         # as (song ms, offset ms). Not remembered across songs: it describes
         # one act of syncing, not a setting.
         self._sync_anchor: tuple[float, float] | None = None
+        self._sync_key_held: bool = False
+        # What the last sync did, kept on screen rather than announced once:
+        # the player is navigating a four-minute song between the two points
+        # and an expiring note is gone long before the second one is set.
+        self._sync_lines: list[str] = []
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         if guide_track is not None and len(guide_track) > 0:
@@ -817,6 +822,14 @@ class PlayingScreen:
     def seek(self, ms: float) -> None:
         """Seek to an absolute position in ms, clamped to [0, duration]."""
         self._playback_ms = max(0.0, min(ms, self._timeline.duration_ms))
+        # Reaching the last bar put the completion screen up and nothing took
+        # it down again, so an arrow key moved the song under a picture that
+        # went on showing the score -- the player had to leave and start over
+        # to hear the last bars a second time, which is exactly when a
+        # recording is being synced. Moving off the end is leaving the
+        # completion screen; the run it scored has already been written.
+        if self._song_completed and self._playback_ms < self._timeline.duration_ms:
+            self._song_completed = False
         if self._matcher:
             self._matcher.reset()
         self._feedback.reset()
@@ -1116,6 +1129,17 @@ class PlayingScreen:
         Returns 'menu' to go back, ('select_track', index) when a track was
         picked, else None.
         """
+        if event.type == pygame.KEYUP:
+            # Key repeat is 300 ms then 40 ms, and a KEYDOWN from a repeat is
+            # indistinguishable from a real press. For most keys that is what
+            # repeat is FOR; for Shift+S it is a disaster, because the two
+            # presses mean different things -- the player's second point was
+            # taken, the rate was set, and the repeat 40 ms later opened a new
+            # point 1 on top of it. Which is exactly what they saw. Requiring
+            # the key to come up is exact where a timeout would be a guess.
+            if event.key == pygame.K_s:
+                self._sync_key_held = False
+            return None
         if event.type != pygame.KEYDOWN:
             return None
 
@@ -1148,6 +1172,9 @@ class PlayingScreen:
         elif event.key == pygame.K_p:
             self._toggle_loop()
         elif event.key == pygame.K_s and event.mod & pygame.KMOD_SHIFT:
+            if self._sync_key_held:
+                return None                    # a repeat, not a second press
+            self._sync_key_held = True
             if event.mod & pygame.KMOD_CTRL:
                 self._clear_sync_rate()
             else:
@@ -2392,12 +2419,24 @@ class PlayingScreen:
                 surface.blit(advice_surf,
                              (w - advice_surf.get_width() - 12, right_y))
 
+        # Where the recording sync has got to. NOT a note that expires: the
+        # player spends a minute seeking from the first point to the second,
+        # and a message that is gone by then leaves them guessing which press
+        # the next Shift+S will be -- which is what they reported.
+        note_y = h - 74
+        for line in self._sync_lines:
+            line_surf = hint_font.render(line, True, t.hud_accent)
+            surface.blit(line_surf,
+                         (w // 2 - line_surf.get_width() // 2, note_y))
+            note_y += 18
+        note_y = h - 74 - 18 * len(self._sync_lines)
+
         # What just happened, over the footer, while it is still news.
         note = self._status_note_text()
         if note:
             note_surf = hint_font.render(note, True, t.hud_accent)
             surface.blit(note_surf,
-                         (w // 2 - note_surf.get_width() // 2, h - 74))
+                         (w // 2 - note_surf.get_width() // 2, note_y))
 
         # Bottom-center: play state + controls
         self._blit_footer_lines(surface, layout, self._footer_lines(), t.hud_text)
@@ -2532,6 +2571,20 @@ class PlayingScreen:
                 sync_surf = hint_font.render(sync_text, True, sync_color)
                 surface.blit(sync_surf, (12, info_y))
 
+    def _playing_median_db(self) -> float | None:
+        """The level while the guitar is sounding, or None with too little.
+
+        The same reading the run log prints: the median of the hops within
+        30 dB of the loudest, which is what separates the playing from the
+        gaps between notes. Compared against the ROOM, it says whether the
+        input can hear the instrument at all.
+        """
+        if len(self._level_samples) < ROOM_SAMPLES:
+            return None
+        loudest = max(self._level_samples)
+        playing = [db for db in self._level_samples if db > loudest - 30.0]
+        return statistics.median(playing) if playing else None
+
     def _level_advice(self) -> str:
         """What to do about the input level, or "" when nothing needs doing.
 
@@ -2573,13 +2626,22 @@ class PlayingScreen:
         # The two rules above were both silent: the peak was -9.2 dB, neither
         # clipping nor quiet.
         #
-        # The threshold is the gate ceiling, not a number of its own: a room
-        # needing a gate above MAX_GATE_DB is a room the detector cannot be
-        # protected from. The four reference takes measure rooms of about -70
-        # to -86 dB, so they clear it by more than 13 dB and this never fires
-        # on them.
+        # The quantity is the DISTANCE between the room and the playing, and
+        # the first version of this rule used the gate ceiling as a proxy for
+        # it -- which convicted the player's Focusrite on the very next run:
+        # room -50.4 dB against a playing median of -29.6, a healthy 21 dB
+        # apart, told to check the device. A room merely above the gate
+        # ceiling is a loud room, and a loud room with a real instrument in
+        # front of the microphone is not this fault.
+        #
+        # Measured: the laptop microphone array read -37.3 room against -37.2
+        # playing -- 0.1 dB. The Focusrite reads 20.8 dB. QUIET_MARGIN_DB is
+        # the same 12 dB the gate band already uses for "clear of the room",
+        # and it separates the two by eight decibels either way.
         room = self.room_db()
-        if room is not None and room + NOISE_MARGIN_DB > MAX_GATE_DB:
+        playing = self._playing_median_db()
+        if (room is not None and playing is not None
+                and playing - room < QUIET_MARGIN_DB):
             return ("Input is hearing the room, not the guitar — wrong "
                     "device? Pick your interface with D in the song list")
         if self._auto_gate:
@@ -3331,7 +3393,7 @@ class PlayingScreen:
                 # that produced this rule read a room of -37.3 against a
                 # playing median of -37.2 -- the input sounding the same
                 # whether the guitar was played or not.
-                if room + NOISE_MARGIN_DB > MAX_GATE_DB:
+                if median - room < QUIET_MARGIN_DB:
                     fh.write(f"input_hears_the_room\tyes"
                              f"\t(room {room:.1f} dB vs playing "
                              f"{median:.1f} dB — check the device)\n")
@@ -4401,26 +4463,36 @@ class PlayingScreen:
         here = (self._playback_ms, self._mp3_offset())
         if self._sync_anchor is None:
             self._sync_anchor = here
-            self._say(f"Sync point 1 at {_clock_text(here[0])} — go near the "
-                      f"end, line it up with Shift+N/M, press Shift+S again")
+            self._sync_lines = [
+                f"SYNC 1 of 2 — point 1: {_clock_text(here[0])} at "
+                f"{_offset_text(here[1])}",
+                "now play to near the END, line the recording up with "
+                "Shift+N/M, then Shift+S again",
+            ]
             return
         s1, o1 = self._sync_anchor
         s2, o2 = here
+        self._sync_lines = [
+            f"SYNC — point 1: {_clock_text(s1)} at {_offset_text(o1)}"
+            f"   point 2: {_clock_text(s2)} at {_offset_text(o2)}",
+        ]
         if abs(s2 - s1) < MIN_SYNC_SPAN_MS:
             # The offset is dialled in 10 ms steps, so a short span turns
             # one keypress into a large speed error. Kept rather than
             # dropped: the player only has to move further away.
-            self._say(f"Too close to sync point 1 — at least "
-                      f"{MIN_SYNC_SPAN_MS / 1000:.0f} s apart, "
-                      f"the start and the end are best")
+            self._sync_lines.append(
+                f"too close together — the two points must be at least "
+                f"{MIN_SYNC_SPAN_MS / 1000:.0f} s apart. Point 1 is kept; "
+                f"go further away and press Shift+S there.")
             return
         old_rate = self._mp3_rate()
         rate = old_rate * (1.0 - (o2 - o1) / (s2 - s1))
         if not (MIN_MP3_RATE <= rate <= MAX_MP3_RATE):
             self._sync_anchor = None
-            self._say(f"That would play the recording at "
-                      f"{rate * 100:.0f} % — the two points cannot both be "
-                      f"right; start again with Shift+S")
+            self._sync_lines.append(
+                f"that would play the recording at {100 / rate:.0f} % of its "
+                f"speed — the two points cannot both be right. Start again "
+                f"with Shift+S.")
             return
         setter = getattr(self._config, "set_mp3_rate_for", None)
         if setter is None:
@@ -4431,12 +4503,14 @@ class PlayingScreen:
         self._set_mp3_offset(s1 - (s1 - o1) * old_rate / rate)
         self._sync_anchor = None
         self._config.save()
-        self._say(f"Recording stretched by {(1.0 / rate - 1.0) * 100:+.2f} % "
-                  f"— building it now")
+        self._sync_lines.append(
+            f"recording stretched by {(1.0 / rate - 1.0) * 100:+.2f} % — "
+            f"kept for this song. Ctrl+Shift+S puts it back.")
 
     def _clear_sync_rate(self) -> None:
         """Back to the recording as it was made."""
         self._sync_anchor = None
+        self._sync_lines = []
         setter = getattr(self._config, "set_mp3_rate_for", None)
         if setter is not None:
             setter(self._song_key, 1.0)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -292,7 +292,13 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap,
                     beat.duration.time, beat.start
                 )
                 for note in beat.notes:
-                    # Keep normal (1) and dead (3), skip rest (0) and tie (2)
+                    # Keep normal (1) and dead (3), skip rest (0).
+                    # A tie (2) is not struck, but it is not nothing either:
+                    # it lengthens the note it continues.
+                    if note.type.value == 2:
+                        _extend_tied(notes, note.string,
+                                     timestamp_ms, duration_ms)
+                        continue
                     if note.type.value not in (1, 3):
                         continue
                     to_next, slide_in, slide_out = _extract_slides(note)
@@ -491,6 +497,11 @@ class _GpifNote:
     slide_in: int = 0
     slide_out: int = 0
     hammer_to_next: bool = False
+    # A note that CONTINUES the one before it on the same string. It is not
+    # struck -- the string is already ringing -- so it must extend that note
+    # rather than become one of its own, which is what "held long and not
+    # played twice" means on paper and is what the player reported seeing.
+    tie_to_previous: bool = False
 
 
 def _gpif_float(prop: ET.Element) -> float:
@@ -537,6 +548,30 @@ def _gpif_bend(values: dict[str, float]) -> tuple[tuple[float, float], ...]:
     return curve if any(value > 0 for _, value in curve) else ()
 
 
+def _extend_tied(events: list[NoteEvent], string: int,
+                 start_ms: float, duration_ms: float) -> None:
+    """Make the note this one continues last through it.
+
+    A tie is one note written twice, and both formats had only the first
+    half of that right: the continuation was skipped (GP3-5) or played again
+    (GPIF), and in neither case did the note it belongs to get any longer.
+    So a note held across two beats was drawn for one -- or, on a GP6/7/8
+    file, drawn twice, which is what the player reported.
+
+    Nothing is appended: a tied note is not struck, and giving it an event of
+    its own would ask for a pick the music does not contain.
+    """
+    for i in range(len(events) - 1, -1, -1):
+        event = events[i]
+        if event.string == string:
+            # NoteEvent is frozen on purpose -- a note that can be edited in
+            # place is a note some later pass can quietly move.
+            events[i] = replace(event, duration_ms=max(
+                event.duration_ms,
+                start_ms + duration_ms - event.timestamp_ms))
+            return
+
+
 def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
     """Every <Note> in a GPIF score, by id.
 
@@ -555,6 +590,11 @@ def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
         nid = n.get("id", "")
         fret = string_val = None
         dead = palm_mute = bended = False
+        # GPIF writes <Tie origin=".." destination=".."/> on the Note itself,
+        # not as a Property. "destination" is the half that is not played.
+        tie_el = n.find("Tie")
+        tie_to_previous = (tie_el is not None
+                           and tie_el.get("destination", "false") == "true")
         slide_flags = 0
         hammer = False
         bend_values: dict[str, float] = {}
@@ -597,6 +637,7 @@ def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
         notes[nid] = _GpifNote(
             fret=fret,
             string=string_val,
+            tie_to_previous=tie_to_previous,
             dead=dead,
             palm_mute=palm_mute,
             bend=_gpif_bend(bend_values) if bended else (),
@@ -848,6 +889,11 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                             midi_note = fret  # fallback
 
                         if not 0 <= midi_note <= 127:
+                            continue
+
+                        if gpif_note.tie_to_previous:
+                            _extend_tied(note_events, our_string,
+                                         beat_pos_ms, dur_ms)
                             continue
 
                         note_events.append(NoteEvent(
