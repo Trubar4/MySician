@@ -730,6 +730,34 @@ already existed, so there is no second loader and a fix for one generation is a 
 - **`list_tracks` reads GPIF too.** Without it the track picker was empty for every GP6/7/8 file, because the caller asked the GP3-5 parser,
   the exception was swallowed, and "no tracks" looks like a song with one track rather than like a format nobody read.
 
+## Is It The Files Or The App? Answer That First
+
+"The picture and the backing drift apart" has three causes and they are fixed in three different places: the tab is wrong, the recording is a
+different arrangement, or the app's playback loses time. `tools/check_song_sync.py` settles the first two **without the app**, so the third is
+only ever suspected once the other two are ruled out.
+
+On the song that prompted it (Bon Jovi, "I'd Die For You", a Songsterr download against an MP3 of the video):
+
+| | |
+|---|---|
+| tab | 147 bars, every one explicitly 4/4, **one** tempo automation of 132 BPM, no repeats, no jumps, no fermatas |
+| tab length | 267.3 s — exactly what the app shows |
+| recording | 270.6 s, **132.51 BPM** measured, CBR 192 kbps with an Info header |
+| tab against recording | **-1.08 %, i.e. 2.6 s over four minutes** |
+
+So the files agree and the 21 s the player sees is made in the app. Three things that measurement had to survive first:
+
+- **Beat tracking on a full band mix is not a measurement.** aubio's tempo gave 136 BPM, a phase fit 137.8, an onset cross-correlation 133.1 —
+  three answers on one file, none reproducible. Autocorrelating the onset envelope gives 132.51 and the same value in every 40-second slice.
+- **Onsets do not survive a dense mix; CHROMA does.** Matching note attacks put 133 of 343 strikes on the grid and the best offset jumped
+  between -39 s and +37 s at constant confidence. Comparing pitch-class energy instead gives a smooth curve with residuals under 0.4 s.
+- **A pop song rhymes with itself, so a lag search always finds something.** Three of seventeen windows matched the wrong chorus, 14 to 28 s
+  away. The first version gated them out by a confidence threshold — which had to be fitted per song and was therefore measuring the song. It
+  fits a robust line instead (median over pairwise slopes) and prints the residual per window: the outliers are named, counted, and cannot move
+  the answer. **Nothing pretends to identify an outlier in advance.**
+
+`mp3_worst_drift_ms` is updated on every frame, not only at a correction, so a run log can carry the answer for the remaining case.
+
 ## Every Bar Was Played Exactly Once
 
 The player reported the picture and the backing recording drifting apart — synced at the start, about 25 s apart by 3:30, and **the same at 70 %
