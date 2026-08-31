@@ -2532,6 +2532,25 @@ class PlayingScreen:
             # playing and is not.
             return ("Input too quiet for reliable pitch — turn the interface "
                     "up (notes will come back as the wrong note)")
+        # A room louder than any gate may exclude is not a level problem and
+        # no key on this screen can fix it -- it is the wrong input. Measured
+        # on the run that produced this rule: the internal microphone array of
+        # a laptop, picked up as Windows' default recording device, read a
+        # room of -37.3 dB against a playing median of -37.2 -- a tenth of a
+        # decibel apart, the input sounding the same whether the guitar was
+        # played or not, and 24 of its 25 strikes carrying no pitch at all.
+        # The two rules above were both silent: the peak was -9.2 dB, neither
+        # clipping nor quiet.
+        #
+        # The threshold is the gate ceiling, not a number of its own: a room
+        # needing a gate above MAX_GATE_DB is a room the detector cannot be
+        # protected from. The four reference takes measure rooms of about -70
+        # to -86 dB, so they clear it by more than 13 dB and this never fires
+        # on them.
+        room = self.room_db()
+        if room is not None and room + NOISE_MARGIN_DB > MAX_GATE_DB:
+            return ("Input is hearing the room, not the guitar — wrong "
+                    "device? Pick your interface with D in the song list")
         if self._auto_gate:
             # The gate is not the player's job any more. What is left here is
             # the interface's gain, which no gate can fix and only a hand on
@@ -3275,6 +3294,15 @@ class PlayingScreen:
                          f"\t{suggested_gate_db(loudest, room):.0f}"
                          f"\t(band {low:.0f} to {high:.0f}"
                          f"{', empty' if low > high else ''})\n")
+                # The verdict, not two numbers eight lines apart. A room that
+                # no permitted gate can clear is the wrong INPUT, and the run
+                # that produced this rule read a room of -37.3 against a
+                # playing median of -37.2 -- the input sounding the same
+                # whether the guitar was played or not.
+                if room + NOISE_MARGIN_DB > MAX_GATE_DB:
+                    fh.write(f"input_hears_the_room\tyes"
+                             f"\t(room {room:.1f} dB vs playing "
+                             f"{median:.1f} dB — check the device)\n")
         else:
             fh.write("level_loudest_db\t(nothing measured)\n")
         fh.write(f"confidence_threshold\t{ac.confidence_threshold}\n")

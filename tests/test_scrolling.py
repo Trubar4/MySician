@@ -2262,6 +2262,9 @@ class TestTheAdviceCannotContradictItself:
         screen._signal_floor_db = floor
         screen._noise_gate_db = gate
         screen._auto_gate = False
+        # No room measured: this class is about the gate keys, and a room
+        # loud enough to outrank them is a different rule.
+        screen._room_samples = []
         return screen._level_advice()
 
     def _follow(self, peak, floor, gate):
@@ -2920,3 +2923,53 @@ class TestThePicturesOwnClock:
         assert "clock_ratio\t0.9800" in text
         assert "clock_lost_ms\t600" in text
         assert "clock_stalls\t3" in text
+
+
+class TestAnInputThatHearsTheRoom:
+    """Neither too loud nor too quiet, and useless -- the case that had no
+    rule.
+
+    The run that produced this was on a laptop's built-in microphone array,
+    picked up as Windows' default recording device: room -37.3 dB against a
+    playing median of -37.2, a tenth of a decibel apart, 24 of 25 strikes
+    carrying no pitch at all, 7 notes credited out of 127 reached. The peak
+    was -9.2 dB, so both existing rules stayed silent and the player was
+    shown nothing at all.
+    """
+
+    def _screen(self, peak, room):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._playing = True
+        screen._signal_peak_db = peak
+        screen._signal_floor_db = room
+        screen._noise_gate_db = -50.0
+        for _ in range(ROOM_SAMPLES):
+            screen._room_samples.append(room)
+        return screen
+
+    def test_the_run_that_produced_the_rule_is_named(self):
+        advice = self._screen(peak=-9.2, room=-37.3)._level_advice()
+        assert "hearing the room" in advice and "D in the song list" in advice
+
+    def test_it_outranks_the_automatic_gate(self):
+        """With the automatic on the advice says nothing about the gate --
+        but this is not about the gate, and no key on the screen fixes it."""
+        screen = self._screen(peak=-9.2, room=-37.3)
+        screen._auto_gate = True
+        assert "hearing the room" in screen._level_advice()
+
+    @pytest.mark.parametrize("room", [-70.0, -86.0, -69.0, -84.0])
+    def test_it_never_fires_on_the_reference_takes(self, room):
+        """The four takes the automatic gate was fitted against measure rooms
+        of about -70 to -86 dB -- more than 13 dB of margin."""
+        assert self._screen(peak=-14.0, room=room)._level_advice() == ""
+
+    def test_an_unmeasured_room_claims_nothing(self):
+        screen = self._screen(peak=-14.0, room=-37.3)
+        screen._room_samples.clear()
+        assert screen._level_advice() == ""
+
+    def test_a_stopped_song_stays_silent(self):
+        screen = self._screen(peak=-9.2, room=-37.3)
+        screen._playing = False
+        assert screen._level_advice() == ""

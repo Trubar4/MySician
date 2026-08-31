@@ -266,6 +266,33 @@ stops, so the completion screen used to report a level fault that was not there.
 strikes arriving with the wrong pitch. With the input turned up (`level_loudest_db` -10.2, median while playing -23.1) the same player,
 same song, same code: **98.4 %, 61 of 62**, 45 timing samples, nothing ambiguous. The level was the whole of it.
 
+## Neither Too Loud Nor Too Quiet, And Useless
+
+The first run log the player ever produced from the EXE scored **7 of 127 notes reached**, and every number in it was noise except one line:
+
+```
+input_device   Mikrofonarray (2- Intel® Smart  — index default, 2 of 2 channel(s) at 44100 Hz
+```
+
+The laptop's built-in microphone array, picked up as Windows' DEFAULT recording device because no device had been chosen. The guitar was never in the signal path at all.
+
+| | |
+|---|---|
+| room | **-37.3 dB** |
+| median while playing | **-37.2 dB** |
+| strikes in 59 s | 25 |
+| **strikes carrying no pitch** | **24 of 25** |
+| notes heard as themselves | 2 |
+
+**A tenth of a decibel between the room and the playing.** The input sounded the same whether the guitar was played or not, which is the whole diagnosis in one comparison — and the app said nothing, because `_level_advice` had a rule for too loud (`peak >= CLIPPING_DB`) and one for too quiet (`peak < QUIET_PEAK_DB`) and the peak was **-9.2 dB**, comfortably between them. A room mic in a room with speakers in it produces loud peaks; that is not the same as hearing an instrument.
+
+- **The threshold is the gate ceiling, not a number of its own.** A room needing `room + NOISE_MARGIN_DB` above `MAX_GATE_DB` is a room the detector cannot be protected from, whatever the player presses. That is a state, and it now has a sentence: *"Input is hearing the room, not the guitar — wrong device? Pick your interface with D in the song list."*
+- **It outranks the automatic gate.** With the automatic on, `_level_advice` deliberately says nothing about the gate — but this is not about the gate, and there is no key on that screen which fixes it.
+- **It never fires on the reference takes.** The four takes the automatic gate was fitted against measure rooms of about **-70 to -86 dB** — more than 13 dB of margin — and the empty-band case the gate advice already handles (a hot compressed signal, floor -26 dB) is a different quantity: the live floor BETWEEN strikes, not the room measured while the song is stopped.
+- **The run log carries the verdict, not two numbers eight lines apart** (`input_hears_the_room`). The same rule as strikes-heard beside notes-credited.
+
+**And the rest of that log was clean, which is the second half of the lesson.** `frames_over_budget_percent 0`, `mp3_worst_drift_ms 53`, `mp3_resyncs 0`, and the audio clock's 178-second leap between two strikes was a pause handled exactly as designed — the sample counter runs while the device stays open, and `_reanchor_audio_clock` put the offset back (the raw-to-adjusted offset is constant to 0.1 ms within each block either side of it). None of the app-side suspects for the picture/sound drift appear in it. **A wrong input device makes every other number in a run log unreadable**, so it has to be the first thing checked and the first thing the app is able to say.
+
 ## The Advice Was Telling Them To Press Two Keys That Undo Each Other
 
 "It always shows me C and then X again. I am playing too quietly and too loudly." Both halves of that were true, and neither was about the
