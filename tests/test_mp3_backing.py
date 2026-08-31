@@ -1039,3 +1039,61 @@ class TestTheRecordingsOwnSpeed:
         screen._mp3_player = None
         screen._set_sync_point()
         assert "Shift+U" in screen._status_note_text()
+
+
+class TestTheOutputDeviceIsSomethingTheAppOwns:
+    """The sound went flattering and quiet mid-session and stayed that way
+    for every song, with the MIDI backing and no recording at all, until the
+    app was restarted. That is state this process holds -- and nothing in
+    the app named it, measured it, or could drop it without losing the
+    sitting."""
+
+    def test_the_mixer_is_asked_for_a_buffer_of_its_own(self):
+        """pygame 2 defaults to 512 frames, 11.6 ms, on a machine also
+        running aubio, a WSOLA stretch and a 60 Hz loop. A backing track is
+        not a monitoring path and nobody can hear 46 ms of it."""
+        from pickhero.audio import output
+        assert output.BUFFER >= 2048
+
+    def test_it_describes_itself_for_the_run_log(self, monkeypatch):
+        from pickhero.audio import output
+        monkeypatch.setattr(pygame.mixer, "get_init", lambda: (44100, -16, 2))
+        text = output.describe()
+        assert "44100 Hz" in text and "2048 frame" in text and "46 ms" in text
+
+    def test_a_closed_mixer_says_so_rather_than_guessing(self, monkeypatch):
+        from pickhero.audio import output
+        monkeypatch.setattr(pygame.mixer, "get_init", lambda: None)
+        assert output.describe() == "(not open)"
+
+    def test_shift_a_reopens_instead_of_toggling_the_input(
+        self, tmp_path, monkeypatch
+    ):
+        """A is the input on/off and must stay that way."""
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        from pickhero.audio import output as out_mod
+        monkeypatch.setattr(out_mod, "reopen", lambda: True)
+        before = screen._audio_enabled
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_a, mod=pygame.KMOD_SHIFT))
+        assert screen._audio_enabled == before
+        assert "reopened" in screen._status_note_text()
+
+    def test_a_failure_is_named_rather_than_silent(self, tmp_path, monkeypatch):
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        from pickhero.audio import output as out_mod
+        monkeypatch.setattr(out_mod, "reopen", lambda: False)
+        screen._reopen_output()
+        assert "could not be reopened" in screen._status_note_text()

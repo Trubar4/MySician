@@ -957,6 +957,30 @@ tuning — which is not a thing to ask of someone who plays metal. They answered
 - The existing session's manifest was corrected by hand rather than re-recorded (the audio is untouched, and the correction says so in a
   `corrected` field).
 
+## A Tie Is One Note Written Twice
+
+The player's screenshot: their tab holds a fret across two beats with a tie and a `let ring`, and the app drew **two notes side by side**. Both readers had half of it right and neither had the other half.
+
+- **GPIF (GP6/7/8) played the continuation again.** `<Tie destination="true"/>` sits on the `<Note>` itself, not in the Properties block, and nothing read it — so the app asked for a pick the music does not contain, and every one of those was an unavoidable miss.
+- **GP3-5 dropped it** (`note.type.value == 2`, skipped) **without lengthening the note it continues**, so a note held across two beats was drawn for one.
+- **Neither made the note longer**, which is the whole point of a tie. `_extend_tied` finds the last event on that string and stretches it to cover the continuation; nothing is appended, because a tied note is not struck.
+
+Measured on the player's own files: **Bon Jovi 850 → 746 notes** and **Papa Roach 1384 → 1314**. A hundred phantom picks in one song, every one of them scored as a miss, and the percentage they had been reading was built on top of that.
+
+The control matters here as much as the fix: `tests/test_ties.py` builds the same file with the tie taken OFF and asserts it really is two notes of 2000 ms. Without it the class would pass on a loader that simply drops every second note.
+
+## The Sound Went Bad And Only A Restart Fixed It
+
+"Sobald der flatternde Sound (ist auch leiser) bei einem Song da ist, bleibt er auch bei jedem andern Song und auch bei nur Midi ohne mp3. Bei anderen Apps bleibt der Sound normal."
+
+Every clause narrows it. It survives a song change, so it is not the file; it happens with no recording loaded, so it is not the time-stretch; other applications are unaffected, so it is not the sound card; a restart clears it, so it is **state this process holds**.
+
+- **The mixer had no buffer of its own.** It was opened lazily in two places with pygame's defaults — 512 frames, 11.6 ms at 44.1 kHz — on a machine also running the aubio analysis thread, a WSOLA stretch and a 60 Hz game loop. A backing track is not a monitoring path and nobody can hear 46 ms of it, so there was nothing to be won by cutting it that fine, and a starved output is what "flattering" sounds like. `audio/output.py` owns the lifecycle and asks for 2048.
+- **The run log named the input and said nothing about the output.** Device, rate, dropped buffers on one side; on the side the player was actually listening to, not a word. `output_device` now.
+- **`Shift+A` reopens it, which is the experiment as much as the workaround.** If the sound comes back, the fault is the mixer; if it does not, it is the shared Windows device and no key in this app can reach it. Until now the only way to find out cost the whole sitting.
+
+**This is not yet a diagnosis and must not be written up as one.** The buffer is the best-founded suspect and it has not been shown to be the cause — the fault has never been reproduced here, only reported.
+
 ## Three Things You Can Hear, Switched Separately
 
 The MIDI backing is what the OTHER instruments play; `Shift+B` is the mirror of it — the written notes of the track being PLAYED, so the part

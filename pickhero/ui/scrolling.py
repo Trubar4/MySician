@@ -25,6 +25,7 @@ from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
                              MAX_MP3_RATE, MIN_GATE_DB, MIN_MP3_RATE, Config)
 from pickhero.matcher import (FINE_MS, STRING_MIN_SAMPLES, MatchType,
                               NoteMatcher)
+from pickhero.audio import output
 from pickhero import practice_log
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.chords import name_chord
@@ -1160,7 +1161,10 @@ class PlayingScreen:
         elif event.key == pygame.K_HOME:
             self.seek(0)
         elif event.key == pygame.K_a:
-            self._toggle_audio()
+            if event.mod & pygame.KMOD_SHIFT:
+                self._reopen_output()
+            else:
+                self._toggle_audio()
         elif event.key == pygame.K_PAGEDOWN:
             self.set_tempo_factor(self._tempo_factor - 0.05)
         elif event.key == pygame.K_PAGEUP:
@@ -2296,6 +2300,7 @@ class PlayingScreen:
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
             "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
             "|  Shift+S: audio speed from 2 points (Ctrl+Shift+S: clear)  "
+            "|  Shift+A: reopen audio output (if the sound goes bad)  "
             "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
             "|  Y: timing report  |  D: run log  |  H: help"
@@ -3352,6 +3357,9 @@ class PlayingScreen:
         describe = getattr(capture, "describe_device", None)
         fh.write(f"input_device\t{describe() if describe else '(unknown)'}\n")
         fh.write(f"dropped_buffers\t{getattr(capture, 'dropped_buffers', 0)}\n")
+        # The OUTPUT, which this log never mentioned. A run where the sound
+        # went wrong and a run where it did not are otherwise identical here.
+        fh.write(f"output_device\t{output.describe()}\n")
         fh.write(f"noise_gate_db\t{ac.noise_gate_db:.0f}"
                  f"\t{'auto' if self._auto_gate else 'von Hand'}\n")
         # The input level, in the same units the HUD shows (RMS of one hop).
@@ -4441,6 +4449,32 @@ class PlayingScreen:
         replaces the live reading with old news.
         """
         self._mp3_note = ""
+
+    def _reopen_output(self) -> None:
+        """Close and reopen the audio output, keeping the song where it is.
+
+        The player reported the sound turning flattering and quiet mid-
+        session -- staying that way for every song afterwards, with the MIDI
+        backing and no recording at all, while other applications were fine,
+        until the app was restarted. That is a piece of state this process
+        holds, and until now the only way to drop it was to lose the sitting.
+
+        It is also the experiment that says WHERE. If the sound comes back,
+        the fault is the mixer this reopens. If it does not, it is the shared
+        Windows device and no key in this app can reach it.
+        """
+        if not output.reopen():
+            self._say("Audio output could not be reopened")
+            return
+        # The mixer forgot the file along with everything else.
+        self._mp3_loaded_build = None
+        if self._mp3_player is not None:
+            self._mp3_player.close()
+            self._load_mp3_for_song()
+            self._ensure_mp3_source()
+            if self._mp3_plays():
+                self._mp3_player.seek(self._mp3_ms(self._playback_ms))
+        self._say(f"Audio output reopened — {output.describe()}")
 
     def _set_sync_point(self) -> None:
         """Two places lined up by hand become a speed for the whole song.

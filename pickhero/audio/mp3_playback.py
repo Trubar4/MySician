@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pygame
 
+from pickhero.audio import output
+
 # How far the recording may drift from the song before it is nudged back.
 # Small enough that nobody hears the error, large enough that ordinary
 # scheduling jitter does not cause a re-seek every frame -- a re-seek is
@@ -96,8 +98,9 @@ class Mp3Player:
             self.error = f"File not found: {self.path.name}"
             return False
         try:
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
+            if not output.ensure_mixer():
+                self.error = "No audio output device"
+                return False
             pygame.mixer.music.load(str(self.path))
         except Exception as exc:               # pygame.error, OSError, ...
             self.error = f"{type(exc).__name__}: {exc}"

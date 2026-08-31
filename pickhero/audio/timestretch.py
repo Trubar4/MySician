@@ -203,8 +203,8 @@ def _decode(path: Path) -> tuple[np.ndarray, int]:
     first -- and the caller says so on screen rather than falling silent.
     """
     import pygame
-    if not pygame.mixer.get_init():
-        pygame.mixer.init()
+    from pickhero.audio import output
+    output.ensure_mixer()
     sound = pygame.mixer.Sound(str(path))
     raw = pygame.sndarray.array(sound)
     rate = pygame.mixer.get_init()[0]
