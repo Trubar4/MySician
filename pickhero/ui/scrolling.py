@@ -443,6 +443,27 @@ def format_time(ms: float) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
+def _engraver_state() -> str:
+    """Whether verovio is present AND able to engrave, in one line."""
+    try:
+        import verovio
+    except Exception as exc:
+        return f"absent ({type(exc).__name__})"
+    try:
+        toolkit = verovio.toolkit()
+        ok = toolkit.loadData(
+            '<?xml version="1.0"?><score-partwise version="3.1">'
+            '<part-list><score-part id="P1"><part-name>G</part-name>'
+            '</score-part></part-list><part id="P1"><measure number="1">'
+            "<attributes><divisions>1</divisions><time><beats>4</beats>"
+            "<beat-type>4</beat-type></time></attributes>"
+            "<note><rest/><duration>4</duration><type>whole</type></note>"
+            "</measure></part></score-partwise>")
+    except Exception as exc:
+        return f"present but broken ({type(exc).__name__})"
+    return "ready" if ok else "present but its data files are missing"
+
+
 def _clock_text(ms: float) -> str:
     """A song position as a player reads it off a transport."""
     total = max(0, int(ms // 1000))
@@ -3418,6 +3439,11 @@ class PlayingScreen:
         # The OUTPUT, which this log never mentioned. A run where the sound
         # went wrong and a run where it did not are otherwise identical here.
         fh.write(f"output_device\t{output.describe()}\n")
+        # Whether the engraver is really in this build. It imports perfectly
+        # happily without its 20 MB of data files and then renders an empty
+        # page, and the EXE is the only place that question is settled -- so
+        # the answer travels in the log rather than being assumed.
+        fh.write(f"engraver\t{_engraver_state()}\n")
         fh.write(f"noise_gate_db\t{ac.noise_gate_db:.0f}"
                  f"\t{'auto' if self._auto_gate else 'von Hand'}\n")
         # The input level, in the same units the HUD shows (RMS of one hop).

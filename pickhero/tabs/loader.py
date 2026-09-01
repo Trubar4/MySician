@@ -95,6 +95,9 @@ class BarRepeat:
 # bars, and a tab that claims to be is a tab nobody can play anyway.
 MAX_PLAYED_BARS = 20_000
 
+# pyguitarpro counts a quarter note as this many ticks.
+_GP_QUARTER_TICKS = 960.0
+
 
 def repeat_order(bars: Sequence[BarRepeat]) -> list[int]:
     """The order the bars are actually PLAYED in, as written-bar indices.
@@ -311,6 +314,8 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap,
                             string=note.string,
                             fret=note.value,
                             measure=bar.play_index,
+                            duration_quarters=(beat.duration.time
+                                               / _GP_QUARTER_TICKS),
                             bend=_extract_bend(note),
                             slide_to_next=to_next,
                             slide_in=slide_in,
@@ -344,7 +349,14 @@ def _extract_measures(track: guitarpro.Track, tempo_map: TempoMap,
     measures = []
     for bar in plan:
         beats_in_measure = []
+        beats = beat_type = 4
         if bar.written_index < len(track.measures):
+            signature = getattr(track.measures[bar.written_index].header,
+                                "timeSignature", None)
+            if signature is not None:
+                beats = int(getattr(signature, "numerator", 4) or 4)
+                denominator = getattr(signature, "denominator", None)
+                beat_type = int(getattr(denominator, "value", 4) or 4)
             for voice in track.measures[bar.written_index].voices:
                 for beat in voice.beats:
                     beats_in_measure.append(beat.start)
@@ -360,7 +372,8 @@ def _extract_measures(track: guitarpro.Track, tempo_map: TempoMap,
             end_ms = start_ms
 
         measures.append(MeasureInfo(index=bar.play_index,
-                                    start_ms=start_ms, end_ms=end_ms))
+                                    start_ms=start_ms, end_ms=end_ms,
+                                    beats=beats, beat_type=beat_type))
     return measures
 
 
@@ -655,12 +668,14 @@ def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
 def _gpif_bar_times(master_bars: Sequence[ET.Element],
                     tempos: dict[int, float],
                     initial_bpm: float) -> tuple[list[float], list[float],
-                                                 list[float]]:
-    """(bpm, written start, length) for every written bar."""
+                                                 list[float],
+                                                 list[tuple[int, int]]]:
+    """(bpm, written start, length, time signature) for every written bar."""
     bpm = initial_bpm
     starts: list[float] = []
     lengths: list[float] = []
     bpms: list[float] = []
+    signatures: list[tuple[int, int]] = []
     now = 0.0
     for idx, mb in enumerate(master_bars):
         if idx in tempos:
@@ -672,8 +687,9 @@ def _gpif_bar_times(master_bars: Sequence[ET.Element],
         bpms.append(bpm)
         starts.append(now)
         lengths.append(length)
+        signatures.append((ts_num, ts_den))
         now += length
-    return bpms, starts, lengths
+    return bpms, starts, lengths, signatures
 
 
 def _gpif_bar_repeat(mb: ET.Element) -> BarRepeat:
@@ -838,8 +854,8 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
     master_bars = root.findall(".//MasterBar")
     # Written time first: a bar's tempo and length are properties of where it
     # is WRITTEN, and the repeat signs only decide the order it is played in.
-    bar_bpm, bar_start, bar_length = _gpif_bar_times(master_bars, tempos,
-                                                     initial_bpm)
+    bar_bpm, bar_start, bar_length, bar_sig = _gpif_bar_times(
+        master_bars, tempos, initial_bpm)
     plan = played_bars([_gpif_bar_repeat(mb) for mb in master_bars],
                        bar_start,
                        [a + b for a, b in zip(bar_start, bar_length)])
@@ -903,6 +919,7 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                             string=our_string,
                             fret=fret,
                             measure=played.play_index,
+                            duration_quarters=dur_quarters,
                             bend=gpif_note.bend,
                             slide_to_next=gpif_note.slide_to_next,
                             slide_in=gpif_note.slide_in,
@@ -918,6 +935,8 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
             index=played.play_index,
             start_ms=measure_start_ms,
             end_ms=measure_start_ms + measure_duration_ms,
+            beats=bar_sig[mb_idx][0],
+            beat_type=bar_sig[mb_idx][1],
         ))
 
     # ── Build metadata and timeline ──────────────────────────────────────
@@ -1065,8 +1084,8 @@ def _extract_gp7_backing_track(
 
     # The SAME plan _load_gp7_file lays the notes out on. A second walk of its
     # own is how the picture and the backing would come to disagree.
-    bar_bpm, bar_start, bar_length = _gpif_bar_times(master_bars, tempos,
-                                                     initial_bpm)
+    bar_bpm, bar_start, bar_length, bar_sig = _gpif_bar_times(
+        master_bars, tempos, initial_bpm)
     plan = played_bars([_gpif_bar_repeat(mb) for mb in master_bars],
                        bar_start,
                        [a + b for a, b in zip(bar_start, bar_length)])

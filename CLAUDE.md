@@ -771,6 +771,26 @@ GP6, GP7 and GP8 (`_parse_gpif_notes`).
 - **A sliding note gives up part of its sustain** so the connector has somewhere to be; back-to-back notes otherwise leave a few pixels.
 - `tools/make_technique_test.py` writes a GP5 stating exactly which technique is where, so a wrong drawing is the app's fault.
 
+## Handing The Tab To An Engraver
+
+A classic tab — six lines, fret numbers, and stems saying how long each note is — is music ENGRAVING, and this project is not going to grow a notation engine. **verovio** does it, is Python, ships as a wheel, runs offline, and renders 150 bars in **90 ms**; its timemap gives the millisecond of every note and its SVG carries an id per note, which is what a playhead and per-note colouring need. What it cannot do is read Guitar Pro. `tabs/musicxml.py` is the bridge.
+
+**The packaging question was asked first, and of a rendered page.** verovio carries 20 MB of fonts and schemas, imports perfectly happily without them, and then renders nothing — the exact class of fault this project keeps shipping. `tools/check_verovio.py` loads a tablature measure and fails unless the SVG really contains tablature; the Windows workflow runs it. The run log carries `engraver` (`ready` / `absent` / `present but its data files are missing`), because the EXE is the only place the answer counts.
+
+Two things had to exist in the reader before the bridge could be honest:
+
+- **`NoteEvent.duration_quarters`** — what the tab WROTE. Milliseconds cannot be read back into a note value: a tempo change or a triplet makes it ambiguous, and a stem is drawn from the written value or not at all.
+- **`MeasureInfo.beats` / `beat_type`** — 3/4 and 6/8 at one tempo are the same length of time and a different piece of music.
+
+Four things were measured rather than assumed, each after the export looked fine and the times did not:
+
+- **An empty bar must be given its length.** A bar with no notes collapsed to nothing and moved every bar after it: Bon Jovi lost **42 s** over the song and the timing test 6, with every onset count still correct. A `<rest measure="yes"/>` fixes it, and a bar rest is reading the tab, not inventing.
+- **`<forward>` is not honoured in the timemap; a rest is.** A bar padded with forwards renders at the right length and reports the wrong times — a playhead that drifts while the picture looks right.
+- **But a rest cannot sit where a note is still sounding**, and guitar tab overlaps constantly: a let-ring bass note under a run of eighths. That is what VOICES are for, and each onset now goes into the first voice whose cursor has reached it.
+- **The bar's tempo travels with it.** Without `<sound tempo>` verovio assumes 120 BPM and every position it reports is wrong by the ratio. And it is computed from this bar's start to the NEXT bar's start, not from its own `end_ms`: the GP3-5 reader sets `end_ms` from the last BEAT in the bar, so a sparsely filled bar reads short and its tempo comes out too fast.
+
+**Where it stands, measured against the app's own note times on three real songs:** the median onset is exact (0.0–0.3 ms on two of them, 56 ms on the third), and a tail is not — 95th percentile 272–600 ms, worst 1307 ms. **That is good enough to know the approach works and not good enough to hang a playhead on**, so nothing in the app reads it yet. The remaining error is in the voice assignment; it is one more pass, not a redesign.
+
 ## Three Guitar Pro Generations, One Parser
 
 GP6 (`.gpx`), GP7 and GP8 (`.gp`) all store the same GPIF XML and differ only in what they wrap it in: GP7 and GP8 use a zip, GP6 uses a

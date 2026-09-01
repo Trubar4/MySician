@@ -44,6 +44,13 @@ class NoteEvent:
     # chokes it, it does not change it -- so scoring is unaffected; the flag
     # exists so the display can show what the tab asked for.
     palm_mute: bool = False
+    # The note value the tab WROTE, in quarter notes: 1.0 for a quarter, 0.5
+    # for an eighth, 0.75 for a dotted eighth. Kept beside duration_ms rather
+    # than derived from it, because milliseconds cannot be read back into a
+    # note value: a tempo change or a triplet makes the arithmetic ambiguous,
+    # and an engraver needs the written value to draw a stem at all. 0.0 means
+    # the reader did not supply one.
+    duration_quarters: float = 0.0
 
     @property
     def bend_semitones(self) -> float:
@@ -80,6 +87,12 @@ class MeasureInfo:
     index: int
     start_ms: float
     end_ms: float
+    # What the bar is written IN. Kept because an engraver cannot draw a bar
+    # without it, and because it cannot be recovered from the milliseconds:
+    # 3/4 at 120 BPM and 6/8 at 120 BPM are the same length of time and a
+    # different piece of music.
+    beats: int = 4
+    beat_type: int = 4
 
 
 @dataclass
