@@ -23,6 +23,12 @@ block_cipher = None
 datas = []
 datas += collect_data_files("sounddevice")
 datas += collect_data_files("certifi")
+# verovio ships ~20 MB of engraving data -- the music fonts and the schemas.
+# Without them the toolkit imports and then renders nothing, which is the
+# failure mode this project has learnt to check for rather than assume: a
+# feature that only works in the development tree is a feature the player
+# does not have.
+datas += collect_data_files("verovio")
 
 # ── Native binaries / C extensions ──────────────────────────────────────────
 # aubio  — C pitch/onset detection library

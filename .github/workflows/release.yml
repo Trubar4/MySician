@@ -39,6 +39,12 @@ jobs:
       - name: Build exe
         run: pyinstaller pickhero.spec --noconfirm
 
+      - name: Verify verovio can actually engrave
+        # Importing it proves nothing -- the toolkit loads without its data
+        # files and then renders an empty page. The packaging question is
+        # asked of a rendered page.
+        run: python tools/check_verovio.py
+
       - name: Verify build output
         run: |
           if (!(Test-Path "dist\MySician.exe")) {
