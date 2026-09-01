@@ -373,7 +373,7 @@ class TestSlowedPractice:
         ran_in = []
         monkeypatch.setattr(
             timestretch, "build",
-            lambda path, tempo, cache, progress=None: ran_in.append(
+            lambda path, tempo, cache, progress=None, plan=(): ran_in.append(
                 threading.current_thread()) or (tmp_path / "x.wav"))
         screen = self._screen(tmp_path, monkeypatch, 0.8)
         screen._ensure_mp3_source()
@@ -394,7 +394,7 @@ class TestSlowedPractice:
         reports = []
         monkeypatch.setattr(
             timestretch, "build",
-            lambda path, tempo, cache, progress=None:
+            lambda path, tempo, cache, progress=None, plan=():
                 reports.append(progress(0.5)) or (tmp_path / "x.wav"))
         screen = self._screen(tmp_path, monkeypatch, 0.8)
         screen._ensure_mp3_source()
@@ -866,10 +866,12 @@ class TestACorrectionThatDoesNotCorrect:
 class TestTheRecordingsOwnSpeed:
     """A tab is a fixed grid and a band is not.
 
-    Measured on the song this was built for: the downloaded tab and a
-    recording of the real performance walk apart by 1.09 %, which is 2.7 s
-    over four minutes and no single offset can follow it. Given the offset
-    that is right at two places, the line between them is the speed.
+    For a while this took exactly TWO sync points, which is a straight line.
+    The player's own measurements say that is not enough: their offset runs
+    -260 ms at the start, -1330 ms at 2:57 and back to -260 ms at 4:18, so
+    the best straight line through the ends corrects by nothing at all and
+    leaves 1.07 s standing in the middle. Every point is one more piece of
+    the curve that can be followed.
     """
 
     def _screen(self, tmp_path, monkeypatch):
@@ -879,160 +881,134 @@ class TestTheRecordingsOwnSpeed:
         config.set_mp3_path_for("song", str(song))
         monkeypatch.setattr(Mp3Player, "open", lambda self: True)
         monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
-        screen = PlayingScreen(_timeline(), config=config, song_key="song")
-        return screen
+        return PlayingScreen(_timeline(), config=config, song_key="song")
 
-    def _sync(self, screen, s1, o1, s2, o2):
-        screen._config.set_mp3_offset_for("song", o1)
-        screen._playback_ms = s1
-        screen._set_sync_point()
-        screen._config.set_mp3_offset_for("song", o2)
-        screen._playback_ms = s2
+    def _mark(self, screen, at_ms, offset_ms):
+        screen._config.set_mp3_offset_for("song", offset_ms)
+        screen._playback_ms = at_ms
         screen._set_sync_point()
 
-    def test_the_players_own_song_comes_back_at_the_measured_rate(
+    def _players_own(self, screen):
+        for at, off in ((0.0, -260.0), (177_000.0, -1330.0),
+                        (258_000.0, -260.0)):
+            self._mark(screen, at, off)
+
+    def test_the_players_three_points_become_two_sections(
         self, tmp_path, monkeypatch
     ):
-        """Chroma alignment put Bon Jovi at -10.9 ms per second. Lining the
-        recording up at 10 s and 250 s reproduces it from two keypresses."""
+        screen = self._screen(tmp_path, monkeypatch)
+        self._players_own(screen)
+        plan = screen._mp3_plan()
+        assert len(plan) == 2
+        # The two sections pull in OPPOSITE directions -- which is exactly
+        # what a single number cannot say, and why a straight line through
+        # the ends corrects by nothing at all.
+        assert (plan[0][1] - 1.0) * (plan[1][1] - 1.0) < 0
+        assert plan[0][1] == pytest.approx(1.0060, abs=1e-3)
+        assert plan[1][1] == pytest.approx(0.9868, abs=1e-3)
+
+    def test_two_points_are_still_one_straight_line(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
         drift = 0.0109
-        self._sync(screen, 10_000.0, 10_000.0 * drift,
-                   250_000.0, 250_000.0 * drift)
-        assert screen._mp3_rate() == pytest.approx(1.0 - drift, abs=1e-4)
-        # The recording is played LONGER, which is what closes the gap.
-        assert screen._mp3_build_tempo() < 1.0
+        self._mark(screen, 10_000.0, 10_000.0 * drift)
+        self._mark(screen, 250_000.0, 250_000.0 * drift)
+        plan = screen._mp3_plan()
+        assert len(plan) == 1
+        assert plan[0][1] == pytest.approx(1.0 - drift, abs=1e-4)
 
-    def test_it_keeps_the_first_point_it_was_given(self, tmp_path, monkeypatch):
-        """Fixing the drift must not throw away the alignment just shown."""
+    def test_one_point_alone_changes_nothing(self, tmp_path, monkeypatch):
+        """It cannot: a single place says where, never how fast."""
         screen = self._screen(tmp_path, monkeypatch)
-        s1, o1 = 10_000.0, 109.0
-        self._sync(screen, s1, o1, 250_000.0, 2725.0)
-        rate = screen._mp3_rate()
-        # The musical moment at s1 is (s1 - offset) * rate, and it may not
-        # have moved.
-        assert ((s1 - screen._mp3_offset()) * rate
-                == pytest.approx((s1 - o1) * 1.0, abs=1.0))
+        self._mark(screen, 10_000.0, 500.0)
+        assert screen._mp3_plan() == ()
+        assert screen._mp3_build_tempo() == 1.0
 
-    def test_the_scroll_speed_is_not_touched(self, tmp_path, monkeypatch):
-        """The correction goes into the file's length, never into the scale:
-        the scale is what makes one real second advance the song by tempo
-        seconds, and changing it would change how fast the notes scroll."""
+    def test_a_point_too_close_replaces_the_one_it_lands_on(
+        self, tmp_path, monkeypatch
+    ):
+        """The offset moves in 10 ms steps, so two points five seconds apart
+        would invent a rate out of one keypress. The newer reading wins --
+        it is the one the player just demonstrated."""
+        screen = self._screen(tmp_path, monkeypatch)
+        self._mark(screen, 10_000.0, 0.0)
+        self._mark(screen, 15_000.0, 200.0)
+        anchors = screen._mp3_anchors()
+        assert len(anchors) == 1 and anchors[0] == (15_000.0, 200.0)
+
+    def test_an_impossible_pair_is_left_out_of_the_plan(
+        self, tmp_path, monkeypatch
+    ):
+        """A real mismatch is about a percent; twenty means the two points
+        cannot both be right, and playing the song at that speed is
+        indistinguishable from a broken recording."""
+        screen = self._screen(tmp_path, monkeypatch)
+        self._mark(screen, 10_000.0, 0.0)
+        self._mark(screen, 100_000.0, 20_000.0)
+        assert screen._mp3_plan() == ()
+
+    def test_the_scroll_speed_is_never_touched(self, tmp_path, monkeypatch):
+        """The correction goes into the file's length. In the scale it would
+        change how fast the notes scroll, which is the one thing it must
+        not do."""
         screen = self._screen(tmp_path, monkeypatch)
         before = screen._mp3_scale()
-        self._sync(screen, 10_000.0, 0.0, 250_000.0, 2000.0)
-        assert screen._mp3_rate() != 1.0
+        self._players_own(screen)
+        assert screen._mp3_plan()
         assert screen._mp3_scale() == before
 
-    def test_a_correction_makes_the_source_stop_fitting(
-        self, tmp_path, monkeypatch
-    ):
-        """Otherwise the copy is never built and the setting does nothing --
-        the scale alone cannot see a rate change."""
+    def test_a_plan_makes_the_source_stop_fitting(self, tmp_path, monkeypatch):
+        """The scale alone cannot see it, so the copy would never be built."""
         screen = self._screen(tmp_path, monkeypatch)
         assert screen._mp3_source_fits()
-        self._sync(screen, 10_000.0, 0.0, 250_000.0, 2000.0)
+        self._players_own(screen)
         assert not screen._mp3_source_fits()
-
-    def test_two_points_too_close_together_are_refused(
-        self, tmp_path, monkeypatch
-    ):
-        """10 ms is one keypress, and over five seconds that is 0.2 % --
-        a fifth of the whole effect, invented by the last key pressed."""
-        screen = self._screen(tmp_path, monkeypatch)
-        self._sync(screen, 10_000.0, 0.0, 15_000.0, 200.0)
-        assert screen._mp3_rate() == 1.0
-        assert "at least" in " ".join(screen._sync_lines)
-
-    def test_the_first_point_survives_a_refusal(self, tmp_path, monkeypatch):
-        """The player only has to move further away, not start again."""
-        screen = self._screen(tmp_path, monkeypatch)
-        self._sync(screen, 10_000.0, 0.0, 15_000.0, 200.0)
-        screen._config.set_mp3_offset_for("song", 2000.0)
-        screen._playback_ms = 250_000.0
-        screen._set_sync_point()
-        assert screen._mp3_rate() != 1.0
-
-    def test_an_impossible_pair_is_named_rather_than_played(
-        self, tmp_path, monkeypatch
-    ):
-        """A real mismatch is about a percent. Twenty means the two points
-        were not what they looked like, and playing the song at that speed
-        is indistinguishable from a broken recording."""
-        screen = self._screen(tmp_path, monkeypatch)
-        self._sync(screen, 10_000.0, 0.0, 100_000.0, 20_000.0)
-        assert screen._mp3_rate() == 1.0
-        assert "cannot both be right" in " ".join(screen._sync_lines)
 
     def test_clearing_puts_the_recording_back(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
-        self._sync(screen, 10_000.0, 0.0, 250_000.0, 2000.0)
+        self._players_own(screen)
         screen._clear_sync_rate()
-        assert screen._mp3_rate() == 1.0
+        assert screen._mp3_anchors() == [] and screen._mp3_plan() == ()
         assert screen._mp3_build_tempo() == 1.0
 
     def test_it_survives_a_practice_speed_change(self, tmp_path, monkeypatch):
-        """The two are independent: the speed says how fast to play, the
-        rate says which recording matches this tab. Both land in the build."""
         screen = self._screen(tmp_path, monkeypatch)
-        self._sync(screen, 10_000.0, 0.0, 250_000.0, 2725.0)
+        self._players_own(screen)
         rate = screen._mp3_rate()
         screen._tempo_factor = 0.7
         assert screen._mp3_build_tempo() == pytest.approx(0.7 * rate)
         assert screen._mp3_scale() == pytest.approx(1.0 / 0.7)
 
+    def test_the_panel_lists_every_point(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._players_own(screen)
+        panel = " ".join(screen._sync_lines)
+        assert "0:00" in panel and "2:57" in panel and "4:18" in panel
+        assert "2 stretched section" in panel
+
     def test_the_first_press_says_what_to_do_next(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
-        screen._playback_ms = 12_000.0
-        screen._set_sync_point()
+        self._mark(screen, 12_000.0, 0.0)
         panel = " ".join(screen._sync_lines)
         assert "0:12" in panel and "Shift+S" in panel
 
-    def test_the_panel_stays_up_while_the_player_navigates(
-        self, tmp_path, monkeypatch
-    ):
-        """An expiring note is long gone by the time the second point is
-        set -- the player spends a minute seeking to the end in between."""
+    def test_the_panel_outlives_an_expiring_note(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
-        screen._playback_ms = 12_000.0
-        screen._set_sync_point()
+        self._mark(screen, 12_000.0, 0.0)
         screen._status_note_until = time.monotonic() - 1.0
         assert screen._status_note_text() == ""
         assert screen._sync_lines
 
-    def test_both_points_are_shown_once_it_is_done(self, tmp_path, monkeypatch):
-        screen = self._screen(tmp_path, monkeypatch)
-        self._sync(screen, 10_000.0, 0.0, 250_000.0, 2725.0)
-        panel = " ".join(screen._sync_lines)
-        assert "0:10" in panel and "4:10" in panel and "%" in panel
-
     def test_a_held_key_is_not_a_second_press(self, tmp_path, monkeypatch):
         """Key repeat is 300 ms then 40 ms, and a repeated KEYDOWN looks
-        exactly like a real one. Holding Shift+S at the second point took
-        the point, set the rate, and then opened a new point 1 on top of
-        it -- which is what the player saw."""
+        exactly like a real one."""
         screen = self._screen(tmp_path, monkeypatch)
         down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_s,
                                   mod=pygame.KMOD_SHIFT)
         screen._playback_ms = 10_000.0
         screen.handle_event(down)
-        screen.handle_event(down)              # the repeat
         screen.handle_event(down)
-        assert screen._sync_anchor is not None
-        assert "point 1" in " ".join(screen._sync_lines)
-
-    def test_letting_go_allows_the_next_press(self, tmp_path, monkeypatch):
-        screen = self._screen(tmp_path, monkeypatch)
-        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_s,
-                                  mod=pygame.KMOD_SHIFT)
-        up = pygame.event.Event(pygame.KEYUP, key=pygame.K_s)
-        screen._playback_ms = 10_000.0
         screen.handle_event(down)
-        screen.handle_event(up)
-        screen._config.set_mp3_offset_for("song", 2725.0)
-        screen._playback_ms = 250_000.0
-        screen.handle_event(down)
-        assert screen._mp3_rate() != 1.0
+        assert len(screen._mp3_anchors()) == 1
 
     def test_a_song_with_no_recording_says_so(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)

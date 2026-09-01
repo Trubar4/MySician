@@ -39,10 +39,9 @@ jobs:
       - name: Build exe
         run: pyinstaller pickhero.spec --noconfirm
 
-      - name: Verify verovio can actually engrave
-        # Importing it proves nothing -- the toolkit loads without its data
-        # files and then renders an empty page. The packaging question is
-        # asked of a rendered page.
+      - name: Verify verovio can engrave in this environment
+        # Necessary and NOT sufficient -- see the EXE check below, which is
+        # the one that answers the packaging question.
         run: python tools/check_verovio.py
 
       - name: Verify build output
@@ -53,6 +52,14 @@ jobs:
           }
           $size = (Get-Item "dist\MySician.exe").Length / 1MB
           Write-Host "MySician.exe size: $([math]::Round($size, 1)) MB"
+        shell: pwsh
+
+      - name: Verify the EXE itself can engrave
+        # The build step above passed while the EXE it produced had no
+        # verovio in it at all: every import of it is inside a function, so
+        # nothing in the static import graph reached it. A check that runs
+        # beside the package cannot answer a question about the package.
+        run: .\dist\MySician.exe --check-engraver
         shell: pwsh
 
       - name: Upload exe as build artifact

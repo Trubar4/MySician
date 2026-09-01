@@ -38,6 +38,11 @@ binaries = []
 binaries += collect_dynamic_libs("aubio")
 binaries += collect_dynamic_libs("pygame")
 binaries += collect_dynamic_libs("numpy")
+# verovio is a 17 MB abi3 extension beside a thin Python wrapper, and every
+# import of it in this app is inside a function -- which is how it came to be
+# missing from the EXE while the build and its own check both passed. Both
+# halves are named explicitly rather than left to the import graph.
+binaries += collect_dynamic_libs("verovio")
 
 # ── VC++ Runtime ────────────────────────────────────────────────────────────
 # Bundle the Visual C++ runtime so the exe works on machines without it.
@@ -65,6 +70,11 @@ a = Analysis(
         "guitarpro",
         # SSL certs for urllib HTTPS requests (Songsterr downloader)
         "certifi",
+        # Engraving. Imported lazily everywhere it is used, so nothing in the
+        # static import graph reaches it.
+        "verovio",
+        "pickhero.ui.tab_view",
+        "pickhero.tabs.musicxml",
     ],
     hookspath=[],
     hooksconfig={},

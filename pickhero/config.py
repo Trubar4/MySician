@@ -156,6 +156,13 @@ class Config:
     # at two places and letting the app fit the line between them. 1.0 means
     # untouched, which is what every song starts at.
     song_mp3_rates: dict = field(default_factory=dict)
+    # Where the player lined the recording up, per song, as
+    # [[song ms, offset ms], ...]. A LIST because two points are a straight
+    # line and a band that played without a click does not follow one:
+    # measured on the player's own song, the offset runs -260 ms, -1330 ms
+    # and back to -260 ms, so the best straight line corrects by nothing at
+    # all and leaves 1.07 s standing in the middle.
+    song_mp3_anchors: dict = field(default_factory=dict)
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     # Song keys the player has starred. A list rather than a set because it
@@ -240,6 +247,30 @@ class Config:
     def set_mp3_offset_for(self, song_key: str, offset_ms: float) -> None:
         if song_key:
             self.song_mp3_offsets[song_key] = float(offset_ms)
+
+    def mp3_anchors_for(self, song_key: str) -> list[tuple[float, float]]:
+        """This song's sync points, sorted, as (song ms, offset ms)."""
+        if not song_key:
+            return []
+        raw = self.song_mp3_anchors.get(song_key) or []
+        points = []
+        for entry in raw:
+            try:
+                points.append((float(entry[0]), float(entry[1])))
+            except (TypeError, ValueError, IndexError):
+                continue
+        return sorted(points)
+
+    def set_mp3_anchors_for(self, song_key: str,
+                            points: list[tuple[float, float]]) -> None:
+        """Store them, or forget the song when there are none left."""
+        if not song_key:
+            return
+        if points:
+            self.song_mp3_anchors[song_key] = [
+                [float(a), float(b)] for a, b in sorted(points)]
+        else:
+            self.song_mp3_anchors.pop(song_key, None)
 
     def mp3_rate_for(self, song_key: str) -> float:
         """This song's recording speed against the tab; 1.0 is untouched."""

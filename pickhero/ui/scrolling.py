@@ -2545,7 +2545,7 @@ class PlayingScreen:
             "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
             "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
-            "|  Shift+S: audio speed from 2 points (Ctrl+Shift+S: clear)  "
+            "|  Shift+S: sync point here (Ctrl+Shift+S: clear)  "
             "|  Shift+A: reopen audio output (if the sound goes bad)  "
             "|  Shift+T: tab page view  "
             "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
@@ -3716,8 +3716,14 @@ class PlayingScreen:
             fh.write(f"mp3_worst_seek_ms\t"
                      f"{getattr(player, 'worst_seek_ms', 0.0):.0f}\n")
             fh.write(f"mp3_time_scale\t{player.time_scale:.3f}\n")
-        fh.write(f"mp3_rate\t{self._mp3_rate():.4f}"
-                 f"\t({(1 / self._mp3_rate() - 1) * 100:+.2f} % gedehnt)\n")
+        anchors = self._mp3_anchors()
+        plan = self._mp3_plan()
+        fh.write(f"mp3_sync_points\t{len(anchors)}\t"
+                 + " ".join(f"{at / 1000:.0f}s:{off:+.0f}ms"
+                            for at, off in anchors) + "\n")
+        fh.write(f"mp3_stretch_sections\t{len(plan)}\t"
+                 + " ".join(f"{(1 / rate - 1) * 100:+.2f}%"
+                            for _, rate in plan) + "\n")
         self._frame_line(fh)
         if self._clock_real_ms > 0:
             ratio = self._clock_song_ms / self._clock_real_ms
@@ -3871,9 +3877,10 @@ class PlayingScreen:
             "Shift+N / Shift+M: shift the recording by 10 ms",
             "Ctrl+N / Ctrl+M: by a second   Ctrl+Shift: by ten seconds",
             "  (reaches 8 minutes, for a tab that is only the solo)",
-            "Shift+S: line the recording up at two places and let the app",
-            "  work out its speed — the offset says where it starts, this",
-            "  says how fast it runs. Ctrl+Shift+S puts it back.",
+            "Shift+S: line the recording up HERE and add a sync point.",
+            "  Two points give one speed, three give two sections, and a",
+            "  band that played without a click needs the sections.",
+            "  Ctrl+Shift+S clears them all.",
             "+/-: scroll faster / slower     G: hit window",
             "N/M: MIDI backing earlier / later   Alt+N/M: by a second",
             "TAB: choose track     H: this help     ESC: song list",
@@ -4495,10 +4502,41 @@ class PlayingScreen:
         """
         return 1.0 / self._tempo_factor if self._tempo_factor > 0 else 1.0
 
+    def _mp3_anchors(self) -> list[tuple[float, float]]:
+        """The places the player lined this recording up, sorted."""
+        getter = getattr(self._config, "mp3_anchors_for", None)
+        return getter(self._song_key) if getter else []
+
+    def _mp3_plan(self) -> tuple[tuple[float, float], ...]:
+        """((fraction through the song, how fast the recording runs), ...).
+
+        One entry per gap between anchors. Two anchors give one entry, which
+        is the straight line the first version could express; three give two,
+        which is the least that can follow a band. The rate between two
+        anchors is `1 - (offset change) / (time between them)` -- the same
+        arithmetic as before, applied per segment.
+        """
+        anchors = self._mp3_anchors()
+        length = self._timeline.duration_ms or 1.0
+        plan: list[tuple[float, float]] = []
+        for (s1, o1), (s2, o2) in zip(anchors, anchors[1:]):
+            if s2 - s1 < MIN_SYNC_SPAN_MS:
+                continue
+            rate = 1.0 - (o2 - o1) / (s2 - s1)
+            if not (MIN_MP3_RATE <= rate <= MAX_MP3_RATE):
+                continue
+            plan.append((max(0.0, min(1.0, s1 / length)), rate))
+        return tuple(plan)
+
     def _mp3_rate(self) -> float:
-        """How fast this recording runs against the tab; 1.0 is untouched."""
-        getter = getattr(self._config, "mp3_rate_for", None)
-        return getter(self._song_key) if getter else 1.0
+        """The FIRST segment's rate, which is all a single number can say.
+
+        Kept because the cache name, the HUD and the run log all want one
+        number for "how far off is this recording"; the piecewise plan is
+        what actually gets built.
+        """
+        plan = self._mp3_plan()
+        return plan[0][1] if plan else 1.0
 
     def _mp3_build_tempo(self) -> float:
         """What `timestretch.build` has to be asked for.
@@ -4571,6 +4609,7 @@ class PlayingScreen:
             return
         self._mp3_stretch_wanted = tempo
         self._mp3_stretch_progress = 0.0
+        plan = self._mp3_plan()
         cache_dir = config_module.CONFIG_DIR / "stretched"
 
         def report(fraction: float) -> bool:
@@ -4581,7 +4620,8 @@ class PlayingScreen:
 
         def work() -> None:
             try:
-                built = timestretch.build(Path(path), tempo, cache_dir, report)
+                built = timestretch.build(Path(path), tempo, cache_dir,
+                                          report, plan)
                 self._mp3_stretch_done = (tempo, path, str(built))
             except timestretch.Cancelled:
                 pass                          # the speed moved on; not a fault
@@ -4735,79 +4775,77 @@ class PlayingScreen:
         self._say(f"Audio output reopened — {output.describe()}")
 
     def _set_sync_point(self) -> None:
-        """Two places lined up by hand become a speed for the whole song.
+        """Remember that the recording is right HERE, and rebuild from all
+        of them.
 
-        The offset can only say WHERE the recording starts. A tab is a fixed
-        grid and a band is not, so a downloaded tab and a recording of the
-        real performance walk apart -- 1.09 % on the song this was built for,
-        2.7 s over four minutes, which no single offset can follow. Given the
-        offset that is right at two places, the line between them is the
-        speed, and that the app can play.
+        The offset can only say where the recording starts, and for a while
+        this took exactly two points -- which is a straight line. The player's
+        own measurements say that is not enough: their offset runs -260 ms at
+        the start, -1330 ms at 2:57 and back to -260 ms at 4:18, so the best
+        straight line corrects by nothing at all and leaves 1.07 s standing in
+        the middle. A band that played without a click does not follow a line,
+        and every point they set is one more piece of it that can be followed.
 
-        It is a repair and not a cure, and it has to be offered as one: on
-        that song the local rate runs from 0.5 to 1.8 % section by section,
-        because nobody played to a click. The best single correction leaves
-        about 400 ms standing, against 2700 without it.
+        It is a repair and not a cure, and it has to be offered as one: the
+        correction is a step at each point, not a curve, because the anchors
+        are the only places the truth is known.
         """
         if self._mp3_player is None:
             self._say("No backing track — Shift+U to pick one")
             return
         here = (self._playback_ms, self._mp3_offset())
-        if self._sync_anchor is None:
-            self._sync_anchor = here
-            self._sync_lines = [
-                f"SYNC 1 of 2 — point 1: {_clock_text(here[0])} at "
-                f"{_offset_text(here[1])}",
-                "now play to near the END, line the recording up with "
-                "Shift+N/M, then Shift+S again",
-            ]
-            return
-        s1, o1 = self._sync_anchor
-        s2, o2 = here
-        self._sync_lines = [
-            f"SYNC — point 1: {_clock_text(s1)} at {_offset_text(o1)}"
-            f"   point 2: {_clock_text(s2)} at {_offset_text(o2)}",
-        ]
-        if abs(s2 - s1) < MIN_SYNC_SPAN_MS:
-            # The offset is dialled in 10 ms steps, so a short span turns
-            # one keypress into a large speed error. Kept rather than
-            # dropped: the player only has to move further away.
-            self._sync_lines.append(
-                f"too close together — the two points must be at least "
-                f"{MIN_SYNC_SPAN_MS / 1000:.0f} s apart. Point 1 is kept; "
-                f"go further away and press Shift+S there.")
-            return
-        old_rate = self._mp3_rate()
-        rate = old_rate * (1.0 - (o2 - o1) / (s2 - s1))
-        if not (MIN_MP3_RATE <= rate <= MAX_MP3_RATE):
-            self._sync_anchor = None
-            self._sync_lines.append(
-                f"that would play the recording at {100 / rate:.0f} % of its "
-                f"speed — the two points cannot both be right. Start again "
-                f"with Shift+S.")
-            return
-        setter = getattr(self._config, "set_mp3_rate_for", None)
+        points = [p for p in self._mp3_anchors()
+                  if abs(p[0] - here[0]) >= MIN_SYNC_SPAN_MS]
+        dropped = len(self._mp3_anchors()) - len(points)
+        points.append(here)
+        points.sort()
+        setter = getattr(self._config, "set_mp3_anchors_for", None)
         if setter is None:
             return
-        setter(self._song_key, rate)
-        # The offset has to move with it, or fixing the drift throws away the
-        # alignment the player just demonstrated at the first point.
-        self._set_mp3_offset(s1 - (s1 - o1) * old_rate / rate)
-        self._sync_anchor = None
+        setter(self._song_key, points)
         self._config.save()
-        self._sync_lines.append(
-            f"recording stretched by {(1.0 / rate - 1.0) * 100:+.2f} % — "
-            f"kept for this song. Ctrl+Shift+S puts it back.")
+        self._describe_sync(replaced=dropped)
+        self._mp3_loaded_build = None          # the plan changed
+
+    def _describe_sync(self, replaced: int = 0) -> None:
+        """The sync points and what they add up to, kept on screen.
+
+        Not a note that expires: the player spends minutes moving between
+        points, and a message that is gone by then leaves them guessing which
+        press the next one will be.
+        """
+        points = self._mp3_anchors()
+        plan = self._mp3_plan()
+        lines = [
+            "  ".join(f"{_clock_text(at)} {_offset_text(off)}"
+                      for at, off in points)
+        ]
+        if len(points) < 2:
+            lines.append("SYNC 1 of 2 — now go somewhere else in the song, "
+                         "line the recording up with Shift+N/M, Shift+S again")
+        else:
+            spans = "  ".join(f"{(1 / rate - 1) * 100:+.2f} %"
+                              for _, rate in plan) or "nothing usable"
+            lines.append(
+                f"SYNC {len(points)} points, {len(plan)} stretched section(s): "
+                f"{spans}   (Shift+S adds one, Ctrl+Shift+S clears)")
+        if replaced:
+            lines.append(f"replaced {replaced} point(s) closer than "
+                         f"{MIN_SYNC_SPAN_MS / 1000:.0f} s to this one")
+        self._sync_lines = ["SYNC   " + lines[0]] + lines[1:]
 
     def _clear_sync_rate(self) -> None:
         """Back to the recording as it was made."""
         self._sync_anchor = None
         self._sync_lines = []
-        setter = getattr(self._config, "set_mp3_rate_for", None)
-        if setter is not None:
-            setter(self._song_key, 1.0)
-            self._config.save()
-        self._say("Recording speed correction cleared")
+        self._mp3_loaded_build = None
+        for name, value in (("set_mp3_anchors_for", []),
+                            ("set_mp3_rate_for", 1.0)):
+            setter = getattr(self._config, name, None)
+            if setter is not None:
+                setter(self._song_key, value)
+        self._config.save()
+        self._say("Recording sync points cleared")
 
     def _set_mp3_offset(self, offset_ms: float) -> None:
         """Store the recording's offset and move the recording to match."""

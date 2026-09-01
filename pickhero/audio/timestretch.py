@@ -59,12 +59,20 @@ class Cancelled(RuntimeError):
     """The stretch was abandoned because nobody wants it any more."""
 
 
-def stretch(samples: np.ndarray, factor: float,
+def stretch(samples: np.ndarray, factor: float | Callable[[float], float],
             progress: Callable[[float], bool] | None = None) -> np.ndarray:
     """Make the audio `factor` times as long at the same pitch.
 
     `samples` is float32, mono `(n,)` or `(n, channels)`. A factor above 1
     makes it longer (slower playback), below 1 shorter.
+
+    `factor` may also be a FUNCTION of the position in the original, as a
+    fraction 0..1. A band that played without a click needs that: measured
+    on the player's own song, the recording runs 6 ms per second slow for
+    the first three minutes and 13 ms per second fast for the next eighty
+    seconds, and one constant factor through both is worth nothing at all --
+    a straight line through the two ends corrects by 0.0 % and leaves 1.07 s
+    standing in the middle.
 
     `progress` is called with how far along this is, 0 to 1, and may return
     False to abandon the work -- which raises `Cancelled`. Both exist for the
@@ -76,8 +84,13 @@ def stretch(samples: np.ndarray, factor: float,
     if samples.ndim == 1:
         samples = samples[:, None]
     n, channels = samples.shape
-    if abs(factor - 1.0) < 1e-3 or n < 4 * WINDOW:
+    varying = callable(factor)
+    if n < 4 * WINDOW:
         return samples.copy()
+    if not varying and abs(factor - 1.0) < 1e-3:
+        return samples.copy()
+    at = factor if varying else (lambda _fraction: factor)
+    biggest = (max(at(i / 32.0) for i in range(33)) if varying else factor)
 
     window = np.hanning(WINDOW + 1)[:-1].astype(np.float32)[:, None]
     # The similarity search compares one signal, not each channel separately:
@@ -85,9 +98,11 @@ def stretch(samples: np.ndarray, factor: float,
     # it apart.
     mono = samples.mean(axis=1).astype(np.float32)
 
-    out_len = int(n * factor) + WINDOW
+    # Allocated for the fastest stretch anywhere in the piece and trimmed to
+    # what was actually written: with a factor that varies there is no single
+    # length to compute up front, and guessing short would cut the song off.
+    out_len = int(n * biggest) + WINDOW
     out = np.zeros((out_len, channels), dtype=np.float32)
-    hop_in = HOP_OUT / factor
 
     read = 0.0
     write = 0
@@ -113,8 +128,14 @@ def stretch(samples: np.ndarray, factor: float,
         out[write:write + WINDOW] += samples[position:position + WINDOW] * window
         previous = position
         write += HOP_OUT
-        read += hop_in
-    return out[:max(1, int(n * factor))]
+        read += HOP_OUT / max(1e-6, at(read / n))
+    # The loop stops one window short of the end, so the output is trimmed to
+    # where the input WOULD have taken it: whatever is left over, stretched
+    # at the rate in force there. With a constant factor that is the old
+    # `n * factor` exactly; with a varying one there is no closed form and
+    # this is the same answer computed forward.
+    tail = max(0.0, n - read) * at(min(1.0, read / n))
+    return out[:max(1, min(out_len, int(round(write + tail))))]
 
 
 def _best_offset(mono: np.ndarray, reference: np.ndarray,
@@ -145,7 +166,32 @@ def _best_offset(mono: np.ndarray, reference: np.ndarray,
     return low + int(np.argmax(correlation / np.sqrt(local + 1e-9)))
 
 
-def cache_name(path: Path, tempo_factor: float) -> str:
+def rate_curve(plan: tuple[tuple[float, float], ...]
+               ) -> Callable[[float], float] | None:
+    """A stretch factor as a function of where we are in the recording.
+
+    `plan` is ((fraction through the song, how fast the recording runs
+    there), ...) sorted by fraction. Between two entries the rate is the
+    earlier one -- a step rather than a ramp, because the anchors the player
+    set are the only places the truth is known and interpolating between
+    them invents a curve nobody measured.
+    """
+    if not plan:
+        return None
+
+    def at(fraction: float) -> float:
+        rate = plan[0][1]
+        for where, value in plan:
+            if fraction < where:
+                break
+            rate = value
+        return 1.0 / max(1e-6, rate)
+
+    return at
+
+
+def cache_name(path: Path, tempo_factor: float,
+               plan: tuple[tuple[float, float], ...] = ()) -> str:
     """A file name that changes when the recording or the speed does."""
     try:
         stat = path.stat()
@@ -158,27 +204,35 @@ def cache_name(path: Path, tempo_factor: float) -> str:
     # arrived: 0.9891 and 0.9932 both read "099" and would have shared one
     # file, so a second attempt at syncing a recording would quietly play
     # the first attempt's copy.
+    shape = ";".join(f"{a:.4f}:{b:.6f}" for a, b in plan)
     key = hashlib.sha1(
-        f"{path.resolve()}|{stamp}|{tempo_factor:.6f}".encode()
+        f"{path.resolve()}|{stamp}|{tempo_factor:.6f}|{shape}".encode()
     ).hexdigest()[:12]
     return f"{path.stem[:32]}_{int(round(tempo_factor * 100)):03d}_{key}.wav"
 
 
 def build(path: Path, tempo_factor: float, cache_dir: Path,
-          progress: Callable[[float], bool] | None = None) -> Path:
+          progress: Callable[[float], bool] | None = None,
+          plan: tuple[tuple[float, float], ...] = ()) -> Path:
     """Return a WAV of `path` slowed to `tempo_factor`, building it if needed.
 
     Blocking and slow by design -- seconds for a whole song. Call it off the
     game loop, and pass `progress` so the player can see it moving.
     """
     cache_dir = Path(cache_dir)
-    target = cache_dir / cache_name(Path(path), tempo_factor)
+    target = cache_dir / cache_name(Path(path), tempo_factor, plan)
     if target.exists():
         return target
     if progress is not None and progress(0.0) is False:
         raise Cancelled()
     samples, rate = _decode(Path(path))
-    stretched = stretch(samples, 1.0 / tempo_factor, progress)
+    curve = rate_curve(plan)
+    if curve is None:
+        stretched = stretch(samples, 1.0 / tempo_factor, progress)
+    else:
+        # The practice speed and the recording's own wandering, in one pass.
+        stretched = stretch(
+            samples, lambda p: curve(p) / tempo_factor, progress)
     del samples                                # a whole song, twice, is real
     cache_dir.mkdir(parents=True, exist_ok=True)
     # Written beside the target and renamed, so a stretch interrupted halfway
