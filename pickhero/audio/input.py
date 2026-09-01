@@ -224,6 +224,15 @@ class AudioCapture:
     The sounddevice callback runs in a separate thread automatically.
     """
 
+    # How far behind the main thread ever got. A stutter that clears when the
+    # song is PAUSED is a backlog, not a device -- pausing is the one thing
+    # that drains these every frame without doing anything else -- so the
+    # depth is what tells a backlog from a bad mixer, and nothing recorded it.
+    # Class attributes so a diagnostic can never be the reason something
+    # breaks: half-built test doubles have them too.
+    worst_note_backlog = 0
+    worst_window_backlog = 0
+
     def __init__(self, config: Config | None = None):
         if config is None:
             config = Config()
@@ -568,6 +577,8 @@ class AudioCapture:
 
     def get_notes(self) -> list[TimestampedNote]:
         """Drain all pending detected notes from the queue (non-blocking)."""
+        self.worst_note_backlog = max(self.worst_note_backlog,
+                                      self.note_queue.qsize())
         notes = []
         while True:
             try:
@@ -578,6 +589,8 @@ class AudioCapture:
 
     def get_strike_windows(self) -> list[StrikeWindow]:
         """Drain raw audio windows for chord verification (non-blocking)."""
+        self.worst_window_backlog = max(self.worst_window_backlog,
+                                        self.strike_queue.qsize())
         windows = []
         while True:
             try:

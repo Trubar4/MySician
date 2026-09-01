@@ -3615,6 +3615,15 @@ class PlayingScreen:
         # The OUTPUT, which this log never mentioned. A run where the sound
         # went wrong and a run where it did not are otherwise identical here.
         fh.write(f"output_device\t{output.describe()}\n")
+        # A stutter that clears when the song is PAUSED is a backlog, and
+        # pausing is the one thing that drains these every frame without
+        # doing anything else. If Shift+A does nothing while it stutters,
+        # the main loop is not reading keys either -- which is a stalled
+        # frame, not a bad mixer. These two numbers tell the two apart.
+        fh.write(f"worst_note_backlog\t"
+                 f"{getattr(capture, 'worst_note_backlog', 0)}\n")
+        fh.write(f"worst_window_backlog\t"
+                 f"{getattr(capture, 'worst_window_backlog', 0)}\n")
         # Whether the engraver is really in this build. It imports perfectly
         # happily without its 20 MB of data files and then renders an empty
         # page, and the EXE is the only place that question is settled -- so
