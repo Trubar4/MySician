@@ -11,6 +11,11 @@ Lass uns an zwei anderen Features arbeiten, bis ich wieder sauber testen kann:
 
 https://www.songsterr.com/a/wsa/red-hot-chili-peppers-californication-tab-s439
 
+#Apps
+https://goplayalong.com/store/
+https://www.gibson.app/subscribe-now?showNavBar=true&source=navbar
+https://soundlane.app/de/
+
 So bedienst du es
 1. Song starten, MP3 an (U)
 2. Am Anfang: mit Shift+N / Shift+M ausrichten, bis Bild und Ton passen
