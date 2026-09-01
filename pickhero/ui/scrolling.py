@@ -1334,8 +1334,11 @@ class PlayingScreen:
             # a second copy of the transport, the offsets and the loop, and
             # this project has already paid for four readers of one plan.
             self._draw_tab_page(surface, layout)
+            # _draw_hud already puts the score up when the song is over.
+            # Calling the overlay here as well drew it unconditionally --
+            # it takes no decision of its own -- so the page view showed
+            # nothing but the end of the song, every time.
             self._draw_hud(surface, layout)
-            self._draw_completion_overlay(surface, layout)
             if self._show_help:
                 self._draw_help_overlay(surface, layout)
             return
@@ -2363,6 +2366,13 @@ class PlayingScreen:
             gap_px = (gap_ms * layout.pixels_per_ms
                       if gap_ms is not None else float("inf"))
             body = self.sustain_width(note.duration_ms, layout.pixels_per_ms)
+            if note.let_ring:
+                # "let ring" does not lengthen the written value -- a
+                # let-ring eighth is still an eighth -- it says the string is
+                # never damped, so the note sounds until something else is
+                # played on it. That is exactly the neighbour gap, which is
+                # already the cap for every other note.
+                body = gap_px
             capsule_w = min(body, gap_px) - visual_gap
 
             # Muted notes do not ring for the length the tab wrote. A dead
@@ -3116,7 +3126,13 @@ class PlayingScreen:
                          (center_x, bar_y - 2), (center_x, bar_y + bar_h + 2), 1)
 
     def _draw_completion_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:
-        """Draw the song completion results overlay."""
+        """Draw the song completion results overlay.
+
+        Unconditional on purpose -- every caller decides whether the song is
+        over. Forgetting that check is what made the page view show nothing
+        but the score, so the callers are the thing to look at when this
+        appears somewhere it should not.
+        """
         t = get_theme()
         w, h = layout.screen_w, layout.screen_h
 

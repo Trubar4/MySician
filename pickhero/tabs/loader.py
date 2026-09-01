@@ -328,6 +328,7 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap,
                             # Type 3 is a dead note: kept as an event because
                             # it is played, flagged because its written fret
                             # names a hand position, not a pitch.
+                            let_ring=bool(getattr(effect, "letRing", False)),
                             dead=note.type.value == 3,
                             palm_mute=bool(
                                 getattr(effect, "palmMute", False)
@@ -510,6 +511,7 @@ class _GpifNote:
     slide_in: int = 0
     slide_out: int = 0
     hammer_to_next: bool = False
+    let_ring: bool = False
     # A note that CONTINUES the one before it on the same string. It is not
     # struck -- the string is already ringing -- so it must extend that note
     # rather than become one of its own, which is what "held long and not
@@ -602,7 +604,7 @@ def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
     for n in notes_el.findall("Note"):
         nid = n.get("id", "")
         fret = string_val = None
-        dead = palm_mute = bended = False
+        dead = palm_mute = bended = let_ring = False
         # GPIF writes <Tie origin=".." destination=".."/> on the Note itself,
         # not as a Property. "destination" is the half that is not played.
         tie_el = n.find("Tie")
@@ -619,6 +621,8 @@ def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
                 dead = prop.find("Enable") is not None
             elif pname == "PalmMuted":
                 palm_mute = prop.find("Enable") is not None
+            elif pname == "LetRing":
+                let_ring = prop.find("Enable") is not None
             elif pname == "Bended":
                 bended = prop.find("Enable") is not None
             elif pname == "HopoOrigin":
@@ -651,6 +655,7 @@ def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
             fret=fret,
             string=string_val,
             tie_to_previous=tie_to_previous,
+            let_ring=let_ring,
             dead=dead,
             palm_mute=palm_mute,
             bend=_gpif_bend(bend_values) if bended else (),
@@ -925,6 +930,7 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                             slide_in=gpif_note.slide_in,
                             slide_out=gpif_note.slide_out,
                             hammer_to_next=gpif_note.hammer_to_next,
+                            let_ring=gpif_note.let_ring,
                             dead=gpif_note.dead,
                             palm_mute=gpif_note.palm_mute,
                         ))

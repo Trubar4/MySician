@@ -811,6 +811,8 @@ Four things were measured rather than assumed, each after the export looked fine
 
 The playhead interpolates between the notes either side of the moment while they sit on the same line of the same page, and snaps otherwise: one sliding diagonally across a line break is worse than one that steps.
 
+**The completion overlay takes no decision of its own.** Every caller checks whether the song is over; the page view called it as well as `_draw_hud`, which already does, so the score was drawn over the page on every frame and the whole view looked like it showed nothing but the end of the song. One call, one guard, and the docstring now says which.
+
 **It is a MODE of the playing screen, not a screen of its own** (`Shift+T`). A second screen would be a second copy of the transport, both offsets, the loop, the tempo and the run log — and this project has already paid for four readers of one plan. `+`/`-` mean zoom there and scroll speed on the board, which is the same key meaning what the view it is pressed in is about.
 
 **Getting it inside the frame budget took two measurements and neither suspect was the one that mattered:**
@@ -1022,6 +1024,8 @@ The player's screenshot: their tab holds a fret across two beats with a tie and 
 Measured on the player's own files: **Bon Jovi 850 → 746 notes** and **Papa Roach 1384 → 1314**. A hundred phantom picks in one song, every one of them scored as a miss, and the percentage they had been reading was built on top of that.
 
 The control matters here as much as the fix: `tests/test_ties.py` builds the same file with the tie taken OFF and asserts it really is two notes of 2000 ms. Without it the class would pass on a loader that simply drops every second note.
+
+**And "let ring" is a different thing that looks the same on screen.** The player's next screenshot showed the doubling gone and the note still short: a tie is one note written twice, but `let ring` does NOT change the written value — a let-ring eighth is still an eighth — it says the string is never damped, so the note sounds on until something else is played on it. Neither reader read it at all. It is `NoteEvent.let_ring` now, out of pyguitarpro's `effect.letRing` and GPIF's `<Property name="LetRing">`, and it changes the DRAWING only: the note is drawn up to the next note on its string, which is the cap every other note already has. Nothing about the scoring moves, because the pick is at the written moment either way.
 
 ## The Sound Went Bad And Only A Restart Fixed It
 

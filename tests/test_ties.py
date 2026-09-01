@@ -107,3 +107,58 @@ class TestTheSameHoldsForTheOlderFormat:
         timeline = load_gp_file(path)
         assert timeline.notes
         assert all(n.duration_ms > 0 for n in timeline.notes)
+
+
+LET_RING_GPIF = GPIF.replace(
+    '<Note id="1"><Tie origin="false" destination="true"/><Properties>',
+    '<Note id="1"><Properties>'
+    '<Property name="LetRing"><Enable/></Property>')
+
+
+def _gp_let_ring(tmp_path):
+    xml = LET_RING_GPIF.replace("__SECOND__", "1")
+    path = tmp_path / "letring.gp"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("Content/score.gpif", xml)
+        archive.writestr("VERSION", "7.0")
+    return path
+
+
+class TestLetRingIsNotATie:
+    """"Der Wert haette ja verlaengert werden muessen."
+
+    A tie is one note written twice and the reader merges it. "Let ring" is
+    a different thing that looks the same on screen: the written value does
+    not change -- a let-ring eighth is still an eighth -- the string simply
+    is not damped, so the note sounds on until something else is played on
+    it. Neither reader read it at all, so those notes were drawn at their
+    written length and looked short.
+    """
+
+    def test_it_is_read_and_does_not_merge_the_notes(self, tmp_path):
+        timeline = load_gp_file(_gp_let_ring(tmp_path), track_index=0)
+        assert len(timeline.notes) == 2
+        assert timeline.notes[1].let_ring
+
+    def test_the_written_value_is_untouched(self, tmp_path):
+        """It changes the drawing, never the scoring: the pick is at the
+        written moment either way."""
+        timeline = load_gp_file(_gp_let_ring(tmp_path), track_index=0)
+        assert timeline.notes[1].duration_ms == pytest.approx(2000.0)
+
+    def test_it_is_drawn_up_to_the_next_note_on_its_string(self, tmp_path):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+        pygame.init()
+        surface = pygame.Surface((1280, 720))
+        timeline = load_gp_file(_gp_let_ring(tmp_path), track_index=0)
+        screen = PlayingScreen(timeline, config=Config())
+        layout = screen._layout(surface)
+        note = timeline.notes[0]
+        gaps = screen._neighbour_gaps(timeline.notes)
+        gap_ms = gaps[(note.timestamp_ms, note.string)]
+        # The plain sustain and the gap are the same here, so the property
+        # that matters is that a let-ring note is never drawn SHORTER than
+        # the room it has.
+        assert screen.sustain_width(gap_ms, layout.pixels_per_ms) > 0

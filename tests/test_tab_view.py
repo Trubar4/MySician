@@ -257,3 +257,41 @@ class TestNothingHereGrowsWithTheSong:
         engraving = TabEngraving(_song(bars=8))
         fitted = fit(engraving.pages[0], 1280)
         assert fitted.get_bitsize() == screen.get_bitsize()
+
+
+class TestThePageIsNotCoveredByTheScore:
+    """The completion overlay draws unconditionally -- every caller decides.
+    Calling it without the check put the score over the page every frame,
+    and the page view looked like it only ever showed the end of the song.
+    """
+
+    def _screen(self):
+        from pickhero.ui.scrolling import PlayingScreen
+        from pickhero.config import Config
+        return PlayingScreen(_song(bars=6), config=Config())
+
+    def test_an_unfinished_song_shows_the_page(self, monkeypatch):
+        screen = self._screen()
+        surface = pygame.display.set_mode((1280, 720))
+        screen.render(surface)
+        screen._toggle_tab_mode()
+        screen.update()
+        drawn = []
+        monkeypatch.setattr(type(screen), "_draw_completion_overlay",
+                            lambda self, *a: drawn.append(1))
+        screen._song_completed = False
+        screen.render(surface)
+        assert drawn == []
+
+    def test_a_finished_song_still_gets_its_score(self, monkeypatch):
+        screen = self._screen()
+        surface = pygame.display.set_mode((1280, 720))
+        screen.render(surface)
+        screen._toggle_tab_mode()
+        screen.update()
+        drawn = []
+        monkeypatch.setattr(type(screen), "_draw_completion_overlay",
+                            lambda self, *a: drawn.append(1))
+        screen._song_completed = True
+        screen.render(surface)
+        assert drawn == [1]

@@ -51,6 +51,12 @@ class NoteEvent:
     # and an engraver needs the written value to draw a stem at all. 0.0 means
     # the reader did not supply one.
     duration_quarters: float = 0.0
+    # "let ring": the string is not damped, so the note sounds on until
+    # something else is played on it. It does NOT change the written value --
+    # a let-ring eighth is still an eighth, which is why the tie fix left
+    # these looking short. It changes how long the note is DRAWN, and nothing
+    # about how it is scored: the pick is at the written moment either way.
+    let_ring: bool = False
 
     @property
     def bend_semitones(self) -> float:
