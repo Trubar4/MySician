@@ -145,3 +145,53 @@ class TestWhatComesOut:
         measures = [MeasureInfo(index=b, start_ms=b * 2000.0,
                                 end_ms=(b + 1) * 2000.0) for b in range(5)]
         ET.fromstring(to_musicxml(_timeline(notes, measures)))
+
+
+class TestTheEngraversTimemapIsNotUsed:
+    """Measured in isolation: on a TABLATURE staff verovio mis-times rests.
+
+    The identical document as standard notation puts "quarter, quarter rest,
+    quarter, quarter" at quarters 0, 2, 3 -- correct -- and as tablature at
+    0, 3, 4, with the rest advancing two quarters instead of one. <forward>
+    is not honoured there either, so neither mechanism for silence survives
+    a tab staff.
+
+    It costs nothing, because the timemap was never the authority: the app
+    knows when every note sounds from its own timeline. What is needed from
+    the engraver is where it drew them.
+    """
+
+    def _timeline_with(self, count):
+        notes = [NoteEvent(timestamp_ms=i * 500.0, duration_ms=500.0,
+                           midi_note=40 + i, string=1 + (i % 6), fret=i % 5,
+                           measure=i // 4, duration_quarters=1.0)
+                 for i in range(count)]
+        measures = [MeasureInfo(index=b, start_ms=b * 2000.0,
+                                end_ms=(b + 1) * 2000.0)
+                    for b in range((count + 3) // 4)]
+        return _timeline(notes, measures)
+
+    def test_every_note_carries_an_id_of_ours(self):
+        xml = to_musicxml(self._timeline_with(8))
+        for i in range(8):
+            assert f'<note id="n{i}"' in xml
+
+    def test_the_id_is_the_index_into_the_timeline(self):
+        """The app maps a note's time to its picture through this and
+        nothing else, so the two must never drift apart."""
+        timeline = self._timeline_with(6)
+        xml = to_musicxml(timeline)
+        first = xml.index('<note id="n3"')
+        fret = timeline.notes[3].fret
+        assert f"<fret>{fret}</fret>" in xml[first:first + 400]
+
+    def test_positions_are_read_back_by_that_id(self):
+        from pickhero.tabs.musicxml import note_positions
+        svg = ('<g id="n0" class="note">  <text x="120" y="240">'
+               '<tspan>3</tspan></text></g>'
+               '<g id="n7" class="note">\n<text x="-5" y="99">')
+        assert note_positions(svg) == {"n0": (120, 240), "n7": (-5, 99)}
+
+    def test_a_page_with_nothing_on_it_yields_nothing(self):
+        from pickhero.tabs.musicxml import note_positions
+        assert note_positions("<svg></svg>") == {}

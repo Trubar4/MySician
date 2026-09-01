@@ -16,14 +16,27 @@ Two things had to exist before it could be written honestly:
   of time and a different piece of music, so `MeasureInfo` carries it rather
   than the exporter guessing from the length of the bar.
 
-What this does NOT do is invent anything. A gap between notes becomes a
-`<forward>`, not a rest of some duration nobody wrote: the tab said nothing
-there, and filling silence with guessed rests is the kind of quiet invention
-this project refuses everywhere else.
+**verovio's own timemap is not used, and must not be.** Measured in
+isolation: on a TABLATURE staff verovio mis-times rests. The identical
+document rendered as standard notation puts a bar of "quarter, quarter rest,
+quarter, quarter" at quarters 0, 2, 3 -- correct -- and as tablature at 0, 3,
+4, with the rest advancing two quarters instead of one and the bar
+overflowing. `<forward>` is not honoured there either. So neither mechanism
+for silence survives a tab staff, and every number the timemap reports for
+one is unreliable.
+
+That costs nothing, because the timemap was a convenience and never the
+authority: the app already knows when every note sounds, from its own
+timeline. What is needed from the engraver is the PICTURE. Each exported
+note carries an `id` of our own (`n<index into timeline.notes>`), verovio
+puts it on the `<g>` in the SVG, and `note_positions` reads the pixel
+coordinates back out. Time comes from us, position comes from verovio, and
+neither has an opinion about the other.
 """
 
 from __future__ import annotations
 
+import re
 from xml.sax.saxutils import escape
 
 from pickhero.audio.note_utils import STANDARD_TUNING
@@ -122,8 +135,22 @@ def _staff_tunings(tuning: dict[int, int]) -> str:
     return "".join(out)
 
 
+def note_positions(svg: str) -> dict[str, tuple[int, int]]:
+    """Where the engraver put each of our notes, by the id we gave it.
+
+    This is the whole reason the export stamps ids: the app knows WHEN a note
+    sounds and verovio knows WHERE it was drawn, and neither needs to be
+    asked about the other.
+    """
+    return {m.group(1): (int(m.group(2)), int(m.group(3)))
+            for m in re.finditer(
+                r'<g id="(n\d+)" class="note">\s*<text x="(-?\d+)" y="(-?\d+)"',
+                svg)}
+
+
 def _note_xml(note: NoteEvent, quarters: float, in_chord: bool,
-              string_count: int, voice: int = 1) -> str:
+              string_count: int, voice: int = 1,
+              note_id: str = "") -> str:
     kind, dots = note_type(quarters)
     duration = max(1, round(quarters * DIVISIONS))
     # MusicXML numbers strings from 1 at the HIGHEST-sounding string, which is
@@ -131,7 +158,7 @@ def _note_xml(note: NoteEvent, quarters: float, in_chord: bool,
     # down because getting it backwards mirrors the whole tab and looks like a
     # rendering bug rather than an off-by-one.
     parts = [
-        "<note>",
+        f'<note id="{note_id}">' if note_id else "<note>",
         "<chord/>" if in_chord else "",
         _pitch(note.midi_note),
         f"<duration>{duration}</duration>",
@@ -151,8 +178,10 @@ def to_musicxml(timeline: Timeline, title: str = "") -> str:
     tuning = timeline.metadata.tuning or STANDARD_TUNING
     string_count = len(tuning) or 6
     by_measure: dict[int, list[NoteEvent]] = {}
-    for note in timeline.notes:
+    ids: dict[int, str] = {}
+    for position, note in enumerate(timeline.notes):
         by_measure.setdefault(note.measure, []).append(note)
+        ids[id(note)] = f"n{position}"
 
     measures = timeline.measures or []
     order = sorted({m.index for m in measures} | set(by_measure))
@@ -240,6 +269,17 @@ def to_musicxml(timeline: Timeline, title: str = "") -> str:
             # makes the engraver misplace everything after it, which is a
             # worse lie than a note drawn one bar short.
             quarters = max(1.0 / DIVISIONS, min(quarters, total - target))
+            # And never a length no single note head can spell. A tie the
+            # reader merged is often 2.5 or 5 quarters, and <type> then said
+            # "half" while <duration> said 2.5 -- verovio follows the TYPE,
+            # so the note ended early and every onset after it in the bar
+            # moved. Measured: Bon Jovi's second onset landed 455 ms late,
+            # at the very first bar. The head is the longest printable value
+            # that fits and the rest of the ring becomes rests, so the two
+            # can never disagree again. A note drawn shorter than it sounds
+            # is a cosmetic loss; an onset in the wrong place is not.
+            printable = split_value(quarters)
+            quarters = printable[0][0] if printable else quarters
             for v, end_at in enumerate(ends):
                 if end_at <= target + 1e-6:
                     voices[v].append((target, quarters, group))
@@ -263,7 +303,8 @@ def to_musicxml(timeline: Timeline, title: str = "") -> str:
                 first = True
                 for note in group:
                     pieces.append(_note_xml(note, quarters, not first,
-                                            string_count, number))
+                                            string_count, number,
+                                            ids.get(id(note), "")))
                     first = False
                 at = target + quarters
             if total - at > 1e-6:

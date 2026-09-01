@@ -789,7 +789,18 @@ Four things were measured rather than assumed, each after the export looked fine
 - **But a rest cannot sit where a note is still sounding**, and guitar tab overlaps constantly: a let-ring bass note under a run of eighths. That is what VOICES are for, and each onset now goes into the first voice whose cursor has reached it.
 - **The bar's tempo travels with it.** Without `<sound tempo>` verovio assumes 120 BPM and every position it reports is wrong by the ratio. And it is computed from this bar's start to the NEXT bar's start, not from its own `end_ms`: the GP3-5 reader sets `end_ms` from the last BEAT in the bar, so a sparsely filled bar reads short and its tempo comes out too fast.
 
-**Where it stands, measured against the app's own note times on three real songs:** the median onset is exact (0.0–0.3 ms on two of them, 56 ms on the third), and a tail is not — 95th percentile 272–600 ms, worst 1307 ms. **That is good enough to know the approach works and not good enough to hang a playhead on**, so nothing in the app reads it yet. The remaining error is in the voice assignment; it is one more pass, not a redesign.
+**And then the timemap turned out to be the wrong thing to measure against.** Chasing a tail of mistimed onsets through four wrong theories — each one measured, each one refuted — the isolation test finally said it plainly:
+
+| one bar: quarter, quarter REST, quarter, quarter | verovio reports |
+|---|---|
+| as standard notation | 0, 2, 3 — correct |
+| **as tablature** | **0, 3, 4** |
+
+**On a tab staff verovio mis-times rests**, advancing two quarters for one and overflowing the bar; `<forward>` is not honoured there either. So neither mechanism for silence survives a tablature staff, and every number its timemap reports for one is unreliable. Nothing in the export was wrong: the same document engraves correctly and reports wrongly.
+
+**That costs nothing, because the timemap was a convenience and never the authority.** The app already knows when every note sounds — from its own timeline, which is the clock everything else in this project is anchored to. What is wanted from an engraver is the PICTURE. So each exported note carries an id of ours (`n<index into timeline.notes>`), verovio puts it on the `<g>` in the SVG, and `note_positions` reads the pixel coordinates back: **1314 of 1314 and 746 of 746 notes found on the player's own two songs**. Time comes from us, position comes from verovio, and neither is asked about the other.
+
+**Four diagnostics in a row measured accumulated drift and called it a local fault** — per-bar error, first-divergence-in-order, onset counts per bar — because every one of them compared milliseconds against a clock that had already slipped. Comparing `qstamp` (quarters from the start, tempo-free) found the real first divergence in one run. When a measurement keeps blaming whatever it looks at, it is measuring itself.
 
 ## Three Guitar Pro Generations, One Parser
 
