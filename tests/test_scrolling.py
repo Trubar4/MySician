@@ -888,7 +888,7 @@ class TestFooterCompleteness:
         "f": "F: frets",
         "g": "G: hit window", "h": "H: help", "i": "I/O", "j": "J: strings",
         "k": "K: sync", "l": "L: weakest", "m": "N/M", "n": "N/M",
-        "o": "I/O", "p": "P: toggle", "s": "Shift+S: audio speed",
+        "o": "I/O", "p": "P: toggle", "s": "Shift+S: sync point",
         "t": "T: theme", "u": "U: audio track",
         "v": "V: chords",
         "w": "W: wait", "x": "X/C", "y": "Y: timing",
