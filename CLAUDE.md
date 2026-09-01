@@ -1068,6 +1068,40 @@ where the song is with where the recording got to and corrects only past `RESYNC
   offset cannot be judged in. `_mp3_plays()` includes `self._playing` for that reason. Paused, `Shift+N`/`Shift+M` only store the value;
   the HUD shows it move regardless, so the key never looks dead.
 
+## Slowing The Tab Down Did Nothing At All
+
+"Kleiner machen geht nicht richtig — es haengt meist bei Groesse 1 und ignoriert kleiner machen. Groesser machen geht, aber das macht den Bildlauf schneller."
+
+Exactly right, and measured on three real songs before touching anything:
+
+| Faktor | Papa Roach | Bon Jovi | timing test |
+|---|---|---|---|
+| 0.4 | 191 px/s | 432 px/s | 173 px/s |
+| 0.6 | **191** | **432** | **173** |
+| 0.8 | **191** | **432** | **173** |
+| 1.0 | 191 | 432 | 173 |
+| 2.5 | 477 | 683 | 433 |
+
+Every factor below 1.0 produced the identical picture. `window = max(MIN, min(fit_window, window))` clamped the window back to the size at which every note keeps its full head — so the number on screen walked down to 0.4 while nothing moved, which is the "feature that cannot be seen working" fault in its purest form.
+
+- **The rule it was protecting is real but was read too widely.** Notes must not change size WHILE SCROLLING. The trim happens on a keypress, which is the same moment the automatic already resizes them — and the app deciding to shrink notes is a different thing from the player asking it to.
+- **Two floors, and the wrong one was in the way.** `MIN_FRET_DIGIT_PX` (34 px of type, so 41.6 px for a two-digit head) was fitted in "Eleven Or Twelve" for reading a number crossing the screen at 430 px/s. Applied to a tab the player is deliberately slowing down it asks the wrong question — and it meant **every song containing a two-digit fret could not be slowed at all**, because its head already sat on it. That is most rock songs. A hand-requested slowdown uses the older, harder `MIN_HEAD_PX` (26) instead.
+- **Measured after: Papa Roach 191 → 112 px/s, Bon Jovi 432 → 270, the timing test 173 → 102.** Bon Jovi is the two-digit case that could not move at all before.
+- **A press that changes nothing is put back and says so.** At the floor the key now answers "the notes are already as small as they may get" rather than storing a factor the display is not honouring.
+- **Removing the clamp broke the speed floor and the suite caught it**, in the one case nobody would have played: a song so dense its notes must overlap had its window recomputed straight back down through `MIN_VISIBLE_WINDOW_MS`, to 167 ms. The trade only runs when the player actually asked to slow down.
+
+## A Tuner Must Not Believe The Calibration
+
+The playing screen has always had a chromatic strip — nearest note, cents, a bar. That is the wrong instrument for tuning up: it says "you are playing a G#", not "your D string is 34 cents flat", and it cannot show which strings are already done. `ui/tuner_menu.py` is the other one, opened with `U` from the song list.
+
+**No library is involved, and none is needed.** The pitch is aubio's, which the app has run since the first day, and a tuner is that pitch against a target: `1200 x log2(heard / target)`. The 16 tunings were already in `note_utils.NAMED_TUNINGS`. What a tuner has to get right is not the arithmetic but what it refuses to say.
+
+- **It reads the RAW pitch** (`get_tuner_data(raw=True)`, `detector.last_freq_raw`). `_correct_octave_jump` halves a frequency whose half lands near a CALIBRATED string, and this player's stored calibration has the A string an octave low. Being wrong about the octave while playing costs one note; being wrong about it while tuning makes them detune the guitar to match.
+- **The catch window is derived from the tuning, not fixed.** The test asserting that no reading can be owned by two strings failed on **DADGAD**, whose G and A sit a whole tone apart — a fixed 2-semitone window owned both, and the tuner would have named whichever it rounded to. It is half the closest pair in the chosen tuning now, capped at `CATCH_SEMITONES`. Every named tuning is checked at ±0.99, ±0.5 and 0 semitones from every string.
+- **A pitch no string owns names nothing.** A tuner that guesses sends the player the wrong way, and further out with every turn.
+- **In tune is a state that has to be HELD** (`STEADY_MS`, 400 ms). One frame inside the band is a string passing through the note on its way somewhere else, and going out again takes the tick back.
+- **Rows read low string first**, the order a guitarist tunes in and the reverse of the string NUMBERS, where 1 is the high e.
+
 ## A Note Head Is Squeezed Sideways, Not Downwards
 
 A dense song shrinks its note heads to buy look-ahead — see `_recompute_scroll_speed`. What was never noticed is that the squeeze is

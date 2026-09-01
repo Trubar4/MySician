@@ -1377,14 +1377,25 @@ class PlayingScreen:
         idx = min(len(gaps) - 1, int(len(gaps) * percentile / 100.0))
         return gaps[idx]
 
-    def _min_head_px(self, layout: _Layout) -> float:
+    def _min_head_px(self, layout: _Layout, by_hand: bool = False) -> float:
         """How narrow a head may get before the fret number stops reading.
 
         A two-digit fret needs roughly twice the width of a one-digit one to
         show the same size of type, and the head was squeezed to a single
         digit's worth for every song. Never wider than the lane: past that the
         head would be wider than tall for no gain, and the height is free.
+
+        `by_hand` is the floor for a slowdown the PLAYER asked for, and it is
+        the older, harder one. `MIN_FRET_DIGIT_PX` was fitted for reading a
+        number that is crossing the screen at 430 px/s -- the whole point of
+        the "eleven or twelve" measurement -- and applying it to a tab the
+        player is deliberately slowing down asks the wrong question. Measured:
+        with the fast floor, every song containing a two-digit fret could not
+        be slowed AT ALL, because its head was already sitting on it. That is
+        most rock songs, and it is what the player was hitting.
         """
+        if by_hand:
+            return min(MIN_HEAD_PX, layout.note_h)
         wanted = _head_px_for_digits(MIN_FRET_DIGIT_PX, self._fret_digits)
         return min(max(MIN_HEAD_PX, wanted), layout.note_h)
 
@@ -1441,15 +1452,42 @@ class PlayingScreen:
                 window = (spacing * layout.usable_width
                           / (head * (1.0 + SUSTAIN_GAP_FRACTION)))
 
-        # Largest window in which every note still gets its full size. Slowing
-        # past it would fit more time on screen at the cost of note size, and
-        # notes changing size is the one thing this display must not do -- so
-        # the trim stops there instead. Speeding up is always allowed: it only
-        # ever gives the notes more room.
+        # Largest window in which every note still gets its full size.
         fit_window = window
         window = max(MIN_VISIBLE_WINDOW_MS, min(BASE_VISIBLE_WINDOW_MS, window))
         window = window / self._scroll_factor()
-        window = max(MIN_VISIBLE_WINDOW_MS, min(fit_window, window))
+        window = max(MIN_VISIBLE_WINDOW_MS, window)
+
+        # Slowing the tab down costs note size, and for a while this refused
+        # to spend it: the window was clamped back to `fit_window`, so every
+        # factor below 1.0 did NOTHING. Measured on three real songs, 0.4,
+        # 0.6, 0.8 and 1.0 gave the identical window and the identical
+        # pixels per second, with the head sitting at 44 px against a 26 px
+        # floor -- room to spend that was simply never spent. Which is what
+        # the player reported: "it sticks at 1 and ignores smaller".
+        #
+        # The rule it was protecting is real but narrower than it was read:
+        # notes must not change size WHILE SCROLLING. This is decided once,
+        # on a keypress, which is the same moment the automatic already
+        # resizes them. And the app deciding to shrink notes is a different
+        # thing from the player asking for it.
+        # Only for a slowdown the player ASKED for. Without the factor test
+        # this also fires when MIN_VISIBLE_WINDOW_MS lifts the window above
+        # what the notes can fill -- a song so dense its notes must overlap --
+        # and then recomputed the window straight back down through the floor,
+        # to 167 ms. The suite caught it; the floor is not decoration.
+        if (self._scroll_factor() < 1.0 and window > fit_window
+                and spacing and spacing > 0):
+            head = (spacing * layout.usable_width
+                    / (window * (1.0 + SUSTAIN_GAP_FRACTION)))
+            floor = self._min_head_px(layout, by_hand=True)
+            if head < floor:
+                # The end of the trade: past here a two-digit fret stops
+                # reading, and an unreadable slow tab is worth nothing.
+                head = floor
+                window = (spacing * layout.usable_width
+                          / (head * (1.0 + SUSTAIN_GAP_FRACTION)))
+            window = max(MIN_VISIBLE_WINDOW_MS, window)
 
         self._visible_window_ms = window
         self._head_px = head
@@ -1635,12 +1673,32 @@ class PlayingScreen:
         return max(lo, min(hi, getattr(self._config, "scroll_speed_factor", 1.0)))
 
     def _adjust_scroll_factor(self, delta: float) -> None:
-        """Speed the tab up or down by hand (+ / -), and remember it."""
+        """Speed the tab up or down by hand (+ / -), and remember it.
+
+        A press that changes nothing is put back rather than stored. The
+        factor used to walk all the way to 0.4 while the picture stood still,
+        so the number on screen described a setting the display was not
+        honouring -- and the key looked broken because it was.
+        """
         lo, hi = SCROLL_FACTOR_RANGE
         current = self._scroll_factor()
-        self._config.scroll_speed_factor = max(lo, min(hi, round(current + delta, 2)))
-        self._config.save()
+        wanted = max(lo, min(hi, round(current + delta, 2)))
+        before_window = self._visible_window_ms
+        if wanted == current:
+            self._say(f"Already at the {'slowest' if delta < 0 else 'fastest'}"
+                      f" setting ({current:.1f}x)")
+            return
+        self._config.scroll_speed_factor = wanted
         self._recompute_scroll_speed()
+        if abs(self._visible_window_ms - before_window) < 1.0:
+            self._config.scroll_speed_factor = current
+            self._recompute_scroll_speed()
+            self._say("The notes are already as small as they may get — "
+                      "this song cannot scroll slower and stay readable")
+            return
+        self._config.save()
+        self._say(f"Tab speed {wanted:.1f}x — "
+                  f"{self._visible_window_ms / 1000:.1f} s ahead")
 
     def _filter_signature(self) -> tuple:
         """What the scroll speed depends on, so it is only redone when needed."""

@@ -254,6 +254,7 @@ class AudioCapture:
         self._channel_energy = None
         self._signal_db: float = -120.0
         self._tuner_freq: float = 0.0
+        self._tuner_freq_raw: float = 0.0
         self._tuner_confidence: float = 0.0
         # Cached (samplerate, channels) probe result, keyed by device index
         self._resolved_settings: tuple[int, int] | None = None
@@ -310,6 +311,7 @@ class AudioCapture:
             result = self.detector.process(chunk)
             self._signal_db = self.detector.last_signal_db
             self._tuner_freq = self.detector.last_freq
+            self._tuner_freq_raw = self.detector.last_freq_raw
             self._tuner_confidence = self.detector.last_confidence
             # Timestamp from the SAMPLE position, not the wall clock. The
             # callback reads perf_counter when it happens to run, so a block
@@ -540,8 +542,16 @@ class AudioCapture:
         """Return the latest signal level in dB. Thread-safe (single float read under GIL)."""
         return self._signal_db
 
-    def get_tuner_data(self) -> tuple[float, float]:
-        """Return (frequency_hz, confidence) for tuner display. Thread-safe."""
+    def get_tuner_data(self, raw: bool = False) -> tuple[float, float]:
+        """(frequency_hz, confidence) for a tuner display. Thread-safe.
+
+        `raw` skips the calibration's octave correction, which a TUNER has to
+        do: a stored calibration that is itself an octave out would otherwise
+        make the tuner confidently name the wrong octave, and a player who
+        trusts it detunes the guitar. See AudioDetector.process.
+        """
+        if raw:
+            return (self._tuner_freq_raw, self._tuner_confidence)
         return (self._tuner_freq, self._tuner_confidence)
 
     def elapsed_ms(self) -> float:

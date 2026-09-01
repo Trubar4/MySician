@@ -17,6 +17,7 @@ from pickhero.progress import ProgressTracker
 from pickhero.tabs.loader import extract_backing_track, load_gp_file
 from pickhero.ui.colors import set_theme
 from pickhero.ui.calibration_menu import CalibrationMenuScreen
+from pickhero.ui.tuner_menu import TunerMenuScreen
 from pickhero.ui.device_menu import DeviceMenuScreen
 from pickhero.ui.download_menu import DownloadMenuScreen
 from pickhero.ui.menu import MenuScreen
@@ -44,6 +45,7 @@ class App:
         self._device_menu: DeviceMenuScreen | None = None
         self._download_menu: DownloadMenuScreen | None = None
         self._calibration_menu: CalibrationMenuScreen | None = None
+        self._tuner_menu: TunerMenuScreen | None = None
         self._settings_menu: SettingsMenuScreen | None = None
         # Where ESC goes from the device and calibration screens. They are
         # reachable from the song list AND from the settings screen, and
@@ -148,6 +150,8 @@ class App:
                 self._handle_download_event(event)
             elif self._state == "calibration":
                 self._handle_calibration_event(event)
+            elif self._state == "tuner":
+                self._handle_tuner_event(event)
             elif self._state == "settings":
                 self._handle_settings_event(event)
 
@@ -167,6 +171,9 @@ class App:
                 return
             if event.key == pygame.K_g:
                 self._open_calibration("menu")
+                return
+            if event.key == pygame.K_u:
+                self._open_tuner("menu")
                 return
 
         result = self._menu.handle_event(event)
@@ -229,6 +236,20 @@ class App:
                 self._menu.scan_files()
             self._download_menu = None
             self._state = "menu"
+
+    def _open_tuner(self, came_from: str) -> None:
+        self._tuner_menu = TunerMenuScreen(self._config)
+        self._return_to = came_from
+        self._state = "tuner"
+
+    def _handle_tuner_event(self, event: pygame.event.Event) -> None:
+        if self._tuner_menu.handle_event(event) == "escape":
+            # The input device is held open while this screen is up, and a
+            # screen that keeps a device after it is gone is the fault this
+            # project has now paid for three times.
+            self._tuner_menu.close()
+            self._tuner_menu = None
+            self._state = self._return_to
 
     def _handle_calibration_event(self, event: pygame.event.Event) -> None:
         result = self._calibration_menu.handle_event(event)
@@ -382,6 +403,8 @@ class App:
             self._playing_screen.update()
         elif self._state == "calibration" and self._calibration_menu is not None:
             self._calibration_menu.update()
+        elif self._state == "tuner" and self._tuner_menu is not None:
+            self._tuner_menu.update()
 
     def _render(self, surface: pygame.Surface) -> None:
         if self._state == "menu" and self._menu is not None:
@@ -395,5 +418,7 @@ class App:
             self._download_menu.render(surface)
         elif self._state == "calibration" and self._calibration_menu is not None:
             self._calibration_menu.render(surface)
+        elif self._state == "tuner" and self._tuner_menu is not None:
+            self._tuner_menu.render(surface)
         elif self._state == "settings" and self._settings_menu is not None:
             self._settings_menu.render(surface)

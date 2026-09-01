@@ -493,16 +493,29 @@ class TestScrollSpeed:
         for spacing in (90.0, 40.0, 10.0):
             assert self._screen(spacing_ms=spacing)._head_px >= MIN_HEAD_PX
 
-    def test_the_trim_never_changes_note_size(self):
-        """Notes changing size is the one thing this display must not do, so
-        the trim moves the speed and nothing else."""
+    def test_speeding_up_never_changes_note_size(self):
+        """The rule is that notes must not change size WHILE SCROLLING, and
+        for a while it was read as "never", which is what made slowing down
+        do nothing at all. Speeding up still costs nothing: it only ever
+        gives the notes more room."""
         screen = self._screen(spacing_ms=600.0)
         sizes = set()
-        for factor in (0.4, 0.7, 1.0, 1.5, 2.5):
+        for factor in (1.0, 1.5, 2.5):
             screen._config.scroll_speed_factor = factor
             screen._recompute_scroll_speed()
             sizes.add(round(screen._head_px, 3))
         assert len(sizes) == 1
+
+    def test_the_size_is_decided_once_and_then_holds(self):
+        """Within one setting it must never move -- a head that changes
+        while the song scrolls is the fault this rule exists for."""
+        screen = self._screen(spacing_ms=600.0)
+        screen._config.scroll_speed_factor = 0.6
+        screen._recompute_scroll_speed()
+        first = screen._head_px
+        for _ in range(5):
+            screen._recompute_scroll_speed()
+            assert screen._head_px == first
 
     def test_speeding_up_always_gives_notes_more_room(self):
         screen = self._screen(spacing_ms=600.0)
@@ -3070,3 +3083,98 @@ class TestTheEndScreenIsNotADeadEnd:
         screen = self._screen()
         screen.seek(screen._timeline.duration_ms + 5_000)
         assert screen._song_completed
+
+
+class TestSlowingTheTabDown:
+    """"Kleiner machen geht nicht richtig -- es haengt bei Groesse 1."
+
+    It did nothing at all. The window was clamped back to the size at which
+    every note keeps its full head, so every factor below 1.0 produced the
+    identical picture. Measured on three real songs before the fix: 0.4,
+    0.6, 0.8 and 1.0 gave the same window and the same pixels per second,
+    with the head at 44 px against a 26 px floor -- room that was never
+    spent. And a second floor, fitted for reading a number at 430 px/s,
+    blocked every song containing a two-digit fret outright.
+    """
+
+    def _screen(self, frets, spacing_ms=200.0, count=60):
+        notes = [NoteEvent(timestamp_ms=i * spacing_ms, duration_ms=150.0,
+                           midi_note=40 + (i % 5), string=1 + (i % 6),
+                           fret=frets[i % len(frets)])
+                 for i in range(count)]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        screen._recompute_scroll_speed(screen._layout(pygame.Surface((1280, 720))))
+        return screen
+
+    def _pps(self, screen):
+        layout = screen._layout(pygame.Surface((1280, 720)))
+        return layout.usable_width / (screen._visible_window_ms / 1000.0)
+
+    def _set(self, screen, factor):
+        screen._config.scroll_speed_factor = factor
+        screen._scroll_speed_signature = None
+        screen._recompute_scroll_speed(screen._layout(pygame.Surface((1280, 720))))
+
+    def test_minus_really_slows_the_picture(self):
+        screen = self._screen([3])
+        self._set(screen, 1.0)
+        fast = self._pps(screen)
+        self._set(screen, 0.6)
+        assert self._pps(screen) < fast * 0.95
+
+    def test_a_two_digit_song_can_be_slowed_too(self):
+        """The case that was blocked outright, and it is most rock songs."""
+        screen = self._screen([12, 10, 3])
+        self._set(screen, 1.0)
+        fast = self._pps(screen)
+        self._set(screen, 0.6)
+        assert self._pps(screen) < fast * 0.95
+
+    def test_slowing_is_paid_for_in_head_size(self):
+        screen = self._screen([3])
+        self._set(screen, 1.0)
+        big = screen._head_px
+        self._set(screen, 0.5)
+        assert screen._head_px < big
+
+    def test_it_never_goes_under_the_hard_floor(self):
+        from pickhero.ui.scrolling import MIN_HEAD_PX
+        screen = self._screen([12, 10])
+        for factor in (0.4, 0.5, 0.6, 0.7, 0.8, 0.9):
+            self._set(screen, factor)
+            assert screen._head_px >= MIN_HEAD_PX - 0.01
+
+    def test_speeding_up_never_shrinks_the_head(self):
+        """Faster only ever gives the notes more room."""
+        screen = self._screen([3])
+        self._set(screen, 1.0)
+        base = screen._head_px
+        for factor in (1.2, 1.6, 2.5):
+            self._set(screen, factor)
+            assert screen._head_px >= base - 0.01
+
+    def test_a_press_that_changes_nothing_is_put_back(self):
+        """The factor used to walk to 0.4 while the picture stood still, so
+        the number on screen described a setting nothing honoured."""
+        screen = self._screen([12, 10])
+        screen._last_layout = screen._layout(pygame.Surface((1280, 720)))
+        self._set(screen, 0.5)
+        settled = screen._scroll_factor()
+        screen._adjust_scroll_factor(-0.1)
+        assert screen._scroll_factor() == settled
+        assert "as small as they may get" in screen._status_note_text()
+
+    def test_a_press_that_works_says_what_it_did(self):
+        screen = self._screen([3])
+        screen._last_layout = screen._layout(pygame.Surface((1280, 720)))
+        self._set(screen, 1.0)
+        screen._adjust_scroll_factor(-0.1)
+        note = screen._status_note_text()
+        assert "0.9x" in note and "ahead" in note
+
+    def test_the_end_of_the_range_is_named(self):
+        screen = self._screen([3])
+        screen._last_layout = screen._layout(pygame.Surface((1280, 720)))
+        self._set(screen, 2.5)
+        screen._adjust_scroll_factor(0.1)
+        assert "fastest" in screen._status_note_text()

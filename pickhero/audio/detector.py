@@ -61,6 +61,8 @@ class PitchDetector:
         self.yin_tolerance = yin_tolerance
         self.last_signal_db: float = -120.0
         self.last_freq: float = 0.0
+        # The same reading with no calibration applied -- see process().
+        self.last_freq_raw: float = 0.0
         self.last_confidence: float = 0.0
         self.last_is_onset: bool = False
 
@@ -114,6 +116,16 @@ class PitchDetector:
         # Detect pitch
         freq = float(self._pitch(audio_buffer)[0])
         confidence = float(self._pitch.get_confidence())
+
+        # What the detector actually heard, before the calibration is allowed
+        # an opinion. A TUNER must read this one: _correct_octave_jump halves
+        # a frequency whose half lands near a CALIBRATED string, so a stored
+        # calibration that is itself an octave out would have the tuner report
+        # the wrong octave with total confidence -- and this player's stored
+        # calibration is exactly that (A string at 54.87 Hz, an octave low).
+        # Being wrong about the note while playing costs one note; being wrong
+        # about it while tuning makes them detune the guitar.
+        self.last_freq_raw = freq
 
         # Correct octave jumps before exposing values
         if freq > 0:
