@@ -407,7 +407,15 @@ class TestSustainWidth:
 
 
 class TestNeighbourGaps:
-    """Notes may not take more room than they have before their neighbour."""
+    """A note may not take more room than it has before the NEXT one.
+
+    This used to take the smaller of the gaps before and after, so a note was
+    shortened by something that had already finished. Measured on the
+    player's own tab: a tied note of 1562 ms, 490 px of sustain, cut to 98 px
+    by an eighth note that came BEFORE it -- which is why a note held across
+    two beats was still drawn for one. Every long note following a quick one
+    on its string was drawn short.
+    """
 
     def _n(self, ts, string, dur=500.0):
         return NoteEvent(timestamp_ms=ts, duration_ms=dur, midi_note=40,
@@ -417,12 +425,26 @@ class TestNeighbourGaps:
         gaps = PlayingScreen._neighbour_gaps([self._n(0.0, 6)])
         assert gaps.get((0.0, 6)) is None
 
-    def test_gap_is_to_the_nearest_neighbour_on_the_same_string(self):
+    def test_the_gap_is_forwards_only(self):
         notes = [self._n(0.0, 6), self._n(200.0, 6), self._n(1000.0, 6)]
         gaps = PlayingScreen._neighbour_gaps(notes)
-        assert gaps[(200.0, 6)] == pytest.approx(200.0)   # backwards, not 800
         assert gaps[(0.0, 6)] == pytest.approx(200.0)
-        assert gaps[(1000.0, 6)] == pytest.approx(800.0)
+        # 800 forwards, NOT 200 backwards: what came before has already
+        # ended and cannot be run into.
+        assert gaps[(200.0, 6)] == pytest.approx(800.0)
+
+    def test_the_last_note_on_a_string_is_limited_by_nothing(self):
+        notes = [self._n(0.0, 6), self._n(200.0, 6)]
+        assert PlayingScreen._neighbour_gaps(notes).get((200.0, 6)) is None
+
+    def test_a_held_note_after_a_quick_one_keeps_its_length(self):
+        """The player's own bar: an eighth, then a note tied across two
+        beats. The tie was merged correctly and then drawn as an eighth."""
+        notes = [self._n(664.0, 2, dur=312.5),
+                 self._n(976.0, 2, dur=1562.5),
+                 self._n(4000.0, 2, dur=312.5)]
+        gaps = PlayingScreen._neighbour_gaps(notes)
+        assert gaps[(976.0, 2)] > 1562.5
 
     def test_other_strings_do_not_constrain(self):
         """Different lanes never collide, so they must not shrink each other."""

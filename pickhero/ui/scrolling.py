@@ -1887,10 +1887,16 @@ class PlayingScreen:
 
     @staticmethod
     def _neighbour_gaps(notes: list[NoteEvent]) -> dict[tuple[float, int], float]:
-        """Time to the nearest neighbouring note on the same string, in ms.
+        """Time to the NEXT note on the same string, in ms.
 
-        Notes only collide within their own lane, so this is what limits how
-        much room a note may take. Missing key means nothing else is near.
+        This is what limits how long a note may be drawn: notes only collide
+        within their own lane, and a note can only ever run into the one that
+        follows it. It used to take the smaller of the gaps before and after,
+        which is a note being shortened by something that had already
+        finished -- and it is why a note held across two beats was still drawn
+        for one. Measured on the player's own tab: a tied note of 1562 ms,
+        490 px of sustain, cut to 98 px by an eighth note that came BEFORE it.
+        Every long note following a quick one on its string was drawn short.
         """
         by_string: dict[int, list[float]] = {}
         for note in notes:
@@ -1899,12 +1905,8 @@ class PlayingScreen:
         gaps: dict[tuple[float, int], float] = {}
         for string, stamps in by_string.items():
             unique = sorted(set(stamps))
-            for i, ts in enumerate(unique):
-                before = ts - unique[i - 1] if i > 0 else None
-                after = unique[i + 1] - ts if i + 1 < len(unique) else None
-                candidates = [g for g in (before, after) if g is not None]
-                if candidates:
-                    gaps[(ts, string)] = min(candidates)
+            for first, following in zip(unique, unique[1:]):
+                gaps[(first, string)] = following - first
         return gaps
 
     @staticmethod
