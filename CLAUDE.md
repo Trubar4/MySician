@@ -802,6 +802,15 @@ Four things were measured rather than assumed, each after the export looked fine
 
 **Four diagnostics in a row measured accumulated drift and called it a local fault** — per-bar error, first-divergence-in-order, onset counts per bar — because every one of them compared milliseconds against a clock that had already slipped. Comparing `qstamp` (quarters from the start, tempo-free) found the real first divergence in one run. When a measurement keeps blaming whatever it looks at, it is measuring itself.
 
+## The Zoom That Made A Bigger Picture Of The Same Thing
+
+`ui/tab_view.py` engraves the song once per song and zoom — 0.2 s for a whole one, and **1314 of 1314 and 746 of 746 notes placed** on the player's two songs at every zoom level — and answers one question per frame: where is the playhead. Two things it has to get right, and the first was wrong until it was measured:
+
+- **Zoom is the PAGE WIDTH, not verovio's `scale`.** Stepping the scale makes a bigger bitmap of the identical layout, and once it is blitted to the window nothing whatsoever changes on screen. Measured, the page width moves a real song from **2.1 to 10.4 bars per line**, which is what a zoom is for. The test asserts how far through the document the music reaches rather than the page count — the same song can fit on one page at two zoom levels and be laid out completely differently, which is how the first version of the test passed a broken feature.
+- **Positions are fractions of the page, never pixels.** A page whose viewBox is 24000 units wide rasterises to whatever SDL felt like — 1320 px here — and a mapping that ignores that is out by a factor of eighteen while looking entirely plausible.
+
+The playhead interpolates between the notes either side of the moment while they sit on the same line of the same page, and snaps otherwise: one sliding diagonally across a line break is worse than one that steps.
+
 ## Three Guitar Pro Generations, One Parser
 
 GP6 (`.gpx`), GP7 and GP8 (`.gp`) all store the same GPIF XML and differ only in what they wrap it in: GP7 and GP8 use a zip, GP6 uses a
