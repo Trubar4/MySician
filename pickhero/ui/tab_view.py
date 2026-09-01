@@ -51,10 +51,18 @@ class TabPage:
     """One engraved page, ready to blit."""
     number: int
     surface: pygame.Surface
+    # Filled in by `fit`, which keeps the last scaling it was asked for.
+    _fitted: pygame.Surface | None = None
     # note id -> position as a fraction of the page, 0..1 in both axes. Kept
     # unitless so the page can be scaled to any window without the positions
     # having to be re-read.
     spots: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # (y, x, index into timeline.notes) sorted by y, so the drawing can take
+    # a SLICE of the notes that are actually on screen. Walking all of them
+    # every frame is the loop-from-the-start-of-the-song fault this project
+    # has now found four times: measured at 12.4 ms a frame on a real song,
+    # against a 16.7 ms budget and 3.2 ms for the scrolling view.
+    placed: list[tuple[float, float, int]] = field(default_factory=list)
 
 
 def _view_box(svg: str) -> tuple[float, float]:
@@ -113,11 +121,15 @@ class TabEngraving:
         for position, note in enumerate(timeline.notes):
             key = f"n{position}"
             for index, page in enumerate(self.pages):
-                if key in page.spots:
-                    x, y = page.spots[key]
+                place = page.spots.get(key)
+                if place is not None:
+                    x, y = place
                     self.spots.append((note.timestamp_ms, index, x, y))
+                    page.placed.append((y, x, position))
                     break
         self.spots.sort()
+        for page in self.pages:
+            page.placed.sort()
 
     @property
     def zoom(self) -> int:
@@ -162,3 +174,34 @@ class TabEngraving:
             return before[1], before[2], before[3]
         share = (ms - before[0]) / (after[0] - before[0])
         return before[1], before[2] + (after[2] - before[2]) * share, before[3]
+
+    def page_of(self, ms: float) -> int:
+        """Which page the playhead is on, 0 when nothing is placed."""
+        spot = self.at_ms(ms)
+        return spot[0] if spot else 0
+
+
+def fit(page: TabPage, width: int) -> pygame.Surface:
+    """The page scaled to a window width, cached on the page itself.
+
+    Scaled once per width rather than per frame: smoothscale of a
+    1300x1800 surface is milliseconds, and sixty of those a second is a
+    third of the frame budget spent redrawing something that did not change.
+    """
+    cached = getattr(page, "_fitted", None)
+    if cached is not None and cached.get_width() == width:
+        return cached
+    source = page.surface
+    height = max(1, round(source.get_height() * width / source.get_width()))
+    fitted = pygame.transform.smoothscale(source, (width, height))
+    # Converted to the display's own format, and this is not a nicety:
+    # measured on a real page, blitting the band that is on screen costs
+    # 8.36 ms unconverted and 0.26 ms after convert(). Half a frame budget,
+    # spent on a pixel format. A page is opaque, so the alpha channel the
+    # SVG loader hands back buys nothing at all.
+    try:
+        fitted = fitted.convert()
+    except pygame.error:
+        pass                              # no display yet; still correct
+    page._fitted = fitted
+    return fitted

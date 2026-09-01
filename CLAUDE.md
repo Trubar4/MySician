@@ -811,6 +811,20 @@ Four things were measured rather than assumed, each after the export looked fine
 
 The playhead interpolates between the notes either side of the moment while they sit on the same line of the same page, and snaps otherwise: one sliding diagonally across a line break is worse than one that steps.
 
+**It is a MODE of the playing screen, not a screen of its own** (`Shift+T`). A second screen would be a second copy of the transport, both offsets, the loop, the tempo and the run log — and this project has already paid for four readers of one plan. `+`/`-` mean zoom there and scroll speed on the board, which is the same key meaning what the view it is pressed in is about.
+
+**Getting it inside the frame budget took two measurements and neither suspect was the one that mattered:**
+
+| | per frame |
+|---|---|
+| first version | **12.4 ms** (budget 16.7; the scrolling view costs 3.2) |
+| after slicing the verdict loop to the visible notes | 12.0 |
+| **after `convert()` on the page** | **4.1** |
+
+The loop over all 1314 notes was the obvious suspect and worth **0.4 ms**. The whole cost was the BLIT: an SVG loads as a 32-bit surface with an alpha channel the display does not share, and blitting the visible band cost **8.36 ms unconverted against 0.26 converted**. Half a frame budget spent on a pixel format. The slice stays, because it is right and because the test that pins it is cheap — but the lesson is the older one: the thing that is slow is not the thing that looks expensive.
+
+And every page is scaled during the build, while the "engraving…" note is on screen: left until a page is first looked at, the scaling costs **50 ms at the page turn**, three dropped frames exactly where the player is reading. Two or three pages is a tenth of a second, once.
+
 ## Three Guitar Pro Generations, One Parser
 
 GP6 (`.gpx`), GP7 and GP8 (`.gp`) all store the same GPIF XML and differ only in what they wrap it in: GP7 and GP8 use a zip, GP6 uses a

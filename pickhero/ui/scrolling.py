@@ -6,6 +6,7 @@ to a playback clock. Optionally captures audio and shows hit/miss feedback.
 
 from __future__ import annotations
 
+import bisect
 import functools
 import math
 import statistics
@@ -344,6 +345,15 @@ MAX_FRAME_STALL_S = 0.25
 # 0.2 %. The start and the end of the song are what this wants.
 MIN_SYNC_SPAN_MS = 30_000.0
 
+# How a note's verdict is shown on an engraved page. PENDING is absent on
+# purpose: a dot under every note not yet reached would bury the music under
+# its own labelling, the same reason a palm mute is badged once per run.
+_TAB_VERDICT_COLOURS = {
+    MatchType.HIT: "feedback_hit",
+    MatchType.CLOSE: "feedback_close",
+    MatchType.MISS: "feedback_miss",
+}
+
 # How long seeks have to stop arriving before the recording follows them.
 # A held arrow key repeats every 40 ms and every repeat used to be a
 # play(start=), which decodes the file up to that point -- 25 of them a
@@ -648,6 +658,15 @@ class PlayingScreen:
         # the player is navigating a four-minute song between the two points
         # and an expiring note is gone long before the second one is set.
         self._sync_lines: list[str] = []
+        # The engraved page view. Built on the frame AFTER it is asked for,
+        # so the "engraving..." line is really on screen while the work
+        # happens -- a whole song is 0.2 s, which is three dropped frames
+        # and reads as a stutter if nothing explains it.
+        self._tab_mode: bool = False
+        self._tab_engraving = None
+        self._tab_due: bool = False
+        self._tab_error: str = ""
+        self._tab_zoom: int = 2
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         if guide_track is not None and len(guide_track) > 0:
@@ -938,6 +957,12 @@ class PlayingScreen:
             self._mp3_dialog_armed = False
             self._open_mp3_dialog()
 
+        if self._tab_due:
+            # Drawn last frame, so the "engraving..." note is really on
+            # screen. Before the paused branch below, because a paused song
+            # is exactly when the page view gets opened.
+            self._build_tab_engraving()
+
         # Update signal level meter and tuner even when paused (so user can verify signal)
         if self._audio_capture is not None:
             raw_db = self._audio_capture.get_signal_db()
@@ -1219,7 +1244,10 @@ class PlayingScreen:
             self._take_gate_by_hand()
             self.set_noise_gate_db(self._noise_gate_db + 5)
         elif event.key == pygame.K_t:
-            self._cycle_theme()
+            if event.mod & pygame.KMOD_SHIFT:
+                self._toggle_tab_mode()
+            else:
+                self._cycle_theme()
         elif event.key == pygame.K_f:
             self._cycle_fret_limit()
         elif event.key == pygame.K_d:
@@ -1252,9 +1280,17 @@ class PlayingScreen:
             else:
                 self._toggle_mp3_backing()
         elif event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
-            self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
+            # Same key, the meaning of the view it is pressed in: on a page
+            # there is no scroll speed to set and zoom is what it wants.
+            if self._tab_mode:
+                self._zoom_tab(+1)
+            else:
+                self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
         elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-            self._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
+            if self._tab_mode:
+                self._zoom_tab(-1)
+            else:
+                self._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
         elif event.key == pygame.K_l:
             self._loop_weakest_section()
         elif event.key == pygame.K_h:
@@ -1292,6 +1328,17 @@ class PlayingScreen:
         self._last_layout = layout
 
         surface.fill(t.bg)
+        if self._tab_mode:
+            # The same song, the same clock, the same keys -- only drawn as
+            # a page instead of a scrolling board. A second SCREEN would be
+            # a second copy of the transport, the offsets and the loop, and
+            # this project has already paid for four readers of one plan.
+            self._draw_tab_page(surface, layout)
+            self._draw_hud(surface, layout)
+            self._draw_completion_overlay(surface, layout)
+            if self._show_help:
+                self._draw_help_overlay(surface, layout)
+            return
         self._draw_lanes(surface, layout)
         self._draw_loop_region(surface, layout)
         self._draw_hit_zone(surface, layout)
@@ -1307,6 +1354,116 @@ class PlayingScreen:
             self._draw_track_menu(surface)
 
     # -- Pure math helpers (testable without display) --
+
+    def _toggle_tab_mode(self) -> None:
+        """Scrolling board <-> engraved page."""
+        self._tab_mode = not self._tab_mode
+        if self._tab_mode and self._tab_engraving is None and not self._tab_error:
+            # Not built here: the note below has to reach the screen first.
+            self._tab_due = True
+            self._say("Engraving the tab…")
+
+    def _build_tab_engraving(self) -> None:
+        """The one slow thing, done once per song and zoom."""
+        self._tab_due = False
+        try:
+            from pickhero.ui.tab_view import TabEngraving
+            self._tab_engraving = TabEngraving(self._timeline, self._tab_zoom)
+        except Exception as exc:
+            # Named rather than swallowed: without verovio's data files this
+            # is the only place the player would ever find out.
+            self._tab_engraving = None
+            self._tab_error = f"{type(exc).__name__}: {exc}"
+            self._say(f"The tab view needs the engraver — {self._tab_error}")
+            return
+        # Every page scaled NOW, while the note explaining the wait is on
+        # screen. Left until a page is first looked at, the scaling costs
+        # 50 ms at the page turn -- three frames, right where the player is
+        # reading. Two or three pages is a tenth of a second here, once.
+        if self._last_layout is not None:
+            from pickhero.ui.tab_view import fit
+            for page in self._tab_engraving.pages:
+                fit(page, self._last_layout.screen_w)
+        placed, written = self._tab_engraving.found()
+        if placed < written:
+            self._say(f"Engraved {placed} of {written} notes")
+
+    def _zoom_tab(self, step: int) -> None:
+        from pickhero.ui.tab_view import ZOOM_STEPS
+        wanted = max(0, min(len(ZOOM_STEPS) - 1, self._tab_zoom + step))
+        if wanted == self._tab_zoom:
+            self._say("Already at the "
+                      f"{'closest' if step > 0 else 'widest'} zoom")
+            return
+        self._tab_zoom = wanted
+        self._tab_engraving = None
+        self._tab_due = True
+        self._say(f"Zoom {wanted + 1} of {len(ZOOM_STEPS)} — engraving…")
+
+    def _draw_tab_page(self, surface: pygame.Surface, layout: _Layout) -> None:
+        """The engraved page, the playhead, and how each note went."""
+        from pickhero.ui.tab_view import fit
+        t = get_theme()
+        font = _get_font("arial", 18)
+        w, h = surface.get_size()
+        if self._tab_engraving is None:
+            message = (self._tab_error and
+                       f"The tab view needs the engraver — {self._tab_error}"
+                       or "Engraving the tab…")
+            text = font.render(message, True, t.hud_text)
+            surface.blit(text, (w // 2 - text.get_width() // 2, h // 2))
+            return
+
+        engraving = self._tab_engraving
+        spot = engraving.at_ms(self._playback_ms)
+        page = engraving.pages[spot[0] if spot else 0]
+        # The page is as wide as the window allows, and scrolls vertically so
+        # the playhead stays in view rather than the player hunting for it.
+        top_margin, bottom_margin = 56, 104
+        view_h = max(1, h - top_margin - bottom_margin)
+        fitted = fit(page, w)
+        head_y = (spot[2] if spot else 0.0) * fitted.get_height()
+        offset = 0
+        if fitted.get_height() > view_h:
+            offset = int(max(0, min(fitted.get_height() - view_h,
+                                    head_y - view_h * 0.4)))
+        surface.blit(fitted, (0, top_margin), (0, offset, w, view_h))
+
+        if spot is not None:
+            x = int(spot[1] * fitted.get_width())
+            y = int(head_y) - offset + top_margin
+            if top_margin <= y <= top_margin + view_h:
+                line_h = max(18, int(fitted.get_height() * 0.02))
+                pygame.draw.line(surface, t.hit_zone,
+                                 (x, y - line_h), (x, y + line_h), 2)
+
+        # How each note went, as a dot under its fret number. The page is a
+        # picture and cannot be re-coloured, so the verdict is drawn ON it.
+        if self._matcher is not None and page.placed:
+            # Only the notes on screen. A page holds most of a song, and
+            # walking all of them every frame cost 12.4 ms against a 16.7 ms
+            # budget -- the loop-over-the-whole-song fault, for the fifth
+            # time. page.placed is sorted by y, so this is two bisects.
+            page_h = fitted.get_height()
+            first = bisect.bisect_left(page.placed, (offset / page_h,))
+            last = bisect.bisect_right(
+                page.placed, ((offset + view_h) / page_h, 2.0, 1 << 30))
+            notes = self._timeline.notes
+            for y, x, position in page.placed[first:last]:
+                colour = _TAB_VERDICT_COLOURS.get(
+                    self._matcher.get_note_state(notes[position]))
+                if colour is None:
+                    continue
+                pygame.draw.circle(
+                    surface, getattr(t, colour),
+                    (int(x * fitted.get_width()),
+                     int(y * page_h) - offset + top_margin + 13), 4)
+
+        label = font.render(
+            f"Page {page.number} of {len(engraving.pages)}   |   "
+            f"Zoom {self._tab_zoom + 1}   |   +/- zoom   |   "
+            f"Shift+T: back to the scrolling tab", True, t.hud_text)
+        surface.blit(label, (w // 2 - label.get_width() // 2, 18))
 
     def _layout(self, surface: pygame.Surface) -> _Layout:
         """Compute layout from current surface dimensions."""
@@ -2380,6 +2537,7 @@ class PlayingScreen:
             "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
             "|  Shift+S: audio speed from 2 points (Ctrl+Shift+S: clear)  "
             "|  Shift+A: reopen audio output (if the sound goes bad)  "
+            "|  Shift+T: tab page view  "
             "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
             "|  Y: timing report  |  D: run log  |  H: help"

@@ -127,3 +127,133 @@ class TestThePlayhead:
                          measures=[MeasureInfo(index=0, start_ms=0.0,
                                                end_ms=2000.0)])
         assert TabEngraving(empty).at_ms(0.0) is None
+
+
+class TestTheViewInsideThePlayingScreen:
+    """One screen, one clock, one set of keys -- the page is a way of
+    DRAWING the song, not a second app with its own transport."""
+
+    def _screen(self):
+        from pickhero.ui.scrolling import PlayingScreen
+        from pickhero.config import Config
+        return PlayingScreen(_song(bars=6), config=Config())
+
+    def test_shift_t_switches_and_plain_t_still_themes(self):
+        screen = self._screen()
+        theme_before = screen._config.theme
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_t, mod=pygame.KMOD_SHIFT))
+        assert screen._tab_mode
+        assert screen._config.theme == theme_before
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_t, mod=0))
+        assert screen._tab_mode          # theme keys must not switch views
+
+    def test_the_engraving_waits_a_frame_so_the_note_is_seen(self):
+        """0.2 s of work with nothing on screen is three dropped frames and
+        reads as a stutter."""
+        screen = self._screen()
+        screen._toggle_tab_mode()
+        assert screen._tab_due and screen._tab_engraving is None
+        assert "Engraving" in screen._status_note_text()
+        screen.update()
+        assert screen._tab_engraving is not None
+
+    def test_it_is_built_while_the_song_is_paused(self):
+        """Which is exactly when the page view gets opened."""
+        screen = self._screen()
+        screen._playing = False
+        screen._toggle_tab_mode()
+        screen.update()
+        assert screen._tab_engraving is not None
+
+    def test_zooming_rebuilds_and_says_so(self):
+        screen = self._screen()
+        screen._toggle_tab_mode()
+        screen.update()
+        screen._zoom_tab(+1)
+        assert screen._tab_engraving is None and screen._tab_due
+        assert "Zoom 4" in screen._status_note_text()
+
+    def test_the_end_of_the_zoom_range_is_named(self):
+        screen = self._screen()
+        screen._tab_zoom = len(ZOOM_STEPS) - 1
+        screen._zoom_tab(+1)
+        assert "closest" in screen._status_note_text()
+        assert not screen._tab_due
+
+    def test_plus_zooms_on_the_page_and_speeds_the_board(self):
+        screen = self._screen()
+        before = screen._scroll_factor()
+        screen._tab_mode = True
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_PLUS, mod=0))
+        assert screen._scroll_factor() == before
+
+    def test_a_missing_engraver_is_named_not_swallowed(self, monkeypatch):
+        import pickhero.ui.tab_view as module
+        screen = self._screen()
+
+        def explode(*_a, **_k):
+            raise RuntimeError("data files are missing")
+
+        monkeypatch.setattr(module, "TabEngraving", explode)
+        screen._toggle_tab_mode()
+        screen.update()
+        assert screen._tab_engraving is None
+        assert "data files are missing" in screen._status_note_text()
+
+    def test_it_draws_without_raising(self):
+        screen = self._screen()
+        surface = pygame.display.set_mode((1280, 720))
+        screen._toggle_tab_mode()
+        screen.update()
+        for ms in (0.0, 3000.0, 11_000.0):
+            screen._playback_ms = ms
+            screen.render(surface)
+
+
+class TestNothingHereGrowsWithTheSong:
+    """A page holds most of a song, and the drawing must only ever touch the
+    notes that are on screen. Measured before the slice: 12.4 ms a frame on
+    a real song against a 16.7 ms budget, where the scrolling view costs 3.2.
+    """
+
+    def test_only_the_visible_notes_are_asked_about(self, monkeypatch):
+        from pickhero.ui.scrolling import PlayingScreen
+        from pickhero.config import Config
+        from pickhero.matcher import NoteMatcher
+
+        song = _song(bars=60)
+        screen = PlayingScreen(song, config=Config())
+        screen._matcher = NoteMatcher(song)
+        surface = pygame.display.set_mode((1280, 720))
+        screen.render(surface)
+        screen._toggle_tab_mode()
+        screen.update()
+
+        asked = []
+        real = screen._matcher.get_note_state
+        monkeypatch.setattr(screen._matcher, "get_note_state",
+                            lambda note: (asked.append(note), real(note))[1])
+        screen._playback_ms = 40_000.0
+        screen.render(surface)
+        assert asked, "the verdicts are not being drawn at all"
+        assert len(asked) < len(song.notes) / 2
+
+    def test_a_page_is_scaled_once_not_every_frame(self):
+        from pickhero.ui.tab_view import TabEngraving, fit
+        pygame.display.set_mode((1280, 720))
+        engraving = TabEngraving(_song(bars=8))
+        page = engraving.pages[0]
+        first = fit(page, 800)
+        assert fit(page, 800) is first
+
+    def test_the_page_is_converted_for_the_display(self):
+        """Unconverted, blitting the band on screen costs 8.36 ms against
+        0.26 -- half a frame budget spent on a pixel format."""
+        from pickhero.ui.tab_view import TabEngraving, fit
+        screen = pygame.display.set_mode((1280, 720))
+        engraving = TabEngraving(_song(bars=8))
+        fitted = fit(engraving.pages[0], 1280)
+        assert fitted.get_bitsize() == screen.get_bitsize()
