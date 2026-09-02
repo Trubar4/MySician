@@ -775,7 +775,7 @@ GP6, GP7 and GP8 (`_parse_gpif_notes`).
 
 A classic tab — six lines, fret numbers, and stems saying how long each note is — is music ENGRAVING, and this project is not going to grow a notation engine. **verovio** does it, is Python, ships as a wheel, runs offline, and renders 150 bars in **90 ms**; its timemap gives the millisecond of every note and its SVG carries an id per note, which is what a playhead and per-note colouring need. What it cannot do is read Guitar Pro. `tabs/musicxml.py` is the bridge.
 
-**The packaging question was asked first, and of a rendered page.** verovio carries 20 MB of fonts and schemas, imports perfectly happily without them, and then renders nothing — the exact class of fault this project keeps shipping. `tools/check_verovio.py` loads a tablature measure and fails unless the SVG really contains tablature; the Windows workflow runs it. The run log carries `engraver` (`ready` / `absent` / `present but its data files are missing`), because the EXE is the only place the answer counts.
+**The packaging question was asked first, and of a rendered page.** verovio carries 20 MB of fonts and schemas, imports perfectly happily without them, and then renders nothing — the exact class of fault this project keeps shipping. `tools/check_verovio.py` loads a tablature measure and fails unless the SVG really contains tablature AND becomes ink on a rasterised page — the second half was added after a page that passed every check turned out to be blank on screen; the Windows workflow runs it, and the EXE answers `--check-engraver` after it is built. The run log carries `engraver` (`ready` / `absent` / `present but its data files are missing`), because the EXE is the only place the answer counts.
 
 Two things had to exist in the reader before the bridge could be honest:
 
@@ -823,9 +823,41 @@ The playhead interpolates between the notes either side of the moment while they
 | after slicing the verdict loop to the visible notes | 12.0 |
 | **after `convert()` on the page** | **4.1** |
 
-The loop over all 1314 notes was the obvious suspect and worth **0.4 ms**. The whole cost was the BLIT: an SVG loads as a 32-bit surface with an alpha channel the display does not share, and blitting the visible band cost **8.36 ms unconverted against 0.26 converted**. Half a frame budget spent on a pixel format. The slice stays, because it is right and because the test that pins it is cheap — but the lesson is the older one: the thing that is slow is not the thing that looks expensive.
+The loop over all 1314 notes was the obvious suspect and worth **0.4 ms**. The whole cost was the BLIT: an SVG loads as a 32-bit surface with an alpha channel the display does not share, and blitting the visible band cost **8.36 ms unconverted against 0.26 converted** (the page comes from cairosvg now, and the arithmetic is the same). Half a frame budget spent on a pixel format. The slice stays, because it is right and because the test that pins it is cheap — but the lesson is the older one: the thing that is slow is not the thing that looks expensive.
 
 And every page is scaled during the build, while the "engraving…" note is on screen: left until a page is first looked at, the scaling costs **50 ms at the page turn**, three dropped frames exactly where the player is reading. Two or three pages is a tenth of a second, once.
+
+## The Page That Loaded And Was Never Drawn
+
+"Tab View ist unsichtbar." The page was engraved, the playhead moved, the verdict dots were on screen in the right places — and between them
+was nothing at all. Every check the project had passed, because every one of them asked whether the SVG existed.
+
+**SDL's SVG loader accepts verovio's output, reports a sensible size, and draws almost nothing**: measured on a real page, **20 ink pixels out
+of 1.2 million**. cairosvg draws the same page at **11 %** ink. The claim written down here that "pygame can load it — no extra library needed"
+was made on a surface that loaded, and never on one that had anything on it. That is this project's own recurring fault, committed in the
+sentence that warns about it.
+
+- **cairosvg is a dependency now**, and on Windows it needs native cairo — so `pickhero.spec` carries `cairosvg` and `cairocffi` data and libs,
+  and `check_verovio.py` fails unless the SVG becomes PIXELS. A check that stops at "the file parsed" is the check that passed this bug.
+- **It costs about a second a page**, which is why the whole build moved off the game loop.
+
+## verovio's Resource Path Is Thread-Local
+
+Rasterising three pages of a real song is **3.1 s** — verovio engraves in 0.2 s and cairosvg spends the rest — and three seconds in the game
+loop is a frozen app, which this project has already shipped twice. So `_build_tab_engraving` starts a thread, `_take_tab_engraving` picks the
+result up on a later frame, and the "engraving… 40 %" note moves while it happens.
+
+**And on that thread verovio silently stopped working.** Its default resource path is set at import, in the main thread, and is **thread-local**:
+on any other thread the toolkit constructs without complaint, loads the score without complaint, and renders **212 characters of empty SVG**
+against 21712 with the path set. Nothing raises. The only tell is a blank page — the same failure mode as the loader above, one layer down.
+
+- **`engrave()` sets the path itself**, every time, on whatever thread is about to build a toolkit.
+- **`_engraver_state()` and `tools/check_verovio.py` now run their check ON a thread**, because that is where the app engraves. Asked on the
+  main thread, both report `ready` for a build whose every page is blank — a self-check that cannot see the fault it exists to catch.
+- The test that pins it engraves on a thread and requires notes on the page; it fails on the unfixed code, which is the only thing that makes
+  it worth having.
+- **A surface must be `convert()`ed on the thread that owns the display**, so the pages are rasterised on the worker and scaled and converted
+  in `_take_tab_engraving`. Converted anywhere else, the display converts them again on every blit — the 8.36 ms against 0.26 ms above.
 
 ## Three Guitar Pro Generations, One Parser
 
@@ -1026,6 +1058,15 @@ Measured on the player's own files: **Bon Jovi 850 → 746 notes** and **Papa Ro
 The control matters here as much as the fix: `tests/test_ties.py` builds the same file with the tie taken OFF and asserts it really is two notes of 2000 ms. Without it the class would pass on a loader that simply drops every second note.
 
 **And the note was STILL drawn short, for a reason that had nothing to do with ties.** The player's file settles it: 1018 ties, no `LetRing` property anywhere — the "let ring" in the picture is a text annotation the file does not encode. The tie was merged perfectly (an eighth of 312 ms became 1562 ms, exactly the tied half note) and then the DRAWING threw it away. `_neighbour_gaps` returned `min(gap before, gap after)`, so a note was shortened by something that had already finished: 490 px of sustain cut to 98 px by an eighth note that came BEFORE it. A note can only ever run into the one that FOLLOWS it. Every long note after a quick one on its string was drawn short, in every song, since long before ties were touched — and the test pinned it, with `# backwards, not 800` written next to the assertion.
+
+**A longer drawn note cannot push the picture and the sound apart, and it was worth measuring rather than asserting.** The drawn length is
+read off the tab and touches no clock — not `_playback_ms`, not the audio anchor, not the recording's transport — so the only way it could
+matter is by costing frames, and a stalled frame really is song time discarded (`clock_lost_ms`). Measured on 4000 notes of sixteenths, the
+worst case there is: **1.72 ms a frame with every note plain, 2.34 ms with every note let-ring**, against a 16.7 ms budget. Six tenths of a
+millisecond. What the player was seeing is the tab against the recording, which is the chapter above.
+
+**And the last note on a string rang for ever.** With no neighbour to stop it the cap was `inf`, `int(inf)` raises, and the frame died — so
+every song whose last note on any string is let-ring crashed when it reached it. It rings to the END OF THE SONG, which is a length.
 
 **And "let ring" is a different thing that looks the same on screen.** The player's next screenshot showed the doubling gone and the note still short: a tie is one note written twice, but `let ring` does NOT change the written value — a let-ring eighth is still an eighth — it says the string is never damped, so the note sounds on until something else is played on it. Neither reader read it at all. It is `NoteEvent.let_ring` now, out of pyguitarpro's `effect.letRing` and GPIF's `<Property name="LetRing">`, and it changes the DRAWING only: the note is drawn up to the next note on its string, which is the cap every other note already has. Nothing about the scoring moves, because the pick is at the written moment either way.
 

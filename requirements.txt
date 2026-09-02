@@ -4,3 +4,4 @@ numpy>=1.24.0
 pyguitarpro>=0.9
 pygame>=2.5.0
 verovio>=5.0
+cairosvg>=2.7

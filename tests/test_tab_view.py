@@ -21,6 +21,20 @@ def _display():
     pygame.display.quit()
 
 
+def _engraved(screen):
+    """Drive the threaded build to the point the main loop has taken it.
+
+    The engraving runs on a thread, so a single update() only STARTS it --
+    the page reaches the screen on a later frame. Everything a test wants to
+    look at is on the far side of that.
+    """
+    screen.update()
+    if screen._tab_thread is not None:
+        screen._tab_thread.join(60)
+    screen.update()
+    return screen
+
+
 def _song(bars=8, per_bar=4):
     notes = []
     for bar in range(bars):
@@ -149,14 +163,16 @@ class TestTheViewInsideThePlayingScreen:
             pygame.KEYDOWN, key=pygame.K_t, mod=0))
         assert screen._tab_mode          # theme keys must not switch views
 
-    def test_the_engraving_waits_a_frame_so_the_note_is_seen(self):
-        """0.2 s of work with nothing on screen is three dropped frames and
-        reads as a stutter."""
+    def test_the_engraving_waits_a_frame_and_then_runs_off_the_loop(self):
+        """Seconds of work with nothing on screen is a frozen app, and this
+        project has already shipped that twice."""
         screen = self._screen()
         screen._toggle_tab_mode()
         assert screen._tab_due and screen._tab_engraving is None
         assert "Engraving" in screen._status_note_text()
         screen.update()
+        assert screen._tab_thread is not None, "the build must not block a frame"
+        _engraved(screen)
         assert screen._tab_engraving is not None
 
     def test_it_is_built_while_the_song_is_paused(self):
@@ -164,13 +180,13 @@ class TestTheViewInsideThePlayingScreen:
         screen = self._screen()
         screen._playing = False
         screen._toggle_tab_mode()
-        screen.update()
+        _engraved(screen)
         assert screen._tab_engraving is not None
 
     def test_zooming_rebuilds_and_says_so(self):
         screen = self._screen()
         screen._toggle_tab_mode()
-        screen.update()
+        _engraved(screen)
         screen._zoom_tab(+1)
         assert screen._tab_engraving is None and screen._tab_due
         assert "Zoom 4" in screen._status_note_text()
@@ -199,7 +215,7 @@ class TestTheViewInsideThePlayingScreen:
 
         monkeypatch.setattr(module, "TabEngraving", explode)
         screen._toggle_tab_mode()
-        screen.update()
+        _engraved(screen)
         assert screen._tab_engraving is None
         assert "data files are missing" in screen._status_note_text()
 
@@ -207,7 +223,7 @@ class TestTheViewInsideThePlayingScreen:
         screen = self._screen()
         surface = pygame.display.set_mode((1280, 720))
         screen._toggle_tab_mode()
-        screen.update()
+        _engraved(screen)
         for ms in (0.0, 3000.0, 11_000.0):
             screen._playback_ms = ms
             screen.render(surface)
@@ -230,7 +246,7 @@ class TestNothingHereGrowsWithTheSong:
         surface = pygame.display.set_mode((1280, 720))
         screen.render(surface)
         screen._toggle_tab_mode()
-        screen.update()
+        _engraved(screen)
 
         asked = []
         real = screen._matcher.get_note_state
@@ -259,6 +275,34 @@ class TestNothingHereGrowsWithTheSong:
         assert fitted.get_bitsize() == screen.get_bitsize()
 
 
+class TestTheEngraverOnAThread:
+    """verovio's default resource path is thread-local. Without setting it on
+    the thread that builds the pages, the toolkit constructs, the score loads,
+    and the SVG comes back empty -- 212 characters against 21712. Nothing
+    raises, so the only tell is a blank page, which is exactly the fault this
+    project keeps shipping.
+    """
+
+    def test_a_page_engraved_on_a_thread_has_notes_on_it(self):
+        import threading
+        from pickhero.ui.tab_view import engrave
+
+        out = {}
+
+        def work():
+            try:
+                out["pages"] = engrave(_song(bars=4), raster_width=640)
+            except Exception as exc:                     # pragma: no cover
+                out["error"] = exc
+
+        thread = threading.Thread(target=work)
+        thread.start()
+        thread.join(60)
+        assert "error" not in out, out.get("error")
+        pages = out["pages"]
+        assert pages and pages[0].spots, "engraved on a thread and came back empty"
+
+
 class TestThePageIsNotCoveredByTheScore:
     """The completion overlay draws unconditionally -- every caller decides.
     Calling it without the check put the score over the page every frame,
@@ -275,7 +319,7 @@ class TestThePageIsNotCoveredByTheScore:
         surface = pygame.display.set_mode((1280, 720))
         screen.render(surface)
         screen._toggle_tab_mode()
-        screen.update()
+        _engraved(screen)
         drawn = []
         monkeypatch.setattr(type(screen), "_draw_completion_overlay",
                             lambda self, *a: drawn.append(1))
@@ -288,7 +332,7 @@ class TestThePageIsNotCoveredByTheScore:
         surface = pygame.display.set_mode((1280, 720))
         screen.render(surface)
         screen._toggle_tab_mode()
-        screen.update()
+        _engraved(screen)
         drawn = []
         monkeypatch.setattr(type(screen), "_draw_completion_overlay",
                             lambda self, *a: drawn.append(1))

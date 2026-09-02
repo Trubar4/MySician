@@ -24,6 +24,8 @@ from __future__ import annotations
 import io
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
 
 import pygame
 
@@ -45,6 +47,13 @@ DEFAULT_ZOOM = 2                       # index into ZOOM_STEPS
 PAGE_HEIGHT = 3200
 ENGRAVING_SCALE = 40
 
+# What the engraving is laid on. An engraver draws black ink and nothing
+# else, so the page needs a ground of its own -- and it is deliberately
+# paper rather than the app's dark background: inverting an engraving turns
+# every stem and every bar line into a thin white hairline, which is the
+# first thing to disappear at a glance.
+PAPER = (238, 236, 231)
+
 
 @dataclass
 class TabPage:
@@ -65,6 +74,25 @@ class TabPage:
     placed: list[tuple[float, float, int]] = field(default_factory=list)
 
 
+def rasterise(svg: str, width: int) -> pygame.Surface:
+    """The engraved page as pixels.
+
+    NOT through pygame. SDL's SVG loader accepts verovio's output, reports a
+    sensible size, and draws almost nothing: measured on a real page, 20 ink
+    pixels out of 1.2 million. The claim that "pygame can load it" was made
+    on a surface that loaded, never on one that had anything drawn on it --
+    which is the fault this project keeps writing up, made here.
+
+    cairosvg draws the same page at 11 % ink. It costs about a second, which
+    is why the engraving is built on a thread.
+    """
+    import cairosvg
+    png = cairosvg.svg2png(bytestring=svg.encode("utf-8"),
+                           output_width=width,
+                           background_color="#eeece7")
+    return pygame.image.load(io.BytesIO(png), "page.png")
+
+
 def _view_box(svg: str) -> tuple[float, float]:
     match = re.search(r'viewBox="[-\d.]+ [-\d.]+ ([\d.]+) ([\d.]+)"', svg)
     if not match:
@@ -72,11 +100,30 @@ def _view_box(svg: str) -> tuple[float, float]:
     return float(match.group(1)), float(match.group(2))
 
 
+class Cancelled(RuntimeError):
+    """The engraving was abandoned because nobody wants it any more."""
+
+
 def engrave(timeline: Timeline, page_width: int = ZOOM_STEPS[DEFAULT_ZOOM],
+            raster_width: int = 1280,
+            progress: Callable[[float], bool] | None = None,
             ) -> list[TabPage]:
-    """Render the whole song. Raises if verovio is not usable."""
+    """Render the whole song. Raises if verovio is not usable.
+
+    `progress` is called with how far along this is and may return False to
+    abandon it -- a whole song is seconds of work and the player may well
+    have changed the zoom again by then.
+    """
     import verovio
 
+    # verovio's default resource path is THREAD-LOCAL. Set on import, in the
+    # main thread, it is simply absent on the thread that builds the pages --
+    # and the toolkit then constructs without complaint, loads the score
+    # without complaint, and renders 212 characters of empty SVG. Measured:
+    # 21712 characters with the path set on this thread, 212 without. So it
+    # is set here, every time, where the toolkit is actually made.
+    verovio.setDefaultResourcePath(
+        str(Path(verovio.__file__).parent / "data"))
     toolkit = verovio.toolkit()
     toolkit.setOptions({
         "scale": ENGRAVING_SCALE,
@@ -91,10 +138,13 @@ def engrave(timeline: Timeline, page_width: int = ZOOM_STEPS[DEFAULT_ZOOM],
         raise RuntimeError("the engraver could not read the exported score")
 
     pages: list[TabPage] = []
-    for number in range(1, toolkit.getPageCount() + 1):
+    total = toolkit.getPageCount()
+    for number in range(1, total + 1):
+        if progress is not None and progress((number - 1) / total) is False:
+            raise Cancelled()
         svg = toolkit.renderToSVG(number)
         width, height = _view_box(svg)
-        surface = pygame.image.load(io.BytesIO(svg.encode()), "page.svg")
+        surface = rasterise(svg, raster_width)
         spots = {}
         if width > 0 and height > 0:
             for note_id, (x, y) in note_positions(svg).items():
@@ -110,10 +160,13 @@ class TabEngraving:
     and it is a bisect over a list that never changes.
     """
 
-    def __init__(self, timeline: Timeline, zoom_index: int = DEFAULT_ZOOM):
+    def __init__(self, timeline: Timeline, zoom_index: int = DEFAULT_ZOOM,
+                 raster_width: int = 1280,
+                 progress: Callable[[float], bool] | None = None):
         self.timeline = timeline
         self.zoom_index = max(0, min(len(ZOOM_STEPS) - 1, zoom_index))
-        self.pages = engrave(timeline, ZOOM_STEPS[self.zoom_index])
+        self.pages = engrave(timeline, ZOOM_STEPS[self.zoom_index],
+                             raster_width, progress)
         # (time, page index, x, y) for every note that was found on a page,
         # in playing order. A note the engraver did not draw is simply absent
         # rather than guessed at.
@@ -192,13 +245,15 @@ def fit(page: TabPage, width: int) -> pygame.Surface:
     if cached is not None and cached.get_width() == width:
         return cached
     source = page.surface
-    height = max(1, round(source.get_height() * width / source.get_width()))
-    fitted = pygame.transform.smoothscale(source, (width, height))
-    # Converted to the display's own format, and this is not a nicety:
-    # measured on a real page, blitting the band that is on screen costs
-    # 8.36 ms unconverted and 0.26 ms after convert(). Half a frame budget,
-    # spent on a pixel format. A page is opaque, so the alpha channel the
-    # SVG loader hands back buys nothing at all.
+    if source.get_width() == width:
+        fitted = source
+    else:
+        height = max(1, round(source.get_height() * width / source.get_width()))
+        fitted = pygame.transform.smoothscale(source, (width, height))
+
+    # Converted, which is not a nicety: blitting the band that is on screen
+    # costs 8.36 ms unconverted and 0.26 ms after convert(). Half a frame
+    # budget, spent on a pixel format.
     try:
         fitted = fitted.convert()
     except pygame.error:

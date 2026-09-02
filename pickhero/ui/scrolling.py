@@ -454,12 +454,29 @@ def format_time(ms: float) -> str:
 
 
 def _engraver_state() -> str:
-    """Whether verovio is present AND able to engrave, in one line."""
+    """Whether verovio is present AND able to engrave, in one line.
+
+    Asked on a THREAD, because that is where the app engraves and verovio's
+    resource path is thread-local: a check run on the main thread reports
+    `ready` for a build whose pages all come back blank.
+    """
+    answer: list[str] = []
+    thread = threading.Thread(target=lambda: answer.append(_engraver_check()),
+                              daemon=True)
+    thread.start()
+    thread.join(60)
+    return answer[0] if answer else "present but it never answered"
+
+
+def _engraver_check() -> str:
+    """The check itself. Never call this on the main thread -- see above."""
     try:
         import verovio
     except Exception as exc:
         return f"absent ({type(exc).__name__})"
     try:
+        verovio.setDefaultResourcePath(
+            str(Path(verovio.__file__).parent / "data"))
         toolkit = verovio.toolkit()
         ok = toolkit.loadData(
             '<?xml version="1.0"?><score-partwise version="3.1">'
@@ -471,7 +488,22 @@ def _engraver_state() -> str:
             "</measure></part></score-partwise>")
     except Exception as exc:
         return f"present but broken ({type(exc).__name__})"
-    return "ready" if ok else "present but its data files are missing"
+    if not ok:
+        return "present but its data files are missing"
+    # The rasteriser is the other half and it is a separate package: the page
+    # is engraved by verovio and drawn by cairosvg, and either can be absent.
+    try:
+        import io as _io
+        import cairosvg
+        from PIL import Image
+        png = cairosvg.svg2png(bytestring=toolkit.renderToSVG(1).encode(),
+                               output_width=200,
+                               background_color="#ffffff")
+        grey = Image.open(_io.BytesIO(png)).convert("L")
+        ink = sum(1 for value in grey.tobytes() if value < 100)
+    except Exception as exc:
+        return f"no rasteriser ({type(exc).__name__})"
+    return "ready" if ink else "the rasteriser drew nothing"
 
 
 def _clock_text(ms: float) -> str:
@@ -658,15 +690,22 @@ class PlayingScreen:
         # the player is navigating a four-minute song between the two points
         # and an expiring note is gone long before the second one is set.
         self._sync_lines: list[str] = []
-        # The engraved page view. Built on the frame AFTER it is asked for,
-        # so the "engraving..." line is really on screen while the work
-        # happens -- a whole song is 0.2 s, which is three dropped frames
-        # and reads as a stutter if nothing explains it.
+        # The engraved page view. Asked for on one frame and started on the
+        # next, so the "engraving..." line is really on screen before the
+        # work begins -- and the work itself runs on a thread, because
+        # rasterising a whole song is seconds and seconds in the game loop
+        # is a frozen app.
         self._tab_mode: bool = False
         self._tab_engraving = None
         self._tab_due: bool = False
         self._tab_error: str = ""
         self._tab_zoom: int = 2
+        self._tab_thread: threading.Thread | None = None
+        self._tab_progress: float = 0.0
+        # (engraving or "error", the zoom it was built for). Handed from the
+        # thread to the main loop, which is the only place a pygame surface
+        # may be converted for the display.
+        self._tab_ready: tuple = (None, -1)
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         if guide_track is not None and len(guide_track) > 0:
@@ -962,6 +1001,11 @@ class PlayingScreen:
             # screen. Before the paused branch below, because a paused song
             # is exactly when the page view gets opened.
             self._build_tab_engraving()
+        if self._tab_ready[0] is not None:
+            # The thread is done. Taking it here rather than there is not
+            # tidiness: a surface must be convert()ed on the thread that
+            # owns the display, or every blit re-converts it.
+            self._take_tab_engraving()
 
         # Update signal level meter and tuner even when paused (so user can verify signal)
         if self._audio_capture is not None:
@@ -1367,27 +1411,64 @@ class PlayingScreen:
             self._say("Engraving the tab…")
 
     def _build_tab_engraving(self) -> None:
-        """The one slow thing, done once per song and zoom."""
+        """The one slow thing, on a thread.
+
+        Three pages of a real song is 3.1 s -- the ENGRAVING is fast (0.2 s)
+        and the rasterising is not, because SDL cannot draw verovio's output
+        and cairosvg has to. Three seconds in the game loop is a frozen app,
+        which this project has already shipped twice.
+        """
         self._tab_due = False
-        try:
-            from pickhero.ui.tab_view import TabEngraving
-            self._tab_engraving = TabEngraving(self._timeline, self._tab_zoom)
-        except Exception as exc:
-            # Named rather than swallowed: without verovio's data files this
-            # is the only place the player would ever find out.
+        if self._tab_thread is not None and self._tab_thread.is_alive():
+            return
+        zoom = self._tab_zoom
+        width = self._last_layout.screen_w if self._last_layout else 1280
+
+        def report(fraction: float) -> bool:
+            self._tab_progress = fraction
+            # Stepping the zoom twice should not build the pages of the one
+            # nobody wants any more.
+            return self._tab_zoom == zoom
+
+        def work() -> None:
+            from pickhero.ui.tab_view import Cancelled, TabEngraving
+            try:
+                built = TabEngraving(self._timeline, zoom, width, report)
+            except Cancelled:
+                return                        # the zoom moved on; not a fault
+            except Exception as exc:
+                # Named rather than swallowed: without the engraver or its
+                # rasteriser this is the only place the player finds out.
+                self._tab_error = f"{type(exc).__name__}: {exc}"
+                self._tab_ready = ("error", zoom)
+                return
+            self._tab_ready = (built, zoom)
+
+        self._tab_progress = 0.0
+        self._tab_thread = threading.Thread(target=work, daemon=True)
+        self._tab_thread.start()
+
+    def _take_tab_engraving(self) -> None:
+        """Swap in a finished engraving, on the main thread.
+
+        The pages are scaled and CONVERTED here rather than on the thread:
+        convert() needs the display, and a surface converted anywhere else is
+        one the display converts again on every blit.
+        """
+        ready, zoom = self._tab_ready
+        self._tab_ready = (None, -1)
+        if zoom != self._tab_zoom:
+            return                            # built for a zoom nobody wants
+        if ready == "error":
             self._tab_engraving = None
-            self._tab_error = f"{type(exc).__name__}: {exc}"
             self._say(f"The tab view needs the engraver — {self._tab_error}")
             return
-        # Every page scaled NOW, while the note explaining the wait is on
-        # screen. Left until a page is first looked at, the scaling costs
-        # 50 ms at the page turn -- three frames, right where the player is
-        # reading. Two or three pages is a tenth of a second here, once.
+        self._tab_engraving = ready
         if self._last_layout is not None:
             from pickhero.ui.tab_view import fit
-            for page in self._tab_engraving.pages:
+            for page in ready.pages:
                 fit(page, self._last_layout.screen_w)
-        placed, written = self._tab_engraving.found()
+        placed, written = ready.found()
         if placed < written:
             self._say(f"Engraved {placed} of {written} notes")
 
@@ -1410,9 +1491,11 @@ class PlayingScreen:
         font = _get_font("arial", 18)
         w, h = surface.get_size()
         if self._tab_engraving is None:
+            # The percentage is not decoration: this is seconds of work with
+            # nothing on screen, which is indistinguishable from a dead key.
             message = (self._tab_error and
                        f"The tab view needs the engraver — {self._tab_error}"
-                       or "Engraving the tab…")
+                       or f"Engraving the tab… {self._tab_progress * 100:.0f} %")
             text = font.render(message, True, t.hud_text)
             surface.blit(text, (w // 2 - text.get_width() // 2, h // 2))
             return
@@ -2374,7 +2457,15 @@ class PlayingScreen:
                 # never damped, so the note sounds until something else is
                 # played on it. That is exactly the neighbour gap, which is
                 # already the cap for every other note.
-                body = gap_px
+                #
+                # And if nothing ever is, it rings to the END OF THE SONG,
+                # which is a length. The gap is None for the last note on a
+                # string, and taking that as the cap made the body infinite:
+                # every song whose last note on any string is let-ring
+                # crashed the frame on `int(inf)`.
+                body = gap_px if gap_ms is not None else max(
+                    0.0, (self._timeline.duration_ms - note.timestamp_ms)
+                    * layout.pixels_per_ms)
             capsule_w = min(body, gap_px) - visual_gap
 
             # Muted notes do not ring for the length the tab wrote. A dead

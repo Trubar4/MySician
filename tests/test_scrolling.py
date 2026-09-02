@@ -406,6 +406,56 @@ class TestSustainWidth:
         assert PlayingScreen.sustain_width(short, 0.5) < PlayingScreen.note_width(short, 0.5)
 
 
+class TestALetRingNoteEndsWithTheSong:
+    """The last note on a string has no neighbour, and "rings until something
+    else is played" then meant "for ever". `int(inf)` raises, so every song
+    whose last note on any string is let-ring crashed the frame it reached.
+    """
+
+    def _song(self, let_ring):
+        notes = [
+            # The last note on string 6, so it has no neighbour to stop it.
+            NoteEvent(timestamp_ms=0.0, duration_ms=500.0, midi_note=40,
+                      string=6, fret=0, measure=0, let_ring=let_ring),
+            NoteEvent(timestamp_ms=4000.0, duration_ms=500.0, midi_note=50,
+                      string=3, fret=0, measure=2),
+        ]
+        return Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=[MeasureInfo(index=b, start_ms=b * 2000.0,
+                                              end_ms=(b + 1) * 2000.0)
+                                  for b in range(3)])
+
+    def test_the_last_let_ring_note_draws(self):
+        pygame.init()
+        screen = PlayingScreen(self._song(True), config=Config())
+        surface = pygame.display.set_mode((1280, 720))
+        screen.render(surface)              # raised OverflowError before
+
+    def _widest_body(self, screen, monkeypatch):
+        """How wide the note is actually DRAWN."""
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        screen.render(surface)                      # sizes the heads
+        widths = []
+        real = pygame.draw.rect
+        monkeypatch.setattr(
+            pygame.draw, "rect",
+            lambda surf, colour, rect, *a, **k: (widths.append(rect[2]),
+                                                 real(surf, colour, rect,
+                                                      *a, **k))[1])
+        screen._draw_notes(surface, screen._layout(surface))
+        monkeypatch.undo()
+        return max(widths)
+
+    def test_and_it_is_still_longer_than_its_written_value(self, monkeypatch):
+        """The point of let ring: the string is never damped, so it sounds on
+        to the end of the song rather than for its written eighth."""
+        ringing = PlayingScreen(self._song(True), config=Config())
+        plain = PlayingScreen(self._song(False), config=Config())
+        assert (self._widest_body(ringing, monkeypatch)
+                > self._widest_body(plain, monkeypatch) + 100)
+
+
 class TestNeighbourGaps:
     """A note may not take more room than it has before the NEXT one.
 

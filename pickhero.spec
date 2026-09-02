@@ -29,6 +29,10 @@ datas += collect_data_files("certifi")
 # feature that only works in the development tree is a feature the player
 # does not have.
 datas += collect_data_files("verovio")
+# cairosvg rasterises the engraving. SDL's own SVG loader accepts verovio's
+# output and draws 20 pixels of it, which is why this is here at all.
+datas += collect_data_files("cairosvg")
+datas += collect_data_files("cairocffi")
 
 # ── Native binaries / C extensions ──────────────────────────────────────────
 # aubio  — C pitch/onset detection library
@@ -43,6 +47,7 @@ binaries += collect_dynamic_libs("numpy")
 # missing from the EXE while the build and its own check both passed. Both
 # halves are named explicitly rather than left to the import graph.
 binaries += collect_dynamic_libs("verovio")
+binaries += collect_dynamic_libs("cairocffi")
 
 # ── VC++ Runtime ────────────────────────────────────────────────────────────
 # Bundle the Visual C++ runtime so the exe works on machines without it.
@@ -73,6 +78,8 @@ a = Analysis(
         # Engraving. Imported lazily everywhere it is used, so nothing in the
         # static import graph reaches it.
         "verovio",
+        "cairosvg",
+        "cairocffi",
         "pickhero.ui.tab_view",
         "pickhero.tabs.musicxml",
     ],
