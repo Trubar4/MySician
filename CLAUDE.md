@@ -895,6 +895,54 @@ already existed, so there is no second loader and a fix for one generation is a 
 - **`list_tracks` reads GPIF too.** Without it the track picker was empty for every GP6/7/8 file, because the caller asked the GP3-5 parser,
   the exception was swallowed, and "no tracks" looks like a song with one track rather than like a format nobody read.
 
+## The Page Wandered A Centimetre Once A Second
+
+"Der Screen wandert alle Sekunde rauf und runter um 1 cm. Das ist sehr irritierend." Two separate causes, and each on its own is enough.
+
+- **A note's y on a TAB staff is the STRING it is written on.** `at_ms` returned the note's own position, so an arpeggio rotating over three
+  strings moved the playhead up and down by the string spacing, and the scroll rule dutifully followed it. `TabPage.systems` groups the
+  placed notes into ROWS OF MUSIC — the six string lines of one staff sit a small even distance apart and the gap to the next row is several
+  times that, so the break is found from the spacing the page itself uses rather than from a constant that would need refitting at every zoom.
+  `at_ms` returns the system's band now, and "the same line" means the same band, so the playhead also interpolates across a whole system
+  instead of snapping at every string change.
+- **And the scroll rule moved on every frame.** Keeping the playhead at a fixed height means scrolling continuously, which cannot be read at
+  all. `_tab_scroll_for` HOLDS its position while the current system is fully on screen and moves only when the music has left it.
+- **The playhead is drawn across the system**, the way every notation app draws it. A short tick at the note's own height jumps between the
+  strings even with the scrolling held still.
+- **Rounding the y values to 1e-6 put a note a hair outside its own row**, which then became a band of its own and the page jumped to it. The
+  band's edges are compared against the very values that made them, so they are not rounded at all.
+
+## Shift+A Could Not Reach The Thing That Was Humming
+
+"Audio reopened bringt nichts. Starke Störgeräusche und komisches Dauerbrummen bleibt bis ich die App schließe."
+
+**Two things in this process make sound**, and the key that exists to make the sound sane again reached one of them. `output.reopen()` closes
+and reopens the MIXER, which plays the recording. The MIDI synth, which plays the backing, is a different device on a different port — so a
+synth still holding a note could be silenced by nothing short of closing the app, which is exactly what the player described.
+
+- **`Shift+A` silences the synth first, then reopens the mixer**, and says which of the two it reached. "reopened; MIDI synth silenced" against
+  "reopened; no MIDI output to silence" is the difference between two diagnoses, and a key that reports only success can settle neither.
+- **CC 123 was not enough on its own.** It asks a note to RELEASE: a patch with a long tail keeps sounding, and a stuck sustain pedal keeps it
+  sounding for ever. `_silence` sends **CC 120 (All Sound Off)** and **CC 121 (Reset All Controllers)** as well, on all sixteen channels.
+- **`panic()` is a module function, not a method.** A player dropped without being closed still has its notes sounding and by definition nothing
+  is tracking them; reaching the PORT is the whole point.
+- **The run log names `midi_output`**, because a log that names only the mixer cannot say that a hum surviving `Shift+A` is not the mixer.
+- **This is still not a diagnosis.** The hum has never been reproduced here. What changed is that the one key meant to fix it can now reach
+  both halves, and that its message says which half it reached — so the next report is evidence rather than another round of guessing.
+
+## Counting The Rescues That Did Not Happen
+
+A run of an acoustic arpeggio scored 24 %, and answering "why" meant reconstructing the funnel by hand out of the strike table: 95 strikes,
+**53 of them subharmonic (56 %)**, 12 rescued. That is the arpeggio case this file already has a chapter on, and the numbers are in line with
+it — but the interesting question, which of the two ways a rescue is lost, could not be read at all.
+
+- **Held but never asked** means the audio window never arrived, because the next strike came too soon and `_limit_pending_windows` trimmed it
+  away. **Asked but refused** means the verifier could not find the written note in the sound. They are fixed in completely different places.
+- The run log carries `rescue_held`, `rescue_no_window`, `rescue_asked`, `rescue_already_credited` and `rescue_refused` now.
+- **The first guess was wrong and the measurement said so.** Gaps between strikes on that take: 5th percentile 174 ms, median 314 ms, and
+  **91 % of windows clear the 200 ms floor**. So the windows were arriving and the loss is in the verifier, which is where the next attempt
+  belongs.
+
 ## Is It The Files Or The App? Answer That First
 
 "The picture and the backing drift apart" has three causes and they are fixed in three different places: the tab is wrong, the recording is a

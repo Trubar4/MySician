@@ -72,6 +72,47 @@ class TabPage:
     # has now found four times: measured at 12.4 ms a frame on a real song,
     # against a 16.7 ms budget and 3.2 ms for the scrolling view.
     placed: list[tuple[float, float, int]] = field(default_factory=list)
+    # (top, bottom) of every SYSTEM on the page, as fractions. A system is a
+    # row of music, not a note: on a tab staff a note's own y is the STRING
+    # it sits on, so following it made the page scroll up and down by the
+    # string spacing on every note of an arpeggio. Filled in by `_systems`.
+    systems: list[tuple[float, float]] = field(default_factory=list)
+
+    def system_at(self, y: float) -> tuple[float, float]:
+        """The row of music this y sits in, or a band around it."""
+        for top, bottom in self.systems:
+            if top - 1e-9 <= y <= bottom + 1e-9:
+                return top, bottom
+        return y, y
+
+
+def _systems(ys: list[float]) -> list[tuple[float, float]]:
+    """Group note positions into rows of music.
+
+    The six string lines of one tab staff sit a small, even distance apart;
+    the gap to the next row is several times that. So the break is found from
+    the spacing the page itself uses rather than from a constant, which would
+    have to be re-fitted at every zoom.
+    """
+    # NOT rounded: the band's edges are compared against the very
+    # values that made them, and rounding to 1e-6 left a note a
+    # hair outside its own row -- which then became a band of its
+    # own and the page jumped to it.
+    distinct = sorted(set(ys))
+    if not distinct:
+        return []
+    gaps = [b - a for a, b in zip(distinct, distinct[1:])]
+    if not gaps:
+        return [(distinct[0], distinct[0])]
+    inline = sorted(gaps)[len(gaps) // 2] or min(g for g in gaps if g > 0)
+    limit = max(inline * 3.0, 1e-4)
+    rows, start = [], distinct[0]
+    for a, b in zip(distinct, distinct[1:]):
+        if b - a > limit:
+            rows.append((start, a))
+            start = b
+    rows.append((start, distinct[-1]))
+    return rows
 
 
 def rasterise(svg: str, width: int) -> pygame.Surface:
@@ -187,6 +228,7 @@ class TabEngraving:
         self.spots.sort()
         for page in self.pages:
             page.placed.sort()
+            page.systems = _systems([y for y, _, _ in page.placed])
 
     @property
     def zoom(self) -> int:
@@ -200,11 +242,17 @@ class TabEngraving:
         """
         return len(self.spots), len(self.timeline.notes)
 
-    def at_ms(self, ms: float) -> tuple[int, float, float] | None:
-        """(page, x, y) as fractions, for the playhead at this moment.
+    def at_ms(self, ms: float) -> tuple[int, float, float, float] | None:
+        """(page, x, top, bottom) as fractions, for the playhead now.
 
-        Interpolated between the notes either side while they sit on the same
-        line of the same page, and snapped to the next note otherwise: a
+        The y is the SYSTEM the note sits in, never the note's own -- on a
+        tab staff a note's y is the string it is written on, so following it
+        made the page scroll up and down by the string spacing on every note
+        of an arpeggio, which is what the player reported as the screen
+        wandering a centimetre once a second.
+
+        Interpolated horizontally between the notes either side while they
+        sit in the same system of the same page, and snapped otherwise: a
         playhead sliding diagonally across a line break is worse than one
         that steps.
         """
@@ -219,18 +267,19 @@ class TabEngraving:
                 high = middle
         if low == 0:
             _, page, x, y = self.spots[0]
-            return page, x, y
+            return (page, x) + self.pages[page].system_at(y)
         before = self.spots[low - 1]
+        band = self.pages[before[1]].system_at(before[3])
         if low >= len(self.spots):
-            return before[1], before[2], before[3]
+            return (before[1], before[2]) + band
         after = self.spots[low]
-        same_line = (before[1] == after[1]
-                     and abs(before[3] - after[3]) < 1e-6
-                     and after[2] >= before[2])
-        if not same_line or after[0] <= before[0]:
-            return before[1], before[2], before[3]
+        same_system = (before[1] == after[1]
+                       and self.pages[after[1]].system_at(after[3]) == band
+                       and after[2] >= before[2])
+        if not same_system or after[0] <= before[0]:
+            return (before[1], before[2]) + band
         share = (ms - before[0]) / (after[0] - before[0])
-        return before[1], before[2] + (after[2] - before[2]) * share, before[3]
+        return (before[1], before[2] + (after[2] - before[2]) * share) + band
 
     def page_of(self, ms: float) -> int:
         """Which page the playhead is on, 0 when nothing is placed."""

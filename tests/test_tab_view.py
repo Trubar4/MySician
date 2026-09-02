@@ -21,6 +21,12 @@ def _display():
     pygame.display.quit()
 
 
+def _playing_screen():
+    from pickhero.ui.scrolling import PlayingScreen
+    from pickhero.config import Config
+    return PlayingScreen(_song(bars=6), config=Config())
+
+
 def _engraved(screen):
     """Drive the threaded build to the point the main loop has taken it.
 
@@ -127,7 +133,9 @@ class TestThePlayhead:
     def test_after_the_last_note_it_stays_there(self):
         engraving = TabEngraving(_song())
         last = engraving.spots[-1]
-        assert engraving.at_ms(1e9) == (last[1], last[2], last[3])
+        page, x, top, bottom = engraving.at_ms(1e9)
+        assert (page, x) == (last[1], last[2])
+        assert top <= last[3] <= bottom
 
     def test_it_moves_between_two_notes_on_one_line(self):
         engraving = TabEngraving(_song(bars=2))
@@ -339,3 +347,55 @@ class TestThePageIsNotCoveredByTheScore:
         screen._song_completed = True
         screen.render(surface)
         assert drawn == [1]
+
+
+class TestThePageDoesNotWanderUpAndDown:
+    """"Der Screen wandert alle Sekunde rauf und runter um 1 cm."
+
+    Two separate causes, and both had to go. A note's y on a TAB staff is the
+    string it is written on, so following it moved the page by the string
+    spacing on every note of an arpeggio; and a rule that keeps the playhead
+    at a fixed height scrolls on every frame, which cannot be read at all.
+    """
+
+    def test_notes_on_different_strings_share_a_system(self):
+        from pickhero.ui.tab_view import _systems
+        # Six string lines close together, then the next row of music.
+        rows = _systems([0.10, 0.11, 0.12, 0.13, 0.14, 0.15,
+                         0.50, 0.51, 0.52])
+        assert len(rows) == 2
+        assert rows[0][0] <= 0.13 <= rows[0][1]
+
+    def test_the_playhead_has_one_height_per_ROW_not_per_string(self):
+        engraving = TabEngraving(_song(bars=12))
+        heights = {engraving.at_ms(ms)[1:] and
+                   (engraving.at_ms(ms)[0], engraving.at_ms(ms)[2],
+                    engraving.at_ms(ms)[3])
+                   for ms in range(0, 24_000, 100)}
+        rows = sum(len(page.systems) for page in engraving.pages)
+        strings = len({y for page in engraving.pages
+                       for y, _, _ in page.placed})
+        assert len(heights) == rows
+        assert strings > rows, "this song would not show the fault at all"
+
+    def test_the_page_holds_still_while_the_system_is_on_screen(self):
+        screen = _playing_screen()
+        first = screen._tab_scroll_for(1000.0, 1100.0, 4000.0, 700.0)
+        again = screen._tab_scroll_for(1300.0, 1400.0, 4000.0, 700.0)
+        assert first == again
+
+    def test_and_moves_once_the_music_has_left_it(self):
+        screen = _playing_screen()
+        screen._tab_scroll_for(100.0, 200.0, 4000.0, 700.0)
+        before = screen._tab_scroll
+        screen._tab_scroll_for(2000.0, 2100.0, 4000.0, 700.0)
+        assert screen._tab_scroll > before
+
+    def test_a_page_that_fits_never_scrolls(self):
+        screen = _playing_screen()
+        assert screen._tab_scroll_for(300.0, 400.0, 600.0, 700.0) == 0
+
+    def test_it_never_scrolls_past_the_end(self):
+        screen = _playing_screen()
+        offset = screen._tab_scroll_for(3990.0, 4000.0, 4000.0, 700.0)
+        assert 0 <= offset <= 4000.0 - 700.0

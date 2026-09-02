@@ -456,6 +456,79 @@ class TestALetRingNoteEndsWithTheSong:
                 > self._widest_body(plain, monkeypatch) + 100)
 
 
+class TestShiftAReachesBothThingsThatMakeSound:
+    """"Audio reopened bringt nichts. Komisches Dauerbrummen bleibt bis ich
+    die App schliesse."
+
+    Two things in this process make sound: the mixer, which plays the
+    recording, and the MIDI synth, which plays the backing. Shift+A reached
+    only the first, so a synth still holding a note could not be silenced by
+    the one key whose whole job is making the sound sane again.
+    """
+
+    def test_all_sound_off_and_reset_go_out_too(self):
+        """CC 123 asks a note to release; a long tail keeps sounding and a
+        held sustain pedal keeps it sounding for ever."""
+        from pickhero.audio import midi_playback
+
+        sent = []
+
+        class _Port:
+            def write_short(self, status, data1, data2):
+                sent.append((status, data1, data2))
+
+        midi_playback._silence(_Port())
+        controllers = {d1 for status, d1, _ in sent if status & 0xF0 == 0xB0}
+        assert controllers == {midi_playback.ALL_SOUND_OFF_CC,
+                               midi_playback.ALL_NOTES_OFF_CC,
+                               midi_playback.RESET_CONTROLLERS_CC}
+        channels = {status & 0x0F for status, _, _ in sent}
+        assert channels == set(range(16))
+
+    def test_panic_reaches_the_port_not_a_player(self, monkeypatch):
+        """A player dropped without being closed still has its notes
+        sounding, and by definition nothing is tracking them."""
+        from pickhero.audio import midi_playback
+
+        sent = []
+
+        class _Port:
+            def write_short(self, *args):
+                sent.append(args)
+
+        monkeypatch.setattr(midi_playback, "_SHARED_OUTPUT", _Port())
+        assert midi_playback.panic() is True
+        assert sent
+
+    def test_and_says_so_when_there_is_no_synth_at_all(self, monkeypatch):
+        from pickhero.audio import midi_playback
+        monkeypatch.setattr(midi_playback, "_SHARED_OUTPUT", None)
+        assert midi_playback.panic() is False
+
+    def test_the_key_silences_the_synth_before_touching_the_mixer(
+            self, monkeypatch):
+        from pickhero.audio import midi_playback, output
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        order = []
+        monkeypatch.setattr(midi_playback, "panic",
+                            lambda: (order.append("midi"), True)[1])
+        monkeypatch.setattr(output, "reopen",
+                            lambda: (order.append("mixer"), True)[1])
+        monkeypatch.setattr(output, "describe", lambda: "x")
+        screen._reopen_output()
+        assert order == ["midi", "mixer"]
+        assert "MIDI synth silenced" in screen._status_note_text()
+
+    def test_no_midi_output_is_a_different_answer(self, monkeypatch):
+        from pickhero.audio import midi_playback, output
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        monkeypatch.setattr(midi_playback, "panic", lambda: False)
+        monkeypatch.setattr(output, "reopen", lambda: True)
+        monkeypatch.setattr(output, "describe", lambda: "x")
+        screen._reopen_output()
+        assert "no MIDI output" in screen._status_note_text()
+
+
 class TestNeighbourGaps:
     """A note may not take more room than it has before the NEXT one.
 

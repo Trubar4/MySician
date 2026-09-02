@@ -283,6 +283,14 @@ class NoteMatcher:
         self.chord_verifications = 0
         self.chord_strings_corrected = 0
         self.rescued_notes = 0
+        # The funnel behind that number. Reconstructing it by hand from the
+        # strike table is what the last report cost, and the answer -- "the
+        # windows never arrived" against "the verifier would not confirm" --
+        # is fixed in two completely different places.
+        self.rescue_held = 0
+        self.rescue_asked = 0
+        self.rescue_already_credited = 0
+        self.rescue_refused = 0
 
         # One line per strike, and one per string a chord verdict took back.
         # Written only; see StrikeTrace for why it exists.
@@ -1033,6 +1041,7 @@ class NoteMatcher:
                <= self._chord_threshold_ms) > 1:
             return
         self._pending_rescues[sample_pos] = nearest
+        self.rescue_held += 1
         if len(self._pending_rescues) > 32:
             oldest = sorted(self._pending_rescues)[:-32]
             for key in oldest:
@@ -1063,11 +1072,14 @@ class NoteMatcher:
         note = self._pending_rescues.pop(window.sample_pos, None)
         if note is None:
             return None
+        self.rescue_asked += 1
         if self._get_state(note) in (MatchType.HIT, MatchType.CLOSE):
+            self.rescue_already_credited += 1
             return None
         if not self._chord_verifier.confirms(
                 window.audio, window.sample_rate, note.midi_note,
                 self._sounding_beside(note, window.timestamp_ms)):
+            self.rescue_refused += 1
             return None
         self._rerecord_match(note, MatchType.HIT)
         self.rescued_notes += 1
@@ -1540,6 +1552,10 @@ class NoteMatcher:
         self.chord_verifications = 0
         self.chord_strings_corrected = 0
         self.rescued_notes = 0
+        self.rescue_held = 0
+        self.rescue_asked = 0
+        self.rescue_already_credited = 0
+        self.rescue_refused = 0
         self._contour.clear()
         self._unjudged_bends = dict(self._bend_plans)
         self.bends_judged = 0

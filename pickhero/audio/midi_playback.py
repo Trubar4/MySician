@@ -17,6 +17,14 @@ PROGRAM_CHANGE = 0xC0
 
 # All-notes-off CC
 ALL_NOTES_OFF_CC = 123
+# CC 123 asks a note to RELEASE; a patch with a long tail keeps sounding and
+# a held sustain pedal keeps it sounding for ever. CC 120 cuts the sound
+# outright and CC 121 puts the controllers -- sustain among them -- back
+# where they started. The player reported a hum that survived leaving the
+# song and every other song after it, and died only when the app was closed,
+# which is what a synth still holding something sounds like.
+ALL_SOUND_OFF_CC = 120
+RESET_CONTROLLERS_CC = 121
 
 
 @dataclass(frozen=True, order=True)
@@ -200,6 +208,48 @@ def _open_shared_output():
     return None
 
 
+def _silence(output) -> None:
+    """Everything a synth needs to be told to stop making sound.
+
+    All three, on all sixteen channels: notes off, sound off, controllers
+    reset. Tracking note-ons is not enough on its own -- a note whose off was
+    never sent (a lost device, a player dropped without being closed) is
+    untracked by definition, and a stuck sustain pedal holds notes through
+    CC 123 alone.
+    """
+    if output is None:
+        return
+    for channel in range(16):
+        for controller in (ALL_SOUND_OFF_CC, ALL_NOTES_OFF_CC,
+                           RESET_CONTROLLERS_CC):
+            try:
+                output.write_short(0xB0 | channel, controller, 0)
+            except Exception:
+                pass
+
+
+def output_name() -> str:
+    """Which synth the backing is going to, for the run log."""
+    if _SHARED_OUTPUT is None:
+        return "(none open)"
+    return _SHARED_OUTPUT_NAME or "(unnamed)"
+
+
+def panic() -> bool:
+    """Silence the MIDI synth, whoever was playing it.
+
+    Not a method: a player that was dropped without being closed still has
+    its notes sounding, and the whole point is to reach the port rather than
+    any object holding it. Returns whether there was a port at all -- "no
+    MIDI output" and "silenced it" are different answers to "why is it still
+    humming".
+    """
+    if _SHARED_OUTPUT is None:
+        return False
+    _silence(_SHARED_OUTPUT)
+    return True
+
+
 class MidiPlayer:
     """Wraps pygame.midi.Output for backing track playback."""
 
@@ -306,9 +356,4 @@ class MidiPlayer:
             except Exception:
                 pass
         self._active_notes.clear()
-        # CC 123 (All Notes Off) on all 16 channels as safety net
-        for ch in range(16):
-            try:
-                self._output.write_short(0xB0 | ch, ALL_NOTES_OFF_CC, 0)
-            except Exception:
-                pass
+        _silence(self._output)

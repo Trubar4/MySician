@@ -26,6 +26,7 @@ from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
                              MAX_MP3_RATE, MIN_GATE_DB, MIN_MP3_RATE, Config)
 from pickhero.matcher import (FINE_MS, STRING_MIN_SAMPLES, MatchType,
                               NoteMatcher)
+from pickhero.audio import midi_playback
 from pickhero.audio import output
 from pickhero.audio.syncmap import SyncMap
 from pickhero import practice_log
@@ -745,6 +746,9 @@ class PlayingScreen:
         # thread to the main loop, which is the only place a pygame surface
         # may be converted for the display.
         self._tab_ready: tuple = (None, -1)
+        # Where the page is scrolled to. Held between frames on purpose: the
+        # page moves when the music leaves the screen, not continuously.
+        self._tab_scroll: int = 0
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         if guide_track is not None and len(guide_track) > 0:
@@ -1529,6 +1533,31 @@ class PlayingScreen:
         self._tab_due = True
         self._say(f"Zoom {wanted + 1} of {len(ZOOM_STEPS)} — engraving…")
 
+    def _tab_scroll_for(self, band_top: float, band_bottom: float,
+                        page_h: float, view_h: float) -> int:
+        """Where to scroll the page so the current system is readable.
+
+        It STAYS PUT while the system it is showing is fully on screen, and
+        moves only when the playhead has left it. A rule that centres the
+        playhead every frame scrolls continuously, and a reader cannot follow
+        a page that is always moving -- which is the other half of what the
+        player reported.
+        """
+        if page_h <= view_h:
+            self._tab_scroll = 0
+            return 0
+        limit = page_h - view_h
+        here = max(0.0, min(limit, float(self._tab_scroll)))
+        margin = min(24.0, view_h * 0.05)
+        if here + margin <= band_top and band_bottom <= here + view_h - margin:
+            self._tab_scroll = int(here)
+            return int(here)
+        # Out of view: put the system a quarter of the way down, so what
+        # comes next is what most of the screen is showing.
+        wanted = band_top - view_h * 0.25
+        self._tab_scroll = int(max(0.0, min(limit, wanted)))
+        return self._tab_scroll
+
     def _draw_tab_page(self, surface: pygame.Surface, layout: _Layout) -> None:
         """The engraved page, the playhead, and how each note went."""
         from pickhero.ui.tab_view import fit
@@ -1553,20 +1582,29 @@ class PlayingScreen:
         top_margin, bottom_margin = 56, 104
         view_h = max(1, h - top_margin - bottom_margin)
         fitted = fit(page, w)
-        head_y = (spot[2] if spot else 0.0) * fitted.get_height()
-        offset = 0
-        if fitted.get_height() > view_h:
-            offset = int(max(0, min(fitted.get_height() - view_h,
-                                    head_y - view_h * 0.4)))
+        page_h = fitted.get_height()
+        # The SYSTEM the playhead is in, never the note's own height. A note's
+        # y on a tab staff is the string it is written on, so scrolling to it
+        # moved the page up and down by the string spacing on every note of
+        # an arpeggio -- a centimetre, once a second, which is what the
+        # player reported.
+        band_top = (spot[2] if spot else 0.0) * page_h
+        band_bottom = (spot[3] if spot else 0.0) * page_h
+        offset = self._tab_scroll_for(band_top, band_bottom, page_h, view_h)
         surface.blit(fitted, (0, top_margin), (0, offset, w, view_h))
 
         if spot is not None:
             x = int(spot[1] * fitted.get_width())
-            y = int(head_y) - offset + top_margin
-            if top_margin <= y <= top_margin + view_h:
-                line_h = max(18, int(fitted.get_height() * 0.02))
+            # Across the whole system, the way every notation app draws it.
+            # A short tick at the note's own height would jump between the
+            # strings even with the scrolling held still.
+            reach = max(9.0, (band_bottom - band_top) * 0.6)
+            y0 = int(band_top - reach) - offset + top_margin
+            y1 = int(band_bottom + reach) - offset + top_margin
+            if y1 > top_margin and y0 < top_margin + view_h:
                 pygame.draw.line(surface, t.hit_zone,
-                                 (x, y - line_h), (x, y + line_h), 2)
+                                 (x, max(top_margin, y0)),
+                                 (x, min(top_margin + view_h, y1)), 2)
 
         # How each note went, as a dot under its fret number. The page is a
         # picture and cannot be re-coloured, so the verdict is drawn ON it.
@@ -1575,7 +1613,6 @@ class PlayingScreen:
             # walking all of them every frame cost 12.4 ms against a 16.7 ms
             # budget -- the loop-over-the-whole-song fault, for the fifth
             # time. page.placed is sorted by y, so this is two bisects.
-            page_h = fitted.get_height()
             first = bisect.bisect_left(page.placed, (offset / page_h,))
             last = bisect.bisect_right(
                 page.placed, ((offset + view_h) / page_h, 2.0, 1 << 30))
@@ -3757,6 +3794,10 @@ class PlayingScreen:
         # The OUTPUT, which this log never mentioned. A run where the sound
         # went wrong and a run where it did not are otherwise identical here.
         fh.write(f"output_device\t{output.describe()}\n")
+        # The OTHER thing in this process that makes sound. A hum that
+        # survives Shift+A is not the mixer, and a log naming only the mixer
+        # cannot say that.
+        fh.write(f"midi_output\t{midi_playback.output_name()}\n")
         # A stutter that clears when the song is PAUSED is a backlog, and
         # pausing is the one thing that drains these every frame without
         # doing anything else. If Shift+A does nothing while it stutters,
@@ -3857,6 +3898,18 @@ class PlayingScreen:
         fh.write(f"strings_taken_back\t{matcher.chord_strings_corrected}\n")
         fh.write(f"chord_windows_judged\t{matcher.chord_verifications}\n")
         fh.write(f"rescued_notes\t{matcher.rescued_notes}\n")
+        # Where the rescues that did NOT happen were lost. Held but never
+        # asked means the audio window never arrived (a strike too close to
+        # the next one); asked but refused means the verifier could not find
+        # the written note in the sound. Those are fixed in different places,
+        # and a single "rescued 12" cannot tell them apart -- reconstructing
+        # it by hand from the strike table is what the last report cost.
+        held, asked = matcher.rescue_held, matcher.rescue_asked
+        fh.write(f"rescue_held\t{held}\n")
+        fh.write(f"rescue_no_window\t{max(0, held - asked)}\n")
+        fh.write(f"rescue_asked\t{asked}\n")
+        fh.write(f"rescue_already_credited\t{matcher.rescue_already_credited}\n")
+        fh.write(f"rescue_refused\t{matcher.rescue_refused}\n")
         fh.write(f"bends_judged\t{matcher.bends_judged}\n")
         fh.write(f"bends_short\t{matcher.bends_short}\n")
         # The recording's own sync, so "it feels out" becomes a number. The
@@ -4979,12 +5032,26 @@ class PlayingScreen:
         until the app was restarted. That is a piece of state this process
         holds, and until now the only way to drop it was to lose the sitting.
 
-        It is also the experiment that says WHERE. If the sound comes back,
-        the fault is the mixer this reopens. If it does not, it is the shared
-        Windows device and no key in this app can reach it.
+        It is also the experiment that says WHERE -- and for a whole cycle it
+        could not be, because it reached only the MIXER. There are TWO things
+        in this process that make sound: the mixer, which plays the recording,
+        and the MIDI synth, which plays the backing. A hum that survives
+        leaving the song and dies only when the app is closed is what a synth
+        still holding something sounds like, and no amount of reopening the
+        mixer can touch it. So this now silences both, and SAYS which ones it
+        reached: "reopened, MIDI synth silenced" against "reopened, no MIDI
+        output" is the difference between two diagnoses.
         """
+
+        # Before the mixer, because it is the half that has never been tried.
+        # Not through the players: one that was dropped without being closed
+        # still has its notes sounding, and reaching the PORT is the point.
+        for player in self._midi_all():
+            player.pause()
+        had_midi = midi_playback.panic()
         if not output.reopen():
-            self._say("Audio output could not be reopened")
+            self._say("Audio output could not be reopened"
+                      + (" — MIDI synth silenced" if had_midi else ""))
             return
         # The mixer forgot the file along with everything else.
         self._mp3_loaded_build = None
@@ -4994,7 +5061,11 @@ class PlayingScreen:
             self._ensure_mp3_source()
             if self._mp3_plays():
                 self._mp3_player.seek(self._mp3_ms(self._playback_ms))
-        self._say(f"Audio output reopened — {output.describe()}")
+        for player in self._midi_all():
+            player.seek(self._backing_ms(self._playback_ms))
+        self._say(f"Audio output reopened — {output.describe()}"
+                  + ("; MIDI synth silenced" if had_midi
+                     else "; no MIDI output to silence"))
 
     def _start_auto_sync(self) -> None:
         """Find this recording's sync points by listening to it (Ctrl+S).
