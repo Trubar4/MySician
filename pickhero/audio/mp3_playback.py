@@ -88,6 +88,11 @@ class Mp3Player:
         self.error: str | None = None
 
     @property
+    def playing(self) -> bool:
+        """Whether the mixer is really sounding this recording right now."""
+        return self._playing and not self._suspended
+
+    @property
     def suspended(self) -> bool:
         """Held where it is by a paused song, rather than stopped."""
         return self._suspended
@@ -143,10 +148,18 @@ class Mp3Player:
     def is_muted(self) -> bool:
         return self._muted
 
-    def update(self, position_ms: float) -> None:
+    def update(self, position_ms: float, correct: bool = True) -> None:
         """Play from `position_ms`, correcting the recording if it has drifted.
 
         Called once a frame with the song position the recording should be at.
+
+        `correct=False` means the recording is the one keeping time and the
+        PICTURE is being pulled to it instead. Nothing here may seek then: a
+        seek is audible, and a warped tab asks for a correction of about a
+        percent for ever, which would break the sound every few seconds for
+        the whole song. The screen still calls this every frame, because
+        starting the recording and noticing it has ended are this object's
+        job either way.
         """
         if not self._ready or self._muted:
             return
@@ -174,6 +187,8 @@ class Mp3Player:
             return
         drift = position_ms - self.position_ms()
         self.worst_drift_ms = max(self.worst_drift_ms, abs(drift))
+        if not correct:
+            return
         if abs(drift) < RESYNC_MS:
             # Holding sync, so whatever made it wander has passed.
             self._resync_gap_ms = MIN_RESYNC_GAP_MS

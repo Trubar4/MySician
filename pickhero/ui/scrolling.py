@@ -27,6 +27,7 @@ from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
 from pickhero.matcher import (FINE_MS, STRING_MIN_SAMPLES, MatchType,
                               NoteMatcher)
 from pickhero.audio import output
+from pickhero.audio.syncmap import SyncMap
 from pickhero import practice_log
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.chords import name_chord
@@ -338,6 +339,20 @@ FRAME_BUDGET_MS = 1000.0 / 60.0
 # that nothing was drawn and nothing was heard, so charging the song for it
 # only teleports the picture.
 MAX_FRAME_STALL_S = 0.25
+
+# When a recording is playing, IT is the clock and the picture is pulled to
+# it. Two numbers decide how that pull feels.
+#
+# Past this the two describe different moments -- a seek, a loop turn, a
+# recording that has just started -- and the picture jumps rather than
+# creeping there over half a minute.
+SYNC_SNAP_MS = 1500.0
+# Otherwise the picture may be corrected by at most this fraction of the time
+# that really passed, so it is never seen to jump. The mismatch being chased
+# is about 1 %, so five times that is plenty of authority, and pygame's
+# get_pos() moves in buffer-sized steps -- the slew limit is what smooths
+# those into a scroll nobody can see move.
+SYNC_PULL_FRACTION = 0.05
 
 # How far apart the two sync points must be. The offset is dialled in 10 ms
 # steps, so one keypress over a short span is a large speed error: over 30 s
@@ -699,6 +714,12 @@ class PlayingScreen:
         # the player is navigating a four-minute song between the two points
         # and an expiring note is gone long before the second one is set.
         self._sync_lines: list[str] = []
+        # How far the picture ever had to be pulled to stay with the
+        # recording, and whether the recording ever led at all. A percentage
+        # cannot be debugged and neither can a sync: these two say whether
+        # the map was doing anything and how much was left over.
+        self._worst_sync_pull_ms: float = 0.0
+        self._mp3_led: bool = False
         # The engraved page view. Asked for on one frame and started on the
         # next, so the "engraving..." line is really on screen before the
         # work begins -- and the work itself runs on a thread, because
@@ -1099,6 +1120,7 @@ class PlayingScreen:
             # than the time you spent on it, and it is the time you spent that
             # a practice diary is about.
             self._session_seconds += real_elapsed
+            self._follow_recording(real_elapsed)
         self._last_tick = now
 
         # Wait mode: freeze if there are pending notes the player hasn't hit yet
@@ -3828,13 +3850,21 @@ class PlayingScreen:
                      f"{getattr(player, 'worst_seek_ms', 0.0):.0f}\n")
             fh.write(f"mp3_time_scale\t{player.time_scale:.3f}\n")
         anchors = self._mp3_anchors()
-        plan = self._mp3_plan()
+        sync = self._sync_map()
         fh.write(f"mp3_sync_points\t{len(anchors)}\t"
                  + " ".join(f"{at / 1000:.0f}s:{off:+.0f}ms"
                             for at, off in anchors) + "\n")
-        fh.write(f"mp3_stretch_sections\t{len(plan)}\t"
+        # One rate per gap between points. Two numbers pulling in OPPOSITE
+        # directions is the whole reason this is a list: no single rate, and
+        # no stretched copy of the recording, can express it.
+        fh.write(f"mp3_sync_sections\t{len(sync.rates())}\t"
                  + " ".join(f"{(1 / rate - 1) * 100:+.2f}%"
-                            for _, rate in plan) + "\n")
+                            for rate in sync.rates()) + "\n")
+        # How far the picture had to be pulled to stay with the recording,
+        # and how much of that the map was already doing. A large pull with
+        # few points says where the next point belongs.
+        fh.write(f"mp3_worst_pull_ms\t{self._worst_sync_pull_ms:.0f}\n")
+        fh.write(f"mp3_leads\t{'yes' if self._mp3_led else 'no'}\n")
         self._frame_line(fh)
         if self._clock_real_ms > 0:
             ratio = self._clock_song_ms / self._clock_real_ms
@@ -4528,13 +4558,66 @@ class PlayingScreen:
         getter = getattr(self._config, "mp3_offset_for", None)
         return getter(self._song_key) if getter else 0.0
 
+    def _mp3_leads(self) -> bool:
+        """Whether the recording is the clock and the picture follows it.
+
+        It is, whenever it is really sounding. A recording has its own clock
+        in the sound card and cannot be bent without a seek; the picture can
+        be pulled by a fraction of a millisecond a frame and nobody sees it.
+        So the correction goes on the cheap side -- which is also the only
+        way a warped tab can be followed at all, since the alternative is
+        seeking the audio every few seconds for the whole song.
+        """
+        player = self._mp3_player
+        return bool(
+            player is not None and player.ready and player.playing
+            and not player.suspended and not self._mp3_muted
+            and self._mp3_pending_seek_ms is None
+            and self._playing and self._playback_ms >= 0)
+
+    def _follow_recording(self, real_elapsed_s: float) -> None:
+        """Pull the song clock towards where the recording actually is."""
+        if not self._mp3_leads():
+            return
+        wanted = self._sync_map().song_at(self._mp3_player.position_ms())
+        error = wanted - self._playback_ms
+        if abs(error) < 1.0:
+            return
+        if abs(error) > SYNC_SNAP_MS:
+            # Not drift: something moved. Creeping there would scroll half a
+            # minute of music the player never asked for.
+            step = error
+        else:
+            room = real_elapsed_s * 1000.0 * SYNC_PULL_FRACTION
+            step = max(-room, min(room, error))
+        self._worst_sync_pull_ms = max(self._worst_sync_pull_ms, abs(error))
+        self._mp3_led = True
+        self._playback_ms = max(0.0, self._playback_ms + step)
+        # The audio clock is anchored to song time, so moving song time moves
+        # the anchor with it. Re-anchoring properly would throw away every
+        # strike still queued, which is not something a frame may do.
+        self._audio_anchor_song_ms += step
+        if self._matcher is not None:
+            self._matcher.audio_offset_ms += step
+
+    def _sync_map(self) -> SyncMap:
+        """Where this tab and this recording agree, and the lines between.
+
+        Built fresh from the stored points every time it is asked for: they
+        change while the player is placing them, and a map cached behind that
+        is the kind of thing that answers yesterday's question.
+        """
+        return SyncMap(self._mp3_anchors(), self._mp3_offset())
+
     def _mp3_ms(self, playback_ms: float) -> float:
         """Song position as the recording should hear it.
 
         A positive offset makes the recording sound LATER, so it is
-        subtracted -- the same convention as the MIDI backing.
+        subtracted -- the same convention as the MIDI backing. With sync
+        points set, the offset is what the map says HERE rather than one
+        number for the whole song.
         """
-        return playback_ms - self._mp3_offset()
+        return self._sync_map().recording_at(playback_ms)
 
     def _mp3_plays(self) -> bool:
         """Whether the recording may sound at all right now.
@@ -4642,9 +4725,8 @@ class PlayingScreen:
     def _mp3_rate(self) -> float:
         """The FIRST segment's rate, which is all a single number can say.
 
-        Kept because the cache name, the HUD and the run log all want one
-        number for "how far off is this recording"; the piecewise plan is
-        what actually gets built.
+        For the HUD and the run log only -- "how far off is this recording"
+        wants one number. NOTHING is built from it any more: see below.
         """
         plan = self._mp3_plan()
         return plan[0][1] if plan else 1.0
@@ -4652,12 +4734,16 @@ class PlayingScreen:
     def _mp3_build_tempo(self) -> float:
         """What `timestretch.build` has to be asked for.
 
-        It returns a copy `1 / tempo` times as long, and two independent
-        things want a say in that length: the practice speed, and how far the
-        recording runs away from the tab. At full speed with no correction
-        this is 1.0 and the original file is used untouched.
+        The PRACTICE SPEED and nothing else. The sync correction used to be
+        multiplied in here, and that was the wrong lever twice over: it
+        rebuilt the whole file for a percent (seconds of work, silence until
+        it landed, a cache entry per attempt), and it could only ever apply
+        ONE rate to a recording whose rate varies by a factor of three across
+        a song. The correction is a warp of the tab now -- free, instant, and
+        as detailed as the number of sync points -- so putting it in the file
+        as well would apply it twice. See audio/syncmap.py.
         """
-        return self._tempo_factor * self._mp3_rate()
+        return self._tempo_factor
 
     def _mp3_source_fits(self) -> bool:
         """Whether the loaded file plays this song at this speed AND rate.
@@ -4672,9 +4758,10 @@ class PlayingScreen:
             return False
         if self._mp3_loaded_build is None:
             # A source this screen did not load itself. All that is known is
-            # what the player reports, which is the scale -- enough while no
-            # correction is wanted, and never enough once one is.
-            return abs(self._mp3_rate() - 1.0) < 1e-6
+            # what the player reports, which is the scale -- and since the
+            # only thing that decides the file now is the practice speed,
+            # that is the whole answer.
+            return True
         return abs(self._mp3_loaded_build - self._mp3_build_tempo()) < 1e-6
 
     def _ensure_mp3_source(self) -> None:
@@ -4720,7 +4807,9 @@ class PlayingScreen:
             return
         self._mp3_stretch_wanted = tempo
         self._mp3_stretch_progress = 0.0
-        plan = self._mp3_plan()
+        # No sync plan any more: the practice speed is the only thing that
+        # decides the file. The recording is left exactly as it was made and
+        # the TAB is warped onto it. See _mp3_build_tempo.
         cache_dir = config_module.CONFIG_DIR / "stretched"
 
         def report(fraction: float) -> bool:
@@ -4732,7 +4821,7 @@ class PlayingScreen:
         def work() -> None:
             try:
                 built = timestretch.build(Path(path), tempo, cache_dir,
-                                          report, plan)
+                                          report)
                 self._mp3_stretch_done = (tempo, path, str(built))
             except timestretch.Cancelled:
                 pass                          # the speed moved on; not a fault
@@ -4772,7 +4861,9 @@ class PlayingScreen:
         if self._mp3_player.suspended:
             self._mp3_player.set_suspended(False)
         target = self._mp3_ms(self._playback_ms)
-        self._mp3_player.update(target)
+        # When the recording leads, nothing here may seek it -- the picture is
+        # what gets pulled. See _follow_recording.
+        self._mp3_player.update(target, correct=not self._mp3_leads())
         self._track_mp3_drift(target)
 
     def _track_mp3_drift(self, target_ms: float) -> None:
@@ -4926,7 +5017,7 @@ class PlayingScreen:
         press the next one will be.
         """
         points = self._mp3_anchors()
-        plan = self._mp3_plan()
+        rates = self._sync_map().rates()
         lines = [
             "  ".join(f"{_clock_text(at)} {_offset_text(off)}"
                       for at, off in points)
@@ -4936,9 +5027,9 @@ class PlayingScreen:
                          "line the recording up with Shift+N/M, Shift+S again")
         else:
             spans = "  ".join(f"{(1 / rate - 1) * 100:+.2f} %"
-                              for _, rate in plan) or "nothing usable"
+                              for rate in rates) or "nothing usable"
             lines.append(
-                f"SYNC {len(points)} points, {len(plan)} stretched section(s): "
+                f"SYNC {len(points)} points, {len(rates)} section(s): "
                 f"{spans}   (Shift+S adds one, Ctrl+Shift+S clears)")
         if replaced:
             lines.append(f"replaced {replaced} point(s) closer than "

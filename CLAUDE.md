@@ -943,7 +943,56 @@ A recording gets a per-song offset, and an offset is a constant: it can put the 
 - **Two points closer than `MIN_SYNC_SPAN_MS` (30 s) are refused**, and the first point is KEPT — the offset moves in 10 ms steps, so over five seconds one keypress is 0.2 %, a fifth of the whole effect invented by the last key pressed. A rate outside 0.9-1.1 is refused outright and named: a real mismatch is about a percent, and playing a song at 80 % of its speed is indistinguishable from a broken recording.
 - **Below 0.1 % nothing is built.** That is the threshold `stretch` itself gives up at, so a build would return the audio unchanged — five seconds of work bought with nothing.
 
-## The Band Did Not Play To A Click
+## Two Clocks, And The Recording Is The One That Cannot Bend
+
+"Trotzdem sind die Aufnahmen in anderen Tools wie Songsterr oder GoPlayAlong perfekt gesynct. Meine Annahme: Es liegt bei uns." That is a
+proof, and it is right. The chapter above measured the drift correctly and then drew a conclusion the measurement does not support: **that no
+cure exists.** A varying rate has no single correction — but it has a piecewise one, and every tool that solves this problem uses exactly that.
+
+- **Go PlayAlong**: sync mode drags beats onto the audio; *"For most songs, 2–5 sync points are usually enough"*; auto-sync fills in the beats
+  between the points the player set. The audio is never touched.
+- **alphaTab**: a sync point is `(barIndex, occurence, ratioPosition, millisecondOffset)` — a place in the score and the millisecond in the
+  media where it happens.
+- **Guitar Pro 8**: the audio track has anchors set by double-clicking above the waveform, stored in the file.
+
+All three warp the SCORE onto the recording. None stretches the audio. Integrated over the drift curve measured on the player's own song, the
+worst error over four minutes:
+
+| | worst error |
+|---|---|
+| one offset (the offset keys alone) | **1313 ms** |
+| one offset and one rate (what shipped) | 241 ms |
+| 3 sync points | 107 ms |
+| **5 sync points** | **90 ms** |
+| 9 sync points | 27 ms |
+| 17 sync points | 7 ms |
+
+Five points cross the 100 ms where picture and sound stop reading as one event. That is the whole design: nothing is modelled, every point is
+a piece of the truth, and the line between two of them is the least that can be claimed.
+
+- **The correction is applied to the TAB, never to the recording.** A recording's clock is in the sound card and can only be bent by seeking,
+  and a seek is audible: following a 1 % warp that way means breaking the sound every five seconds for the whole song. The picture can be
+  pulled by a fraction of a millisecond a frame and nobody sees it. **Correct the cheap side** — and that inverts what this app did, which was
+  to seek the recording whenever it drifted 90 ms from a tab that was itself wrong.
+- **So while the recording sounds, IT keeps time** (`_mp3_leads`) and `_follow_recording` pulls the song clock towards `song_at(recording)`.
+  The pull is limited to `SYNC_PULL_FRACTION` (5 %) of the time that really passed, which is five times the authority needed to track a 1 %
+  mismatch and far too slow to see; past `SYNC_SNAP_MS` (1.5 s) it jumps, because that is not drift but a seek or a loop turn.
+  `Mp3Player.update(correct=False)` says the recording is not to be touched, and the pull carries the audio anchor and
+  `matcher.audio_offset_ms` with it — moving song time without them would put every strike out by the whole correction, 2.6 s by the end of
+  that song.
+- **The stretched copy is for the practice speed and nothing else now.** The sync rate used to be multiplied into `_mp3_build_tempo`, which
+  rebuilt the whole file for one percent — seconds of work, silence until it landed, a cache entry per attempt — to apply ONE rate to a
+  recording whose rate varies by a factor of three. Warping the tab does it for free, and leaving it in the file as well would apply it twice.
+- **`SyncMap` is exact in both directions** and the test asserts the round trip: the recording is a piecewise-linear function of song time, so
+  the inverse is piecewise linear over the same points. A segment's slope is bounded to `MIN_RATE`/`MAX_RATE`, so two points set close
+  together cannot imply a rate that runs the rest of the song away.
+- **Outside the outermost points it extrapolates** rather than holding a value: a recording drifting at the last point is still drifting after
+  it, and the slope is bounded so it cannot escape. A point near the end is still worth more than any extrapolation, which is what every tool
+  that does this tells its users.
+- **The run log carries `mp3_sync_points`, `mp3_sync_sections`, `mp3_worst_pull_ms` and `mp3_leads`.** A large pull with few points says where
+  the next point belongs; `mp3_leads no` says the map was never in play at all, which is a different fault from a map that is wrong.
+
+## The Band Did Not Play To A Click, And That Was The Wrong Conclusion
 
 The player measured the picture against the recording bar by bar — and then measured it again at 70 % speed, where **the same bars were the same number of milliseconds out**. That one comparison settles what three sessions of guessing could not: anything the app loses (a stalled frame, a late resync) is proportional to REAL time, so at 70 % it would be 1.43x larger in song time. An offset that is unchanged in song milliseconds is a property of the FILES.
 

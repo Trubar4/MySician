@@ -1469,6 +1469,9 @@ class TestPausingIsNotStoppingEverything:
         ready = True
         time_scale = 1.0
         suspended = False
+        # Whether it is really sounding. Mirrors the real player, because
+        # that is what decides which of the two keeps time.
+        playing = False
         def __init__(self):
             self.stopped = 0
             self.seeks = 0
@@ -1483,7 +1486,8 @@ class TestPausingIsNotStoppingEverything:
             if value != self.suspended:
                 self.suspends.append(value)
             self.suspended = value
-        def update(self, ms): pass
+        def update(self, ms, correct=True): pass
+        def position_ms(self): return 0.0
         def drift_ms(self, ms): return 0.0
 
     def test_pausing_holds_the_recording_instead_of_stopping_it(self):

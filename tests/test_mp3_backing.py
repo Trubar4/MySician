@@ -723,7 +723,8 @@ class TestARecordingThatWillNotFollow:
         config.set_mp3_path_for("song", str(song))
         monkeypatch.setattr(Mp3Player, "open", lambda self: True)
         monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
-        monkeypatch.setattr(Mp3Player, "update", lambda self, ms: None)
+        monkeypatch.setattr(Mp3Player, "update",
+                            lambda self, ms, correct=True: None)
         monkeypatch.setattr(Mp3Player, "drift_ms", lambda self, ms: drift)
         screen = PlayingScreen(_timeline(), config=config, song_key="song")
         screen._playing = True
@@ -863,6 +864,127 @@ class TestACorrectionThatDoesNotCorrect:
         assert player.worst_seek_ms >= 5.0
 
 
+class TestTheRecordingKeepsTimeAndThePictureFollows:
+    """Which of the two is the clock decides everything else.
+
+    A recording's clock is in the sound card and can only be bent by seeking,
+    which is audible: following a warped tab that way would break the sound
+    every few seconds for the whole song. The picture can be pulled by a
+    fraction of a millisecond a frame and nobody sees it. So the correction
+    goes on the cheap side.
+    """
+
+    def _screen(self, tmp_path, monkeypatch, at_ms=0.0):
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        monkeypatch.setattr(Mp3Player, "playing", property(lambda self: True))
+        monkeypatch.setattr(Mp3Player, "position_ms",
+                            lambda self: self._fake_at)
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        screen._mp3_player._fake_at = at_ms
+        screen._playing = True
+        return screen
+
+    def _sync(self, screen, points):
+        screen._config.set_mp3_anchors_for("song", points)
+
+    def test_it_only_leads_while_it_is_really_sounding(self, tmp_path,
+                                                       monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        assert screen._mp3_leads()
+        screen._mp3_muted = True
+        assert not screen._mp3_leads()
+        screen._mp3_muted = False
+        screen._playing = False
+        assert not screen._mp3_leads()
+
+    def test_the_picture_is_pulled_towards_the_recording(self, tmp_path,
+                                                         monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, at_ms=60_000.0)
+        self._sync(screen, [(0.0, 0.0), (240_000.0, -2400.0)])
+        screen._playback_ms = 60_000.0
+        # The map says this recording runs ahead of the tab, so 60 s of
+        # recording is only 59.4 s of song.
+        wanted = screen._sync_map().song_at(60_000.0)
+        assert wanted < screen._playback_ms
+        # A 600 ms error, corrected at 5 % of the time that passes, is
+        # twelve seconds of playing -- invisible, and that is the point.
+        for _ in range(60 * 15):
+            screen._follow_recording(1 / 60)
+        assert screen._playback_ms == pytest.approx(wanted, abs=2.0)
+
+    def test_and_never_faster_than_the_eye(self, tmp_path, monkeypatch):
+        """A correction the player can SEE is worse than the error."""
+        screen = self._screen(tmp_path, monkeypatch, at_ms=60_000.0)
+        self._sync(screen, [(0.0, 0.0), (240_000.0, -2400.0)])
+        screen._playback_ms = 58_000.0       # well over a second out
+        before = screen._playback_ms
+        screen._follow_recording(1 / 60)
+        assert 0 < screen._playback_ms - before <= 1000.0 / 60 * 0.05 + 1e-6
+
+    def test_but_a_seek_snaps(self, tmp_path, monkeypatch):
+        """Past a point the two are not drifting, they are describing
+        different moments -- creeping there would scroll half a minute of
+        music the player never asked for."""
+        screen = self._screen(tmp_path, monkeypatch, at_ms=120_000.0)
+        screen._playback_ms = 10_000.0
+        screen._follow_recording(1 / 60)
+        assert screen._playback_ms == pytest.approx(120_000.0, abs=1.0)
+
+    def test_the_audio_clock_is_carried_with_it(self, tmp_path, monkeypatch):
+        """Song time is what strikes are stamped against, so moving it
+        without moving the anchor would put every strike out by the whole
+        correction -- 2.6 s by the end of the song that prompted this."""
+        from pickhero.matcher import NoteMatcher
+        screen = self._screen(tmp_path, monkeypatch, at_ms=60_000.0)
+        screen._matcher = NoteMatcher(screen._timeline)
+        screen._matcher.audio_offset_ms = 0.0
+        screen._audio_anchor_song_ms = 0.0
+        screen._playback_ms = 59_500.0
+        screen._follow_recording(1 / 60)
+        moved = screen._playback_ms - 59_500.0
+        assert moved > 0
+        assert screen._matcher.audio_offset_ms == pytest.approx(moved)
+        assert screen._audio_anchor_song_ms == pytest.approx(moved)
+
+    def test_the_recording_is_never_corrected_while_it_leads(self, tmp_path,
+                                                             monkeypatch):
+        """A seek is the one thing that must not happen here."""
+        asked = []
+        monkeypatch.setattr(Mp3Player, "update",
+                            lambda self, ms, correct=True: asked.append(correct))
+        screen = self._screen(tmp_path, monkeypatch, at_ms=60_000.0)
+        screen._playback_ms = 60_000.0
+        screen._update_mp3()
+        assert asked == [False]
+
+    def test_and_is_corrected_when_it_does_not(self, tmp_path, monkeypatch):
+        asked = []
+        monkeypatch.setattr(Mp3Player, "update",
+                            lambda self, ms, correct=True: asked.append(correct))
+        screen = self._screen(tmp_path, monkeypatch, at_ms=60_000.0)
+        monkeypatch.setattr(Mp3Player, "playing", property(lambda self: False))
+        screen._playback_ms = 60_000.0
+        screen._update_mp3()
+        assert asked == [True]
+
+    def test_a_song_with_no_points_is_untouched(self, tmp_path, monkeypatch):
+        """Nothing about this may change a song nobody has synced."""
+        screen = self._screen(tmp_path, monkeypatch, at_ms=60_000.0)
+        screen._config.set_mp3_offset_for("song", -500.0)
+        assert screen._mp3_ms(60_000.0) == pytest.approx(60_500.0)
+        # The recording is exactly where the plain offset puts it, so there
+        # is nothing to pull.
+        screen._mp3_player._fake_at = screen._mp3_ms(60_000.0)
+        screen._playback_ms = 60_000.0
+        screen._follow_recording(1 / 60)
+        assert screen._playback_ms == pytest.approx(60_000.0)
+
+
 class TestTheRecordingsOwnSpeed:
     """A tab is a fixed grid and a band is not.
 
@@ -956,12 +1078,18 @@ class TestTheRecordingsOwnSpeed:
         assert screen._mp3_plan()
         assert screen._mp3_scale() == before
 
-    def test_a_plan_makes_the_source_stop_fitting(self, tmp_path, monkeypatch):
-        """The scale alone cannot see it, so the copy would never be built."""
+    def test_syncing_never_rebuilds_the_recording(self, tmp_path, monkeypatch):
+        """The correction is a warp of the TAB, so the file is untouched.
+
+        It used to be built into a stretched copy -- seconds of work and a
+        cache entry for every attempt, to apply ONE rate to a recording whose
+        rate varies by a factor of three across a song.
+        """
         screen = self._screen(tmp_path, monkeypatch)
         assert screen._mp3_source_fits()
         self._players_own(screen)
-        assert not screen._mp3_source_fits()
+        assert screen._mp3_source_fits()
+        assert screen._mp3_build_tempo() == 1.0
 
     def test_clearing_puts_the_recording_back(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
@@ -971,19 +1099,21 @@ class TestTheRecordingsOwnSpeed:
         assert screen._mp3_build_tempo() == 1.0
 
     def test_it_survives_a_practice_speed_change(self, tmp_path, monkeypatch):
+        """The practice speed is the only thing that decides the file now."""
         screen = self._screen(tmp_path, monkeypatch)
         self._players_own(screen)
-        rate = screen._mp3_rate()
         screen._tempo_factor = 0.7
-        assert screen._mp3_build_tempo() == pytest.approx(0.7 * rate)
+        assert screen._mp3_build_tempo() == pytest.approx(0.7)
         assert screen._mp3_scale() == pytest.approx(1.0 / 0.7)
+        # And the map still says the same thing about where the music is.
+        assert screen._sync_map().offset_at(177_000.0) == pytest.approx(-1330.0)
 
     def test_the_panel_lists_every_point(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
         self._players_own(screen)
         panel = " ".join(screen._sync_lines)
         assert "0:00" in panel and "2:57" in panel and "4:18" in panel
-        assert "2 stretched section" in panel
+        assert "2 section" in panel
 
     def test_the_first_press_says_what_to_do_next(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
