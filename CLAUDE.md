@@ -823,7 +823,7 @@ The playhead interpolates between the notes either side of the moment while they
 | after slicing the verdict loop to the visible notes | 12.0 |
 | **after `convert()` on the page** | **4.1** |
 
-The loop over all 1314 notes was the obvious suspect and worth **0.4 ms**. The whole cost was the BLIT: an SVG loads as a 32-bit surface with an alpha channel the display does not share, and blitting the visible band cost **8.36 ms unconverted against 0.26 converted** (the page comes from cairosvg now, and the arithmetic is the same). Half a frame budget spent on a pixel format. The slice stays, because it is right and because the test that pins it is cheap — but the lesson is the older one: the thing that is slow is not the thing that looks expensive.
+The loop over all 1314 notes was the obvious suspect and worth **0.4 ms**. The whole cost was the BLIT: an SVG loads as a 32-bit surface with an alpha channel the display does not share, and blitting the visible band cost **8.36 ms unconverted against 0.26 converted** (the page comes from resvg now, and the arithmetic is the same). Half a frame budget spent on a pixel format. The slice stays, because it is right and because the test that pins it is cheap — but the lesson is the older one: the thing that is slow is not the thing that looks expensive.
 
 And every page is scaled during the build, while the "engraving…" note is on screen: left until a page is first looked at, the scaling costs **50 ms at the page turn**, three dropped frames exactly where the player is reading. Two or three pages is a tenth of a second, once.
 
@@ -833,17 +833,31 @@ And every page is scaled during the build, while the "engraving…" note is on s
 was nothing at all. Every check the project had passed, because every one of them asked whether the SVG existed.
 
 **SDL's SVG loader accepts verovio's output, reports a sensible size, and draws almost nothing**: measured on a real page, **20 ink pixels out
-of 1.2 million**. cairosvg draws the same page at **11 %** ink. The claim written down here that "pygame can load it — no extra library needed"
-was made on a surface that loaded, and never on one that had anything on it. That is this project's own recurring fault, committed in the
-sentence that warns about it.
+of 1.2 million**. A real rasteriser draws the same page at **11 %** ink. The claim written down here that "pygame can load it — no extra library
+needed" was made on a surface that loaded, and never on one that had anything on it. That is this project's own recurring fault, committed in
+the sentence that warns about it.
 
-- **cairosvg is a dependency now**, and on Windows it needs native cairo — so `pickhero.spec` carries `cairosvg` and `cairocffi` data and libs,
-  and `check_verovio.py` fails unless the SVG becomes PIXELS. A check that stops at "the file parsed" is the check that passed this bug.
-- **It costs about a second a page**, which is why the whole build moved off the game loop.
+- **`check_verovio.py` fails unless the SVG becomes PIXELS**, and counts them through the app's own path. A check that stops at "the file
+  parsed" is the check that passed this bug.
+- **It costs a few hundred ms a page**, which is why the whole build moved off the game loop.
+
+**And the obvious rasteriser was the wrong one, which only the Windows build could say.** cairosvg shipped first, the suite was green, and the
+release build failed one step later: `no library called "cairo-2" was found`. cairosvg installs perfectly happily on Windows and then finds no
+cairo, because cairo is a system library nobody has — and bundling it into the EXE is the same problem one layer down. **resvg-py** is one
+self-contained 1.2 MB wheel with nothing underneath it. Measured on three real songs, it draws the same page and draws it faster:
+
+| song | cairosvg | resvg | pixels strongly different |
+|---|---|---|---|
+| timing test | 195 ms, 19507 ink | **140 ms**, 18467 | 0.003 % |
+| canon | 566 ms, 103132 | **329 ms**, 97272 | 0.051 % |
+| Demo_v5 | 844 ms, 114930 | **327 ms**, 109378 | 0.035 % |
+
+The differences are antialiasing. **A dependency that cannot be installed on the target platform is worse than no dependency**, and the only
+reason this was caught in an hour is that the release workflow renders a page and counts its ink on the machine that matters.
 
 ## verovio's Resource Path Is Thread-Local
 
-Rasterising three pages of a real song is **3.1 s** — verovio engraves in 0.2 s and cairosvg spends the rest — and three seconds in the game
+Rasterising three pages of a real song is **3.1 s** — verovio engraves in 0.2 s and the rasteriser spends the rest — and three seconds in the game
 loop is a frozen app, which this project has already shipped twice. So `_build_tab_engraving` starts a thread, `_take_tab_engraving` picks the
 result up on a later frame, and the "engraving… 40 %" note moves while it happens.
 

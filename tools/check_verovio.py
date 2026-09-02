@@ -13,6 +13,8 @@ import sys
 import threading
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 MXL = """<?xml version="1.0" encoding="UTF-8"?>
 <score-partwise version="3.1">
  <part-list><score-part id="P1"><part-name>G</part-name></score-part></part-list>
@@ -67,23 +69,24 @@ def _check() -> int:
     # contains tablature", and everything passed while the page on screen was
     # blank: SDL's SVG loader reports a sensible size and draws 20 pixels out
     # of 1.2 million. A rendered page is the only thing that answers this.
+    # Through the app's own path -- resvg to PNG, pygame to a surface --
+    # rather than a rasteriser of the tool's own, so a build that passes
+    # this really can draw a page.
     try:
-        import cairosvg
-        png = cairosvg.svg2png(bytestring=svg.encode("utf-8"), output_width=400,
-                               background_color="#ffffff")
+        from pickhero.ui.tab_view import rasterise
+        surface = rasterise(svg, 400)
     except Exception as exc:
         print(f"the engraving cannot be rasterised: "
               f"{type(exc).__name__}: {exc}")
         return 1
     # Counted on DECODED pixels. Counting dark bytes in the PNG itself was
     # the first version and it is meaningless -- a PNG is compressed, so the
-    # bytes are not pixels. Pillow comes with cairosvg, so it is always here.
+    # bytes are not pixels.
     try:
-        import io
-        from PIL import Image
-        image = Image.open(io.BytesIO(png)).convert("L")
-        ink = sum(1 for value in image.tobytes() if value < 100)
-        share = ink / max(1, image.width * image.height)
+        import numpy as np
+        from pygame import surfarray
+        ink = int((surfarray.array3d(surface).mean(axis=2) < 100).sum())
+        share = ink / max(1, surface.get_width() * surface.get_height())
     except Exception as exc:
         print(f"the page could not be inspected: {type(exc).__name__}: {exc}")
         return 1

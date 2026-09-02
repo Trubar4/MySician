@@ -468,8 +468,21 @@ def _engraver_state() -> str:
     return answer[0] if answer else "present but it never answered"
 
 
+def _ink_pixels(surface: pygame.Surface) -> int:
+    """How many pixels on this page are actually dark.
+
+    A page that "loaded" is not a page that was drawn -- SDL's SVG loader
+    managed 20 pixels of 1.2 million, and every check this project had
+    passed on it.
+    """
+    import numpy as np
+    from pygame import surfarray
+    return int((surfarray.array3d(surface).mean(axis=2) < 100).sum())
+
+
 def _engraver_check() -> str:
     """The check itself. Never call this on the main thread -- see above."""
+    from pickhero.ui.tab_view import rasterise
     try:
         import verovio
     except Exception as exc:
@@ -491,16 +504,12 @@ def _engraver_check() -> str:
     if not ok:
         return "present but its data files are missing"
     # The rasteriser is the other half and it is a separate package: the page
-    # is engraved by verovio and drawn by cairosvg, and either can be absent.
+    # is engraved by verovio and drawn by resvg, and either can be absent.
+    # Counted through the app's own path -- resvg to PNG, pygame to a
+    # surface -- so this answers the question the tab view actually asks.
     try:
-        import io as _io
-        import cairosvg
-        from PIL import Image
-        png = cairosvg.svg2png(bytestring=toolkit.renderToSVG(1).encode(),
-                               output_width=200,
-                               background_color="#ffffff")
-        grey = Image.open(_io.BytesIO(png)).convert("L")
-        ink = sum(1 for value in grey.tobytes() if value < 100)
+        surface = rasterise(toolkit.renderToSVG(1), 200)
+        ink = _ink_pixels(surface)
     except Exception as exc:
         return f"no rasteriser ({type(exc).__name__})"
     return "ready" if ink else "the rasteriser drew nothing"
@@ -1415,7 +1424,7 @@ class PlayingScreen:
 
         Three pages of a real song is 3.1 s -- the ENGRAVING is fast (0.2 s)
         and the rasterising is not, because SDL cannot draw verovio's output
-        and cairosvg has to. Three seconds in the game loop is a frozen app,
+        and resvg has to. Three seconds in the game loop is a frozen app,
         which this project has already shipped twice.
         """
         self._tab_due = False

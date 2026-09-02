@@ -83,13 +83,17 @@ def rasterise(svg: str, width: int) -> pygame.Surface:
     on a surface that loaded, never on one that had anything drawn on it --
     which is the fault this project keeps writing up, made here.
 
-    cairosvg draws the same page at 11 % ink. It costs about a second, which
-    is why the engraving is built on a thread.
+    resvg draws it properly, and the reason it is resvg and not cairosvg is
+    Windows: cairosvg installs happily there and then finds no cairo at all
+    ("no library called cairo-2 was found"), which the release build proved
+    rather than guessed. resvg ships one 1.2 MB self-contained wheel and
+    needs nothing from the system. Measured on three real songs it draws the
+    same page -- 0.003 to 0.05 % of pixels differ, which is antialiasing --
+    and does it FASTER: 140 against 195 ms, 329 against 566, 327 against 844.
     """
-    import cairosvg
-    png = cairosvg.svg2png(bytestring=svg.encode("utf-8"),
-                           output_width=width,
-                           background_color="#eeece7")
+    import resvg_py
+    png = bytes(resvg_py.svg_to_bytes(svg_string=svg, width=width,
+                                      background="#eeece7"))
     return pygame.image.load(io.BytesIO(png), "page.png")
 
 
