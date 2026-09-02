@@ -992,6 +992,40 @@ a piece of the truth, and the line between two of them is the least that can be 
 - **The run log carries `mp3_sync_points`, `mp3_sync_sections`, `mp3_worst_pull_ms` and `mp3_leads`.** A large pull with few points says where
   the next point belongs; `mp3_leads no` says the map was never in play at all, which is a different fault from a map that is wrong.
 
+## Five Points By Hand Before Every Song Is Not A Feature
+
+Sync points work and the other tools ask for them, but placing five of them by ear before every song is a chore that will not be done twice.
+The measurement that finds them already existed here as a diagnostic — `check_song_sync.py` compares the tab's pitch classes against the
+recording's, window by window — so `audio/autosync.py` is the same measurement with its answer handed to the map instead of printed. **Ctrl+S**
+runs it; `tools/check_song_sync.py --write-sync` does the same from the command line. It is one implementation, imported by both: two copies of
+this would be two answers to one question.
+
+- **The points that come out are all MEASURED.** The curve is thinned by Douglas-Peucker to the fewest windows whose straight lines still
+  reproduce it to `SIMPLIFY_MS` (25 ms), so what is stored is a subset of what was read rather than a model of it. Measured on a synthesised
+  recording with a known drift: 30 points at a 5 ms tolerance and 8 points at 25 ms give **the same worst error**, so the thinning costs
+  nothing and the tolerance is not a knob anyone needs to turn.
+- **The control that must read zero is what found the real bug.** A recording sitting exactly on the tab's grid came back saying **+50 ms with
+  a scatter of only 10 ms** — a shift, not noise, and half the budget of the 100 ms this whole feature exists to get under. An analysis frame
+  covers 8192 samples and was indexed by its FIRST one, so the recording's chroma reported everything half a frame early while the tab's
+  chroma, built straight from note times, had no window at all. The two sides now describe the same stretch of time: recording frames are
+  indexed by their centre, and the tab's chroma is smeared over the same span. The residual is **−25 ms**, stable across wildly different note
+  envelopes, and it is left alone rather than tuned away — tuning it would be fitting to the synthesiser.
+- **The lag resolution was coarser than the target.** The search stepped two analysis frames, which is 93 ms at 44.1 kHz and 186 ms on a
+  stretched copy; measured, that quantisation alone left a **228 ms staircase**. Stepping one frame and finding the peak between samples with a
+  parabola through three scores brings the worst error to **98 ms** and the scatter to ±9 ms.
+- **End to end on that control: 710 ms of drift becomes 130 ms**, and 104 ms once the constant is nudged out with `Shift+N/M`. That is a
+  synthetic control and must not be quoted as accuracy on real music — what it establishes is that the arithmetic recovers a drift it was never
+  told about. The real number has to come from the player's own files, and `check_song_sync.py` prints the residual per window.
+- **Two filters, answering different questions.** A window whose best lag beats its nearest rival by less than `MIN_MARGIN` could not tell one
+  chorus from another; a window sitting further than `OUTLIER_S` from the robust line disagrees with all the others. Neither is a threshold on
+  the correlation itself, which would have to be fitted per song and would then be measuring the song.
+- **All the pitched tracks, not the one being practised.** A recording is the whole band, and matching a single guitar line against it throws
+  away most of the evidence. Percussion is left out: a drum kit has no pitch classes, only noise across all twelve.
+- **It runs on a thread with a percentage on screen**, because a four-minute song is a couple of seconds of arithmetic and seconds in the game
+  loop is a frozen app — the bill this project has now paid at seeks, at the pause, at the instrument change and at the tab view.
+- **"Could not read it" and "needs no correction" are different answers**, so the panel prints how many windows were usable next to how many
+  there were. A feature that stays silent on failure is indistinguishable from one that does not work.
+
 ## The Band Did Not Play To A Click, And That Was The Wrong Conclusion
 
 The player measured the picture against the recording bar by bar — and then measured it again at 70 % speed, where **the same bars were the same number of milliseconds out**. That one comparison settles what three sessions of guessing could not: anything the app loses (a stalled frame, a late resync) is proportional to REAL time, so at 70 % it would be 1.43x larger in song time. An offset that is unchanged in song milliseconds is a property of the FILES.

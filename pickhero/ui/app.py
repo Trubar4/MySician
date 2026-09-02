@@ -379,6 +379,7 @@ class App:
             guide_track=guide_track,
             progress_tracker=self._progress,
             song_key=path.stem,
+            song_path=str(path),
         )
         self._state = "playing"
         self._current_song_path = path

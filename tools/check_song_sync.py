@@ -39,56 +39,45 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from pickhero.audio import autosync  # noqa: E402
+from pickhero.config import Config  # noqa: E402
 from pickhero.tabs.loader import load_gp_file, list_tracks  # noqa: E402
 
-HOP = 2048
-FRAME = 8192
-# Windows this long are compared against the recording. Long enough to carry a
-# phrase, short enough that a real drift shows as a slope rather than a blur.
-WINDOW_S = 20.0
-STEP_S = 6.0
+# The analysis itself lives in the package now: the app runs the very same
+# measurement when the player asks it to sync a song, and two copies of it
+# would be two answers to one question. What is left here is the report.
+HOP = autosync.HOP
+FRAME = autosync.FRAME
+WINDOW_S = autosync.WINDOW_S
+STEP_S = autosync.STEP_S
+MAX_LAG_S = autosync.MAX_LAG_S
+OUTLIER_S = autosync.OUTLIER_S
+
 # One row printed per this many windows. The step above is what the LOCAL
 # rate check needs -- at 15 s a whole minute held three windows and the
 # uniformity test silently fell back to a single bucket, which is how a
 # rate that doubles came back reported as steady. The table on screen is a
 # different question and stays readable at every fourth row.
 PRINT_EVERY = 4
-MAX_LAG_S = 40.0
-# How far from the best lag a rival has to be to count as a rival at all.
-RUNNER_UP_GUARD_S = 5.0
-# A window sitting further than this from the fitted line is the song rhyming
-# with itself rather than a reading. It is counted and shown, never used --
-# and it is NOT thrown out by a threshold on the correlation itself, which
-# would have to be fitted per song and would then be measuring the song
-# instead of the drift. The estimator tolerates outliers; nothing pretends to
-# identify them in advance.
-OUTLIER_S = 3.0
 
 # What counts as "apart". The old verdict called anything under 3 SECONDS
 # "in sync" -- a threshold nobody fitted, and this song landed at 2.9 s and
 # was reported as agreeing while the player was watching the picture walk
 # a beat and a half away from the sound. 100 ms is the usual limit for
 # picture and sound being taken as one event, and it is close to the app's
-# own hit window; the app corrects its recording at 90 ms.
+# own hit window.
 AUDIBLE_MS = 100.0
 
-# Two local rates differing by more than this are not one tempo. A single
-# stretch factor can only follow a constant rate, so this is what decides
-# whether a correction exists at all.
+# Two local rates differing by more than this are not one tempo. It decides
+# whether a single stretch factor could ever have worked -- which, since the
+# app warps the tab through a chain of sync points instead, is now a remark
+# about the recording rather than a verdict on what can be done about it.
 RATE_SPREAD_MS = 4.0
 
-
-def decode(path: Path) -> tuple[np.ndarray, int]:
-    """Whole file as mono float32. SDL decodes what the app itself plays."""
-    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-    import pygame
-    pygame.mixer.init(frequency=44100, size=-16, channels=2)
-    sound = pygame.mixer.Sound(str(path))
-    arr = pygame.sndarray.array(sound).astype(np.float32) / 32768.0
-    pygame.mixer.quit()
-    if arr.ndim > 1:
-        arr = arr.mean(axis=1)
-    return arr, 44100
+decode = autosync.decode
+chroma_of_audio = autosync.chroma_of_audio
+chroma_of_tab = autosync.chroma_of_tab_file
+drift_curve = autosync.drift_curve
 
 
 def onset_envelope(x: np.ndarray, hop: int) -> np.ndarray:
@@ -110,78 +99,33 @@ def tempo_of(env: np.ndarray, fps: float) -> tuple[float, float]:
     return 60.0 * fps / k, float(ac[k] / (ac[0] + 1e-9))
 
 
-def chroma_of_audio(x: np.ndarray, sr: int) -> tuple[np.ndarray, float]:
-    n = (len(x) - FRAME) // HOP
-    freqs = np.fft.rfftfreq(FRAME, 1.0 / sr)
-    midi = np.full(len(freqs), -1)
-    audible = freqs > 25
-    midi[audible] = np.round(12 * np.log2(freqs[audible] / 440.0) + 69)
-    klass = np.where((midi >= 28) & (midi <= 100), midi % 12, -1)
-    out = np.zeros((n, 12), dtype=np.float32)
-    win = np.hanning(FRAME)
-    for i in range(n):
-        mag = np.abs(np.fft.rfft(x[i * HOP:i * HOP + FRAME] * win))
-        for k in range(12):
-            out[i, k] = mag[klass == k].sum()
-    out /= (out.sum(axis=1, keepdims=True) + 1e-9)
-    return out, sr / HOP
+def _write_sync(args, tab_path: Path, rows) -> None:
+    """Store the measured points, so the app can warp the tab onto this file.
 
-
-def chroma_of_tab(path: Path, fps: float) -> tuple[np.ndarray, int]:
-    """Every pitched track of the tab, as the same 12 bins."""
-    notes = []
-    for info in list_tracks(path):
-        if info.get("is_percussion"):
-            continue
-        try:
-            timeline = load_gp_file(path, track_index=info["index"])
-        except Exception:
-            continue
-        for note in timeline.notes:
-            notes.append((note.timestamp_ms / 1000.0,
-                          max(note.duration_ms / 1000.0, 0.15),
-                          note.midi_note))
-    if not notes:
-        return np.zeros((0, 12), dtype=np.float32), 0
-    span = max(t + d for t, d, _ in notes)
-    out = np.zeros((int(span * fps) + 50, 12), dtype=np.float32)
-    for start, dur, midi in notes:
-        a, b = int(start * fps), min(len(out), int((start + dur) * fps))
-        if 0 <= a < b:
-            out[a:b, midi % 12] += 1.0
-    out /= (out.sum(axis=1, keepdims=True) + 1e-9)
-    return out, len(notes)
-
-
-def _norm(a: np.ndarray) -> np.ndarray:
-    a = a - a.mean(axis=0, keepdims=True)
-    return a / (np.linalg.norm(a, axis=0, keepdims=True) + 1e-9)
-
-
-def drift_curve(tab: np.ndarray, rec: np.ndarray, fps: float):
-    """(tab time, lag, margin) per window; margin is the confidence."""
-    width, step = int(WINDOW_S * fps), int(STEP_S * fps)
-    max_lag, guard = int(MAX_LAG_S * fps), int(RUNNER_UP_GUARD_S * fps)
-    rows = []
-    for start in range(0, max(0, len(tab) - width), step):
-        seg = _norm(tab[start:start + width])
-        lags, scores = [], []
-        for lag in range(-max_lag, max_lag, 2):
-            at = start + lag
-            if at < 0 or at + width > len(rec):
-                continue
-            lags.append(lag)
-            scores.append(float((seg * _norm(rec[at:at + width])).sum()) / 12)
-        if not scores:
-            continue
-        scores = np.array(scores)
-        lags = np.array(lags)
-        best = int(np.argmax(scores))
-        far = np.abs(lags - lags[best]) > guard
-        runner = float(scores[far].max()) if far.any() else -1.0
-        rows.append((start / fps, lags[best] / fps,
-                     float(scores[best]) - runner))
-    return rows
+    The same rows the table above was drawn from, thinned to the fewest
+    MEASURED places that still reproduce the curve. Nothing is modelled and
+    no point is invented: what is stored is a subset of what was read.
+    """
+    points = autosync.points_from_rows(rows)
+    if len(points) < 2:
+        print("\n  Zu wenige brauchbare Fenster -- keine Sync-Punkte "
+              "geschrieben.")
+        return
+    key = args.song_key or tab_path.stem
+    config = Config.load()
+    config.set_mp3_anchors_for(key, points)
+    # A rate correction and a chain of points are two answers to one
+    # question, and the old one rebuilt the recording. Clearing it is part
+    # of writing these.
+    config.set_mp3_rate_for(key, 1.0)
+    config.save()
+    print(f"\n  {len(points)} Sync-Punkte fuer \"{key}\" gespeichert:")
+    for at, off in points:
+        print(f"    {int(at // 60000)}:{int(at // 1000) % 60:02d}"
+              f"  {off:+8.0f} ms")
+    print("  Die App richtet das Tab damit an dieser Aufnahme aus. "
+          "Im Song: Shift+S setzt\n  einen weiteren Punkt von Hand, "
+          "Ctrl+Shift+S loescht alle.")
 
 
 def main() -> int:
@@ -191,6 +135,13 @@ def main() -> int:
     ap.add_argument("tab")
     ap.add_argument("audio")
     ap.add_argument("--track", type=int, default=None)
+    ap.add_argument("--write-sync", action="store_true",
+                    help="store the measured sync points for this song, so "
+                         "the app plays the tab warped onto this recording")
+    ap.add_argument("--song-key", default=None,
+                    help="which song to store them under; the tab file's "
+                         "name without its extension by default, which is "
+                         "what the app uses")
     args = ap.parse_args()
 
     tab_path, audio_path = Path(args.tab), Path(args.audio)
@@ -277,6 +228,9 @@ def main() -> int:
 
     print(f"\n  Anfang {intercept:+.1f}s, Wanderung {slope * 1000:+.1f} ms "
           f"pro Sekunde ({slope * 100:+.2f} %)")
+
+    if args.write_sync:
+        _write_sync(args, tab_path, rows)
 
     # Is the rate CONSTANT? That is the whole question behind "can one
     # number fix this", and a single fitted line cannot answer it -- it

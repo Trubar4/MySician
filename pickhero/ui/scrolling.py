@@ -577,7 +577,7 @@ class PlayingScreen:
                  backing_track: BackingTrack | None = None,
                  guide_track: BackingTrack | None = None,
                  progress_tracker: ProgressTracker | None = None,
-                 song_key: str = ""):
+                 song_key: str = "", song_path: str = ""):
         self._timeline = timeline
         self._visible_beats = visible_beats
         self._hit_zone_fraction = hit_zone_fraction
@@ -661,6 +661,9 @@ class PlayingScreen:
         self._session_strikes = 0
         self._session_written = False
         self._song_key = song_key
+        # Where the tab came from. Only the auto-sync wants it,
+        # and only because a recording is the whole band.
+        self._song_path = song_path
         self._song_completed = False
         self._is_new_best = False
         self._recommendations: list[str] = []
@@ -720,6 +723,12 @@ class PlayingScreen:
         # the map was doing anything and how much was left over.
         self._worst_sync_pull_ms: float = 0.0
         self._mp3_led: bool = False
+        # Finding the sync points by listening. On a thread: a four-minute
+        # song is a couple of seconds of arithmetic, and seconds in the game
+        # loop is a frozen app -- a bill this project has paid three times.
+        self._auto_sync_thread: threading.Thread | None = None
+        self._auto_sync_progress: tuple[float, str] = (0.0, "")
+        self._auto_sync_result: tuple | None = None
         # The engraved page view. Asked for on one frame and started on the
         # next, so the "engraving..." line is really on screen before the
         # work begins -- and the work itself runs on a thread, because
@@ -1031,6 +1040,8 @@ class PlayingScreen:
             # screen. Before the paused branch below, because a paused song
             # is exactly when the page view gets opened.
             self._build_tab_engraving()
+        if self._auto_sync_result is not None:
+            self._take_auto_sync()
         if self._tab_ready[0] is not None:
             # The thread is done. Taking it here rather than there is not
             # tidiness: a surface must be convert()ed on the thread that
@@ -1296,6 +1307,9 @@ class PlayingScreen:
             self._set_loop_end(self._playback_ms)
         elif event.key == pygame.K_p:
             self._toggle_loop()
+        elif (event.key == pygame.K_s and event.mod & pygame.KMOD_CTRL
+                and not event.mod & pygame.KMOD_SHIFT):
+            self._start_auto_sync()
         elif event.key == pygame.K_s and event.mod & pygame.KMOD_SHIFT:
             if self._sync_key_held:
                 return None                    # a repeat, not a second press
@@ -2669,6 +2683,7 @@ class PlayingScreen:
             "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
             "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
+            "|  Ctrl+S: sync to the recording automatically  "
             "|  Shift+S: sync point here (Ctrl+Shift+S: clear)  "
             "|  Shift+A: reopen audio output (if the sound goes bad)  "
             "|  Shift+T: tab page view  "
@@ -2800,12 +2815,17 @@ class PlayingScreen:
         # and a message that is gone by then leaves them guessing which press
         # the next Shift+S will be -- which is what they reported.
         note_y = h - 74
-        for line in self._sync_lines:
+        # A progress line while the listening runs. Seconds of work with
+        # nothing moving is indistinguishable from a dead key, which is a
+        # fault this project has now shipped four times.
+        lines = ([self._auto_sync_line()] if self._auto_sync_line()
+                 else self._sync_lines)
+        for line in lines:
             line_surf = hint_font.render(line, True, t.hud_accent)
             surface.blit(line_surf,
                          (w // 2 - line_surf.get_width() // 2, note_y))
             note_y += 18
-        note_y = h - 74 - 18 * len(self._sync_lines)
+        note_y = h - 74 - 18 * len(lines)
 
         # What just happened, over the footer, while it is still news.
         note = self._status_note_text()
@@ -4975,6 +4995,91 @@ class PlayingScreen:
             if self._mp3_plays():
                 self._mp3_player.seek(self._mp3_ms(self._playback_ms))
         self._say(f"Audio output reopened — {output.describe()}")
+
+    def _start_auto_sync(self) -> None:
+        """Find this recording's sync points by listening to it (Ctrl+S).
+
+        Setting five points by hand is what the other tools ask for and it
+        works; doing it before every song does not. The measurement that
+        finds them is the one `tools/check_song_sync.py` already made -- the
+        tab's pitch classes against the recording's, window by window --
+        with its answer handed to the map instead of printed.
+        """
+        if self._auto_sync_thread is not None and self._auto_sync_thread.is_alive():
+            self._say("Already listening to the recording…")
+            return
+        path = self._mp3_path()
+        if not path:
+            self._say("No backing track — Shift+U to pick one")
+            return
+        # The FILE where there is one, so every track of the band is
+        # matched against the recording rather than the one guitar being
+        # practised. A recording is the whole arrangement, and one track of
+        # it is most of the evidence thrown away.
+        source = Path(self._song_path) if self._song_path else self._timeline
+
+        def report(fraction: float, what: str) -> bool:
+            self._auto_sync_progress = (fraction, what)
+            return self._auto_sync_thread is not None
+
+        def work() -> None:
+            from pickhero.audio import autosync
+            try:
+                points, rows = autosync.find_points(source, path, report)
+                self._auto_sync_result = ("ok", points, len(rows),
+                                          len(autosync.usable_rows(rows)))
+            except Exception as exc:
+                # Named rather than swallowed: "the file cannot be decoded"
+                # is a thing the player can act on; silence is not.
+                self._auto_sync_result = (
+                    "error", f"{type(exc).__name__}: {exc}", 0, 0)
+
+        self._auto_sync_progress = (0.0, "reading the recording")
+        self._sync_lines = ["SYNC   listening to the recording…"]
+        self._auto_sync_thread = threading.Thread(target=work, daemon=True)
+        self._auto_sync_thread.start()
+
+    def _take_auto_sync(self) -> None:
+        """Store what the listening found, on the main thread."""
+        result, self._auto_sync_result = self._auto_sync_result, None
+        self._auto_sync_thread = None
+        if result is None:
+            return
+        state = result[0]
+        if state == "error":
+            self._sync_lines = [f"SYNC   could not read the recording — "
+                                f"{result[1]}"]
+            return
+        _, points, windows, usable = result
+        if len(points) < 2:
+            # A result, not a failure: a recording this could not read is a
+            # different thing from one that needs no correction, and the
+            # window count is what tells them apart.
+            self._sync_lines = [
+                f"SYNC   the recording could not be read against this tab "
+                f"({usable} of {windows} windows usable)",
+                "SYNC   Shift+N/M to line it up by hand, Shift+S to set a "
+                "point"]
+            return
+        setter = getattr(self._config, "set_mp3_anchors_for", None)
+        if setter is None:
+            return
+        setter(self._song_key, points)
+        rate_setter = getattr(self._config, "set_mp3_rate_for", None)
+        if rate_setter is not None:
+            rate_setter(self._song_key, 1.0)
+        self._config.save()
+        self._describe_sync()
+        self._sync_lines.append(
+            f"SYNC   found by listening — {usable} of {windows} windows "
+            f"usable. Shift+S adds one by hand, Ctrl+Shift+S clears")
+
+    def _auto_sync_line(self) -> str:
+        """What the panel says while the listening is running."""
+        if self._auto_sync_thread is None:
+            return ""
+        fraction, what = self._auto_sync_progress
+        return f"SYNC   {what}… {fraction * 100:.0f} %"
 
     def _set_sync_point(self) -> None:
         """Remember that the recording is right HERE, and rebuild from all

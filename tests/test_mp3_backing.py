@@ -864,6 +864,113 @@ class TestACorrectionThatDoesNotCorrect:
         assert player.worst_seek_ms >= 5.0
 
 
+class TestAutoSyncInsideTheApp:
+    """Ctrl+S: find the points by listening, instead of setting five by hand.
+
+    The measurement itself is tested in tests/test_autosync.py. What is
+    tested here is that the app runs it off the game loop, says so while it
+    runs, and stores what it finds.
+    """
+
+    def _screen(self, tmp_path, monkeypatch):
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        return PlayingScreen(_timeline(), config=config, song_key="song")
+
+    def _found(self, monkeypatch, points, windows=20, usable=18):
+        from pickhero.audio import autosync
+        monkeypatch.setattr(
+            autosync, "find_points",
+            lambda tab, audio, progress=None, tolerance_ms=25.0: (
+                points, [(0.0, 0.0, 0.9)] * windows))
+        monkeypatch.setattr(
+            autosync, "usable_rows", lambda rows: [(0.0, 0.0)] * usable)
+
+    def _run(self, screen):
+        screen.update()
+        if screen._auto_sync_thread is not None:
+            screen._auto_sync_thread.join(30)
+        screen._take_auto_sync()
+
+    def test_it_does_not_run_in_the_frame(self, tmp_path, monkeypatch):
+        """A four-minute song is seconds of arithmetic, and seconds in the
+        game loop is a frozen app."""
+        self._found(monkeypatch, [(0.0, -260.0), (177_000.0, -1330.0)])
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        assert screen._auto_sync_thread is not None
+        assert "listening" in " ".join(screen._sync_lines)
+        self._run(screen)
+
+    def test_what_it_finds_is_stored(self, tmp_path, monkeypatch):
+        points = [(0.0, -260.0), (177_000.0, -1330.0), (258_000.0, -260.0)]
+        self._found(monkeypatch, points)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        assert screen._mp3_anchors() == points
+        assert screen._sync_map().offset_at(177_000.0) == pytest.approx(-1330.0)
+
+    def test_and_the_panel_says_how_much_was_readable(self, tmp_path,
+                                                      monkeypatch):
+        """"Could not read it" and "needs no correction" are different
+        answers, and the window count is what tells them apart."""
+        self._found(monkeypatch, [(0.0, -260.0), (60_000.0, -300.0)],
+                    windows=30, usable=22)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        assert "22 of 30" in " ".join(screen._sync_lines)
+
+    def test_a_recording_it_cannot_read_says_so(self, tmp_path, monkeypatch):
+        self._found(monkeypatch, [], windows=30, usable=1)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        assert screen._mp3_anchors() == []
+        panel = " ".join(screen._sync_lines)
+        assert "could not be read" in panel and "1 of 30" in panel
+
+    def test_a_failure_is_named_not_swallowed(self, tmp_path, monkeypatch):
+        from pickhero.audio import autosync
+
+        def explode(*a, **k):
+            raise RuntimeError("that file cannot be decoded")
+
+        monkeypatch.setattr(autosync, "find_points", explode)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        assert "cannot be decoded" in " ".join(screen._sync_lines)
+
+    def test_with_no_recording_it_says_which_key_picks_one(self, tmp_path,
+                                                           monkeypatch):
+        config = Config()
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        screen._start_auto_sync()
+        assert screen._auto_sync_thread is None
+        assert "Shift+U" in screen._status_note_text()
+
+    def test_ctrl_s_starts_it_and_shift_s_still_sets_a_point(self, tmp_path,
+                                                             monkeypatch):
+        self._found(monkeypatch, [(0.0, 0.0), (60_000.0, -100.0)])
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_CTRL))
+        assert screen._auto_sync_thread is not None
+        self._run(screen)
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYUP, key=pygame.K_s))
+        screen._playback_ms = 200_000.0
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_SHIFT))
+        assert len(screen._mp3_anchors()) == 3
+
+
 class TestTheRecordingKeepsTimeAndThePictureFollows:
     """Which of the two is the clock decides everything else.
 
