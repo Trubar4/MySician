@@ -208,20 +208,27 @@ def _open_shared_output():
     return None
 
 
-def _silence(output) -> None:
-    """Everything a synth needs to be told to stop making sound.
+def _silence(output, reset_controllers: bool = False) -> None:
+    """Tell the synth to stop making sound, on all sixteen channels.
 
-    All three, on all sixteen channels: notes off, sound off, controllers
-    reset. Tracking note-ons is not enough on its own -- a note whose off was
-    never sent (a lost device, a player dropped without being closed) is
-    untracked by definition, and a stuck sustain pedal holds notes through
-    CC 123 alone.
+    Tracking note-ons is not enough on its own: a note whose off was never
+    sent (a lost device, a player dropped without being closed) is untracked
+    by definition, and CC 123 alone only asks a note to RELEASE, which a long
+    tail ignores.
+
+    `reset_controllers` is for a PANIC and nothing else. CC 121 puts volume,
+    pan and sustain back to their defaults -- which is what clears a stuck
+    pedal, and also what would undo the mix the tab asked for. A seek must
+    not change how the backing sounds, and a held arrow key is 25 seeks a
+    second: this used to send 48 messages on every one of them.
     """
     if output is None:
         return
+    controllers = [ALL_SOUND_OFF_CC, ALL_NOTES_OFF_CC]
+    if reset_controllers:
+        controllers.append(RESET_CONTROLLERS_CC)
     for channel in range(16):
-        for controller in (ALL_SOUND_OFF_CC, ALL_NOTES_OFF_CC,
-                           RESET_CONTROLLERS_CC):
+        for controller in controllers:
             try:
                 output.write_short(0xB0 | channel, controller, 0)
             except Exception:
@@ -246,7 +253,7 @@ def panic() -> bool:
     """
     if _SHARED_OUTPUT is None:
         return False
-    _silence(_SHARED_OUTPUT)
+    _silence(_SHARED_OUTPUT, reset_controllers=True)
     return True
 
 

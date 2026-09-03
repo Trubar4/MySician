@@ -562,13 +562,31 @@ class TestShiftAReachesBothThingsThatMakeSound:
             def write_short(self, status, data1, data2):
                 sent.append((status, data1, data2))
 
-        midi_playback._silence(_Port())
+        midi_playback._silence(_Port(), reset_controllers=True)
         controllers = {d1 for status, d1, _ in sent if status & 0xF0 == 0xB0}
         assert controllers == {midi_playback.ALL_SOUND_OFF_CC,
                                midi_playback.ALL_NOTES_OFF_CC,
                                midi_playback.RESET_CONTROLLERS_CC}
         channels = {status & 0x0F for status, _, _ in sent}
         assert channels == set(range(16))
+
+    def test_but_a_seek_does_not_reset_the_controllers(self):
+        """CC 121 puts volume, pan and sustain back to their defaults -- what
+        clears a stuck pedal, and what would undo the mix the tab asked for.
+        A held arrow key is 25 seeks a second, and each one used to send 48
+        messages to the synth."""
+        from pickhero.audio import midi_playback
+
+        sent = []
+
+        class _Port:
+            def write_short(self, status, data1, data2):
+                sent.append((status, data1, data2))
+
+        midi_playback._silence(_Port())
+        controllers = {d1 for status, d1, _ in sent if status & 0xF0 == 0xB0}
+        assert midi_playback.RESET_CONTROLLERS_CC not in controllers
+        assert len(sent) == 32
 
     def test_panic_reaches_the_port_not_a_player(self, monkeypatch):
         """A player dropped without being closed still has its notes

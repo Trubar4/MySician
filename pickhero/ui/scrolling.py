@@ -724,6 +724,9 @@ class PlayingScreen:
         # the map was doing anything and how much was left over.
         self._worst_sync_pull_ms: float = 0.0
         self._mp3_led: bool = False
+        # How much the player spooled. Not reset by a loop or a song end:
+        # the question is what this sitting did.
+        self._seeks: int = 0
         # Finding the sync points by listening. On a thread: a four-minute
         # song is a couple of seconds of arithmetic, and seconds in the game
         # loop is a frozen app -- a bill this project has paid three times.
@@ -944,6 +947,10 @@ class PlayingScreen:
 
     def seek(self, ms: float) -> None:
         """Seek to an absolute position in ms, clamped to [0, duration]."""
+        # Counted, because the player has now identified seeking as what the
+        # stutter follows -- and a run log that cannot say how much spooling
+        # a run contained cannot correlate anything with it.
+        self._seeks += 1
         self._playback_ms = max(0.0, min(ms, self._timeline.duration_ms))
         # Reaching the last bar put the completion screen up and nothing took
         # it down again, so an arrow key moved the song under a picture that
@@ -3942,6 +3949,7 @@ class PlayingScreen:
         # few points says where the next point belongs.
         fh.write(f"mp3_worst_pull_ms\t{self._worst_sync_pull_ms:.0f}\n")
         fh.write(f"mp3_leads\t{'yes' if self._mp3_led else 'no'}\n")
+        fh.write(f"seeks\t{self._seeks}\n")
         self._frame_line(fh)
         if self._clock_real_ms > 0:
             ratio = self._clock_song_ms / self._clock_real_ms

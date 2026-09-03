@@ -912,6 +912,37 @@ already existed, so there is no second loader and a fix for one generation is a 
 - **Rounding the y values to 1e-6 put a note a hair outside its own row**, which then became a band of its own and the page jumped to it. The
   band's edges are compared against the very values that made them, so they are not rounded at all.
 
+## The Stutter Follows The SEEK, And Our Own State Is Innocent
+
+The player narrowed it themselves, and every clause is a measurement: *"Der Haenger kommt immer erst wenn ich gespult habe. Es ist egal ob
+Midi und MP3 ein sind oder nur MP3. U aus und B aus helfen nicht. Erst App zu loest das Problem. A aendert auch nichts. Andere Songs — gleiches
+Problem."*
+
+That rules out most of what had been suspected. It is not a stuck MIDI note (it happens with MP3 alone). It is not the mixer (`Shift+A` closes
+and reopens it). It is not the input stream (`A`). It is not the song. Turning both backings OFF afterwards does not clear it, so whatever a
+seek does is not undone by silence.
+
+**And our own state is innocent, measured rather than assumed.** 200 seeks through a real `PlayingScreen`, in batches, counting objects,
+threads and frame time after each:
+
+| | after 0 | 50 | 100 | 150 | 200 seeks |
+|---|---|---|---|---|---|
+| live objects | 40576 | 40575 | 40575 | 40575 | 40575 |
+| threads | 1 | 1 | 1 | 1 | 1 |
+| frame median | 1.68 ms | 1.82 | 1.78 | 1.83 | 1.83 |
+
+Nothing grows. So the fault is in what a seek does to a DEVICE, which is the half this machine cannot exercise — there is no MP3 decoder, no
+MIDI port and no real mixer here.
+
+- **What a seek touches on the audio side is `pygame.mixer.music.play(start=)` and the MIDI port**, and nothing else.
+- **The controller reset was made a PANIC-only thing.** `_all_notes_off` had grown to 48 messages per call — CC 120, CC 123 and CC 121 on all
+  sixteen channels — and it is called on every seek, which a held arrow key produces 25 times a second. CC 121 also puts volume, pan and
+  sustain back to their defaults, so a seek could change how the backing SOUNDS; that is wrong on its own terms, quite apart from the traffic.
+  A seek now sends 32 messages and never resets a controller; `panic()` and `close()` still send everything.
+- **The run log counts `seeks`**, because the variable the player identified as the trigger was the one number the log could not report.
+
+**This is not a diagnosis and must not be written up as one.** What is established is where it is NOT.
+
 ## Shift+A Could Not Reach The Thing That Was Humming
 
 "Audio reopened bringt nichts. Starke Störgeräusche und komisches Dauerbrummen bleibt bis ich die App schließe."
