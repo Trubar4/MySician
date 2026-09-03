@@ -1067,6 +1067,20 @@ a piece of the truth, and the line between two of them is the least that can be 
 - **The run log carries `mp3_sync_points`, `mp3_sync_sections`, `mp3_worst_pull_ms` and `mp3_leads`.** A large pull with few points says where
   the next point belongs; `mp3_leads no` says the map was never in play at all, which is a different fault from a map that is wrong.
 
+## Sync Points Belong To A RECORDING, Not To A Song
+
+Seventeen points measured by ear or by Ctrl+S are the most expensive thing in a song's settings, and two ways of losing them were open.
+
+- **Picking a different recording kept them.** Another rip has another intro and another encoder padding, so points measured against the old
+  file put the new one out by seconds — while the panel still reads "17 points" and everything looks synced. Choosing a file at a DIFFERENT
+  path now drops the points, the rate and the offset and says so; re-picking the same file after moving it keeps the work, because that is not
+  a different recording.
+- **`merge_stats.py` did not carry them.** A song measured on one machine had to be measured all over again on the other, which is the
+  "a setting that moves house has to be followed into every reader" fault for the second time. `song_mp3_anchors` and `song_mp3_rates` travel
+  now, under the same rule as the rest: an entry the receiving machine already has always wins.
+- **Where they live:** `~/.pickhero/settings.json`, under `song_mp3_anchors`, keyed by the tab file's name without its extension. Written the
+  moment a point is set, so nothing has to be saved by hand — and renaming the tab file starts the song over, which is what that key means.
+
 ## Five Points By Hand Before Every Song Is Not A Feature
 
 Sync points work and the other tools ask for them, but placing five of them by ear before every song is a chore that will not be done twice.

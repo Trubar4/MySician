@@ -5004,10 +5004,19 @@ class PlayingScreen:
             # Cancelled, or no tkinter on this machine. The two look the same
             # from here and neither is an error worth shouting about.
             return
+        # Sync points and the offset belong to (song, RECORDING), not to the
+        # song alone: another rip has another intro and another encoder
+        # padding, so points measured against the old file put the new one
+        # out by seconds while looking like a synced song. Dropped only when
+        # the path really changes -- re-picking the same file after moving it
+        # must not throw the player's work away.
+        replaced = bool(self._mp3_path()) and chosen != self._mp3_path()
         setter = getattr(self._config, "set_mp3_path_for", None)
         if setter is not None:
             setter(self._song_key, chosen)
             self._config.save()
+        if replaced:
+            self._forget_sync_for_new_recording()
         self._load_mp3_for_song()
         if self._mp3_player is not None:
             self._mp3_muted = False
@@ -5070,6 +5079,27 @@ class PlayingScreen:
         self._say(f"Audio output reopened — {output.describe()}"
                   + ("; MIDI synth silenced" if had_midi
                      else "; no MIDI output to silence"))
+
+    def _forget_sync_for_new_recording(self) -> None:
+        """A different file needs its own sync, and says so.
+
+        Keeping the old points would be worse than having none: they were
+        measured against another recording and would put this one out by
+        seconds while the panel still read "17 points".
+        """
+        had = len(self._mp3_anchors())
+        for name, value in (("set_mp3_anchors_for", []),
+                            ("set_mp3_rate_for", 1.0),
+                            ("set_mp3_offset_for", 0.0)):
+            setter = getattr(self._config, name, None)
+            if setter is not None:
+                setter(self._song_key, value)
+        self._config.save()
+        self._sync_lines = []
+        self._mp3_loaded_build = None
+        self._say("A different recording — its sync starts fresh"
+                  + (f" ({had} points dropped)" if had else "")
+                  + ". Ctrl+S measures it.")
 
     def _start_auto_sync(self) -> None:
         """Find this recording's sync points by listening to it (Ctrl+S).

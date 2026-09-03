@@ -195,7 +195,16 @@ class TestTheSettingsThatBelongToTheSONG:
             {"song_tempo_factors": {"a": 0.5}})
         assert merged["song_tempo_factors"]["a"] == 0.8
 
-    def test_all_four_per_song_settings_travel(self):
+    def test_the_sync_points_travel_too(self):
+        """The expensive ones. A song measured against its recording on one
+        machine had to be measured all over again on the other."""
+        theirs = {"song_mp3_anchors": {"song": [[0.0, -260.0],
+                                                [177000.0, -1330.0]]}}
+        merged, changed = merge_stats.merge_settings({}, theirs)
+        assert merged["song_mp3_anchors"]["song"][1] == [177000.0, -1330.0]
+        assert changed
+
+    def test_all_the_per_song_settings_travel(self):
         theirs = {f: {"song": "x"} for f in merge_stats.SONG_SETTINGS}
         merged, _ = merge_stats.merge_settings({}, theirs)
         for field in merge_stats.SONG_SETTINGS:

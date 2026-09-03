@@ -21,6 +21,7 @@ from pickhero.audio.mp3_playback import (
 )
 from pickhero.config import Config
 from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
+from pickhero.ui import scrolling
 from pickhero.ui.scrolling import PlayingScreen
 
 
@@ -862,6 +863,60 @@ class TestACorrectionThatDoesNotCorrect:
                             lambda ms: (_t.sleep(0.01), real(ms))[1])
         player.update(2000.0)
         assert player.worst_seek_ms >= 5.0
+
+
+class TestADifferentRecordingNeedsItsOwnSync:
+    """Sync points belong to (song, RECORDING), not to the song alone.
+
+    Another rip has another intro and another encoder padding, so points
+    measured against the old file put the new one out by seconds -- while the
+    panel still reads "17 points" and everything looks synced.
+    """
+
+    def _screen(self, tmp_path, monkeypatch):
+        song = tmp_path / "one.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        config.set_mp3_anchors_for("song", [(0.0, -260.0),
+                                            (177_000.0, -1330.0)])
+        config.set_mp3_offset_for("song", -260.0)
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        return PlayingScreen(_timeline(), config=config, song_key="song")
+
+    def test_picking_another_file_starts_the_sync_fresh(self, tmp_path,
+                                                        monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        other = tmp_path / "two.mp3"
+        other.write_bytes(b"y")
+        monkeypatch.setattr(scrolling, "pick_audio_file",
+                            lambda start: str(other))
+        screen._open_mp3_dialog()
+        assert screen._mp3_anchors() == []
+        assert screen._mp3_offset() == 0.0
+        assert "starts fresh" in screen._status_note_text()
+
+    def test_re_picking_the_same_file_keeps_the_work(self, tmp_path,
+                                                     monkeypatch):
+        """Moving a file and pointing at it again must not throw away the
+        minutes that went into syncing it."""
+        screen = self._screen(tmp_path, monkeypatch)
+        same = screen._mp3_path()
+        monkeypatch.setattr(scrolling, "pick_audio_file", lambda start: same)
+        screen._open_mp3_dialog()
+        assert len(screen._mp3_anchors()) == 2
+
+    def test_the_first_recording_of_a_song_is_not_a_replacement(
+            self, tmp_path, monkeypatch):
+        config = Config()
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        first = tmp_path / "first.mp3"
+        first.write_bytes(b"x")
+        monkeypatch.setattr(scrolling, "pick_audio_file",
+                            lambda start: str(first))
+        screen._open_mp3_dialog()
+        assert "starts fresh" not in (screen._status_note_text() or "")
 
 
 class TestAutoSyncInsideTheApp:

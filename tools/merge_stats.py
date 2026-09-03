@@ -95,7 +95,12 @@ def merge_progress(mine: dict, theirs: dict) -> tuple[dict, list[str]]:
 # The per-song settings, and nothing else. Everything absent from this list
 # stays as the receiving machine has it -- see the module docstring.
 SONG_SETTINGS = ("song_tempo_factors", "song_mp3_paths", "song_mp3_offsets",
-                 "song_backing_offsets")
+                 "song_backing_offsets",
+                 # The sync points, which are the expensive ones: a song
+                 # measured against its recording on one machine had to be
+                 # measured again on the other, and a setting that moves
+                 # house has to be followed into every reader.
+                 "song_mp3_anchors", "song_mp3_rates")
 
 
 def merge_settings(mine: dict, theirs: dict) -> tuple[dict, list[str]]:
