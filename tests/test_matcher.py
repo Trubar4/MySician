@@ -1345,6 +1345,43 @@ class TestRescuingAPitchlessSingleNote:
         matcher.process_strike_windows([self._window(8192)])
         assert matcher.get_note_state(note) == MatchType.PENDING
 
+    def test_a_subharmonic_on_a_written_CHORD_credits_the_strum(self):
+        """Both halves of "it goes where a pitchless strike goes".
+
+        For a cycle it went to one: held for the audio, which refuses a chord
+        by design. Measured on the player's own take of the chorus, 92 strikes
+        came back subharmonic and only 28 were held -- the other 64 sat on a
+        written chord and were dropped outright. A subharmonic exists ONLY
+        because several strings are sounding together, which is the very
+        thing being credited.
+        """
+        notes = [_note_event(1000.0, midi_note=43, string=6),
+                 _note_event(1000.0, midi_note=50, string=4),
+                 _note_event(1000.0, midi_note=55, string=3)]
+        matcher = _make_matcher(notes)
+        verifier = self._Verifier(confirm=False)
+        matcher.chord_verifier = verifier
+        # A pitch no written note explains -- the common period of the shape.
+        matcher.process_detected_notes(
+            [self._subharmonic(31, 1000.0, sample_pos=8192)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+        # Credited outright: a chord needs no audio, which is why the rescue
+        # refuses one in the first place.
+        assert verifier.asked == []
+        assert matcher._pending_rescues == {}
+
+    def test_but_a_single_written_note_is_still_only_held(self):
+        """The chord credit is for a CHORD. One note and an unexplained
+        pitch is exactly the case the audio has to settle."""
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        verifier = self._Verifier(confirm=False)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(31, 1000.0, sample_pos=8192)], 1000.0)
+        assert matcher.get_note_state(note) == MatchType.PENDING
+        assert matcher._pending_rescues
+
     def test_a_subharmonic_that_DOES_fit_keeps_its_own_rule(self):
         """It proves the strum outright and needs no audio: a monophonic
         detector can never report a second chord tone to reach a majority."""

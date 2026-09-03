@@ -930,6 +930,33 @@ synth still holding a note could be silenced by nothing short of closing the app
 - **This is still not a diagnosis.** The hum has never been reproduced here. What changed is that the one key meant to fix it can now reach
   both halves, and that its message says which half it reached — so the next report is evidence rather than another round of guessing.
 
+## The Recording Was Already There, And It Was The Chorus
+
+"Hab ich dir nicht schon vor ein paar Tagen ein Recording von Leave a light on gegeben?" Yes — three, on 2026-08-30, and asking for another was
+a failure to look. Two of them name the song in their manifest; one is 45 s of the CHORUS (song 132.5-177.2 s, 557 written notes), which is
+exactly the "play-along recording of a strummed CHORUS, not another arpeggio" the chord-credit chapter above says was needed and did not exist.
+
+**Read with the rescue funnel, it named a hole nobody was looking for.** On that take 153 strikes arrive, **92 of them subharmonic (60 %)** —
+and only **28** were ever held for rescue. The other 64 sat on a written CHORD, where `_hold_for_rescue` abstains by design, and were dropped
+outright.
+
+- **"It goes where a pitchless strike goes" was implemented for one of the two places it goes.** A pitchless strike is offered to
+  `_unpitched_chord_credit` FIRST and only held for the audio when no chord explains it. The subharmonic path skipped straight to the hold, so
+  on chord-written material — which is most of a rock song — it did nothing at all.
+- **A subharmonic is if anything STRONGER evidence of a strum than silence is.** It exists only because several strings are sounding together
+  and share a period, which is the very thing being credited. The matched-subharmonic path has said so since it was written ("the strum itself
+  is proven"); the unmatched one now says it too.
+- **Measured on the chorus take: 66.4 % → 69.5 %** (370 → 387 of 557), and the funnel goes 9 held / 3 confirmed → 28 held / 9 confirmed.
+- **All three controls hold.** `check_chord_credit.py`: every correct chord still credited in full, every deliberate one-fret error still
+  caught. `check_ringing_rescue.py`: the damped takes gain **+0**. `check_subharmonic_rescue.py`: no take loses a note, and one timing-test
+  take gains two.
+
+**And a second finding that is NOT fixed, written down so it is not rediscovered.** The 20-second take produced **one verification window for
+177 strikes**. It runs at 9 strikes a second with a median gap of 107 ms, and `_limit_pending_windows` drops any window trimmed under
+`MIN_WINDOW_MS`; only 1 % of its gaps clear 255 ms. So on dense strumming the chord verifier and the rescue are both inert — not wrong, absent.
+Both takes also show a hard floor of 64 ms in their gap distribution, which is a re-trigger and not a pick. Whether that is worth a separate
+onset rule is unmeasured; what is measured is that the evidence never arrives.
+
 ## Counting The Rescues That Did Not Happen
 
 A run of an acoustic arpeggio scored 24 %, and answering "why" meant reconstructing the funnel by hand out of the strike table: 95 strikes,

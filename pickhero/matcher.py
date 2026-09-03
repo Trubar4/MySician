@@ -756,9 +756,26 @@ class NoteMatcher:
                     # that period, so its value names the chord sounding in
                     # the room and not the note just struck -- and when it
                     # matches nothing written it is exactly as much evidence
-                    # about that note as no pitch at all. So it goes where a
-                    # pitchless strike goes: held, and put to the audio.
-                    self._hold_for_rescue(adjusted_ms, ts_note.sample_pos)
+                    # about that note as no pitch at all.
+                    #
+                    # So it goes where a pitchless strike goes, and that is
+                    # BOTH of the places a pitchless strike goes. For a
+                    # cycle it only went to one: held for the audio, which
+                    # then refuses a chord by design. Measured on the
+                    # player's own take of an acoustic arpeggio, 92 strikes
+                    # came back subharmonic and only 28 were held -- the
+                    # other 64 sat on a written chord and were dropped
+                    # outright. A subharmonic is if anything STRONGER
+                    # evidence of a strum than silence is: it exists only
+                    # because several strings are sounding together, which
+                    # is the very thing being credited.
+                    credit = self._unpitched_chord_credit(
+                        adjusted_ms, ts_note.sample_pos)
+                    if credit is not None:
+                        results.append(credit)
+                    else:
+                        self._hold_for_rescue(adjusted_ms,
+                                              ts_note.sample_pos)
                 self._trace(ts_note, adjusted_ms, playback_ms,
                             "dead" if dead_result is not None else "unmatched",
                             dead_result.matched_events[0] if dead_result
