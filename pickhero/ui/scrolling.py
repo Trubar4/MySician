@@ -2595,25 +2595,29 @@ class PlayingScreen:
             else:
                 color = dimmed(base_color) if past_hit_zone else base_color
 
-            # A short note is a circle sitting on its string; a sustained one
-            # stretches into a capsule. Either way the note's LEADING EDGE is
-            # at its own time, so the moment to play is when the start of the
-            # shape reaches the hit line -- not its middle, which put the cue
-            # half a note late.
-            if capsule_w > 2 * radius:
-                rect = pygame.Rect(
-                    int(x), int(cy - half_h), int(capsule_w), int(2 * half_h),
-                )
-                corner = int(min(radius, half_h))
-                pygame.draw.rect(surface, color, rect, border_radius=corner)
-                pygame.draw.rect(surface, t.note_border, rect, width=2,
-                                 border_radius=corner)
-            else:
-                oval = pygame.Rect(
-                    int(x), int(cy - half_h), int(2 * radius), int(2 * half_h),
-                )
-                pygame.draw.ellipse(surface, color, oval)
-                pygame.draw.ellipse(surface, t.note_border, oval, 2)
+            # One shape for every note: a rounded rectangle, as round as its
+            # HEIGHT allows. A short note is then a circle and a sustained
+            # one a capsule, and the curvature is identical -- which is the
+            # point. The note's LEADING EDGE is at its own time, so the
+            # moment to play is when the start of the shape reaches the hit
+            # line, not its middle, which put the cue half a note late.
+            #
+            # The corner used to be `min(radius, half_h)` -- half the head's
+            # WIDTH. Since the head is squeezed sideways to buy look-ahead
+            # while keeping the lane's height, that made every wide note less
+            # rounded than the short ones beside it, and a long note read as
+            # a box. The curvature is the height's business and nothing
+            # else's; pygame clamps it to half the shorter side by itself, so
+            # a head narrower than it is tall stays a capsule rather than
+            # growing corners.
+            draw_w = max(capsule_w, 2 * radius)
+            rect = pygame.Rect(
+                int(x), int(cy - half_h), int(draw_w), int(2 * half_h),
+            )
+            corner = int(half_h)
+            pygame.draw.rect(surface, color, rect, border_radius=corner)
+            pygame.draw.rect(surface, t.note_border, rect, width=2,
+                             border_radius=corner)
 
             # Technique marks go OVER the head. They live inside the note now
             # rather than arcing out of the lane, so drawing them underneath

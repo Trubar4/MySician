@@ -406,6 +406,91 @@ class TestSustainWidth:
         assert PlayingScreen.sustain_width(short, 0.5) < PlayingScreen.note_width(short, 0.5)
 
 
+class TestEveryNoteHeadIsRoundedTheSame:
+    """"Im Moment sind die breiteren Noten weniger abgerundet und mehr eckig."
+
+    The corner was `min(head width / 2, head height / 2)`, and the head is
+    squeezed SIDEWAYS to buy look-ahead while keeping the lane's height -- so
+    on any dense song a sustained note was drawn with corners fitted to a
+    width it does not have, and read as a box beside the round short ones.
+    The curvature is the height's business and nothing else's.
+    """
+
+    def _song(self, per_bar=4, bars=6, duration=150.0):
+        notes, measures = [], []
+        step = 2000.0 / per_bar
+        for bar in range(bars):
+            for i in range(per_bar):
+                notes.append(NoteEvent(
+                    timestamp_ms=bar * 2000.0 + i * step, duration_ms=duration,
+                    midi_note=40 + i % 12, string=1 + i % 6, fret=i % 13,
+                    measure=bar))
+            measures.append(MeasureInfo(index=bar, start_ms=bar * 2000.0,
+                                        end_ms=(bar + 1) * 2000.0))
+        return Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=measures)
+
+    def _heads(self, screen, monkeypatch):
+        """(width, height, corner radius) of every note head drawn."""
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        screen.render(surface)                      # sizes the heads
+        seen = []
+        real = pygame.draw.rect
+        monkeypatch.setattr(
+            pygame.draw, "rect",
+            lambda s, c, r, *a, **k: (seen.append((r[2], r[3],
+                                                   k.get("border_radius"))),
+                                      real(s, c, r, *a, **k))[1])
+        screen._draw_notes(surface, screen._layout(surface))
+        monkeypatch.undo()
+        return [t for t in seen if t[2]]
+
+    def test_a_short_and_a_long_note_curve_the_same(self, monkeypatch):
+        # A quick note and a held one, each with room of its own so the
+        # neighbour cap does not make them the same width.
+        notes = [
+            NoteEvent(timestamp_ms=0.0, duration_ms=150.0, midi_note=40,
+                      string=6, fret=0, measure=0),
+            NoteEvent(timestamp_ms=2000.0, duration_ms=1800.0, midi_note=45,
+                      string=5, fret=3, measure=1),
+        ]
+        song = Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=[MeasureInfo(index=b, start_ms=b * 2000.0,
+                                              end_ms=(b + 1) * 2000.0)
+                                  for b in range(3)])
+        heads = self._heads(PlayingScreen(song, config=Config()), monkeypatch)
+        widths = {w for w, _, _ in heads}
+        assert len(widths) > 1, "this song would not show the fault at all"
+        assert len({r for _, _, r in heads}) == 1
+
+    def test_the_curve_is_half_the_HEIGHT(self, monkeypatch):
+        screen = PlayingScreen(self._song(), config=Config())
+        heads = self._heads(screen, monkeypatch)
+        for _, height, corner in heads:
+            assert corner == height // 2
+
+    def test_a_square_head_comes_out_round(self, monkeypatch):
+        """Which is the other half of the ask: small ones are circles."""
+        screen = PlayingScreen(self._song(), config=Config())
+        heads = self._heads(screen, monkeypatch)
+        square = [(w, h, r) for w, h, r in heads if w == h]
+        assert square, "no short note on this board"
+        for w, h, r in square:
+            assert r * 2 >= min(w, h)
+
+    def test_a_dense_song_squeezes_the_head_and_keeps_the_curve(
+            self, monkeypatch):
+        """The case the old rule got wrong: the head is narrower than the
+        lane is tall, so half the WIDTH is smaller than half the height."""
+        screen = PlayingScreen(self._song(per_bar=16, bars=60),
+                               config=Config())
+        heads = self._heads(screen, monkeypatch)
+        assert screen._head_px < screen._head_h_px, "not squeezed at all"
+        for _, height, corner in heads:
+            assert corner == height // 2
+
+
 class TestALetRingNoteEndsWithTheSong:
     """The last note on a string has no neighbour, and "rings until something
     else is played" then meant "for ever". `int(inf)` raises, so every song

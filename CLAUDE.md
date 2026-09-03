@@ -1373,6 +1373,23 @@ Two things worth keeping straight, because the first version of the write-up got
 - **Every fret number in a song is sized for the widest label in it.** Sized to its own label instead, a lone "5" towers over the "15"
   beside it, which reads as emphasis the music never asked for.
 
+## One Curve For Every Note
+
+"Im Moment sind die breiteren Noten weniger abgerundet und mehr eckig." Exactly right, and it followed from the head being squeezed sideways.
+
+The corner radius was `min(head width / 2, head height / 2)` — and since a dense song buys look-ahead by narrowing the head while it keeps the
+lane's full height (see the chapter above), the width is the smaller of the two on every song that matters. So a sustained note got corners
+fitted to a width it does not have, and read as a box beside the round short ones next to it.
+
+- **The curvature is the HEIGHT's business and nothing else's.** One shape for every note now — a rounded rectangle with a corner of half the
+  head height — so a short note is a circle, a held one is a capsule, and the curve where they meet is identical. pygame clamps the radius to
+  half the shorter side by itself, so a head narrower than it is tall stays a capsule instead of growing corners.
+- **The ellipse branch is gone with it.** A short note used to be drawn as an ellipse and a long one as a rect, which is two shapes to keep in
+  agreement for no gain: a square rounded rect IS a circle.
+- Measured on a real board: 44x44 corner 22 and 222x44 corner 22, one radius for both. The test asserts the property — every head on a board
+  carrying both a quick note and a held one comes back with the same corner — and it fails on the old rule for the dense case, which is the one
+  the player was looking at.
+
 ## Eleven Or Twelve
 
 "In a fast solo I can barely see whether it says 11 or 12." Measured on the app as it stood, in the same song:
