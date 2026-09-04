@@ -271,6 +271,23 @@ class MenuScreen:
             return None
         return files[self._selected]
 
+    def selected_tuning(self) -> tuple[str, str]:
+        """(open strings, song name) of the song under the cursor.
+
+        For the tuner, which the player opens from here: the list already
+        shows every song's tuning, so asking them to dial it in again is
+        asking for something this screen has. Empty when the song has not
+        been read yet, or holds no guitar -- and an empty answer is what
+        makes the tuner fall back to Standard.
+        """
+        path = self._selected_path()
+        if path is None:
+            return "", ""
+        info = self._index.get(path)
+        if info is None or not info.distinct_tunings:
+            return "", path.stem
+        return info.distinct_tunings[0], path.stem
+
     def _select_path(self, path) -> None:
         """Put the cursor back on this song, or leave it where it fits."""
         files = self._display_files

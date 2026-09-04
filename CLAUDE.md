@@ -1441,6 +1441,23 @@ Every factor below 1.0 produced the identical picture. `window = max(MIN, min(fi
 - **A press that changes nothing is put back and says so.** At the floor the key now answers "the notes are already as small as they may get" rather than storing a factor the display is not honouring.
 - **Removing the clamp broke the speed floor and the suite caught it**, in the one case nobody would have played: a song so dense its notes must overlap had its window recomputed straight back down through `MIN_VISIBLE_WINDOW_MS`, to 167 ms. The trade only runs when the player actually asked to slow down.
 
+## Making The Tuner Simpler Meant Taking Things Away
+
+Three things it asked of the player that it did not need to.
+
+- **It asked which tuning, and the app already knew.** The song list reads every file's open strings and shows them on the row; the tuner is
+  opened from that list, with a song under the cursor. So it opens on THAT song's tuning and says where it came from
+  (`from Papa Roach - Leave A Light On`). All sixteen named tunings render to distinct letter strings, so `tuning_for_notes` is a lookup and
+  not a guess — a song in a tuning nobody named, or one not read yet, falls back to Standard exactly as before, and `LEFT`/`RIGHT` still
+  override. Picking by hand drops the song's name from the line, because it would then be describing something no longer true.
+- **It showed six bars, of which five never move.** Finding the one that does is what the little arrow beside them was for — a cue that only
+  exists because the layout hid the answer. One string gets the screen now: its note at 96 px, one needle as wide as the window, and six small
+  pips underneath for which strings are done. A tuner is about the string in your hand.
+- **It reported cents, which is a measurement and not an instruction.** "−34 ¢" asks the player to know that negative means flat and that flat
+  means turning the peg the tightening way. `advice()` says **"Too low — tighten"**, then "Hold it…" inside the band, then "In tune" once it
+  has been held; the number stays underneath in small type for anyone who wants it. It is tested as a property — flat says tighten, sharp says
+  loosen — rather than by its wording.
+
 ## A Tuner Must Not Believe The Calibration
 
 The playing screen has always had a chromatic strip — nearest note, cents, a bar. That is the wrong instrument for tuning up: it says "you are playing a G#", not "your D string is 34 cents flat", and it cannot show which strings are already done. `ui/tuner_menu.py` is the other one, opened with `U` from the song list.

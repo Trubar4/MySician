@@ -213,6 +213,24 @@ def tuning_notes(tuning: dict[int, int] | None) -> list[str]:
             for s in sorted(tuning, reverse=True) if s in tuning]
 
 
+def tuning_for_notes(letters: str) -> dict[int, int] | None:
+    """The named tuning a song's open strings describe, or None.
+
+    Takes what the song list already shows -- "E A D G B E", low string
+    first -- and gives back the shape the tuner needs. All sixteen named
+    tunings render to distinct letter strings, so this is a lookup and not a
+    guess; a song in a tuning nobody named simply gets no answer, which is
+    the honest one.
+    """
+    wanted = " ".join((letters or "").split())
+    if not wanted:
+        return None
+    for _, shape in NAMED_TUNINGS:
+        if " ".join(tuning_notes(shape)) == wanted:
+            return shape
+    return None
+
+
 def is_standard_tuning(tuning: dict[int, int] | None) -> bool:
     """True when nothing has to be retuned before playing.
 

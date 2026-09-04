@@ -238,7 +238,13 @@ class App:
             self._state = "menu"
 
     def _open_tuner(self, came_from: str) -> None:
-        self._tuner_menu = TunerMenuScreen(self._config)
+        # Opened on the tuning of the song under the cursor. The list already
+        # shows it on every row, so making the player dial it in again is
+        # asking them for something the app has.
+        letters, song = ("", "")
+        if came_from == "menu":
+            letters, song = self._menu.selected_tuning()
+        self._tuner_menu = TunerMenuScreen(self._config, letters, song)
         self._return_to = came_from
         self._state = "tuner"
 

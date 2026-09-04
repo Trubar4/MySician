@@ -10,6 +10,7 @@ from pickhero.audio.note_utils import (
     NAMED_TUNINGS, STANDARD_TUNING, midi_to_freq,
 )
 from pickhero.config import Config
+from pickhero.ui import tuner_menu
 from pickhero.ui.tuner_menu import (
     CATCH_SEMITONES, IN_TUNE_CENTS, STEADY_MS, TunerMenuScreen,
     nearest_string,
@@ -147,3 +148,74 @@ class TestTheScreen:
         screen = self._screen(monkeypatch)
         self._hear(screen, _cents(40, -30.0))
         screen.render(pygame.Surface((1280, 720)))
+
+
+class TestItOpensOnTheSongsOwnTuning:
+    """The song list shows every song's tuning on its row. Asking the player
+    to dial it in again is asking them for something the app has."""
+
+    def test_a_drop_d_song_opens_the_tuner_in_drop_d(self, monkeypatch):
+        monkeypatch.setattr(tuner_menu.TunerMenuScreen, "_start_capture",
+                            lambda self: None)
+        screen = tuner_menu.TunerMenuScreen(Config(), "D A D G B E", "Song")
+        assert screen.tuning_name == "Drop D"
+
+    def test_a_tuning_nobody_named_opens_on_standard(self, monkeypatch):
+        monkeypatch.setattr(tuner_menu.TunerMenuScreen, "_start_capture",
+                            lambda self: None)
+        screen = tuner_menu.TunerMenuScreen(Config(), "C G C G C E", "Song")
+        assert screen.tuning_name == "Standard"
+
+    def test_and_so_does_no_tuning_at_all(self, monkeypatch):
+        monkeypatch.setattr(tuner_menu.TunerMenuScreen, "_start_capture",
+                            lambda self: None)
+        assert tuner_menu.TunerMenuScreen(Config()).tuning_name == "Standard"
+
+    def test_picking_by_hand_stops_naming_the_song(self, monkeypatch):
+        """The line would be describing something no longer true."""
+        monkeypatch.setattr(tuner_menu.TunerMenuScreen, "_start_capture",
+                            lambda self: None)
+        screen = tuner_menu.TunerMenuScreen(Config(), "D A D G B E", "Song")
+        assert screen._song == "Song"
+        screen._choose_tuning(+1)
+        assert screen._song == ""
+
+
+class TestItSaysWhatToDo:
+    """"-34 cents" asks the player to know that negative means flat, and that
+    flat means turn the peg the tightening way. The thing they DO is the
+    thing to say."""
+
+    def _screen(self, monkeypatch):
+        monkeypatch.setattr(tuner_menu.TunerMenuScreen, "_start_capture",
+                            lambda self: None)
+        return tuner_menu.TunerMenuScreen(Config())
+
+    def test_nothing_heard_yet(self, monkeypatch):
+        assert self._screen(monkeypatch).advice() == ("Play a string", "")
+
+    def test_flat_means_tighten(self, monkeypatch):
+        screen = self._screen(monkeypatch)
+        screen._active = 6
+        screen._cents[6] = -34.0
+        action, note = screen.advice()
+        assert "tighten" in action.lower() and note.startswith("E")
+
+    def test_sharp_means_loosen(self, monkeypatch):
+        screen = self._screen(monkeypatch)
+        screen._active = 6
+        screen._cents[6] = +34.0
+        assert "loosen" in screen.advice()[0].lower()
+
+    def test_inside_the_band_but_not_held_yet(self, monkeypatch):
+        screen = self._screen(monkeypatch)
+        screen._active = 6
+        screen._cents[6] = 2.0
+        assert screen.advice()[0] == "Hold it…"
+
+    def test_and_held_is_in_tune(self, monkeypatch):
+        screen = self._screen(monkeypatch)
+        screen._active = 6
+        screen._cents[6] = 2.0
+        screen._done.add(6)
+        assert screen.advice()[0] == "In tune"

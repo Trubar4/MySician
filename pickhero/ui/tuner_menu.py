@@ -34,7 +34,7 @@ import pygame
 
 from pickhero.audio.input import AudioCapture
 from pickhero.audio.note_utils import (
-    NAMED_TUNINGS, midi_to_freq, midi_to_name,
+    NAMED_TUNINGS, midi_to_freq, midi_to_name, tuning_for_notes,
 )
 from pickhero.config import Config
 from pickhero.ui.colors import get_theme
@@ -93,11 +93,18 @@ def nearest_string(freq: float, tuning: dict[int, int]) -> tuple[int, float] | N
 class TunerMenuScreen:
     """Pick a tuning, play a string, see how far off it is."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, tuning_notes: str = "",
+                 song: str = ""):
         self._config = config
         self._capture: AudioCapture | None = None
         self._error = ""
-        self._tuning_index = 0
+        # The tuning of the song that was highlighted when this was opened.
+        # The app already knows it -- the song list shows it on every row --
+        # so asking the player to dial it in again is asking them for
+        # something we have. A song in a tuning nobody named, or none at all,
+        # opens on Standard exactly as before.
+        self._tuning_index = self._index_of(tuning_notes)
+        self._song = song if self._tuning_index else ""
         # string -> cents, smoothed; and string -> when it became steady
         self._cents: dict[int, float] = {}
         self._steady_since: dict[int, float] = {}
@@ -105,6 +112,17 @@ class TunerMenuScreen:
         self._active: int | None = None
         self._last_heard = 0.0
         self._start_capture()
+
+    @staticmethod
+    def _index_of(letters: str) -> int:
+        """Which named tuning those open strings are, 0 (Standard) if none."""
+        shape = tuning_for_notes(letters)
+        if shape is None:
+            return 0
+        for index, (_, candidate) in enumerate(NAMED_TUNINGS):
+            if candidate == shape:
+                return index
+        return 0
 
     # -- audio ---------------------------------------------------------
 
@@ -134,6 +152,9 @@ class TunerMenuScreen:
 
     def _choose_tuning(self, step: int) -> None:
         self._tuning_index = (self._tuning_index + step) % len(NAMED_TUNINGS)
+        # Chosen by hand now, so the line naming the song it came from would
+        # be describing something that is no longer true.
+        self._song = ""
         # Everything measured was measured against the old targets.
         self._cents.clear()
         self._steady_since.clear()
@@ -193,70 +214,106 @@ class TunerMenuScreen:
             return theme.tuner_close
         return theme.tuner_off
 
+    def advice(self) -> tuple[str, str]:
+        """(what to do, the note being tuned) -- in words, not in cents.
+
+        "-34 cents" asks the player to know that negative means flat and that
+        flat means turn the peg the tightening way. The thing they DO is the
+        thing to say; the number stays underneath for anyone who wants it.
+        """
+        if self._active is None:
+            return "Play a string", ""
+        note = midi_to_name(self.tuning[self._active])
+        cents = self._cents.get(self._active)
+        if cents is None:
+            return "Play a string", ""
+        if self._active in self._done:
+            return "In tune", note
+        if abs(cents) <= IN_TUNE_CENTS:
+            return "Hold it…", note
+        return ("Too low — tighten" if cents < 0
+                else "Too high — loosen"), note
+
     def render(self, surface: pygame.Surface) -> None:
+        """One string, big, and six pips for the rest.
+
+        Six bars at once is five rows of nothing moving and one to find --
+        which is what the little arrow beside them was there to solve. A
+        tuner is about the string in your hand, so that one gets the screen
+        and the others shrink to whether they are done.
+        """
         t = get_theme()
         surface.fill(t.menu_bg)
         w, h = surface.get_size()
+        huge = pygame.font.SysFont("Arial", 96, bold=True)
         title = pygame.font.SysFont("Arial", 30, bold=True)
-        big = pygame.font.SysFont("Arial", 40, bold=True)
-        body = pygame.font.SysFont("Arial", 20)
+        body = pygame.font.SysFont("Arial", 22)
         small = pygame.font.SysFont("Arial", 16)
 
-        head = title.render("Tuner", True, t.hud_text)
-        surface.blit(head, (w // 2 - head.get_width() // 2, 26))
-
-        name = big.render(self.tuning_name, True, t.hud_accent)
-        surface.blit(name, (w // 2 - name.get_width() // 2, 66))
-        hint = small.render("LEFT / RIGHT: tuning", True, t.hud_text)
-        surface.blit(hint, (w // 2 - hint.get_width() // 2, 112))
+        head = title.render(self.tuning_name, True, t.hud_accent)
+        surface.blit(head, (w // 2 - head.get_width() // 2, 24))
+        under = (f"from {self._song}" if self._song
+                 else "LEFT / RIGHT: another tuning")
+        hint = small.render(under, True, t.hud_text)
+        surface.blit(hint, (w // 2 - hint.get_width() // 2, 62))
 
         if self._error:
             msg = body.render(f"No input: {self._error}", True, t.feedback_miss)
             surface.blit(msg, (w // 2 - msg.get_width() // 2, h // 2))
             return
 
-        # Low string first -- the order a guitarist tunes in, and the reverse
-        # of the string NUMBERS, where 1 is the high e.
-        top = 150
-        row_h = min(58, (h - top - 90) // 6)
-        bar_w = min(460, w - 320)
+        action, note = self.advice()
+        colour = (self._row_colour(self._active, t) if self._active is not None
+                  else t.hud_text)
+
+        # The note being tuned, in the size a tuner is read at -- across the
+        # room, over the top of a guitar.
+        if note:
+            name = huge.render(note, True, colour)
+            surface.blit(name, (w // 2 - name.get_width() // 2, h // 2 - 190))
+
+        # One needle, as wide as the screen allows.
+        bar_w = min(760, w - 120)
+        bar_x, bar_y = w // 2 - bar_w // 2, h // 2 - 40
+        pygame.draw.rect(surface, t.signal_cold, (bar_x, bar_y, bar_w, 22))
+        centre = bar_x + bar_w // 2
+        band = max(2, int(bar_w / 2 * IN_TUNE_CENTS / 50.0))
+        pygame.draw.rect(surface, t.hud_text,
+                         (centre - band, bar_y, 2 * band, 22), 1)
+        pygame.draw.line(surface, t.hud_text,
+                         (centre, bar_y - 10), (centre, bar_y + 32), 1)
+        cents = (self._cents.get(self._active)
+                 if self._active is not None else None)
+        if cents is not None:
+            offset = int(max(-1.0, min(1.0, cents / 50.0)) * (bar_w // 2))
+            pygame.draw.rect(surface, colour,
+                             (centre + offset - 5, bar_y - 8, 10, 38))
+
+        # What to DO about it.
+        say = title.render(action, True, colour)
+        surface.blit(say, (w // 2 - say.get_width() // 2, h // 2 + 24))
+        if cents is not None and note:
+            fine = small.render(
+                f"{'+' if cents >= 0 else ''}{cents:.0f} ¢", True, t.hud_text)
+            surface.blit(fine, (w // 2 - fine.get_width() // 2, h // 2 + 66))
+
+        # Six pips, low string first: which ones are done. Small on purpose --
+        # they are a checklist, not the thing being read.
+        pip_r, gap = 13, 46
+        pips_x = w // 2 - (5 * gap) // 2
+        pips_y = h // 2 + 122
         for i, string in enumerate(sorted(self.tuning, reverse=True)):
-            y = top + i * row_h
-            colour = self._row_colour(string, t)
-            midi = self.tuning[string]
-            label = body.render(f"{6 - i}   {midi_to_name(midi):<4}", True, colour)
-            surface.blit(label, (w // 2 - bar_w // 2 - 110, y + row_h // 2 - 12))
-
-            bar_x = w // 2 - bar_w // 2
-            bar_y = y + row_h // 2 - 6
-            pygame.draw.rect(surface, t.signal_cold, (bar_x, bar_y, bar_w, 12))
-            centre = bar_x + bar_w // 2
-            # The in-tune band, drawn so the target is a zone and not a
-            # hairline nobody can land on.
-            band = int(bar_w / 2 * IN_TUNE_CENTS / 50.0)
-            pygame.draw.rect(surface, t.hud_text,
-                             (centre - band, bar_y, 2 * band, 12), 1)
-            cents = self._cents.get(string)
-            if cents is not None:
-                offset = int(max(-1.0, min(1.0, cents / 50.0)) * (bar_w // 2))
-                pygame.draw.rect(surface, colour,
-                                 (centre + offset - 3, bar_y - 4, 6, 20))
-            pygame.draw.line(surface, t.hud_text,
-                             (centre, bar_y - 6), (centre, bar_y + 18), 1)
-
-            if cents is None:
-                text = "—"
-            elif string in self._done:
-                text = "in tune"
-            else:
-                text = f"{'+' if cents >= 0 else ''}{cents:.0f} ¢"
-            value = body.render(text, True, colour)
-            surface.blit(value, (bar_x + bar_w + 18, y + row_h // 2 - 12))
+            x = pips_x + i * gap
+            done = string in self._done
+            pygame.draw.circle(surface, t.tuner_in_tune if done else t.signal_cold,
+                               (x, pips_y), pip_r, 0 if done else 2)
             if string == self._active:
-                pygame.draw.polygon(surface, t.hud_accent, [
-                    (bar_x - 130, y + row_h // 2),
-                    (bar_x - 120, y + row_h // 2 - 7),
-                    (bar_x - 120, y + row_h // 2 + 7)])
+                pygame.draw.circle(surface, t.hud_accent, (x, pips_y),
+                                   pip_r + 5, 2)
+            label = small.render(
+                midi_to_name(self.tuning[string]).rstrip("0123456789"), True,
+                t.hud_text)
+            surface.blit(label, (x - label.get_width() // 2, pips_y + 20))
 
         done = small.render(
             f"{len(self._done)} of 6 in tune   |   R: start over   "
