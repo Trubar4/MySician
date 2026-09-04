@@ -22,6 +22,7 @@ from pickhero.audio.mp3_playback import (
 from pickhero.config import Config
 from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
 from pickhero.ui import scrolling
+from pickhero.ui.scrolling import _get_font
 from pickhero.ui.scrolling import PlayingScreen
 
 
@@ -863,6 +864,59 @@ class TestACorrectionThatDoesNotCorrect:
                             lambda ms: (_t.sleep(0.01), real(ms))[1])
         player.update(2000.0)
         assert player.worst_seek_ms >= 5.0
+
+
+class TestAnAlreadySyncedSongSaysSo:
+    """"Werden die Syncs gespeichert pro Song? Beim neu Oeffnen wird die
+    Liste nicht mehr angezeigt."
+
+    They were stored and used all along -- the panel simply started empty
+    every time, so nothing on screen could tell a synced song from one nobody
+    had touched. The most expensive setting in the app, invisible.
+    """
+
+    def _screen(self, points):
+        config = Config()
+        if points:
+            config.set_mp3_anchors_for("song", points)
+        return PlayingScreen(_timeline(), config=config, song_key="song")
+
+    def test_opening_a_synced_song_shows_its_points(self):
+        screen = self._screen([(0.0, -260.0), (177_000.0, -1330.0),
+                               (258_000.0, -260.0)])
+        panel = " ".join(screen._sync_lines)
+        assert "0:00" in panel and "2:57" in panel and "4:18" in panel
+        assert "3 points" in panel
+
+    def test_a_song_nobody_synced_says_nothing(self):
+        """A panel that is always there is a panel nobody reads."""
+        assert self._screen([])._sync_lines == []
+
+    def test_the_panel_sits_above_the_footer(self):
+        """It used to start at a fixed height and grow DOWNWARD into the
+        keyboard shortcuts, which is what the player saw overlapping."""
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        screen = self._screen([(0.0, -260.0), (177_000.0, -1330.0)])
+        layout = screen._layout(surface)
+        footer_top = screen._blit_footer_lines(
+            surface, layout, screen._footer_lines(), (255, 255, 255))
+        # Every sync line has to end above where the footer begins.
+        lines = len(screen._sync_lines)
+        top = footer_top - 6 - 18 * lines
+        assert top + 18 * lines <= footer_top
+
+    def test_a_very_long_line_is_cut_to_the_window(self):
+        """Seventeen points do not fit across a window, and a line drawn
+        wider than the screen loses BOTH ends -- the first point and the
+        last, which are the two that matter most."""
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        screen = self._screen([(t * 12_000.0, t * 40.0) for t in range(17)])
+        font = _get_font("arial", 14)
+        for line in screen._sync_lines:
+            assert screen._fit_line(font, line, 600, (255, 255, 255)
+                                    ).get_width() <= 600
 
 
 class TestADifferentRecordingNeedsItsOwnSync:

@@ -757,6 +757,13 @@ class PlayingScreen:
         if guide_track is not None and len(guide_track) > 0:
             self._init_guide_player(guide_track)
         self._load_mp3_for_song()
+        # A song opened with sync points already measured has to SHOW them.
+        # They were stored and used all along -- the panel simply started
+        # empty every time, so the player had no way to tell a synced song
+        # from one nobody had touched. That is the "a feature that cannot be
+        # seen working" fault, applied to the most expensive setting there is.
+        if self._mp3_anchors():
+            self._describe_sync()
 
         # Difficulty filter
         self._max_fret: int = self._config.max_fret
@@ -2741,11 +2748,37 @@ class PlayingScreen:
         )
         return transport, tools
 
+    @staticmethod
+    def _fit_line(font, text: str, width: int, colour) -> pygame.Surface:
+        """Render a line, shrinking the middle away until it fits.
+
+        Seventeen sync points do not fit across a window, and a line drawn
+        wider than the screen is centred so BOTH ends are cut -- the first
+        point and the last, which are the two that matter most.
+        """
+        surface = font.render(text, True, colour)
+        if surface.get_width() <= width or len(text) < 8:
+            return surface
+        keep = len(text)
+        while keep > 8:
+            keep -= max(1, keep // 20)
+            half = keep // 2
+            shortened = text[:half] + " … " + text[-(keep - half):]
+            surface = font.render(shortened, True, colour)
+            if surface.get_width() <= width:
+                break
+        return surface
+
     def _blit_footer_lines(
         self, surface: pygame.Surface, layout: _Layout,
         lines: tuple[str, ...], color: tuple[int, int, int],
-    ) -> None:
-        """Centre the footer lines, shrinking until the widest one fits."""
+    ) -> int:
+        """Centre the footer lines, shrinking until the widest one fits.
+
+        Returns the y the block STARTS at, because whatever is stacked above
+        it has to know where it ends -- the sync panel used to be placed at a
+        fixed height and ran straight into these lines.
+        """
         w = layout.screen_w
         for size in self.FOOTER_FONT_SIZES:
             font = _get_font("arial", size)
@@ -2753,10 +2786,12 @@ class PlayingScreen:
             if max(s.get_width() for s in rendered) <= w - 16:
                 break
         line_h = rendered[0].get_height() + 2
-        y = layout.screen_h - 4 - line_h * len(rendered)
+        top = layout.screen_h - 4 - line_h * len(rendered)
+        y = top
         for surf in rendered:
             surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
             y += line_h
+        return top
 
     def _draw_hud(self, surface: pygame.Surface, layout: _Layout) -> None:
         t = get_theme()
@@ -2858,22 +2893,30 @@ class PlayingScreen:
                 surface.blit(advice_surf,
                              (w - advice_surf.get_width() - 12, right_y))
 
+        # Bottom-centre: play state + controls. Drawn FIRST, because it is
+        # what everything else at the bottom has to stack on top of -- the
+        # sync panel used to start at a fixed height and grow DOWNWARD into
+        # these lines, which is exactly what the player saw overlapping.
+        footer_top = self._blit_footer_lines(
+            surface, layout, self._footer_lines(), t.hud_text)
+
         # Where the recording sync has got to. NOT a note that expires: the
         # player spends a minute seeking from the first point to the second,
         # and a message that is gone by then leaves them guessing which press
         # the next Shift+S will be -- which is what they reported.
-        note_y = h - 74
+        #
         # A progress line while the listening runs. Seconds of work with
         # nothing moving is indistinguishable from a dead key, which is a
         # fault this project has now shipped four times.
         lines = ([self._auto_sync_line()] if self._auto_sync_line()
                  else self._sync_lines)
+        note_y = footer_top - 6 - 18 * len(lines)
         for line in lines:
-            line_surf = hint_font.render(line, True, t.hud_accent)
+            line_surf = self._fit_line(hint_font, line, w - 16, t.hud_accent)
             surface.blit(line_surf,
                          (w // 2 - line_surf.get_width() // 2, note_y))
             note_y += 18
-        note_y = h - 74 - 18 * len(lines)
+        note_y = footer_top - 6 - 18 * len(lines) - 18
 
         # What just happened, over the footer, while it is still news.
         note = self._status_note_text()
@@ -2881,9 +2924,6 @@ class PlayingScreen:
             note_surf = hint_font.render(note, True, t.hud_accent)
             surface.blit(note_surf,
                          (w // 2 - note_surf.get_width() // 2, note_y))
-
-        # Bottom-center: play state + controls
-        self._blit_footer_lines(surface, layout, self._footer_lines(), t.hud_text)
         if self._mp3_dialog_due:
             # Drawn this frame, so the next update may block on the chooser.
             self._mp3_dialog_armed = True

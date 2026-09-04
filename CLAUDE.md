@@ -1098,6 +1098,39 @@ a piece of the truth, and the line between two of them is the least that can be 
 - **The run log carries `mp3_sync_points`, `mp3_sync_sections`, `mp3_worst_pull_ms` and `mp3_leads`.** A large pull with few points says where
   the next point belongs; `mp3_leads no` says the map was never in play at all, which is a different fault from a map that is wrong.
 
+## The Panel Grew Downwards Into The Footer, And Vanished On Reopening
+
+Two faults in the sync panel, and the second is this project's oldest one.
+
+- **It was placed at a fixed height and grew DOWNWARD.** Three lines reached the keyboard shortcuts and drew over them. The footer is drawn
+  FIRST now and reports the y it starts at; everything at the bottom of the screen stacks upward from there, so a fourth line pushes the block
+  up instead of into the footer.
+- **Seventeen points do not fit across a window.** A line drawn wider than the screen is centred, so BOTH ends are cut — the first point and
+  the last, which are the two that matter most. `_fit_line` shrinks the MIDDLE away until it fits.
+- **A song opened with points already measured showed nothing.** They were stored and used all along; the panel simply started empty every
+  session, so nothing on screen could tell a synced song from one nobody had touched — the most expensive setting in the app, invisible. The
+  panel is rebuilt on load when the song has anchors, and stays silent when it has none.
+
+## A Run Log That Says The App Is Innocent
+
+The player's log after a "Tonabsturz", with 31 seeks in it:
+
+| | |
+|---|---|
+| `frame_ms_median` / `frames_over_budget_percent` | 7.7 ms / **2 %** |
+| `clock_stalls` / `clock_ratio` | **0** / **1.0000** |
+| `mp3_resyncs` / `mp3_worst_seek_ms` | **0** / **0** |
+| `dropped_buffers` | **9** |
+
+**The picture kept perfect time and the recording was never re-seeked once.** So the two mechanisms this app has for making sound go wrong
+were both idle while the sound went wrong. What did happen is on the INPUT side: nine dropped buffers, against zero in every earlier log, and
+one frame of 146 ms.
+
+**And `hits 0` in that log is not a detection failure — it is a seek.** The strike table is empty and every reached note reads `miss` because
+`seek()` calls `matcher.reset()`, which clears the trace and puts every note back to PENDING; the sweep then marks everything behind the
+playhead as missed. A log taken straight after spooling describes what happened since the last seek and nothing before it. `seeks` is in the
+header for exactly this reason: without it, that log looks like the detector died.
+
 ## Sync Points Belong To A RECORDING, Not To A Song
 
 Seventeen points measured by ear or by Ctrl+S are the most expensive thing in a song's settings, and two ways of losing them were open.
