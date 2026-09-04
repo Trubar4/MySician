@@ -449,6 +449,44 @@ def _get_font(name: str, size: int, bold: bool = False) -> "_CachedFont":
     return _CachedFont(pygame.font.Font(None, size))
 
 
+# Note heads, drawn once and blitted after that. A frame of a real song makes
+# 48 rounded-rect calls -- 24 notes, fill and border -- and measured on the
+# player's own song 46 of the 48 are the SAME size, because one head size is
+# chosen for the whole song. Rounding is what costs: 24 heads drawn as rounded
+# rects is 0.519 ms and the same 24 blitted is 0.056 ms.
+#
+# Cleared wholesale at the cap, the way the font cache is: the only thing that
+# really varies is a colour mid-animation, redrawing one head is a fraction of
+# a millisecond, and an LRU here would be bookkeeping to save nothing.
+_HEAD_CACHE: dict = {}
+_HEAD_CACHE_MAX = 256
+
+
+def _head_surface(width: int, height: int, colour, border) -> pygame.Surface:
+    """One note head, ready to blit. Same shape for every note.
+
+    Transparent outside the rounded corners, so the board and the fret wires
+    show through them exactly as they did when this was drawn in place.
+    """
+    key = (width, height, tuple(colour), tuple(border))
+    got = _HEAD_CACHE.get(key)
+    if got is not None:
+        return got
+    if len(_HEAD_CACHE) >= _HEAD_CACHE_MAX:
+        _HEAD_CACHE.clear()
+    head = pygame.Surface((width, height), pygame.SRCALPHA)
+    try:
+        head = head.convert_alpha()
+    except pygame.error:
+        pass                            # no display yet; the surface still works
+    rect = pygame.Rect(0, 0, width, height)
+    corner = height // 2
+    pygame.draw.rect(head, colour, rect, border_radius=corner)
+    pygame.draw.rect(head, border, rect, width=2, border_radius=corner)
+    _HEAD_CACHE[key] = head
+    return head
+
+
 def clear_font_cache() -> None:
     """Drop every cached font and every surface drawn with one.
 
@@ -457,8 +495,13 @@ def clear_font_cache() -> None:
     and it is why this function exists rather than being left to chance. The
     app calls it when it starts a session; the test suite calls it between
     tests, several of which run an init/quit cycle of their own.
+
+    The note heads go with them: a Surface outlives `pygame.quit()` no better
+    than a Font does, and they are drawn with the theme's colours, which a
+    theme change moves.
     """
     _get_font.cache_clear()
+    _HEAD_CACHE.clear()
 
 
 def format_time(ms: float) -> str:
@@ -2624,14 +2667,10 @@ class PlayingScreen:
             # else's; pygame clamps it to half the shorter side by itself, so
             # a head narrower than it is tall stays a capsule rather than
             # growing corners.
-            draw_w = max(capsule_w, 2 * radius)
-            rect = pygame.Rect(
-                int(x), int(cy - half_h), int(draw_w), int(2 * half_h),
-            )
-            corner = int(half_h)
-            pygame.draw.rect(surface, color, rect, border_radius=corner)
-            pygame.draw.rect(surface, t.note_border, rect, width=2,
-                             border_radius=corner)
+            draw_w = max(1, int(max(capsule_w, 2 * radius)))
+            draw_h = max(1, int(2 * half_h))
+            surface.blit(_head_surface(draw_w, draw_h, color, t.note_border),
+                         (int(x), int(cy - half_h)))
 
             # Technique marks go OVER the head. They live inside the note now
             # rather than arcing out of the lane, so drawing them underneath

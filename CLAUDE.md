@@ -1626,6 +1626,44 @@ other half: one line of JSON per session, appended, never rewritten, read by `to
 - **A song name lands inside a `<script>` tag**, and a song called `</script>` closes it. The embedded JSON escapes `<` and `>`; the test that
   found that is the reason it is written down here.
 
+## Profiled Again, And This Time It WAS The Notes
+
+Asked to make the app faster, and the answer is only worth having with a profiler in front of it. A frame of the player's own song
+(1314 notes, 1280x720), broken into its steps:
+
+| | per frame | share |
+|---|---|---|
+| `_draw_notes` | **1.03 ms** | 39 % |
+| `_draw_lanes` (board, strings, bar lines) | 0.46 | 20 % |
+| `surface.fill` | 0.37 | 16 % |
+| `_draw_hit_zone` | 0.12 | 5 % |
+| `_draw_hud` | 0.11 | 5 % |
+| **whole frame** | **2.27 ms** | of a 16.7 ms budget |
+
+**Inside `_draw_notes` it is the ROUNDING.** A frame issues 48 rounded-rect calls — 24 notes, a fill and a border each — and **46 of the 48
+are the same size**, because one head size is chosen for the whole song. Stubbing the calls out puts the floor at 0.39 ms, so 0.64 ms of that
+1.03 is SDL drawing arcs. Measured directly: 24 heads drawn as rounded rects is **0.519 ms**, the same 24 blitted from a cached surface is
+**0.056 ms**.
+
+So `_head_surface` draws each head once and blits it after that. **`_draw_notes` 1.03 → 0.44 ms, the whole frame 2.27 → 1.88 ms (-17 %).**
+The cache holds **14 entries** on a real board — six string colours plain and dimmed, plus the open-string grey — and stops growing, which the
+test asserts over 600 frames rather than trusting. The feedback colours are discrete, not a fade, so an animation cannot thrash it; it is
+cleared with the font cache, because a Surface outlives `pygame.quit()` no better than a Font does. The picture is **pixel-identical**: 0
+pixels differ in colour and 0 in alpha against drawing it in place.
+
+**Three things were measured and NOT built, which is half the value of profiling:**
+
+- **Baking the background into a surface is a LOSS.** A full-screen blit is **0.63 ms** against **0.23 ms** for a fill. The obvious
+  optimisation is the wrong way round.
+- **Baking the board strip saves 0.17 ms and costs the layering.** The strings are drawn OVER the bar lines the way they lie on a guitar, and
+  the bar lines move; a baked strip would have to go under them and the strings would end up beneath the wires.
+- **Everything else is already healthy**, so nobody looks there again: loading a GP6 container 25 ms, `NoteMatcher` 0.7 ms, `PlayingScreen`
+  0.3 ms, and the audio callback **0.24 ms of its 11.6 ms hop — 2 %**.
+
+**And one measurement of mine was worthless, which is the recurring lesson.** Timing `_neighbour_gaps` over a whole song showed it growing to
+2.3 ms at 5600 notes — except `_draw_notes` calls it with the VISIBLE notes, never all of them. I had measured a loop the app does not run.
+A number is only worth what the call that produced it is.
+
 ## The Notes Were Never What Cost The Frame
 
 The app ran "slow and stuttering" on a thin 14" laptop, and the obvious suspect on a scrolling display is the scrolling. It was not. Profiled over

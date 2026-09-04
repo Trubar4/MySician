@@ -11,6 +11,7 @@ import pytest
 from pickhero.config import MAX_GATE_DB, MIN_GATE_DB, Config
 from pickhero.tabs.timeline import (MeasureInfo, NoteEvent, SongMetadata,
                                     Timeline)
+from pickhero.ui import scrolling
 from pickhero.ui.scrolling import (
     MIN_NOTE_WIDTH_PX,
     ROOM_SAMPLES,
@@ -406,6 +407,99 @@ class TestSustainWidth:
         assert PlayingScreen.sustain_width(short, 0.5) < PlayingScreen.note_width(short, 0.5)
 
 
+class TestNoteHeadsAreDrawnOnceAndBlittedAfter:
+    """Measured on the player's own song: a frame makes 48 rounded-rect
+    calls -- 24 notes, fill and border -- and 46 of the 48 are the SAME size,
+    because one head size is chosen for the whole song. Rounding is what
+    costs: 24 heads drawn is 0.519 ms, the same 24 blitted is 0.056 ms.
+    """
+
+    def test_the_same_head_is_built_once(self):
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        scrolling.clear_font_cache()
+        first = scrolling._head_surface(44, 44, (200, 120, 60), (10, 10, 10))
+        again = scrolling._head_surface(44, 44, (200, 120, 60), (10, 10, 10))
+        assert again is first
+
+    def test_a_different_colour_is_a_different_head(self):
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        scrolling.clear_font_cache()
+        one = scrolling._head_surface(44, 44, (200, 120, 60), (10, 10, 10))
+        two = scrolling._head_surface(44, 44, (60, 200, 120), (10, 10, 10))
+        assert one is not two
+
+    def test_it_looks_exactly_like_drawing_it_in_place(self):
+        """The whole point is that nothing on screen changes."""
+        import numpy as np
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        scrolling.clear_font_cache()
+        drawn = pygame.Surface((96, 44), pygame.SRCALPHA)
+        rect = pygame.Rect(0, 0, 96, 44)
+        pygame.draw.rect(drawn, (200, 120, 60), rect, border_radius=22)
+        pygame.draw.rect(drawn, (10, 10, 10), rect, width=2, border_radius=22)
+        cached = scrolling._head_surface(96, 44, (200, 120, 60), (10, 10, 10))
+        colour = pygame.surfarray.array3d(drawn).astype(int)
+        colour2 = pygame.surfarray.array3d(cached).astype(int)
+        alpha = pygame.surfarray.array_alpha(drawn).astype(int)
+        alpha2 = pygame.surfarray.array_alpha(cached).astype(int)
+        assert (np.abs(colour - colour2).sum(axis=2) > 8).sum() == 0
+        assert (np.abs(alpha - alpha2) > 8).sum() == 0
+
+    def test_the_cache_belongs_to_the_pygame_session(self):
+        """A Surface kept across pygame.quit() is a dangling pointer, the
+        same as a Font -- and the heads carry the theme's colours, which a
+        theme change moves."""
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        scrolling._head_surface(44, 44, (1, 2, 3), (4, 5, 6))
+        assert scrolling._HEAD_CACHE
+        scrolling.clear_font_cache()
+        assert scrolling._HEAD_CACHE == {}
+
+    def test_it_cannot_grow_without_bound(self):
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        scrolling.clear_font_cache()
+        for i in range(scrolling._HEAD_CACHE_MAX + 20):
+            scrolling._head_surface(40 + i % 7, 44, (i % 250, 1, 2), (0, 0, 0))
+        assert len(scrolling._HEAD_CACHE) <= scrolling._HEAD_CACHE_MAX
+
+    def test_a_frame_of_a_real_board_builds_only_a_handful(self, monkeypatch):
+        """A dense song's notes are nearly all one size, so the cache stays
+        tiny -- and the feedback colours are discrete, not a fade, so an
+        animation cannot thrash it."""
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        scrolling.clear_font_cache()
+        notes, measures = [], []
+        for bar in range(40):
+            for i in range(8):
+                notes.append(NoteEvent(
+                    timestamp_ms=bar * 2000.0 + i * 250.0, duration_ms=250.0,
+                    midi_note=40 + i % 12, string=1 + i % 6, fret=i % 13,
+                    measure=bar))
+            measures.append(MeasureInfo(index=bar, start_ms=bar * 2000.0,
+                                        end_ms=(bar + 1) * 2000.0))
+        song = Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=measures)
+        screen = PlayingScreen(song, config=Config())
+        for frame in range(60):
+            screen._playback_ms = 20_000.0 + frame * 16.0
+            screen.render(surface)
+        after_one_second = len(scrolling._HEAD_CACHE)
+        assert 0 < after_one_second <= 24, after_one_second
+        # And it STOPS growing, which is the property that matters: six
+        # string colours plain and dimmed, plus the open-string grey, is all
+        # a board of one head size can ask for.
+        for frame in range(60, 600):
+            screen._playback_ms = 20_000.0 + frame * 16.0
+            screen.render(surface)
+        assert len(scrolling._HEAD_CACHE) == after_one_second
+
+
 class TestEveryNoteHeadIsRoundedTheSame:
     """"Im Moment sind die breiteren Noten weniger abgerundet und mehr eckig."
 
@@ -430,21 +524,19 @@ class TestEveryNoteHeadIsRoundedTheSame:
         return Timeline(notes, SongMetadata(title="t", tempo=120),
                         measures=measures)
 
-    def _heads(self, screen, monkeypatch):
-        """(width, height, corner radius) of every note head drawn."""
+    def _heads(self, screen, monkeypatch=None):
+        """(width, height, corner radius) of every note head drawn.
+
+        Read off the head cache rather than by listening for draw calls: a
+        head is built once and blitted after that, so there is no per-note
+        draw call left to listen for.
+        """
         pygame.init()
         surface = pygame.display.set_mode((1280, 720))
         screen.render(surface)                      # sizes the heads
-        seen = []
-        real = pygame.draw.rect
-        monkeypatch.setattr(
-            pygame.draw, "rect",
-            lambda s, c, r, *a, **k: (seen.append((r[2], r[3],
-                                                   k.get("border_radius"))),
-                                      real(s, c, r, *a, **k))[1])
+        scrolling._HEAD_CACHE.clear()
         screen._draw_notes(surface, screen._layout(surface))
-        monkeypatch.undo()
-        return [t for t in seen if t[2]]
+        return [(w, h, h // 2) for w, h, _, _ in scrolling._HEAD_CACHE]
 
     def test_a_short_and_a_long_note_curve_the_same(self, monkeypatch):
         # A quick note and a held one, each with room of its own so the
@@ -459,7 +551,7 @@ class TestEveryNoteHeadIsRoundedTheSame:
                         measures=[MeasureInfo(index=b, start_ms=b * 2000.0,
                                               end_ms=(b + 1) * 2000.0)
                                   for b in range(3)])
-        heads = self._heads(PlayingScreen(song, config=Config()), monkeypatch)
+        heads = self._heads(PlayingScreen(song, config=Config()))
         widths = {w for w, _, _ in heads}
         assert len(widths) > 1, "this song would not show the fault at all"
         assert len({r for _, _, r in heads}) == 1
@@ -516,21 +608,14 @@ class TestALetRingNoteEndsWithTheSong:
         surface = pygame.display.set_mode((1280, 720))
         screen.render(surface)              # raised OverflowError before
 
-    def _widest_body(self, screen, monkeypatch):
+    def _widest_body(self, screen, monkeypatch=None):
         """How wide the note is actually DRAWN."""
         pygame.init()
         surface = pygame.display.set_mode((1280, 720))
         screen.render(surface)                      # sizes the heads
-        widths = []
-        real = pygame.draw.rect
-        monkeypatch.setattr(
-            pygame.draw, "rect",
-            lambda surf, colour, rect, *a, **k: (widths.append(rect[2]),
-                                                 real(surf, colour, rect,
-                                                      *a, **k))[1])
+        scrolling._HEAD_CACHE.clear()
         screen._draw_notes(surface, screen._layout(surface))
-        monkeypatch.undo()
-        return max(widths)
+        return max(w for w, _, _, _ in scrolling._HEAD_CACHE)
 
     def test_and_it_is_still_longer_than_its_written_value(self, monkeypatch):
         """The point of let ring: the string is never damped, so it sounds on
