@@ -375,7 +375,7 @@ class TestSlowedPractice:
         ran_in = []
         monkeypatch.setattr(
             timestretch, "build",
-            lambda path, tempo, cache, progress=None, plan=(): ran_in.append(
+            lambda path, tempo, cache, progress=None, plan=(), semitones=0: ran_in.append(
                 threading.current_thread()) or (tmp_path / "x.wav"))
         screen = self._screen(tmp_path, monkeypatch, 0.8)
         screen._ensure_mp3_source()
@@ -396,7 +396,7 @@ class TestSlowedPractice:
         reports = []
         monkeypatch.setattr(
             timestretch, "build",
-            lambda path, tempo, cache, progress=None, plan=():
+            lambda path, tempo, cache, progress=None, plan=(), semitones=0:
                 reports.append(progress(0.5)) or (tmp_path / "x.wav"))
         screen = self._screen(tmp_path, monkeypatch, 0.8)
         screen._ensure_mp3_source()

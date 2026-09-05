@@ -100,7 +100,10 @@ SONG_SETTINGS = ("song_tempo_factors", "song_mp3_paths", "song_mp3_offsets",
                  # measured against its recording on one machine had to be
                  # measured again on the other, and a setting that moves
                  # house has to be followed into every reader.
-                 "song_mp3_anchors", "song_mp3_rates")
+                 "song_mp3_anchors", "song_mp3_rates",
+                 # Which tuning the song is played in. It describes the SONG
+                 # and the player's hands, not the machine.
+                 "song_transpose")
 
 
 def merge_settings(mine: dict, theirs: dict) -> tuple[dict, list[str]]:

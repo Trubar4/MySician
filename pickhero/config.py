@@ -34,6 +34,12 @@ MAX_LATENCY_OFFSET_MS = 300.0
 # and a value past it means the two sync points were not what they looked
 # like. Refusing is better than silently playing the song at the wrong
 # speed, which is indistinguishable from a broken recording.
+# The furthest a song may be shifted to suit a differently tuned guitar.
+# Five semitones covers every pair inside a tuning family -- Drop A to Drop D,
+# B Standard to Standard -- and past that the frets would want recomputing
+# rather than the pitch shifting.
+MAX_TRANSPOSE = 5
+
 MIN_MP3_RATE = 0.9
 MAX_MP3_RATE = 1.1
 
@@ -163,6 +169,12 @@ class Config:
     # and back to -260 ms, so the best straight line corrects by nothing at
     # all and leaves 1.07 s standing in the middle.
     song_mp3_anchors: dict = field(default_factory=dict)
+    # Semitones this song is PLAYED away from how it is written, per song.
+    # A tab in Drop C played on a Drop D guitar is +2: the same fret numbers,
+    # a tone higher. The frets never move, so the picture is untouched -- what
+    # moves is the pitch the app expects to hear and the pitch of the
+    # recording. Bounded to the tunings that are actually reachable this way.
+    song_transpose: dict = field(default_factory=dict)
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     # Song keys the player has starred. A list rather than a set because it
@@ -271,6 +283,26 @@ class Config:
                 [float(a), float(b)] for a, b in sorted(points)]
         else:
             self.song_mp3_anchors.pop(song_key, None)
+
+    def transpose_for(self, song_key: str) -> int:
+        """How far this song is played from how it is written, in semitones."""
+        if not song_key:
+            return 0
+        try:
+            value = int(self.song_transpose.get(song_key, 0))
+        except (TypeError, ValueError):
+            return 0
+        return value if -MAX_TRANSPOSE <= value <= MAX_TRANSPOSE else 0
+
+    def set_transpose_for(self, song_key: str, semitones: int) -> None:
+        """Store it, or forget it when the song is played as written."""
+        if not song_key:
+            return
+        semitones = max(-MAX_TRANSPOSE, min(MAX_TRANSPOSE, int(semitones)))
+        if semitones == 0:
+            self.song_transpose.pop(song_key, None)
+        else:
+            self.song_transpose[song_key] = semitones
 
     def mp3_rate_for(self, song_key: str) -> float:
         """This song's recording speed against the tab; 1.0 is untouched."""

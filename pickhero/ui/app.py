@@ -184,6 +184,19 @@ class App:
 
     def _handle_playing_event(self, event: pygame.event.Event) -> None:
         result = self._playing_screen.handle_event(event)
+        if isinstance(result, tuple) and result[0] == "transpose":
+            # A different tuning is a different set of pitches, so the whole
+            # plan is rebuilt -- and the position is carried over, the same
+            # as an instrument change, because you change tuning precisely
+            # at the passage you were trying to play.
+            setter = getattr(self._config, "set_transpose_for", None)
+            if setter is not None:
+                setter(self._current_song_path.stem, result[1])
+                self._config.save()
+            self._load_song(self._current_song_path,
+                            self._current_track_index,
+                            resume_at_ms=self._playing_screen.position_ms())
+            return
         if isinstance(result, tuple) and result[0] == "select_track":
             # Stay where the song is. The screen is rebuilt from scratch, so
             # the position has to be carried over by hand.
@@ -351,6 +364,19 @@ class App:
             return
         self._load_error = None
 
+        # Played on a guitar tuned somewhere else. The fret numbers do not
+        # move -- Drop C and Drop D differ by a uniform tone, so the same
+        # shapes are the same music a tone higher -- so this shifts what the
+        # app expects to HEAR and nothing else. Applied here, before anything
+        # downstream is built, so the matcher, the MIDI backing and the guide
+        # track are all made from one transposed plan rather than each
+        # applying the shift for itself.
+        transpose = 0
+        getter = getattr(self._config, "transpose_for", None)
+        if getter is not None:
+            transpose = getter(path.stem)
+        timeline = timeline.transposed(transpose)
+
         # Extract backing track (everything EXCEPT the track being played)
         chosen = timeline.metadata.track_index
         backing_track = None
@@ -386,6 +412,7 @@ class App:
             progress_tracker=self._progress,
             song_key=path.stem,
             song_path=str(path),
+            transpose=transpose,
         )
         self._state = "playing"
         self._current_song_path = path

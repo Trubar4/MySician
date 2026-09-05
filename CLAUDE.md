@@ -1256,6 +1256,34 @@ that was skipped.
 - **The GPIF side is verified by injection**: `|:` and `:|` added to bars 4-7 of a real file lengthens it by exactly four bars and 8.7 s, and the
   hand-built container in `tests/test_repeats.py` pins each convention.
 
+## Playing A Drop C Song On A Drop D Guitar
+
+"Wie schwierig ist es bei einem Lied die Stimmung anzupassen… im Idealfall muss man das Tab nicht anpassen, sondern nur die Tonhöhe des MP3s?"
+The idea is right and the cheap half is cheaper than it looks: **Drop C and Drop D differ by a uniform two semitones, so the FRET NUMBERS DO
+NOT MOVE.** The same shapes on a Drop D guitar are the same music a tone higher. The picture is untouched; what moves is the pitch the app
+expects to HEAR and the pitch of the recording.
+
+- **`Timeline.transposed(n)` shifts the notes and the tuning and nothing else.** Applied in `_load_song`, before the matcher, the MIDI backing
+  and the guide track are built, so one transposed plan feeds all of them rather than each applying the shift for itself — the
+  "four readers of one plan" fault this project has already paid for.
+- **Only tunings of the same SHAPE can stand in for each other.** `uniform_shift` returns None for Drop C against Standard, because a Drop
+  tuning has its sixth string lower relative to the others and no transposition expresses that. Moving a note to a different fret is a
+  different operation and already exists (`tools/retune.py`). `reachable_tunings` is what the key steps through, so a player chooses a TUNING
+  and never a number of semitones; DADGAD reaches only itself, and the key says so rather than looking dead.
+- **`timestretch.pitch_shift` is the stretch we already had, read back at the pitch ratio.** The two length changes cancel exactly, and that
+  matters more than it sounds: **an unchanged length means every sync point, the offset and the whole sync map still describe this file.**
+  Nothing has to be measured again.
+- **The shift is arithmetic and it is exact.** Measured against a sine of known pitch: +2, −2, +1, +5, −5 and +0.5 semitones all land within
+  **0.23 cents**, a five-hundredth of a semitone. End to end on the player's own five-minute recording: built in **7.5 s**, length error
+  **0 ms**, and the strongest pitch class moves 0 → 2 for +2 and 0 → 10 for −2, which is the whole point.
+- **What it costs is not accuracy but the WSOLA artefacts the practice speed already has**, at a far smaller factor — a tone is 1.12 where
+  50 % speed is 2.0. Whether that is acceptable on a full band mix is a question for ears, not for this file.
+- **A shifted copy is a different cache entry**, because a transposed song quietly playing the untransposed copy is the fault the sync rate
+  caused once already. `_mp3_source_fits` compares the transpose explicitly: the time scale cannot see it, since a pitch shift leaves the
+  length exactly alone.
+- **The HUD names both tunings** (`Tuning: Drop D … (written Drop C, +2 — R)`). The fret numbers on screen belong to the WRITTEN song, and
+  without saying so they belong to a song nobody can find.
+
 ## Seven Strings On A Six-String App
 
 Metal is written for seven and eight strings and this app plays six. The usual answer is "you need a seven-string"; the honest one is that the

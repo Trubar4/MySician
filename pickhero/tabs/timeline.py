@@ -7,7 +7,7 @@ of NoteEvents and provides efficient range queries for the game loop.
 from __future__ import annotations
 
 import bisect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass(frozen=True)
@@ -133,6 +133,25 @@ class Timeline:
         # sorted by their start, so this is what turns "which notes are
         # sounding" from a scan of the whole song into a slice of it.
         self._longest_ms = max((n.duration_ms for n in self._notes), default=0.0)
+
+    def transposed(self, semitones: int) -> "Timeline":
+        """The same song, played on a guitar tuned `semitones` away.
+
+        The FRET NUMBERS DO NOT MOVE. Drop C and Drop D differ by a uniform
+        two semitones, so the same shapes on a Drop D guitar are the same
+        music a tone higher -- the picture is identical and only the pitch
+        the app expects to HEAR changes. That is why this is a shift of the
+        notes and the tuning and nothing else; anything that had to move a
+        fret would be a different operation (see tools/retune.py).
+        """
+        if not semitones:
+            return self
+        notes = [replace(n, midi_note=n.midi_note + semitones)
+                 for n in self._notes]
+        meta = replace(
+            self.metadata,
+            tuning={s: v + semitones for s, v in self.metadata.tuning.items()})
+        return Timeline(notes, meta, list(self._measures))
 
     def __len__(self) -> int:
         return len(self._notes)

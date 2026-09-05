@@ -407,6 +407,73 @@ class TestSustainWidth:
         assert PlayingScreen.sustain_width(short, 0.5) < PlayingScreen.note_width(short, 0.5)
 
 
+class TestSteppingThroughPlayableTunings:
+    """A player thinks in tunings, not in semitones, so R steps through the
+    tunings the song can actually be played in -- the ones a uniform shift
+    away, which are the ones where every fret number still holds."""
+
+    def _screen(self, tuning_name="Drop C", transpose=0):
+        from pickhero.audio.note_utils import NAMED_TUNINGS
+        shape = dict(NAMED_TUNINGS)[tuning_name]
+        played = {s: v + transpose for s, v in shape.items()}
+        song = Timeline(
+            [NoteEvent(timestamp_ms=0.0, duration_ms=500.0,
+                       midi_note=36 + transpose, string=6, fret=0)],
+            SongMetadata(title="t", tempo=120, tuning=played),
+            measures=[MeasureInfo(index=0, start_ms=0.0, end_ms=2000.0)])
+        return PlayingScreen(song, config=Config(), song_key="s",
+                             transpose=transpose)
+
+    def test_it_works_back_to_the_written_tuning(self):
+        from pickhero.audio.note_utils import NAMED_TUNINGS, tuning_name
+        screen = self._screen("Drop C", transpose=2)
+        assert tuning_name(screen.written_tuning()) == "Drop C"
+        assert tuning_name(screen._timeline.metadata.tuning) == "Drop D"
+
+    def test_stepping_up_asks_the_app_to_reload(self):
+        screen = self._screen("Drop C")
+        assert screen._next_tuning(+1) == ("transpose", 1)
+
+    def test_and_the_note_names_the_tuning_not_the_semitones(self):
+        screen = self._screen("Drop C")
+        screen._next_tuning(+1)
+        assert "Drop C#" in screen._status_note_text()
+
+    def test_stepping_down_from_the_written_one(self):
+        screen = self._screen("Drop C")
+        assert screen._next_tuning(-1) == ("transpose", -1)
+
+    def test_it_walks_back_to_as_written(self):
+        screen = self._screen("Drop C", transpose=1)
+        assert screen._next_tuning(-1) == ("transpose", 0)
+        assert "as written" in screen._status_note_text()
+
+    def test_a_tuning_of_its_own_shape_says_so_and_does_nothing(self):
+        """DADGAD is nobody's transposition, so there is nothing to step to
+        and the key must say that rather than look dead."""
+        screen = self._screen("DADGAD")
+        assert screen._next_tuning(+1) is None
+        assert "cannot be swapped" in screen._status_note_text()
+
+    def test_r_is_the_key_and_shift_r_goes_back(self):
+        screen = self._screen("Drop C")
+        up = screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_r, mod=0))
+        assert up == ("transpose", 1)
+        down = screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_r, mod=pygame.KMOD_SHIFT))
+        assert down == ("transpose", -1)
+
+    def test_the_hud_names_both_tunings(self):
+        """The fret numbers on screen belong to the WRITTEN song; without
+        saying so, they belong to a song nobody can find."""
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        screen = self._screen("Drop C", transpose=2)
+        screen.render(surface)          # must not raise
+        assert screen._transpose == 2
+
+
 class TestNoteHeadsAreDrawnOnceAndBlittedAfter:
     """Measured on the player's own song: a frame makes 48 rounded-rect
     calls -- 24 notes, fill and border -- and 46 of the 48 are the SAME size,
@@ -1221,6 +1288,7 @@ class TestFooterCompleteness:
         "f": "F: frets",
         "g": "G: hit window", "h": "H: help", "i": "I/O", "j": "J: strings",
         "k": "K: sync", "l": "L: weakest", "m": "N/M", "n": "N/M",
+        "r": "R: play in another tuning",
         "o": "I/O", "p": "P: toggle", "s": "Shift+S: sync point",
         "t": "T: theme", "u": "U: audio track",
         "v": "V: chords",

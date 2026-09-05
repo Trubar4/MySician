@@ -213,6 +213,45 @@ def tuning_notes(tuning: dict[int, int] | None) -> list[str]:
             for s in sorted(tuning, reverse=True) if s in tuning]
 
 
+def uniform_shift(written: dict[int, int] | None,
+                  played: dict[int, int] | None) -> int | None:
+    """Semitones from one tuning to another, or None if it is not a shift.
+
+    Drop C to Drop D moves every string by +2, so the same fret numbers give
+    the same music a tone higher -- nothing about the tab has to be rewritten.
+    Drop C to Standard is a different SHAPE (the sixth string sits lower
+    relative to the others), and no shift can express it; that needs the
+    frets recomputed, which is what `tools/retune.py` is for.
+    """
+    if not written or not played or len(written) != len(played):
+        return None
+    shifts = {played[s] - written[s] for s in written if s in played}
+    if len(shifts) != 1 or len(written) != len(played):
+        return None
+    return shifts.pop()
+
+
+def reachable_tunings(written: dict[int, int] | None
+                      ) -> list[tuple[str, int]]:
+    """(name, semitones) for every tuning this one can be PLAYED as.
+
+    The tab is written in one tuning; a guitar strung in another of the same
+    shape plays the same fret numbers and sounds them shifted. So these are
+    the tunings a player can use without retuning and without the tab being
+    touched -- ordered by how far they are, nearest first, with the written
+    one at nothing.
+    """
+    if not written:
+        return []
+    out = []
+    for name, shape in NAMED_TUNINGS:
+        shift = uniform_shift(written, shape)
+        if shift is not None:
+            out.append((name, shift))
+    out.sort(key=lambda pair: (abs(pair[1]), pair[1]))
+    return out
+
+
 def tuning_for_notes(letters: str) -> dict[int, int] | None:
     """The named tuning a song's open strings describe, or None.
 

@@ -621,7 +621,8 @@ class PlayingScreen:
                  backing_track: BackingTrack | None = None,
                  guide_track: BackingTrack | None = None,
                  progress_tracker: ProgressTracker | None = None,
-                 song_key: str = "", song_path: str = ""):
+                 song_key: str = "", song_path: str = "",
+                 transpose: int = 0):
         self._timeline = timeline
         self._visible_beats = visible_beats
         self._hit_zone_fraction = hit_zone_fraction
@@ -708,6 +709,10 @@ class PlayingScreen:
         # Where the tab came from. Only the auto-sync wants it,
         # and only because a recording is the whole band.
         self._song_path = song_path
+        # How far this song is being PLAYED from how it is written. The
+        # timeline handed in has already been shifted, so this is only kept
+        # to work back to the written tuning and to say so on screen.
+        self._transpose = int(transpose)
         self._song_completed = False
         self._is_new_best = False
         self._recommendations: list[str] = []
@@ -752,6 +757,10 @@ class PlayingScreen:
         # The build the loaded source was made for, so a rate change is seen
         # even though it leaves time_scale untouched.
         self._mp3_loaded_build: float | None = None
+        # Which transpose the loaded copy was built for. The scale cannot
+        # answer it -- a pitch shift leaves the length exactly alone, which
+        # is the whole point of it.
+        self._mp3_loaded_source_transpose: int = 0
         # The first of the two places the player lines the recording up at,
         # as (song ms, offset ms). Not remembered across songs: it describes
         # one act of syncing, not a setting.
@@ -1372,6 +1381,9 @@ class PlayingScreen:
             self._set_loop_end(self._playback_ms)
         elif event.key == pygame.K_p:
             self._toggle_loop()
+        elif event.key == pygame.K_r:
+            return self._next_tuning(-1 if event.mod & pygame.KMOD_SHIFT
+                                     else +1)
         elif (event.key == pygame.K_s and event.mod & pygame.KMOD_CTRL
                 and not event.mod & pygame.KMOD_SHIFT):
             self._start_auto_sync()
@@ -1593,6 +1605,42 @@ class PlayingScreen:
         self._tab_engraving = None
         self._tab_due = True
         self._say(f"Zoom {wanted + 1} of {len(ZOOM_STEPS)} — engraving…")
+
+    def written_tuning(self) -> dict[int, int]:
+        """The tuning the tab was WRITTEN in, whatever it is played in."""
+        return {s: v - self._transpose
+                for s, v in self._timeline.metadata.tuning.items()}
+
+    def tuning_choices(self) -> list[tuple[str, int]]:
+        """The tunings this song can be played in without moving a fret."""
+        from pickhero.audio.note_utils import reachable_tunings
+        return reachable_tunings(self.written_tuning())
+
+    def _next_tuning(self, step: int):
+        """Play the same shapes on a differently tuned guitar (R).
+
+        A player thinks in tunings, not in semitones, so this steps through
+        the tunings the song can actually be played in -- the ones a uniform
+        shift away, which are the ones where every fret number still holds.
+        A tuning of a different SHAPE cannot be reached this way at all, and
+        for such a song there is nothing to step through.
+        """
+        choices = self.tuning_choices()
+        if len(choices) < 2:
+            self._say("This tuning cannot be swapped without moving the frets")
+            return None
+        order = sorted(choices, key=lambda pair: pair[1])
+        here = next((i for i, (_, shift) in enumerate(order)
+                     if shift == self._transpose), None)
+        if here is None:
+            here = next(i for i, (_, shift) in enumerate(order) if shift == 0)
+        name, shift = order[(here + step) % len(order)]
+        if shift == self._transpose:
+            return None
+        self._say(f"Playing in {name}"
+                  + (f" — the recording moves {shift:+d} semitones with you"
+                     if shift else " — as written"))
+        return ("transpose", shift)
 
     def _tab_scroll_for(self, band_top: float, band_bottom: float,
                         page_h: float, view_h: float) -> int:
@@ -2781,6 +2829,7 @@ class PlayingScreen:
             "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
             "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
+            "|  R: play in another tuning (Shift+R: back)  "
             "|  Ctrl+S: sync to the recording automatically  "
             "|  Shift+S: sync point here (Ctrl+Shift+S: clear)  "
             "|  Shift+A: reopen audio output (if the sound goes bad)  "
@@ -3006,7 +3055,15 @@ class PlayingScreen:
         if notes:
             name = tuning_name(tuning)
             label = f"Tuning: {name or 'custom'} — {' '.join(notes)}"
-            if not standard:
+            if self._transpose:
+                # What the tab says and what you are playing are two
+                # different tunings now, and the line has to name both --
+                # otherwise the fret numbers on screen belong to a song
+                # nobody can find.
+                written = tuning_name(self.written_tuning())
+                label += (f"   (written {written or 'custom'}, "
+                          f"{self._transpose:+d} — R)")
+            elif not standard:
                 label += "   ← retune"
             tune_surf = hint_font.render(
                 label, True, t.hud_text if standard else t.feedback_close)
@@ -4932,6 +4989,8 @@ class PlayingScreen:
             return False
         if abs(self._mp3_player.time_scale - self._mp3_scale()) >= 1e-6:
             return False
+        if self._mp3_loaded_source_transpose != self._transpose:
+            return False
         if self._mp3_loaded_build is None:
             # A source this screen did not load itself. All that is known is
             # what the player reports, which is the scale -- and since the
@@ -4960,11 +5019,13 @@ class PlayingScreen:
         if abs(wanted - 1.0) < 1e-3:
             self._mp3_player.set_source(self._mp3_path(), self._mp3_scale())
             self._mp3_loaded_build = wanted
+            self._mp3_loaded_source_transpose = self._transpose
             return
         if self._mp3_stretch_matches(self._mp3_stretch_done, wanted):
             self._mp3_player.set_source(self._mp3_stretch_done[2],
                                         self._mp3_scale())
             self._mp3_loaded_build = wanted
+            self._mp3_loaded_source_transpose = self._transpose
             return
         if self._mp3_stretch_matches(self._mp3_stretch_failed, wanted):
             return                             # already said so on screen
@@ -4983,6 +5044,11 @@ class PlayingScreen:
             return
         self._mp3_stretch_wanted = tempo
         self._mp3_stretch_progress = 0.0
+        # The recording moves with the player: a tab in Drop C played on a
+        # Drop D guitar sounds a tone higher, so the backing has to. Pitch
+        # shifting preserves the LENGTH exactly, so every sync point, the
+        # offset and the whole map still describe this file.
+        semitones = self._transpose
         # No sync plan any more: the practice speed is the only thing that
         # decides the file. The recording is left exactly as it was made and
         # the TAB is warped onto it. See _mp3_build_tempo.
@@ -4997,7 +5063,7 @@ class PlayingScreen:
         def work() -> None:
             try:
                 built = timestretch.build(Path(path), tempo, cache_dir,
-                                          report)
+                                          report, semitones=semitones)
                 self._mp3_stretch_done = (tempo, path, str(built))
             except timestretch.Cancelled:
                 pass                          # the speed moved on; not a fault

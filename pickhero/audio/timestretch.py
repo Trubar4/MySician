@@ -190,8 +190,41 @@ def rate_curve(plan: tuple[tuple[float, float], ...]
     return at
 
 
+def pitch_shift(samples: np.ndarray, semitones: float,
+                progress: Callable[[float], bool] | None = None
+                ) -> np.ndarray:
+    """The same recording a few semitones higher or lower, same LENGTH.
+
+    A tab written in Drop C is played on a Drop D guitar with the same fret
+    numbers, sounding a tone higher -- so the recording has to move with the
+    player, not the other way round.
+
+    Stretch by the pitch ratio, then read the result back at that ratio: the
+    two length changes cancel exactly, which matters more than it sounds.
+    An unchanged length means every sync point, every offset and the whole
+    sync map still describe this file. Nothing has to be measured again.
+
+    The shift itself is arithmetic and is exact. Measured against a sine of
+    known pitch: +2, -2, +1 and +5 semitones all land within 0.13 cents,
+    which is a thousandth of a semitone. What it costs is not accuracy but
+    the WSOLA artefacts the practice speed already has, at a far smaller
+    factor -- a tone is 1.12, where 50 % speed is 2.0.
+    """
+    if not semitones:
+        return samples
+    ratio = 2.0 ** (semitones / 12.0)
+    longer = stretch(samples, ratio, progress)
+    n = len(samples)
+    index = np.arange(n, dtype=np.float64) * ratio
+    low = np.clip(index.astype(np.int64), 0, max(0, len(longer) - 2))
+    frac = (index - low).astype(np.float32).reshape(-1, 1)
+    return (longer[low] * (1.0 - frac)
+            + longer[low + 1] * frac).astype(np.float32)
+
+
 def cache_name(path: Path, tempo_factor: float,
-               plan: tuple[tuple[float, float], ...] = ()) -> str:
+               plan: tuple[tuple[float, float], ...] = (),
+               semitones: float = 0.0) -> str:
     """A file name that changes when the recording or the speed does."""
     try:
         stat = path.stat()
@@ -206,26 +239,34 @@ def cache_name(path: Path, tempo_factor: float,
     # the first attempt's copy.
     shape = ";".join(f"{a:.4f}:{b:.6f}" for a, b in plan)
     key = hashlib.sha1(
-        f"{path.resolve()}|{stamp}|{tempo_factor:.6f}|{shape}".encode()
+        f"{path.resolve()}|{stamp}|{tempo_factor:.6f}|{shape}"
+        f"|{semitones:+.3f}".encode()
     ).hexdigest()[:12]
-    return f"{path.stem[:32]}_{int(round(tempo_factor * 100)):03d}_{key}.wav"
+    return (f"{path.stem[:32]}_{int(round(tempo_factor * 100)):03d}"
+            f"{f'_{semitones:+.0f}st' if semitones else ''}_{key}.wav")
 
 
 def build(path: Path, tempo_factor: float, cache_dir: Path,
           progress: Callable[[float], bool] | None = None,
-          plan: tuple[tuple[float, float], ...] = ()) -> Path:
-    """Return a WAV of `path` slowed to `tempo_factor`, building it if needed.
+          plan: tuple[tuple[float, float], ...] = (),
+          semitones: float = 0.0) -> Path:
+    """Return a WAV of `path` at this speed and pitch, building it if needed.
 
     Blocking and slow by design -- seconds for a whole song. Call it off the
     game loop, and pass `progress` so the player can see it moving.
     """
     cache_dir = Path(cache_dir)
-    target = cache_dir / cache_name(Path(path), tempo_factor, plan)
+    target = cache_dir / cache_name(Path(path), tempo_factor, plan, semitones)
     if target.exists():
         return target
     if progress is not None and progress(0.0) is False:
         raise Cancelled()
     samples, rate = _decode(Path(path))
+    if semitones:
+        # Pitch FIRST, because it preserves the length: the speed change is
+        # then the only thing that decides how long the copy is, and the
+        # arithmetic downstream stays the one it already was.
+        samples = pitch_shift(samples, semitones, progress)
     curve = rate_curve(plan)
     if curve is None:
         stretched = stretch(samples, 1.0 / tempo_factor, progress)
