@@ -29,9 +29,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pickhero.audio.chord_verify import ChordVerifier  # noqa: E402
-from pickhero.audio.input import (  # noqa: E402
-    RING_SECONDS, AudioCapture, _AudioRing,
-)
+from take_harness import events, feed, strikes_of  # noqa: E402
 from pickhero.config import Config  # noqa: E402
 from pickhero.matcher import MatchType, NoteMatcher  # noqa: E402
 from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline  # noqa: E402
@@ -41,7 +39,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from analyze_ringing import align  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-HOP = 512
 # What the rescue's thresholds were fitted at. See capture().
 FITTED_ONSET_THRESHOLD = 0.3
 TAKES = [
@@ -50,46 +47,6 @@ TAKES = [
     ("schnell, gedaempft", "52_across_fast_damped", False),
     ("schnell, klingend", "53_across_fast_ringing", True),
 ]
-
-
-def capture(path: Path, sample_rate: int):
-    """Strikes and verification windows, straight out of the audio thread."""
-    with wave.open(str(path)) as handle:
-        channels = handle.getnchannels()
-        raw = handle.readframes(handle.getnframes())
-    audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-    if channels > 1:
-        audio = audio.reshape(-1, channels).mean(axis=1)
-
-    config = Config()
-    # Pinned, because this tool's ground truth is derived from the strikes:
-    # `intended()` aligns what was detected against the line that was asked
-    # for, so a detector setting that changes the NUMBER of strikes also
-    # changes the tab being scored, and the two columns stop being
-    # comparable. Lowering the onset threshold made a damped take appear to
-    # gain a note that way, which is the opposite of what this tool exists to
-    # report. It tests the RESCUE, at the settings the rescue was fitted at.
-    config.audio.onset_threshold = FITTED_ONSET_THRESHOLD
-    cap = AudioCapture(config)
-    cap._sample_rate = sample_rate
-    cap.detector.sample_rate = sample_rate
-    cap.detector.reset()
-    cap._onset_collector.reset()
-    cap._ring = _AudioRing(int(sample_rate * RING_SECONDS))
-    strikes, windows = [], []
-    for i in range(0, len(audio) - HOP + 1, HOP):
-        cap._audio_callback(audio[i:i + HOP].reshape(-1, 1), HOP, None, None)
-        # Drained as it goes, the way the app drains it every frame. The
-        # queue holds MAX_QUEUED_WINDOWS (16) and drops the oldest to stay
-        # bounded, so pushing a whole take through and collecting once keeps
-        # only the LAST sixteen strikes -- on a 45-second take that is a
-        # quarter of them, and the tool then reports the verifier doing
-        # nothing when it was never given anything to do.
-        strikes.extend(s for s in cap.get_notes() if s.note.is_onset)
-        windows.extend(cap.get_strike_windows())
-    strikes.extend(s for s in cap.get_notes() if s.note.is_onset)
-    windows.extend(cap.get_strike_windows())
-    return strikes, windows
 
 
 def intended(strikes, line):
@@ -115,8 +72,14 @@ def intended(strikes, line):
     return [(strikes[i], sequence[j]) for i, j in align(detected, sequence)]
 
 
-def score(pairs, windows, verify: bool):
-    """Play the take against a tab written at the strikes' own times."""
+def score(take, pairs, verify: bool):
+    """Play the take against a tab written at the strikes' own times.
+
+    Handed the whole take rather than two lists, so the strikes and the
+    windows reach the matcher INTERLEAVED, the way the app's frame loop
+    hands them over. `_pending_rescues` is bounded, so a batch of windows
+    arriving after every strike can only answer the last thirty-two holds.
+    """
     notes = [
         NoteEvent(timestamp_ms=strike.timestamp_ms, duration_ms=300.0,
                   midi_note=want, string=6, fret=5)
@@ -128,9 +91,13 @@ def score(pairs, windows, verify: bool):
     matcher = NoteMatcher(timeline, timing_window_ms=150.0,
                           late_window_ms=300.0,
                           chord_verifier=ChordVerifier() if verify else None)
-    for strike, _ in pairs:
-        matcher.process_detected_notes([strike], strike.timestamp_ms)
-    matcher.process_strike_windows(windows)
+    wanted = {id(strike) for strike, _ in pairs}
+    for kind, item in take:
+        if kind == "strike":
+            if id(item) in wanted:
+                matcher.process_detected_notes([item], item.timestamp_ms)
+        else:
+            matcher.process_strike_windows([item])
     matcher.process_detected_notes(
         [], max(n.timestamp_ms for n in notes) + 5000)
     hits = sum(1 for n in notes
@@ -163,12 +130,21 @@ def main() -> int:
         if take_id not in takes:
             print(f"{label:22s}  fehlt")
             continue
-        take = takes[take_id]
-        strikes, windows = capture(directory / take["file"], sample_rate)
-        line = [notes[0] for notes in take["expected_midi"]]
-        pairs = intended(strikes, line)
-        before, total = score(pairs, windows, verify=False)
-        after, _ = score(pairs, windows, verify=True)
+        entry = takes[take_id]
+        # Pinned, because this tool's ground truth is derived from the
+        # strikes: `intended()` aligns what was detected against the line
+        # that was asked for, so a detector setting that changes the NUMBER
+        # of strikes also changes the tab being scored. It tests the RESCUE,
+        # at the settings the rescue was fitted at.
+        config = Config()
+        config.audio.onset_threshold = FITTED_ONSET_THRESHOLD
+        line = [notes[0] for notes in entry["expected_midi"]]
+        take = events(directory / entry["file"], sample_rate, config)
+        pairs = intended(strikes_of(take), line)
+        before, total = score(take, pairs, verify=False)
+        take = events(directory / entry["file"], sample_rate, config)
+        pairs = intended(strikes_of(take), line)
+        after, _ = score(take, pairs, verify=True)
         gained = after - before
         # A damped take is the control. Its strikes carry a pitch, so there is
         # nothing to rescue -- anything gained there is a note being invented.

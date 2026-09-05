@@ -440,8 +440,8 @@ So when a strike arrives unpitched and a **single** note is written there, the m
 - **A note already marked MISS can still be rescued.** The window trails its strike by ~380 ms by design, so the verdict arrives after the
   note has timed out; refusing it for being late would throw the evidence away for arriving exactly when it was always going to.
 - **A chord is not rescued and a dead note is not either** — both already have their own rule, and neither needs audio.
-- **Measured, with the damped takes as the control** (`tools/check_ringing_rescue.py`): fast ringing 8/14 → **10/14**, and every damped take
-  gains exactly **nothing**. A rescue firing on a damped take would be a note being invented, which is what that check exists to catch; it
+- **Measured, with the damped takes as the control** (`tools/check_ringing_rescue.py`): fast ringing 8/14 → **12/14** (10/14 as first written up, which was
+  the batched harness — see "Four Tools Batched What The App Interleaves"), and every damped take gains exactly **nothing**. A rescue firing on a damped take would be a note being invented, which is what that check exists to catch; it
   exits non-zero if one ever does. The chord takes and the play-along takes are unchanged.
 - It closes about half the gap, not all of it (57 % → 71 %, against 81 % damped). The two strikes it cannot recover are the high A4, whose
   partials sit among the ringing lower strings' harmonics at a margin of 3-5 dB — too little to act on.
@@ -987,6 +987,65 @@ outright.
 `MIN_WINDOW_MS`; only 1 % of its gaps clear 255 ms. So on dense strumming the chord verifier and the rescue are both inert — not wrong, absent.
 Both takes also show a hard floor of 64 ms in their gap distribution, which is a re-trigger and not a pick. Whether that is worth a separate
 onset rule is unmeasured; what is measured is that the evidence never arrives.
+
+## Four Tools Batched What The App Interleaves
+
+Asked to improve the arpeggio, the first measurement was of the measuring instrument, and it was wrong by a third.
+
+The app drains both audio queues **every frame**. All four check tools pushed a whole take through `_audio_callback`, collected the strikes and
+the windows into two lists, and then handed the matcher every strike followed by every window. Two bounded structures make that a different
+program, and both drop the OLDEST entry: `AudioCapture.strike_queue` holds 16, and `NoteMatcher._pending_rescues` holds 32. So a 134-strike
+take arrives with 70 holds and only the last 32 can still be answered.
+
+| the same events, the same code, only the ORDER | notes credited |
+|---|---|
+| batched (what the tools did) | **46.0 %** |
+| interleaved (what the app does) | **61.5 %** |
+
+**The app was never at 46 %.** Every arpeggio figure written down before this — the 43 %, the 49 %, the "8 held / 3 confirmed" funnels — was
+measured through the batched version and understates the rescue. `check_ringing_rescue.py`'s fast ringing take is 12/14, not the 10/14 in the
+chapter above.
+
+- **`tools/take_harness.py` is the one implementation**, returning `[("strike", …), ("window", …)]` in arrival order. Four copies of one
+  capture loop is the "four readers of one plan" fault this project has already paid for at the repeats and at the transpose.
+- **This is the fifth time a tool measured itself**, after `analyze_ringing.py`, `check_ringing_rescue.py`, the four drift diagnostics and the
+  `MIN_WINDOW_MS` sweep that gated on the value it was testing. The tell each time was a control that came back wrong; here it was a funnel
+  reporting 42 holds that were never asked about on a take whose gaps clear the window floor 83 % of the time.
+
+## Acquitting Is Not Convicting, And They Had One Threshold
+
+With the harness honest, the arpeggio's remaining loss is the verifier: 15 refusals, and instrumenting every one of them says why.
+
+| why `confirms` said no | how many |
+|---|---|
+| **the written note WON and lost on the margin** | **10** |
+| a different note won outright | 4 |
+| the written note was masked and unscorable | 1 |
+
+In those ten the written note is the strongest hypothesis in the window — −1.4, −6.0, −6.2, −6.3, −7.9, −8.3, −9.9, −11.8, −13.9, −18.0 dB —
+and is refused because a rival **one or two semitones away** scores within 8 dB of it.
+
+`MARGIN_DB` is 8 because at 5 dB `verify` mis-called a correctly played low E. But **`verify` and `confirms` ask different questions**, which
+this file already said in as many words and the code did not: `verify` must CHOOSE which note a string played and can convict, so it must not
+be talked into the wrong one; `confirms` only asks whether the written note is present and can never do anything but acquit. Borrowing the
+conviction threshold for the acquittal is the same class of mistake as `MIN_WINDOW_MS` being fitted against a floor that had since moved.
+
+- **`CONFIRM_MARGIN_DB` is 2.0, and it is fitted.** The two populations separate cleanly: over the arpeggio take the 54 rescues where the
+  written note wins have a worst margin of **2.2 dB** (10th percentile 6.2, median 12.6), and over the DAMPED control takes — where a
+  confirmation is by definition a note being invented, since nothing was left ringing — exactly one candidate wins, at **1.2 dB**. The window
+  is 1.2 to 2.2.
+- **The value sits at the top of that window because the two mistakes are not equal.** Refusing a real rescue costs one note of credit;
+  accepting a false one turns a wrong note green, which is the thing the player has already said the score does too much of.
+- **Everything else is untouched.** `present_db` still governs whether the note is loud enough to be there at all, and a rival that really wins
+  is still refused — the rule only ever acquits.
+- **Measured on the arpeggio: 61.5 % → 67.1 %** (99 → 108 of 161), rescues 44 → 54. The strummed chorus take goes 388 → 396. Every control
+  holds at the shipped value: the damped takes gain **+0**, all **7/7** deliberate one-fret errors are still caught, the palm-muted wrong take
+  stays at **0/57** green, and no play-along take loses a note.
+
+**What is left is not detection.** Of the 53 notes still missing on that take, **23 have a strike in the window that was credited to a
+NEIGHBOURING note** — and the tab writes 145 onset moments where 132 strikes were heard, so most of those are picks that were not played rather
+than picks that were not read. Crediting them would be crediting notes on no evidence. Nine are subharmonic strikes the verifier still refuses
+and eight have no strike within 650 ms.
 
 ## Counting The Rescues That Did Not Happen
 

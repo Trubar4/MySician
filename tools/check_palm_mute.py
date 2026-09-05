@@ -41,15 +41,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pickhero.audio.chord_verify import ChordVerifier  # noqa: E402
-from pickhero.audio.input import (  # noqa: E402
-    RING_SECONDS, AudioCapture, _AudioRing,
-)
+from take_harness import events, feed, strikes_of  # noqa: E402
 from pickhero.config import Config  # noqa: E402
 from pickhero.matcher import NoteMatcher  # noqa: E402
 from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-HOP = 512
 # (take played, take whose shape the TAB writes, is a deliberate error)
 CASES = [
     ("70_chug_slow_ok", "70_chug_slow_ok", False),
@@ -59,44 +56,13 @@ CASES = [
 ]
 
 
-def capture(path: Path, sample_rate: int):
-    """Strikes and verification windows, straight out of the audio thread."""
-    with wave.open(str(path)) as handle:
-        channels = handle.getnchannels()
-        raw = handle.readframes(handle.getnframes())
-    audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-    if channels > 1:
-        audio = audio.reshape(-1, channels).mean(axis=1)
-
-    cap = AudioCapture(Config())
-    cap._sample_rate = sample_rate
-    cap.detector.sample_rate = sample_rate
-    cap.detector.reset()
-    cap._onset_collector.reset()
-    cap._ring = _AudioRing(int(sample_rate * RING_SECONDS))
-    strikes, windows = [], []
-    for i in range(0, len(audio) - HOP + 1, HOP):
-        cap._audio_callback(audio[i:i + HOP].reshape(-1, 1), HOP, None, None)
-        # Drained as it goes, the way the app drains it every frame. The
-        # queue holds MAX_QUEUED_WINDOWS (16) and drops the oldest to stay
-        # bounded, so pushing a whole take through and collecting once keeps
-        # only the LAST sixteen strikes -- on a 45-second take that is a
-        # quarter of them, and the tool then reports the verifier doing
-        # nothing when it was never given anything to do.
-        strikes.extend(s for s in cap.get_notes() if s.note.is_onset)
-        windows.extend(cap.get_strike_windows())
-    strikes.extend(s for s in cap.get_notes() if s.note.is_onset)
-    windows.extend(cap.get_strike_windows())
-    return strikes, windows
-
-
 # The share of pitchless strikes at which the removed rule's premise -- that a
 # choked string often produces no pitch -- would start holding for single
 # notes. It holds for chords, which is why they have a rule of their own.
 PREMISE_SHARE = 0.20
 
 
-def score(strikes, windows, written_midi: int):
+def score(take, strikes, written_midi: int):
     """Play the take against a tab writing one palm-muted note per strike."""
     notes = [
         NoteEvent(timestamp_ms=s.timestamp_ms, duration_ms=200.0,
@@ -106,9 +72,7 @@ def score(strikes, windows, written_midi: int):
     timeline = Timeline(notes, SongMetadata(title="chugs", tempo=150))
     matcher = NoteMatcher(timeline, timing_window_ms=150.0,
                           late_window_ms=300.0, chord_verifier=ChordVerifier())
-    for strike in strikes:
-        matcher.process_detected_notes([strike], strike.timestamp_ms)
-    matcher.process_strike_windows(windows)
+    feed(matcher, take)
     matcher.process_detected_notes(
         [], max(n.timestamp_ms for n in notes) + 5000)
     # GREEN only. A chug one fret off comes back a semitone away, which the
@@ -147,14 +111,14 @@ def main() -> int:
         if take_id not in takes or tab_id not in takes:
             print(f"{take_id:22s}  fehlt")
             continue
-        strikes, windows = capture(directory / takes[take_id]["file"],
-                                   sample_rate)
+        take = events(directory / takes[take_id]["file"], sample_rate)
+        strikes = strikes_of(take)
         if not strikes:
             print(f"{take_id:22s}  kein Anschlag erkannt")
             continue
         written = takes[tab_id]["expected_midi"][0][0]
         unpitched = sum(1 for s in strikes if s.note.unpitched)
-        green, total = score(strikes, windows, written)
+        green, total = score(take, strikes, written)
         # What the removed rule would have done: credit exactly the strikes
         # that carried no pitch at all.
         if is_error:

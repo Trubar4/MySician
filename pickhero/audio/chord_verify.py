@@ -94,6 +94,25 @@ MIN_HZ_SECONDS = 61.0
 # Decision thresholds, all in dB below the frame's strongest peak.
 PRESENT_DB = -32.0    # genuine detections landed at -3..-30, noise at -36..-39
 MARGIN_DB = 8.0       # at 5 dB a correctly played low E was mis-called once
+# ...and what ACQUITTING one takes. A separate number because it answers a
+# separate question: `verify` has to CHOOSE which note a string played and
+# must not be talked into the wrong one, while `confirms` only asks whether
+# the written note is there and can never convict. Reusing the conviction
+# threshold for the acquittal was a borrowed constant, and it refused ten of
+# the fifteen rescues measured on the player's arpeggio -- every one of them
+# with the written note winning outright, at -1.4 to -18 dB, beaten on the
+# margin alone by a rival one or two semitones away.
+#
+# Fitted, not guessed, and the two populations separate cleanly. Over the
+# arpeggio take, the 54 rescues where the written note wins have a worst
+# margin of 2.2 dB (10th percentile 6.2, median 12.6). Over the DAMPED
+# control takes -- where a confirmation is by definition a note being
+# invented, since nothing was left ringing -- exactly one candidate wins, at
+# 1.2 dB. So the window is 1.2 to 2.2, and the value sits at the top of it:
+# the two mistakes are not equal. Refusing a real rescue costs one note of
+# credit; accepting a false one turns a wrong note green, which is the thing
+# the player has already said the score does too much of.
+CONFIRM_MARGIN_DB = 2.0
 INTRUDER_DB = -25.0   # stricter bar for flagging a masked string as wrong
 
 # How far either side of the expected note to test hypotheses.
@@ -169,9 +188,11 @@ class ChordVerifier:
         margin_db: float = MARGIN_DB,
         intruder_db: float = INTRUDER_DB,
         span: int = SPAN_SEMITONES,
+        confirm_margin_db: float = CONFIRM_MARGIN_DB,
     ):
         self.present_db = present_db
         self.margin_db = margin_db
+        self.confirm_margin_db = confirm_margin_db
         self.intruder_db = intruder_db
         self.span = span
         # Partial frequencies are fixed per MIDI note; cache them.
@@ -316,12 +337,15 @@ class ChordVerifier:
                                 sample_rate, min_hz)
             if score is not None:
                 scores[cand] = score
-        verdict = self._decide(midi_note, scores, allow_intruder=False)
+        verdict = self._decide(midi_note, scores, allow_intruder=False,
+                               margin_db=self.confirm_margin_db)
         return verdict.correct
 
     def _decide(
         self, target: int, scores: dict[int, float], allow_intruder: bool = True,
+        margin_db: float | None = None,
     ) -> StringVerdict:
+        needed = self.margin_db if margin_db is None else margin_db
         if not scores:
             return StringVerdict(target, None, -120.0, 0.0, "")
         ranked = sorted(scores.items(), key=lambda kv: -kv[1])
@@ -333,10 +357,10 @@ class ChordVerifier:
             # Expected note is masked by an octave/fifth already sounding: it
             # can never be confirmed, but an intruder still shows up loudly.
             if (allow_intruder and best_midi != target
-                    and best_db > self.intruder_db and margin > self.margin_db):
+                    and best_db > self.intruder_db and margin > needed):
                 return StringVerdict(target, best_midi, best_db, margin, "intruder")
             return StringVerdict(target, None, best_db, margin, "")
 
-        if best_db <= self.present_db or margin <= self.margin_db:
+        if best_db <= self.present_db or margin <= needed:
             return StringVerdict(target, None, best_db, margin, "")
         return StringVerdict(target, best_midi, best_db, margin, "direct")

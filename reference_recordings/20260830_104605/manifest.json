@@ -1,26 +1,26 @@
 {
-  "created": "2026-08-30T10:46:05",
-  "samplerate": 48000,
-  "channels": 1,
-  "device": "Analogue 1 + 2 (Focusrite USB A",
-  "tuning_offset_semitones": 0,
-  "drop_semitones": 0,
-  "takes": [
-    {
-      "id": "play_along",
-      "block": 99,
-      "title": "Durchgespielt: unbekannt (siehe corrected)",
-      "file": "play_along.wav",
-      "technique": "free",
-      "intentional_error": "",
-      "shapes": [],
-      "expected_midi": [],
-      "song": null,
-      "tempo_percent": 100,
-      "seconds": 45.0,
-      "peak_dbfs": -6.6,
-      "rms_dbfs": -27.2,
-      "corrected": "song stand auf timing_test_100bpm.gp5, weil --play-along ohne Argument diesen Standard hatte. Gespielt wurde etwas anderes: gegen den Timing-Test passen nur 23 von 59 Anschlaegen aufs Raster und 3 von 46 Noten stimmen, gegen die aus dem Run-Log vom 30.08. 10:49 rekonstruierten Noten 58 von 60. Es ist der Anfang von 'Papa Roach - Leave A Light On'. Die Tab-Datei liegt nicht im Repo, deshalb steht song auf null statt auf einem Namen, den kein Werkzeug oeffnen kann."
-    }
-  ]
+ "created": "2026-08-30T10:46:05",
+ "samplerate": 48000,
+ "channels": 1,
+ "device": "Analogue 1 + 2 (Focusrite USB A",
+ "tuning_offset_semitones": 0,
+ "drop_semitones": 0,
+ "takes": [
+  {
+   "id": "play_along",
+   "block": 99,
+   "title": "Durchgespielt: Papa Roach - Leave A Light On (Anfang, Arpeggio)",
+   "file": "play_along.wav",
+   "technique": "free",
+   "intentional_error": "",
+   "shapes": [],
+   "expected_midi": [],
+   "song": "Papa Roach - Leave A Light On.gp",
+   "tempo_percent": 100,
+   "seconds": 45.0,
+   "peak_dbfs": -6.6,
+   "rms_dbfs": -27.2,
+   "corrected": "song stand auf timing_test_100bpm.gp5, weil --play-along ohne Argument diesen Standard hatte. Gespielt wurde etwas anderes: gegen den Timing-Test passen nur 23 von 59 Anschlaegen aufs Raster und 3 von 46 Noten stimmen, gegen die aus dem Run-Log vom 30.08. 10:49 rekonstruierten Noten 58 von 60. Es ist der Anfang von 'Papa Roach - Leave A Light On'. Die Tab-Datei liegt nicht im Repo, deshalb steht song auf null statt auf einem Namen, den kein Werkzeug oeffnen kann. Nachtrag: song steht jetzt auf dem Namen. Ein Werkzeug, das die Datei nicht findet, sagt 'Songdatei fehlt' und nennt sie — das ist eine brauchbare Meldung, waehrend null nur 'Manifest sagt nicht, was gespielt wurde' ergab und den Take aus jeder Kontrolle heraushielt. Es ist die einzige Aufnahme eines Arpeggios, die es gibt, und genau die Stelle, an der die subharmonische Rettung kalibriert wurde."
+  }
+ ]
 }

@@ -33,16 +33,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pickhero.audio.chord_verify import ChordVerifier  # noqa: E402
-from pickhero.audio.input import (  # noqa: E402
-    RING_SECONDS, AudioCapture, _AudioRing,
-)
+from take_harness import events, feed, strikes_of  # noqa: E402
 from pickhero.config import Config  # noqa: E402
 from pickhero.matcher import NoteMatcher  # noqa: E402
 from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DIR = REPO_ROOT / "reference_recordings" / "20260814_160019"
-HOP = 512
 
 # (take played, take whose shape the TAB writes, is a deliberate error)
 CASES = [
@@ -72,40 +69,12 @@ CASES = [
 ]
 
 
-def capture(path: Path, sample_rate: int):
-    """Strikes and verification windows, straight out of the audio thread."""
-    with wave.open(str(path)) as handle:
-        raw = handle.readframes(handle.getnframes())
-    audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-
-    cap = AudioCapture(Config())
-    cap._sample_rate = sample_rate
-    cap.detector.sample_rate = sample_rate
-    cap.detector.reset()
-    cap._onset_collector.reset()
-    cap._ring = _AudioRing(int(sample_rate * RING_SECONDS))
-    strikes, windows = [], []
-    for i in range(0, len(audio) - HOP + 1, HOP):
-        cap._audio_callback(audio[i:i + HOP].reshape(-1, 1), HOP, None, None)
-        # Drained as it goes, the way the app drains it every frame. The
-        # queue holds MAX_QUEUED_WINDOWS (16) and drops the oldest to stay
-        # bounded, so pushing a whole take through and collecting once keeps
-        # only the LAST sixteen strikes -- on a 45-second take that is a
-        # quarter of them, and the tool then reports the verifier doing
-        # nothing when it was never given anything to do.
-        strikes.extend(s for s in cap.get_notes() if s.note.is_onset)
-        windows.extend(cap.get_strike_windows())
-    strikes.extend(s for s in cap.get_notes() if s.note.is_onset)
-    windows.extend(cap.get_strike_windows())
-    return strikes, windows
-
-
-def score(strikes, windows, strings, pitches, credit_pitchless: bool):
+def score(take, strings, pitches, credit_pitchless: bool):
     """Play the take against a tab that writes `pitches` at every strike."""
     notes = [
         NoteEvent(timestamp_ms=s.timestamp_ms, duration_ms=400.0,
                   midi_note=pitch, string=string, fret=2)
-        for s in strikes for string, pitch in zip(strings, pitches)
+        for s in strikes_of(take) for string, pitch in zip(strings, pitches)
     ]
     timeline = Timeline(sorted(notes, key=lambda n: n.timestamp_ms),
                         SongMetadata(title="reference", tempo=100))
@@ -113,9 +82,7 @@ def score(strikes, windows, strings, pitches, credit_pitchless: bool):
                           late_window_ms=300.0, chord_verifier=ChordVerifier())
     if not credit_pitchless:
         matcher._unpitched_chord_credit = lambda *a, **k: None
-    for strike in strikes:
-        matcher.process_detected_notes([strike], strike.timestamp_ms)
-    matcher.process_strike_windows(windows)
+    feed(matcher, take)
     matcher.process_detected_notes([], max(n.timestamp_ms for n in notes) + 5000)
     stats = matcher.get_statistics()
     return (stats["hits"] + stats["close"], len(notes),
@@ -140,14 +107,17 @@ def main() -> int:
     for take_id, tab_id, is_error in CASES:
         if take_id not in takes or tab_id not in takes:
             continue
-        strikes, windows = capture(directory / takes[take_id]["file"], sample_rate)
+        take = events(directory / takes[take_id]["file"], sample_rate)
+        strikes = strikes_of(take)
         if not strikes:
             print(f"{take_id:20s}  no strikes detected -- skipped")
             continue
         strings = sorted((int(k) for k in takes[tab_id]["shapes"][0]), reverse=True)
         pitches = sorted(takes[tab_id]["expected_midi"][0])
-        before, total, _ = score(strikes, windows, strings, pitches, False)
-        after, _, caught = score(strikes, windows, strings, pitches, True)
+        before, total, _ = score(take, strings, pitches, False)
+        after, _, caught = score(
+            events(directory / takes[take_id]["file"], sample_rate),
+            strings, pitches, True)
 
         want = "a wrong finger must show" if is_error else "correct -- nothing"
         ok = (caught > 0) == is_error
