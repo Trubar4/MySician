@@ -473,6 +473,44 @@ class TestSteppingThroughPlayableTunings:
         screen.render(surface)          # must not raise
         assert screen._transpose == 2
 
+    def test_the_hud_names_what_comes_next(self):
+        """A key that walks a list nobody can see is a key you press to find
+        out where it went -- and this one rebuilds the whole recording."""
+        screen = self._screen("Drop C")
+        label = screen.tuning_step_label()
+        assert "Drop C#" in label and "Drop B" in label
+
+    def test_and_the_label_never_promises_a_step_the_key_refuses(self):
+        """One helper answers both, so the line cannot advertise a tuning
+        pressing the key does not reach."""
+        for transpose in (-3, -2, -1, 0, 1, 2):
+            screen = self._screen("Drop C", transpose=transpose)
+            label = screen.tuning_step_label()
+            for step, half in ((+1, 0), (-1, 1)):
+                named = label.split("Shift+R")[half].split("\u2192")[-1].strip()
+                asked = screen._next_tuning(step)
+                if named == "—":
+                    assert asked is None, (transpose, step, label)
+                else:
+                    assert asked is not None, (transpose, step, label)
+                    assert named in screen._status_note_text()
+
+    def test_the_top_of_the_list_says_so_instead_of_wrapping(self):
+        """Ordered by pitch the two ends are five semitones apart, so a wrap
+        turns one press into a jump to the other end of the guitar -- and a
+        whole recording rebuilt for a tuning nobody asked for."""
+        screen = self._screen("Drop C", transpose=2)      # Drop D, the top
+        assert screen._next_tuning(+1) is None
+        assert "highest" in screen._status_note_text()
+
+    def test_and_so_does_the_bottom(self):
+        screen = self._screen("Drop C", transpose=-3)     # Drop A, the floor
+        assert screen._next_tuning(-1) is None
+        assert "lowest" in screen._status_note_text()
+
+    def test_a_song_with_nowhere_to_step_says_nothing_at_all(self):
+        assert self._screen("DADGAD").tuning_step_label() == ""
+
 
 class TestNoteHeadsAreDrawnOnceAndBlittedAfter:
     """Measured on the player's own song: a frame makes 48 rounded-rect

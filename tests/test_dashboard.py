@@ -318,3 +318,52 @@ class TestTheWeekView:
     def test_the_calendar_week_is_the_one_printed_in_germany(self, week_view):
         # 2026-01-01 is a Thursday, so KW 1; 2020-12-28 is in KW 53 of 2020
         assert week_view["weeks"] == [1, 35, 53, 1]
+
+
+class TestThePageIsCurrentWithinASitting:
+    """The player practised ten minutes, opened the page, and it said three.
+    Nothing was lost -- the page was only rebuilt when the APP closed, so it
+    described the state at the last close. Leaving a song is where "how long
+    have I played today" is asked, and it is also where the sitting is
+    written, so it is where the page has to be rebuilt.
+    """
+
+    def _app(self, written):
+        import pygame
+        from pickhero.ui.app import App
+
+        class Screen:
+            def __init__(self):
+                self.stopped = False
+
+            def handle_event(self, event):
+                return "menu"
+
+            def stop_audio(self):
+                self.stopped = True
+                written.append("session")
+
+        class Menu:
+            def scan_files(self):
+                pass
+
+        app = App.__new__(App)
+        app._playing_screen = Screen()
+        app._menu = Menu()
+        app._state = "playing"
+        app._write_dashboard = lambda: written.append("dashboard")
+        return app, pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE)
+
+    def test_leaving_a_song_rebuilds_it(self):
+        written = []
+        app, event = self._app(written)
+        app._handle_playing_event(event)
+        assert "dashboard" in written
+
+    def test_and_only_after_the_sitting_has_been_written(self):
+        """The other order would show the page one session stale for ever,
+        which is the fault this exists to fix."""
+        written = []
+        app, event = self._app(written)
+        app._handle_playing_event(event)
+        assert written.index("session") < written.index("dashboard")

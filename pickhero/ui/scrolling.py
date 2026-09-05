@@ -1616,6 +1616,33 @@ class PlayingScreen:
         from pickhero.audio.note_utils import reachable_tunings
         return reachable_tunings(self.written_tuning())
 
+    def _tuning_order(self) -> tuple[list[tuple[str, int]], int]:
+        """The tunings this song steps through, lowest first, and where we
+        are in them. One helper, so the line that ADVERTISES the key and the
+        key itself can never name different tunings."""
+        order = sorted(self.tuning_choices(), key=lambda pair: pair[1])
+        here = next((i for i, (_, shift) in enumerate(order)
+                     if shift == self._transpose), None)
+        if here is None:
+            here = next((i for i, (_, shift) in enumerate(order)
+                         if shift == 0), 0)
+        return order, here
+
+    def tuning_step_label(self) -> str:
+        """What R and Shift+R will do next, named rather than discovered.
+
+        A key that walks a list nobody can see is a key you press to find out
+        where it went -- and this one reloads the song and rebuilds the
+        stretched recording, so finding out costs seconds. An end of the list
+        says so instead of naming a tuning.
+        """
+        order, here = self._tuning_order()
+        if len(order) < 2:
+            return ""
+        up = order[here + 1][0] if here + 1 < len(order) else "—"
+        down = order[here - 1][0] if here > 0 else "—"
+        return f"R \u2192 {up}    Shift+R \u2192 {down}"
+
     def _next_tuning(self, step: int):
         """Play the same shapes on a differently tuned guitar (R).
 
@@ -1624,17 +1651,23 @@ class PlayingScreen:
         shift away, which are the ones where every fret number still holds.
         A tuning of a different SHAPE cannot be reached this way at all, and
         for such a song there is nothing to step through.
+
+        It does NOT wrap. Ordered by pitch, the two ends are five semitones
+        apart, so wrapping turns one press at the top of the list into a jump
+        to the bottom of it -- a whole recording rebuilt for a tuning nobody
+        asked for. R means higher and Shift+R means lower, all the way, and
+        the end of the list is a sentence rather than a surprise.
         """
-        choices = self.tuning_choices()
-        if len(choices) < 2:
+        order, here = self._tuning_order()
+        if len(order) < 2:
             self._say("This tuning cannot be swapped without moving the frets")
             return None
-        order = sorted(choices, key=lambda pair: pair[1])
-        here = next((i for i, (_, shift) in enumerate(order)
-                     if shift == self._transpose), None)
-        if here is None:
-            here = next(i for i, (_, shift) in enumerate(order) if shift == 0)
-        name, shift = order[(here + step) % len(order)]
+        wanted = here + step
+        if not 0 <= wanted < len(order):
+            self._say(f"Already the {'highest' if step > 0 else 'lowest'} "
+                      f"tuning this song can be played in ({order[here][0]})")
+            return None
+        name, shift = order[wanted]
         if shift == self._transpose:
             return None
         self._say(f"Playing in {name}"
@@ -3069,6 +3102,11 @@ class PlayingScreen:
                 label, True, t.hud_text if standard else t.feedback_close)
             surface.blit(tune_surf, (12, info_y))
             info_y += 16
+            step_label = self.tuning_step_label()
+            if step_label:
+                step_surf = hint_font.render(step_label, True, t.hud_text)
+                surface.blit(step_surf, (12, info_y))
+                info_y += 16
 
         # Hit-window HUD — always shown, since it decides what counts as a hit
         window_surf = hint_font.render(

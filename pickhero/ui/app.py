@@ -114,7 +114,8 @@ class App:
         rather than before it: the sitting that just ended is written by that
         call, so a page built at startup is always one session stale -- it
         would never show the practising that had just been done, which is the
-        practising anyone opens it to look at.
+        practising anyone opens it to look at. Leaving a song reaches this
+        too, so the page is current within a sitting and not only after one.
 
         Measured on generated logs: 1.5 ms at 100 sittings, 38 ms at 5000,
         224 ms at 20000 -- and all of it after the last frame, where there is
@@ -205,10 +206,20 @@ class App:
                             resume_at_ms=where)
             return
         if result == "menu":
-            self._playing_screen.stop_audio()
+            self._playing_screen.stop_audio()      # writes the sitting
             self._playing_screen = None
             self._state = "menu"
             self._menu.scan_files()
+            # Leaving a song is where "how long have I played today" gets
+            # asked, and until now the page could only answer it after the
+            # app was CLOSED -- so a player who had practised for ten minutes
+            # was shown three, which reads as a diary that loses sittings
+            # rather than as a page that is out of date. It costs 1.5 ms at
+            # a hundred sittings, on a frame that is tearing a screen down
+            # anyway, and it is written AFTER stop_audio for the same reason
+            # it is written after close_session on the way out: that call is
+            # what puts the sitting in the log.
+            self._write_dashboard()
 
     def _open_device_menu(self, came_from: str) -> None:
         self._device_menu = DeviceMenuScreen(self._config)

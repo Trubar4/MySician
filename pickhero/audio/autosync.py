@@ -52,8 +52,25 @@ RUNNER_UP_GUARD_S = 5.0
 # rhyming with itself. Fitted on the player's own files, where the good
 # windows clear 0.03 and the three that matched the wrong chorus do not.
 MIN_MARGIN = 0.012
-# A window sitting further than this from the fitted line is not a reading.
+# The CEILING on how far a window may sit from the fitted line, not the
+# threshold itself. It was fitted against a wrong-chorus match, which lands 14
+# to 28 s away -- so it is three seconds wide, and blind to a spike of one.
 OUTLIER_S = 3.0
+# The threshold is the scatter the SONG shows, because that is the only thing
+# that says what a disagreement is. Bad Omens' "Like a Villain": nine of its
+# twelve stored points sit within 52 ms of the fitted line (MAD 44 ms) and
+# three are spikes of 175, 561 and 1349 ms -- 4, 13 and 31 times that scatter,
+# and every one of them comfortably inside three seconds. Each poisons the two
+# sections around it: the map then implies +22 %, -7.3 % and +9.3 %, one of
+# them clamped at MAX_RATE, and the picture jumps by up to 1.35 s. Dropping
+# the three brings the map's worst error from 1352 ms to 52 ms. The factor has
+# to keep 52 ms and drop 175 ms, so anything from 1.2 to 4.0 works and 3.0 is
+# the middle of what was measured.
+SPIKE_FACTOR = 3.0
+# ...and never rejects a reading nobody could see. 100 ms is where picture and
+# sound stop reading as one event, and it is what keeps a song whose windows
+# agree almost exactly from throwing away the one that agrees least.
+SPIKE_FLOOR_S = 0.1
 # How fast a recording of the same performance may run against the tab. The
 # measured mismatch on a real song is about 1 %; this is five times that, and
 # still nowhere near what a wrong match implies. Without a bound, a staircase
@@ -314,6 +331,23 @@ def _robust_line(xs: Sequence[float], ys: Sequence[float]
     return slope, float(np.median(inliers)) if inliers else best
 
 
+def spike_tolerance(residuals: Sequence[float]) -> float:
+    """How far a window may sit from the line before it is not a reading.
+
+    The scatter the song itself shows, measured as the median absolute
+    residual, so it asks "does this window disagree with the others" rather
+    than "is it more than N seconds out" -- which is a question only a fixed
+    threshold has to answer, and which cannot be answered once for every song.
+
+    Bounded at both ends: never below what nobody could see, never above what
+    a wrong-chorus match implies.
+    """
+    if not residuals:
+        return OUTLIER_S
+    mad = float(np.median(np.abs(np.asarray(residuals, dtype=float))))
+    return min(OUTLIER_S, max(SPIKE_FLOOR_S, SPIKE_FACTOR * mad))
+
+
 def usable_rows(rows: Iterable[tuple[float, float, float]]
                 ) -> list[tuple[float, float]]:
     """Drop the windows that are not readings, and then the outliers.
@@ -323,13 +357,20 @@ def usable_rows(rows: Iterable[tuple[float, float, float]]
     one disagrees with all the others. Neither is a threshold on the
     correlation itself, which would have to be fitted per song and would then
     be measuring the song.
+
+    The residual filter is scaled to the scatter the song shows rather than
+    fixed, because a fixed one has to be set for the worst case it must catch
+    -- a wrong chorus, tens of seconds away -- and is then blind to a spike of
+    one second on a song whose windows agree to within fifty milliseconds.
     """
     kept = [(at, lag) for at, lag, margin in rows if margin >= MIN_MARGIN]
     if len(kept) < MIN_WINDOWS:
         return []
     slope, intercept = _robust_line([a for a, _ in kept], [b for _, b in kept])
-    return [(at, lag) for at, lag in kept
-            if abs(lag - (slope * at + intercept)) <= OUTLIER_S]
+    residuals = [lag - (slope * at + intercept) for at, lag in kept]
+    tolerance = spike_tolerance(residuals)
+    return [(at, lag) for (at, lag), gap in zip(kept, residuals)
+            if abs(gap) <= tolerance]
 
 
 def simplify(points: list[tuple[float, float]],

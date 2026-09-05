@@ -252,3 +252,68 @@ class TestASongThatRepeatsItself:
         slope, _ = autosync._robust_line([r[0] for r in rows],
                                          [r[1] for r in rows])
         assert abs(slope) <= autosync.MAX_DRIFT_RATE
+
+
+class TestASpikeInAnOtherwiseGoodCurve:
+    """Bad Omens, "Like a Villain". The recording really does drift against
+    the tab -- 0.17 %, smooth, nine of the twelve stored points within 52 ms
+    of the line. The other three sit 175, 561 and 1349 ms off it, which is 4,
+    13 and 31 times the scatter and comfortably inside the three seconds the
+    filter allowed. Each spike poisons the two sections around it: the stored
+    map implied +22 %, -7.3 % and +9.3 %, one of them clamped at MAX_RATE.
+
+    The wrong-chorus case is tens of seconds away, so the threshold fitted
+    against it cannot see this at all.
+    """
+
+    def _like_a_villain(self):
+        """The twelve points the app stored, read off the player's run log."""
+        return [(10, -449), (28, -1767), (34, -444), (52, -326), (64, -344),
+                (70, 215), (88, -368), (112, -260), (118, -89), (166, -203),
+                (172, -172), (196, -183)]
+
+    def _rows(self):
+        return [(float(t), lag / 1000.0, 0.05)
+                for t, lag in self._like_a_villain()]
+
+    def test_the_three_spikes_are_dropped(self):
+        kept = [int(at) for at, _ in autosync.usable_rows(self._rows())]
+        assert kept == [10, 34, 52, 64, 88, 112, 166, 172, 196]
+
+    def test_and_the_drift_that_is_really_there_survives(self):
+        kept = autosync.usable_rows(self._rows())
+        slope, _ = autosync._robust_line([a for a, _ in kept],
+                                         [b for _, b in kept])
+        assert slope == pytest.approx(0.0017, abs=0.0005)
+
+    def test_what_the_spikes_cost_on_the_map(self):
+        """The number that makes this worth fixing: a jump the size of a bar
+        against an error nobody can see."""
+        from pickhero.audio.syncmap import SyncMap
+
+        clean = [(t, off) for t, off in self._like_a_villain()
+                 if t not in (28, 70, 118)]
+        xs = np.array([t for t, _ in clean], float)
+        ys = np.array([o for _, o in clean], float)
+        a, b = np.polyfit(xs, ys, 1)
+
+        def worst(points):
+            m = SyncMap([(t * 1000.0, off) for t, off in points], 0.0)
+            return max(abs(m.offset_at(t * 1000.0) - (a * t + b))
+                       for t in np.arange(0, 205, 0.5))
+
+        assert worst(self._like_a_villain()) > 1300.0
+        assert worst(clean) < 100.0
+
+    def test_a_song_whose_windows_agree_exactly_loses_nothing(self):
+        """The floor. Without it the tolerance collapses onto a scatter of
+        nothing and the least-agreeing window of a clean song is thrown away
+        for disagreeing by a millisecond."""
+        rows = [(i * 6.0, 0.5 + (i % 3) * 0.001, 0.05) for i in range(20)]
+        assert len(autosync.usable_rows(rows)) == len(rows)
+
+    def test_and_the_ceiling_still_holds_for_a_scattered_song(self):
+        """A song whose windows scatter by seconds must not have its
+        tolerance grow to match: a wrong chorus is what that would admit."""
+        assert autosync.spike_tolerance([-4.0, 4.0, -4.0, 4.0]) \
+            == autosync.OUTLIER_S

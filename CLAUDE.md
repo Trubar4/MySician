@@ -1156,6 +1156,82 @@ A straight line fits that staircase at **-12 %** almost perfectly. So the robust
   whose points all sit in the first minute is a song whose last four are a guess.
 - **`mp3_snaps` is in the run log.** A pull nobody can see is the design; a jump is a fault, and without a count it is only ever a report.
 
+## Three Seconds Wide, And Blind To A Spike Of One
+
+"Like a villain synced falsch." The run log had the whole answer in two lines. Twelve stored points, and the sections between them read
+`-6.83% +11.11% +0.66% -0.15% +10.29% -3.14% +0.45% +2.93% -0.24% +0.53% -0.05%` — one of them clamped at `MAX_RATE` exactly.
+
+Fitted, the song's real drift is **+0.17 %, smooth, and nine of the twelve points sit within 52 ms of it** (MAD 44 ms). The other three are
+spikes:
+
+| at | lag | off the line | times the scatter |
+|---|---|---|---|
+| 28 s | -1767 ms | **-1349 ms** | 31x |
+| 70 s | +215 ms | **+561 ms** | 13x |
+| 118 s | -89 ms | +175 ms | 4x |
+
+Every one of them was kept, because `OUTLIER_S` is **3.0 s — sixty-eight times the scatter this song shows.** Each poisons the two sections
+around it. Dropping the three takes the map's worst error from **1352 ms to 52 ms**.
+
+- **The fixed threshold was fitted against the wrong case, and correctly so.** It exists to reject a window that matched the wrong chorus,
+  which lands 14 to 28 s away — so it has to be seconds wide, and is then blind to everything smaller. A threshold set for the worst thing it
+  must catch cannot also be the threshold for the commonest.
+- **The scatter the song shows is the only thing that says what a disagreement is.** `spike_tolerance` is `3 x MAD` of the residuals, bounded
+  below by 100 ms (where picture and sound stop reading as one event, so a reading nobody could see is never rejected) and above by the old
+  `OUTLIER_S` (so a genuinely scattered song cannot grow its tolerance until a wrong chorus fits inside it). The factor has to keep 52 ms and
+  drop 175 ms, so anything from 1.2 to 4.0 works and 3.0 is the middle of what was measured.
+- **It is one filter improved, not a second one added.** A local rate bound between adjacent stored points would catch the same three spikes
+  and would be two answers to one question — the reason `onset_min_interval_ms` lasted an hour.
+- **All the controls hold**: the zero-drift synthetic control loses nothing (its scatter is 9 ms, so the floor governs and the tolerance never
+  binds), the Godsmack staircase still collapses to one plateau, and a real 1 % drift is still followed to within 0.2 %.
+- **A map measured before this is still wrong**, because the points are stored. `Ctrl+S` re-measures.
+
+## One Stretch For The Speed And The Pitch, Not One Each
+
+Playing a Drop C song on a Drop D guitar shifts the recording, and `build` did that as its own pass before stretching for the practice speed —
+so a slowed-down transposed song went through WSOLA twice. It does not have to: a pitch shift IS a stretch by the pitch ratio read back at that
+ratio, and reading back is uniform, so it leaves every sample's position as a FRACTION of the file exactly where it was and the rate curve
+composes with it unchanged. One stretch by `ratio / tempo_factor`, then one resample by `ratio`.
+
+| four minutes of audio, +2 semitones | before | after |
+|---|---|---|
+| 100 % speed | 7.9 s | 7.8 s |
+| **80 % speed** | **14.1 s** | **11.0 s** |
+| 70 % speed | 16.6 s | 13.6 s |
+
+**At full speed it saves nothing, and that is the honest half.** There was only ever one stretch there; the eight seconds is the pitch shift
+itself, and 56 % of it is the FFT cross-correlation at the heart of WSOLA. Searching a downsampled signal would cut that and would change which
+offsets are chosen — measurable only by ear, on a build nobody here can listen to, and the player's verdict on the current one is "klingt noch
+gut". Not built.
+
+Verified exact rather than assumed: length lands within **1.0000x** of what the speed alone would give at 100, 80 and 70 %, and the pitch
+within **0.1 cents** of what was asked for. The length matters as much as the pitch — an unchanged one means every sync point and every offset
+still describes the file.
+
+## A Key That Walks A List Nobody Can See
+
+"Das Blättern mit R und Sh+R ist merkwürdig. Kannst du mir anzeigen, was als nächstes kommt." Both halves were real, and the second explains
+the first.
+
+A Drop C song reaches six tunings — Drop A, A#, B, C, C#, D — ordered by pitch. `R` stepped through them **and wrapped**, so one press at the
+top jumped five semitones to the bottom: a whole recording rebuilt, seconds of silence, for a tuning nobody asked for.
+
+- **It does not wrap.** `R` means higher and `Shift+R` means lower, all the way, and an end of the list is a sentence — the same rule as the
+  zoom key and the scroll-speed floor.
+- **The HUD names the next one in each direction** (`R -> Drop C#    Shift+R -> Drop B`), with an em dash where the list ends. A key you press
+  to find out where it went is bad enough; this one reloads the song and rebuilds the stretched recording, so finding out costs seconds.
+- **One helper answers both**, so the line cannot advertise a tuning the key refuses — the same property `K` and its HUD line are held to, and
+  the test asserts it over every position in the list rather than asserting the wording.
+
+## The Diary Was Right And The Page Was Yesterday
+
+"Wie lange habe ich heute gespielt? Davor waren es nur unter 3 min." Nothing was lost: the dashboard was rebuilt only when the APP closed, so
+it described the state at the last close. Twelve sittings totalling 10.1 minutes read as three.
+
+Leaving a song is where that question gets asked and is also where the sitting is written (`stop_audio` -> `close_session`), so the page is
+rebuilt there too — 1.5 ms at a hundred sittings, on a frame that is tearing a screen down anyway, and after the write for the same reason the
+one on the way out is. **A number that is right in the file and stale on the screen is indistinguishable from a diary that loses sittings.**
+
 ## Sync Points Belong To A RECORDING, Not To A Song
 
 Seventeen points measured by ear or by Ctrl+S are the most expensive thing in a song's settings, and two ways of losing them were open.
