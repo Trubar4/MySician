@@ -770,6 +770,10 @@ class PlayingScreen:
         # How much the player spooled. Not reset by a loop or a song end:
         # the question is what this sitting did.
         self._seeks: int = 0
+        # How often the picture had to JUMP to stay with the recording. A
+        # pull nobody can see is the design; a jump is a fault, and without a
+        # count it is only ever a report.
+        self._mp3_snaps: int = 0
         # Finding the sync points by listening. On a thread: a four-minute
         # song is a couple of seconds of arithmetic, and seconds in the game
         # loop is a frozen app -- a bill this project has paid three times.
@@ -4027,6 +4031,7 @@ class PlayingScreen:
         # and how much of that the map was already doing. A large pull with
         # few points says where the next point belongs.
         fh.write(f"mp3_worst_pull_ms\t{self._worst_sync_pull_ms:.0f}\n")
+        fh.write(f"mp3_snaps\t{self._mp3_snaps}\n")
         fh.write(f"mp3_leads\t{'yes' if self._mp3_led else 'no'}\n")
         fh.write(f"seeks\t{self._seeks}\n")
         self._frame_line(fh)
@@ -4750,6 +4755,13 @@ class PlayingScreen:
         if abs(error) > SYNC_SNAP_MS:
             # Not drift: something moved. Creeping there would scroll half a
             # minute of music the player never asked for.
+            #
+            # Counted, because a snap is the picture JUMPING and the player
+            # sees it. In normal playback it should never happen: past a
+            # second and a half the map and the recording are describing
+            # different moments, which is a map that was measured wrong.
+            # On the song that found this, three snaps of up to 4.8 s.
+            self._mp3_snaps += 1
             step = error
         else:
             room = real_elapsed_s * 1000.0 * SYNC_PULL_FRACTION
@@ -5325,9 +5337,18 @@ class PlayingScreen:
         else:
             spans = "  ".join(f"{(1 / rate - 1) * 100:+.2f} %"
                               for rate in rates) or "nothing usable"
+            # Where the points actually ARE. Beyond the outermost one the map
+            # extrapolates, and a song whose points all sit in the first
+            # minute is a song whose last four are a guess -- which the
+            # panel has to say rather than leave to be discovered.
+            covered = (f"measured {_clock_text(points[0][0])}"
+                       f"–{_clock_text(points[-1][0])} of "
+                       f"{_clock_text(self._timeline.duration_ms)}")
             lines.append(
                 f"SYNC {len(points)} points, {len(rates)} section(s): "
-                f"{spans}   (Shift+S adds one, Ctrl+Shift+S clears)")
+                f"{spans}   ({covered})")
+            lines.append("SYNC Shift+S adds one, Ctrl+Shift+S clears, "
+                         "Ctrl+S measures again")
         if replaced:
             lines.append(f"replaced {replaced} point(s) closer than "
                          f"{MIN_SYNC_SPAN_MS / 1000:.0f} s to this one")

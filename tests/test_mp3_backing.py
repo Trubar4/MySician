@@ -1142,6 +1142,24 @@ class TestTheRecordingKeepsTimeAndThePictureFollows:
         screen._follow_recording(1 / 60)
         assert 0 < screen._playback_ms - before <= 1000.0 / 60 * 0.05 + 1e-6
 
+    def test_a_snap_is_counted_because_the_player_sees_it(self, tmp_path,
+                                                          monkeypatch):
+        """A pull nobody can see is the design; a jump is a fault. On the
+        song that found this the picture jumped three times, by up to 4.8 s,
+        because the measured map disagreed with the recording."""
+        screen = self._screen(tmp_path, monkeypatch, at_ms=120_000.0)
+        screen._playback_ms = 10_000.0
+        assert screen._mp3_snaps == 0
+        screen._follow_recording(1 / 60)
+        assert screen._mp3_snaps == 1
+
+    def test_an_ordinary_pull_is_not_a_snap(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, at_ms=60_000.0)
+        self._sync(screen, [(0.0, 0.0), (240_000.0, -2400.0)])
+        screen._playback_ms = 59_800.0
+        screen._follow_recording(1 / 60)
+        assert screen._mp3_snaps == 0
+
     def test_but_a_seek_snaps(self, tmp_path, monkeypatch):
         """Past a point the two are not drifting, they are describing
         different moments -- creeping there would scroll half a minute of

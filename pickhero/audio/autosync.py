@@ -52,8 +52,19 @@ RUNNER_UP_GUARD_S = 5.0
 # rhyming with itself. Fitted on the player's own files, where the good
 # windows clear 0.03 and the three that matched the wrong chorus do not.
 MIN_MARGIN = 0.012
-# A window sitting further than this from the robust line is not a reading.
+# A window sitting further than this from the fitted line is not a reading.
 OUTLIER_S = 3.0
+# How fast a recording of the same performance may run against the tab. The
+# measured mismatch on a real song is about 1 %; this is five times that, and
+# still nowhere near what a wrong match implies. Without a bound, a staircase
+# of windows that each matched the WRONG repeat of a riff -- Godsmack's Awake
+# stepped -17.9 s to +10.9 s in plateaus 8 s apart -- fits a straight line at
+# -12 % perfectly, so the outlier filter finds nothing to drop and every one
+# of them is stored as a sync point.
+MAX_DRIFT_RATE = 0.05
+# Two windows closer together than this cannot say anything about a rate: the
+# offset moves in fractions of a second and the noise is comparable.
+MIN_SLOPE_SPAN_S = 30.0
 # A point the line between its neighbours already predicts this well is not
 # worth storing. 25 ms is a quarter of the 100 ms where picture and sound
 # stop reading as one event.
@@ -266,18 +277,41 @@ def drift_curve(tab: np.ndarray, rec: np.ndarray, fps: float,
 
 def _robust_line(xs: Sequence[float], ys: Sequence[float]
                  ) -> tuple[float, float]:
-    """Slope and intercept by the median of pairwise slopes.
+    """Slope and intercept of the line most windows agree on.
 
-    Least squares would let one window that matched the wrong chorus drag the
-    whole line; this cannot be moved by fewer than half of them.
+    Two things, and the second is what a median alone cannot do.
+
+    The SLOPE is the median of pairwise slopes over pairs far enough apart to
+    mean anything, and only over slopes a recording can actually have. A
+    median is robust to a minority of wrong points; it is not robust to a
+    majority, and a song that repeats produces exactly that -- whole clusters
+    of windows matching the wrong repeat, each cluster consistent with the
+    next, adding up to a "drift" of 12 %.
+
+    The OFFSET is then the one the most windows sit near, not the median of
+    them. Where half the readings are wrong the median lands between the two
+    answers and belongs to neither; the largest agreeing group is an answer
+    somebody measured.
     """
+    if not xs:
+        return 0.0, 0.0
     slopes = [(ys[j] - ys[i]) / (xs[j] - xs[i])
               for i in range(len(xs)) for j in range(i + 1, len(xs))
-              if xs[j] - xs[i] > 1e-9]
-    if not slopes:
-        return 0.0, float(np.median(ys))
-    slope = float(np.median(slopes))
-    return slope, float(np.median([y - slope * x for x, y in zip(xs, ys)]))
+              if xs[j] - xs[i] >= MIN_SLOPE_SPAN_S]
+    usable = [s for s in slopes if abs(s) <= MAX_DRIFT_RATE]
+    slope = float(np.median(usable)) if usable else 0.0
+    # Consensus on the offset: try the line through each reading in turn and
+    # keep the one the most readings fall in with.
+    offsets = [y - slope * x for x, y in zip(xs, ys)]
+    best, agreed = float(np.median(offsets)), -1
+    for candidate in offsets:
+        count = sum(1 for o in offsets if abs(o - candidate) <= OUTLIER_S)
+        if count > agreed:
+            best, agreed = candidate, count
+    # Centre it on the group it found, so the line sits in the middle of the
+    # agreeing readings rather than on whichever one was tried first.
+    inliers = [o for o in offsets if abs(o - best) <= OUTLIER_S]
+    return slope, float(np.median(inliers)) if inliers else best
 
 
 def usable_rows(rows: Iterable[tuple[float, float, float]]

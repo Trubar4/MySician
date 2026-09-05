@@ -1131,6 +1131,31 @@ one frame of 146 ms.
 playhead as missed. A log taken straight after spooling describes what happened since the last seek and nothing before it. `seeks` is in the
 header for exactly this reason: without it, that log looks like the detector died.
 
+## A Song That Rhymes With Itself Beat The Median
+
+"Bei diesem Song habe ich 3x gesehen, wie das Bild links/rechts springt." Godsmack's "Awake", and the run log named it in one line:
+`mp3_worst_pull_ms 4759` against a `SYNC_SNAP_MS` of 1500 — the picture did not drift, it JUMPED, three times, because the sync map it was
+following was wrong.
+
+**The map was wrong in a way the outlier filter was built to miss.** The nineteen stored points walked from **-10.2 s to +17.9 s** over five
+minutes, in plateaus about 8 s apart — a metal song whose riffs recur, so window after window matched the WRONG repeat. Re-measured here from
+the player's own files: 47 windows, lags stepping from +10.9 s down to -17.9 s.
+
+A straight line fits that staircase at **-12 %** almost perfectly. So the robust line found nothing to call an outlier and kept all of it, and
+`SyncMap` then spread the nonsense across the song at its own clamp — `+11.11 %` appears four times in that log, which is `MAX_RATE` exactly.
+
+- **A median is robust to a MINORITY of wrong readings; it is not robust to a majority.** Whole clusters, each consistent with the next, are a
+  majority. Two things fix it and both are needed: the fitted slope is bounded to `MAX_DRIFT_RATE` (5 %, five times the ~1 % a real mismatch
+  measures), and the OFFSET is chosen by consensus — the line the most windows sit within `OUTLIER_S` of — rather than by the median, which
+  lands between two answers and belongs to neither.
+- **Pairs closer than `MIN_SLOPE_SPAN_S` (30 s) are left out of the slope entirely.** The offset moves in fractions of a second and the noise
+  is comparable, so a pair five seconds apart implies any rate at all.
+- **Measured on the player's own files: 19 points spanning 28 seconds become 5 points spanning 1.2 s**, at a fitted drift of +1.9 %, with
+  11 of 47 windows usable. That song repeats too much for the rest, and saying "11 of 47" is the honest answer.
+- **The panel now says what the points COVER** (`measured 0:10–1:15 of 4:58`). Beyond the outermost point the map extrapolates, and a song
+  whose points all sit in the first minute is a song whose last four are a guess.
+- **`mp3_snaps` is in the run log.** A pull nobody can see is the design; a jump is a fault, and without a count it is only ever a report.
+
 ## Sync Points Belong To A RECORDING, Not To A Song
 
 Seventeen points measured by ear or by Ctrl+S are the most expensive thing in a song's settings, and two ways of losing them were open.

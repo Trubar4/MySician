@@ -190,3 +190,65 @@ class TestThinningKeepsOnlyMeasuredPoints:
         rows = [(t, 0.5, 0.05) for t in range(0, 60, 6)]
         points = autosync.points_from_rows(rows)
         assert all(off == pytest.approx(-500.0) for _, off in points)
+
+
+class TestASongThatRepeatsItself:
+    """Godsmack's "Awake": a metal song whose riffs recur, so a window
+    regularly matches the WRONG repeat. The lags came back in plateaus about
+    8 s apart, stepping from +10.9 s down to -17.9 s over the song -- and a
+    straight line fits that staircase at -12 % perfectly, so the outlier
+    filter found nothing to drop and all nineteen were stored as sync points.
+    The app then snapped the picture 4.8 s three times to follow them.
+
+    A median is robust to a MINORITY of wrong readings. Whole clusters, each
+    consistent with the next, are a majority.
+    """
+
+    def _staircase(self):
+        """The shape the real song produced: plateaus a repeat-length apart,
+        walking one way, with a small real drift inside each."""
+        rows = []
+        for i in range(24):
+            at = i * 6.0
+            plateau = -8.4 * (i // 4)          # a wrong repeat, every so often
+            rows.append((at, 10.0 + plateau + at * 0.005, 0.05))
+        return rows
+
+    def test_the_fitted_drift_cannot_be_something_no_recording_does(self):
+        rows = self._staircase()
+        kept = autosync.usable_rows(rows)
+        xs = [a for a, _ in kept]
+        ys = [b for _, b in kept]
+        slope, _ = autosync._robust_line(xs, ys)
+        assert abs(slope) <= autosync.MAX_DRIFT_RATE
+
+    def test_only_one_plateau_survives(self):
+        """They cannot all be right: they disagree by whole repeat lengths."""
+        kept = autosync.usable_rows(self._staircase())
+        lags = [b for _, b in kept]
+        assert lags, "everything was thrown away"
+        assert max(lags) - min(lags) < 3.0, lags
+
+    def test_and_it_is_the_one_most_windows_agree_on(self):
+        kept = autosync.usable_rows(self._staircase())
+        lags = [b for _, b in kept]
+        # The first plateau holds four of the six groups' worth of readings.
+        assert 9.0 < sum(lags) / len(lags) < 11.0
+
+    def test_a_real_one_percent_drift_is_still_followed(self):
+        """The bound must not eat the thing this exists to measure."""
+        rows = [(i * 6.0, i * 6.0 * 0.01, 0.05) for i in range(30)]
+        kept = autosync.usable_rows(rows)
+        assert len(kept) == len(rows)
+        slope, _ = autosync._robust_line([a for a, _ in kept],
+                                         [b for _, b in kept])
+        assert slope == pytest.approx(0.01, abs=0.002)
+
+    def test_two_windows_too_close_together_say_nothing_about_a_rate(self):
+        """The offset moves in fractions of a second and the noise is
+        comparable, so a pair five seconds apart implies any rate at all."""
+        rows = [(0.0, 0.0, 0.05), (5.0, 2.0, 0.05), (10.0, 0.1, 0.05),
+                (60.0, 0.2, 0.05), (120.0, 0.3, 0.05)]
+        slope, _ = autosync._robust_line([r[0] for r in rows],
+                                         [r[1] for r in rows])
+        assert abs(slope) <= autosync.MAX_DRIFT_RATE
