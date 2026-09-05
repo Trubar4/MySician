@@ -613,6 +613,30 @@ class _Layout:
     lane_top: float = float(LANE_TOP_MARGIN)
 
 
+def _technique_flags(note) -> str:
+    """What the tab asks for at this note, in one field.
+
+    One letter each, so a whole song's techniques fit in a column: b bend,
+    s slide, h hammer-on or pull-off, d dead note, p palm mute, l let ring.
+    A dash where the tab asks for nothing, because an empty cell in a
+    tab-separated table is a column that has gone missing.
+    """
+    flags = ""
+    if note.bend:
+        flags += "b"
+    if note.slide_to_next or note.slide_in or note.slide_out:
+        flags += "s"
+    if note.hammer_to_next:
+        flags += "h"
+    if note.dead:
+        flags += "d"
+    if note.palm_mute:
+        flags += "p"
+    if getattr(note, "let_ring", False):
+        flags += "l"
+    return flags or "-"
+
+
 class PlayingScreen:
     """Scrolling tab display with playback clock and optional audio matching."""
 
@@ -4152,11 +4176,34 @@ class PlayingScreen:
                 f"\t{'' if t.note_ms is None else f'{t.note_ms:.1f}'}"
                 f"\t{'' if t.semitones is None else t.semitones}\n")
 
+        # Every written note and what became of it -- with the BAR it is in,
+        # the fret and what the tab asked for there. Milliseconds locate a
+        # note for a machine and for nobody else: "practise bar 36 to 45" is
+        # something a player can act on and "practise at 78341 ms" is not.
+        # The fret and the technique are here for the same reason -- a run of
+        # bends and a stretch across four frets fail for different causes and
+        # are practised differently -- and because they make the log readable
+        # WITHOUT the tab file beside it, which is what lets a log be handed
+        # to anybody who does not have the song.
+        starts = [m.start_ms for m in self._timeline.measures]
+        written_at: dict[int, int] = {}
+        for note in self._timeline.notes:
+            key = int(round(note.timestamp_ms))
+            written_at[key] = written_at.get(key, 0) + 1
         fh.write("\n# every written note and how it ended up\n")
-        fh.write("note_ms\tstring\tmidi\tverdict\n")
+        fh.write("note_ms\tbar\tstring\tfret\tmidi\ttech\tchord\tverdict\n")
         for note in sorted(self._timeline.notes,
                            key=lambda n: (n.timestamp_ms, -n.string)):
-            fh.write(f"{note.timestamp_ms:.1f}\t{note.string}\t{note.midi_note}"
+            # A tab that parsed without measure info has no bars to name,
+            # and a "0" there would read as one. Same rule as the technique
+            # column: a dash says the answer is missing, a number says it is
+            # this one.
+            bar = (bisect.bisect_right(starts, note.timestamp_ms + 1e-6)
+                   if starts else "-")
+            fh.write(f"{note.timestamp_ms:.1f}\t{bar}\t{note.string}"
+                     f"\t{note.fret}\t{note.midi_note}"
+                     f"\t{_technique_flags(note)}"
+                     f"\t{written_at.get(int(round(note.timestamp_ms)), 1)}"
                      f"\t{matcher.get_note_state(note).value}\n")
 
     def _draw_help_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:

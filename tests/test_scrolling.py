@@ -1758,6 +1758,73 @@ class TestRunLog:
         screen._write_run_log(buffer)
         return buffer.getvalue()
 
+    def test_the_note_table_names_the_BAR_a_note_is_in(self):
+        """Milliseconds locate a note for a machine and for nobody else.
+        "Practise bars 36 to 45" is something a player can act on."""
+        text = self._log_text(self._played_screen())
+        header = [l for l in text.splitlines()
+                  if l.startswith("note_ms\t")][0]
+        assert header.split("\t") == ["note_ms", "bar", "string", "fret",
+                                      "midi", "tech", "chord", "verdict"]
+
+    def test_and_the_bar_is_the_one_the_note_is_really_in(self):
+        from pickhero.matcher import NoteMatcher
+        notes = [
+            NoteEvent(timestamp_ms=100.0, midi_note=40, string=6, fret=0,
+                      duration_ms=200.0, measure=0),
+            NoteEvent(timestamp_ms=2100.0, midi_note=45, string=5, fret=0,
+                      duration_ms=200.0, measure=1),
+        ]
+        timeline = Timeline(
+            notes, SongMetadata(title="Test", tempo=120),
+            measures=[MeasureInfo(index=0, start_ms=0.0, end_ms=2000.0),
+                      MeasureInfo(index=1, start_ms=2000.0, end_ms=4000.0)])
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "t"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        rows = [l.split("\t") for l in self._log_text(screen).splitlines()
+                if l and l[0].isdigit() and len(l.split("\t")) == 8]
+        assert [r[1] for r in rows] == ["1", "2"]
+
+    def test_it_names_the_fret_and_what_the_tab_asked_for(self):
+        """A run of bends and a stretch across four frets fail for different
+        reasons and are practised differently."""
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=0.0, midi_note=40, string=6, fret=12,
+                           duration_ms=500.0, measure=0,
+                           bend=((0.0, 0.0), (0.5, 2.0)), palm_mute=True)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "t"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        row = [l.split("\t") for l in self._log_text(screen).splitlines()
+               if l.startswith("0.0\t")][0]
+        assert row[3] == "12"
+        assert set(row[5]) == {"b", "p"}
+
+    def test_a_note_the_tab_asks_nothing_of_says_so_with_a_dash(self):
+        """An empty cell in a tab-separated table is a column that has gone
+        missing, not a note with no technique."""
+        row = [l.split("\t") for l in self._log_text(self._played_screen())
+               .splitlines() if l.startswith("1000.0\t")][0]
+        assert row[5] == "-"
+
+    def test_it_says_how_many_strings_were_written_at_that_moment(self):
+        """A four-string chord credited from one strike and a single note
+        heard as itself are two different things, and the log has to be able
+        to tell a reader which it was looking at."""
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=0.0, midi_note=40 + i, string=6 - i,
+                           fret=0, duration_ms=500.0, measure=0)
+                 for i in range(3)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "t"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        rows = [l.split("\t") for l in self._log_text(screen).splitlines()
+                if l.startswith("0.0\t")]
+        assert [r[6] for r in rows] == ["3", "3", "3"]
+
     def test_it_names_the_practice_speed(self):
         screen = self._played_screen()
         screen._tempo_factor = 0.8
@@ -1782,7 +1849,7 @@ class TestRunLog:
     def test_a_note_never_struck_reads_as_pending_not_as_hit(self):
         text = self._log_text(self._played_screen())
         table = text.split("# every written note and how it ended up")[1]
-        assert "2000.0\t5\t45\tpending" in table
+        assert "2000.0\t-\t5\t0\t45\t-\t1\tpending" in table
 
     def test_the_counts_that_explain_a_bad_score_are_in_the_header(self):
         text = self._log_text(self._played_screen())

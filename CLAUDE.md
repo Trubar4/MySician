@@ -1726,6 +1726,38 @@ them.
   precisely BECAUSE they are at that passage. `_load_song` takes `resume_at_ms`, clamped to the new track's length, since it may be shorter.
   The screen is rebuilt from scratch on that path, so the position has to be carried over by hand.
 
+## Nine Out Of Ten Red Notes Are Not About The Playing
+
+"Kannst du meine Logs je Song lesen und mir helfen — wie ein Gitarrenlehrer." The run log already holds what a teacher needs; what nobody had
+done is ask what a red note is EVIDENCE of. Every missed note in three complete runs of two real songs, classified by joining it to the strike
+that arrived nearest it:
+
+| why the note failed | Leave A Light On | the same song again | Californication |
+|---|---|---|---|
+| subharmonic — an arpeggio read as one note | 72 % | 71 % | 65 % |
+| a strike arrived carrying no pitch | 17 % | 10 % | 23 % |
+| **a clean reading of a WRONG pitch** | **8 %** | **9 %** | **9 %** |
+| an octave out (green on screen; counted here for completeness) | 2 % | 2 % | 1 % |
+| no strike within the window at all | 0 % | 8 % | 2 % |
+
+**So a report that simply listed the weakest bars would spend most of its advice on passages that were played correctly**, which is the worst
+thing a teacher can do and is exactly what the first version of this did. `tools/coach.py` therefore reports only what it can stand behind:
+
+- **A strike that never arrived** is the one unambiguous fault, and **a clean reading of a different pitch** names the interval it went wrong
+  by. Those two are the playing.
+- **Timing is honest even where the pitch is not**: a subharmonic strike proves something was struck at that moment, whatever the detector
+  made of it. So the timing per bar is measured over every strike, not only over the readable ones.
+- **Everything else is counted and named as unreadable**, and a passage whose failures are all unreadable says so in as many words rather than
+  being ranked among the weak ones. Absence of evidence is the commonest thing in this signal path.
+- **The trust check runs first and outranks everything.** A wrong input device makes every other number in a log meaningless — this project
+  has spent whole sessions on playing that was never in the signal path — so `trustworthy()` reports the room microphone, the gate that ate
+  the audio, a peak below where the pitch rots, and dropped buffers, before a single bar is named.
+
+**And the log had to become self-contained first.** The note table was `note_ms string midi verdict`: milliseconds locate a note for a machine
+and for nobody else, and everything else needed the tab file beside it. It now carries the **bar**, the **fret**, what the tab asked for
+(`tech`: bend, slide, hammer, dead, palm mute, let ring) and how many strings were written at that moment — so "practise bars 36 to 45, frets
+0 to 5, there is a slide in there" comes out of the log alone, and a log can be handed to anybody without the song.
+
 ## Two Kinds Of History, And They Answer Different Questions
 
 `progress.py` keeps the BEST a song has ever been played — one record per song, overwritten as it improves. That answers "am I getting better
