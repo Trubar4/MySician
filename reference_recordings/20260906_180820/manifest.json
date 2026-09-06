@@ -1,0 +1,25 @@
+{
+  "created": "2026-09-06T18:08:20",
+  "samplerate": 48000,
+  "channels": 1,
+  "device": "Analogue 1 + 2 (Focusrite USB A",
+  "tuning_offset_semitones": 0,
+  "drop_semitones": 0,
+  "takes": [
+    {
+      "id": "play_along",
+      "block": 99,
+      "title": "Durchgespielt: songs/Kid Rock - Rock On.gp",
+      "file": "play_along.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [],
+      "expected_midi": [],
+      "song": "songs/Kid Rock - Rock On.gp",
+      "tempo_percent": 100,
+      "seconds": 45.0,
+      "peak_dbfs": -11.2,
+      "rms_dbfs": -32.4
+    }
+  ]
+}

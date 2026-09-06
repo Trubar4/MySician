@@ -4149,6 +4149,20 @@ class PlayingScreen:
         # How far the picture had to be pulled to stay with the recording,
         # and how much of that the map was already doing. A large pull with
         # few points says where the next point belongs.
+        # WHERE the points are, next to how many there are. Beyond the
+        # outermost one the map extrapolates, and a song whose points stop
+        # two thirds of the way through is a song whose last minute is a
+        # guess -- which is exactly what "synced at the start, apart at the
+        # end" looks like from the inside. Measured on the song that
+        # prompted it: 5 of 41 windows readable, all of them before 2:48 of
+        # a 4:03 song, and a fitted drift of 3 % where a real one is about 1.
+        if anchors:
+            covered = 100.0 * (anchors[-1][0] - anchors[0][0]) / max(
+                1.0, self._timeline.duration_ms)
+            fh.write(f"mp3_sync_covers\t{anchors[0][0] / 1000:.0f}"
+                     f"-{anchors[-1][0] / 1000:.0f}s of "
+                     f"{self._timeline.duration_ms / 1000:.0f}s"
+                     f"\t{covered:.0f}%\n")
         fh.write(f"mp3_worst_pull_ms\t{self._worst_sync_pull_ms:.0f}\n")
         fh.write(f"mp3_snaps\t{self._mp3_snaps}\n")
         fh.write(f"mp3_leads\t{'yes' if self._mp3_led else 'no'}\n")

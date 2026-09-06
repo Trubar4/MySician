@@ -213,3 +213,63 @@ class TestTheFavouritesFilter:
         menu.reload_files()
         assert menu._favourites_only is True
         assert [p.stem for p in menu._display_files] == ["alpha"]
+
+
+class TestReachingTheTunerWhileSearching:
+    """A letter belongs to the search box while it is open, so U types a "u"
+    -- and tuning up in the middle of hunting for a song is exactly when the
+    tuner is wanted. Shift+U is heard first, and the search survives it.
+    """
+
+    def _app(self, tmp_path):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.app import App
+        from pickhero.ui.menu import MenuScreen
+
+        config = Config()
+        config.songs_dir = str(tmp_path)
+        app = App.__new__(App)
+        app._config = config
+        app._menu = MenuScreen(tmp_path, config=config)
+        app._state = "menu"
+        app._return_to = "menu"
+        app._tuner_menu = None
+        opened = []
+        app._open_tuner = lambda came_from: opened.append(came_from)
+        return app, opened, pygame
+
+    def test_shift_u_opens_it_with_the_search_box_open(self, tmp_path):
+        app, opened, pygame = self._app(tmp_path)
+        app._menu.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_f, unicode="f", mod=0))
+        assert app._menu.is_searching
+        app._handle_menu_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_u, unicode="U",
+            mod=pygame.KMOD_SHIFT))
+        assert opened == ["menu"]
+
+    def test_and_the_search_is_still_there_afterwards(self, tmp_path):
+        app, opened, pygame = self._app(tmp_path)
+        for key, ch in ((pygame.K_f, "f"), (pygame.K_r, "r"),
+                        (pygame.K_o, "o")):
+            app._menu.handle_event(pygame.event.Event(
+                pygame.KEYDOWN, key=key, unicode=ch, mod=0))
+        before = app._menu._search_text
+        assert before == "ro"
+        app._handle_menu_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_u, unicode="U",
+            mod=pygame.KMOD_SHIFT))
+        assert app._menu.is_searching
+        assert app._menu._search_text == before
+
+    def test_a_plain_u_still_types_into_the_search(self, tmp_path):
+        """Otherwise the letter would be unreachable, which is worse than
+        having to hold shift for the tuner."""
+        app, opened, pygame = self._app(tmp_path)
+        app._menu.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_f, unicode="f", mod=0))
+        app._handle_menu_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_u, unicode="u", mod=0))
+        assert opened == []
+        assert app._menu._search_text == "u"

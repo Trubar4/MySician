@@ -1437,3 +1437,41 @@ class TestTheOutputDeviceIsSomethingTheAppOwns:
         monkeypatch.setattr(out_mod, "reopen", lambda: False)
         screen._reopen_output()
         assert "could not be reopened" in screen._status_note_text()
+
+
+class TestTheLogSaysWhatTheSyncPointsCover:
+    """"Synced at the start, apart at the end" is what extrapolation looks
+    like from the inside. Beyond the outermost point the map has nothing
+    measured to follow, and the count of points alone cannot say that.
+    """
+
+    def _log(self, anchors):
+        import io
+        from pickhero.matcher import NoteMatcher
+        from pickhero.tabs.timeline import (MeasureInfo, NoteEvent,
+                                            SongMetadata, Timeline)
+        from pickhero.ui.scrolling import PlayingScreen
+        from pickhero.config import Config
+
+        timeline = Timeline(
+            [NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=40,
+                       string=6, fret=0, measure=0)],
+            SongMetadata(title="t", tempo=120),
+            measures=[MeasureInfo(index=0, start_ms=0.0, end_ms=240_000.0)])
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "t"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        screen._mp3_anchors = lambda: list(anchors)
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        return buffer.getvalue()
+
+    def test_it_names_the_span_and_the_share(self):
+        text = self._log([(10_000.0, -900.0), (170_000.0, -400.0)])
+        line = [l for l in text.splitlines()
+                if l.startswith("mp3_sync_covers")]
+        assert line, text
+        assert "10-170s of" in line[0]
+
+    def test_a_song_with_no_points_says_nothing_rather_than_zero(self):
+        assert "mp3_sync_covers" not in self._log([])

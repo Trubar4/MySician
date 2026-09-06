@@ -1060,6 +1060,45 @@ it — but the interesting question, which of the two ways a rescue is lost, cou
   **91 % of windows clear the 200 ms floor**. So the windows were arriving and the loss is in the verifier, which is where the next attempt
   belongs.
 
+## The Rhythm Cannot Place A Take Of A Song That Repeats Itself
+
+`best_offset_at` scored an alignment on TIMES alone, and the docstring said why in as many words: fitting on pitch would assume the answer to the
+question being asked. That is right about the danger and wrong about the alternative, and Kid Rock's "Rock On" settles it. Its verse repeats one
+rhythmic figure, so on a 45-second take of it the rhythm does not merely tie — **it actively prefers the wrong bars**. The true offset ranks
+**93rd** by strikes-on-the-grid, 48 against the winner's 66; its pitch agreement is **61 of 72 against 12**. Read where the times point, the take
+scores **30 %** of its written notes; read where the pitches point, **86 %**.
+
+- **The candidates come from both histograms** — where strikes pile up on written onsets, and where they pile up on onsets whose pitch they
+  carry. Without the second the true place is never even a candidate.
+- **The times still answer; the pitches may only OVERRULE them**, and only by `ALIGN_PITCH_DOUBT` (3.0). Over the eight play-along takes the
+  ratio is 1.00-1.05 where the two agree, 1.83-1.93 where the pitch answer is WORSE (and once 0.51), and 4.51 on the take the times cannot
+  place. The window is 1.93 to 4.51. Same shape as `TEMPO_DOUBT_RATIO`, and for the same reason: a criterion that is usually right must not be
+  replaced by one that is occasionally better.
+- **The evidence is an F-measure, not a hit count.** Counting only the strikes that find a note of their own pitch is free in a dense passage:
+  a chorus writing six strings a beat has some note of every pitch class at nearly every moment. Measured, that moved the arpeggio take from its
+  true place at song −1 s into a chord section at 125 s, where 615 notes sit under its 134 strikes. Both directions — what share of the strikes
+  landed on a note of their pitch, and what share of the notes written in the covered stretch got such a strike.
+- **A subharmonic is not evidence about a note.** It names the chord sounding in the room, which is the same reason the matcher never scores
+  one. Counted in, 62 % of the arpeggio take's strikes voted for that dense chorus; counted out, the true place wins two to one.
+- **Every other take is unmoved**, which is what makes the change safe: all seven earlier play-along takes align exactly where they did.
+
+## A Song With Four Chords And Nothing Else
+
+"Whats up ist am Ende nicht mehr sync." The run log named it and the offline measurement confirmed it: `mp3_sync_points 4`, the last at **178 s
+of a 243 s song**, and sections reading `+0.80% +2.56% +3.51%`.
+
+Measured without the app (`check_song_sync.py`): **5 of 41 windows readable**, all of them before 2:48, at a fitted drift of **−3.0 %** where a
+real mismatch is about 1. The song is a four-chord loop repeating every eight bars, so the chroma matches equally well fourteen, twenty-eight and
+forty-two seconds away — the lag table is a staircase of exactly those. This is the hardest possible case for auto-sync and it is not going to be
+solved by a threshold.
+
+- **What the app can honestly do is say where its points stop.** `mp3_sync_covers` in the run log: the span the points span, and it as a share of
+  the song. Beyond the outermost point the map extrapolates a slope fitted on whatever was readable, and "synced at the start, apart at the end"
+  is exactly what that looks like from the inside. The count of points alone cannot say it.
+- **`MAX_DRIFT_RATE` was NOT lowered.** 3 % is inside it and wrong, which is an argument for tightening — and one counter-example is not a
+  calibration. The Godsmack chapter set 5 % deliberately generous, and moving it on one song would be fitting to that song.
+- **The fix for a song like this is a hand-placed point near the end** (`Shift+S`), which is what every other tool asks for too.
+
 ## Is It The Files Or The App? Answer That First
 
 "The picture and the backing drift apart" has three causes and they are fixed in three different places: the tab is wrong, the recording is a

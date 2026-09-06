@@ -68,14 +68,26 @@ def _find_song(name: str) -> Path:
     either produced a path nothing could open, and the take was then reported
     as missing rather than as a take of a song this repo does not carry.
     """
-    song = REPO_ROOT / "songs" / name
-    if song.exists():
-        return song
-    for suffix in (".gp5", ".gp", ".gpx"):
-        candidate = song.with_name(song.name + suffix)
+    # A manifest may say "timing_test_100bpm", "x.gp" or a whole path like
+    # "songs/Kid Rock - Rock On.gp" -- the recorder writes back whatever the
+    # app was given. Only the file NAME is ours to look up, and it is matched
+    # case-insensitively because the name travels from a Windows machine,
+    # where "Rock On.gp" and "Rock on.gp" are the same file and here are not.
+    folder = REPO_ROOT / "songs"
+    stem = Path(name).name
+    for candidate in (folder / stem,
+                      *(folder / (stem + suffix)
+                        for suffix in (".gp5", ".gp", ".gpx"))):
         if candidate.exists():
             return candidate
-    return song
+    if folder.is_dir():
+        for candidate in folder.iterdir():
+            if candidate.name.lower() in (stem.lower(),
+                                          *(stem.lower() + suffix
+                                            for suffix in (".gp5", ".gp",
+                                                           ".gpx"))):
+                return candidate
+    return folder / stem
 
 
 def main() -> int:
@@ -126,7 +138,16 @@ def main() -> int:
         stamps = [s.timestamp_ms for s in strikes]
         tempo, _ = check_tempo(stamps, onsets,
                                stated / 100.0 if stated else None)
-        offset, _, tempo = best_alignment(stamps, onsets, tempo)
+        # Pitch is not allowed to SCORE an alignment -- that would assume
+        # the answer -- but it may break a tie the rhythm cannot: a song
+        # whose verse repeats one figure offers several offsets that put the
+        # same number of strikes on the grid, whole bars apart.
+        offset, _, tempo = best_alignment(
+            stamps, onsets, tempo,
+            [None if (s.note.unpitched
+                      or getattr(s.note, "subharmonic", False))
+             else s.note.midi_note for s in strikes],
+            [(n.timestamp_ms, n.midi_note) for n in timeline.notes])
 
         subharmonic = sum(1 for s in strikes
                           if getattr(s.note, "subharmonic", False))

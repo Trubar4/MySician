@@ -157,6 +157,17 @@ class App:
                 self._handle_settings_event(event)
 
     def _handle_menu_event(self, event: pygame.event.Event) -> None:
+        # Shift+U reaches the tuner even with the search box open, and it has
+        # to be tested BEFORE the guard below: while searching, every letter
+        # belongs to the search, so a plain U types a "u" and the shifted one
+        # would type a "U". Tuning up in the middle of hunting for a song is
+        # exactly when this is wanted, and the search survives it -- the
+        # tuner only changes which screen is drawn, so the list comes back
+        # filtered the way it was left.
+        if (event.type == pygame.KEYDOWN and event.key == pygame.K_u
+                and event.mod & pygame.KMOD_SHIFT):
+            self._open_tuner("menu")
+            return
         if event.type == pygame.KEYDOWN and not self._menu.is_searching:
             if event.key == pygame.K_d:
                 self._open_device_menu("menu")

@@ -188,7 +188,7 @@ def main() -> int:
 
     # ---- do they run together? ---------------------------------------
     rec_chroma, fps = chroma_of_audio(audio, sr)
-    tab_chroma, n_notes = chroma_of_tab(tab_path, fps)
+    tab_chroma = chroma_of_tab(tab_path, fps)
     if not len(tab_chroma):
         print("\nKeine Noten im Tab -- nichts auszurichten.")
         return 1

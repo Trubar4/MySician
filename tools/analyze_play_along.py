@@ -56,6 +56,12 @@ MATCH_MS = 140.0
 # "the intro again". A take of anything but the beginning could not be read.
 ALIGN_MAX_MS = 30_000.0
 ALIGN_STEP_MS = 5.0
+# How many places to look, from each of the two histograms -- where strikes
+# pile up on written onsets, and where they pile up on onsets whose pitch
+# they carry.
+ALIGN_REGIONS = 8
+# How much better the pitch evidence has to be before it overrules the times.
+ALIGN_PITCH_DOUBT = 3.0
 # Practice speeds the app can be in when the take was played (PgDn/PgUp go
 # from 50 % to 100 % in steps of 5). A take at 80 % lasts 1/0.8 as long as
 # the tab says, so the written grid has to be stretched by that much before
@@ -91,17 +97,103 @@ def strikes_of(audio, rate):
     return out
 
 
-def best_offset_at(strike_ms, onsets, tempo):
+def best_offset_at(strike_ms, onsets, tempo, strike_midi=None,
+                   written=None):
     """Where the song starts inside the recording, at a given practice tempo.
 
-    Scored by how many strikes land near a written onset, which needs no
-    pitch to be right -- an alignment fitted on pitch would quietly assume
-    the answer to the question being asked.
+    Scored on TIMES alone for as long as the times can answer, and this
+    was written up here for a year as a principle: fitting on pitch would
+    assume the answer to the question being asked. That is right about the
+    danger and wrong about the alternative, and Kid Rock's "Rock On"
+    settles it. Its verse repeats one rhythmic figure, so on a 45-second
+    take of it the rhythm does not merely tie -- it actively prefers the
+    wrong bars. The true offset ranks NINETY-THIRD by strikes-on-the-grid,
+    with 48 against the winner's 66, while its pitch agreement is 61 of 72
+    against the winner's 12. Read where the times point, the take scores
+    30 % of its written notes; read where the pitches point, 86 %.
+
+    So the candidates come from BOTH: the places where strikes pile up on
+    written onsets, and the places where strikes pile up on onsets whose
+    pitch they carry. Among them the pitches choose, with the time hits as
+    the tie-break. An alignment that puts a take on the wrong bars is not
+    the conservative option -- it is simply wrong, and it looks exactly
+    like a detector that has stopped working.
+
+    The circularity is real and is handled by SAYING SO rather than by
+    pretending it away: `alignment_note()` reports when the two disagree,
+    so a reader knows that "heard with the right pitch" rests on an
+    alignment the pitches helped choose.
+
+    `strike_midi` runs parallel to `strike_ms` and carries the pitch a
+    strike can be TRUSTED to name -- None or 0 where it cannot. A strike
+    with no pitch is one such case and a SUBHARMONIC is the other, and the
+    second one decides this: a subharmonic names the chord sounding in the
+    room, not the note just struck, and on an arpeggio it is most of what
+    the detector produces. Counted as evidence, 62 % of one take's strikes
+    voted for a dense chorus 126 seconds from where the take really was.
+    Counted out, the true place wins by two to one.
+
+    `written` is the tab as (time_ms, midi) pairs, which is not the same
+    list as `onsets` because a chord writes several pitches at one moment.
+    Without either, this behaves exactly as it always did.
     """
     if not strike_ms or not onsets:
         return 0.0, 0, float("inf")
     grid = np.asarray(onsets, dtype=float) / tempo
     times = np.asarray(strike_ms, dtype=float)
+    heard = (np.asarray([m or 0 for m in strike_midi], dtype=float)
+             if strike_midi is not None else None)
+    if written:
+        note_at = np.asarray([t for t, _ in written], dtype=float) / tempo
+        note_is = np.asarray([m for _, m in written], dtype=float)
+    else:
+        note_at = note_is = None
+
+    def agreement(offset):
+        """How well the strikes and the WRITTEN NOTES explain each other.
+
+        Counting only the strikes that find a note of their own pitch is
+        free in a dense passage: a chorus writing six strings a beat has
+        some note of every pitch class at almost every moment, so a sparse
+        45-second take scores full marks there. Measured, that is not a
+        hypothetical -- it moved the arpeggio take from its true place at
+        song -1 s into a chord section at 125 s, where 615 notes sit under
+        its 134 strikes.
+
+        So both directions, combined as an F-measure: what fraction of the
+        strikes landed on a note of the pitch they carry, and what fraction
+        of the notes WRITTEN in the stretch the take covers got such a
+        strike. A dense passage wins the first and loses the second.
+
+        Octave-equivalent, the way the matcher scores: a low string read an
+        octave up is the commonest reading this detector produces and is
+        green on screen, so counting it as a disagreement would prefer
+        whichever bar happened to be misread less.
+        """
+        if heard is None or note_at is None:
+            return 0.0
+        song = times - offset
+        lo, hi = song.min() - MATCH_MS, song.max() + MATCH_MS
+        within = (note_at >= lo) & (note_at <= hi)
+        if not within.any():
+            return 0.0
+        their_at, their_is = note_at[within], note_is[within]
+        explained = np.zeros(len(their_at), dtype=bool)
+        struck = 0
+        for when, note in zip(song, heard):
+            if note <= 0:                      # unpitched: says nothing here
+                continue
+            fits = (np.abs(their_at - when) <= MATCH_MS) & (
+                (their_is - note) % 12 == 0)
+            if fits.any():
+                struck += 1
+                explained |= fits
+        pitched = int((heard > 0).sum())
+        if not struck or not pitched:
+            return 0.0
+        precision = struck / pitched
+        recall = float(explained.sum()) / len(their_at)
+        return 2.0 * precision * recall / (precision + recall)
 
     def score(offset):
         """(how many strikes land on the grid, how tightly they land)."""
@@ -126,16 +218,69 @@ def best_offset_at(strike_ms, onsets, tempo):
     counts, _ = np.histogram(diffs, bins=edges)
     # A few regions, not one: the true offset can lose the raw count to a
     # dense passage that happens to line up with a different bar.
-    regions = np.argsort(counts)[::-1][:8]
+    wanted = list(np.argsort(counts)[::-1][:ALIGN_REGIONS])
+    if note_at is not None and heard is not None:
+        # ...and the same histogram over the pairs whose PITCH agrees, which
+        # is where a take of a repetitive verse is actually found. Without
+        # this the true offset is never even a candidate: on the take that
+        # prompted it, it ranks 93rd by time alone.
+        agreeing = []
+        for when, note in zip(times, heard):
+            if note <= 0:
+                continue
+            fits = (note_is - note) % 12 == 0
+            agreeing.append(when - note_at[fits])
+        if agreeing:
+            pitched = np.concatenate(agreeing)
+            pitched = pitched[(pitched >= -grid.max() - 1000.0)
+                              & (pitched <= ALIGN_MAX_MS)]
+            if pitched.size:
+                by_pitch, _ = np.histogram(pitched, bins=edges)
+                for region in np.argsort(by_pitch)[::-1][:ALIGN_REGIONS]:
+                    if region not in wanted:
+                        wanted.append(int(region))
+    regions = wanted
 
-    best_offset, best_hits, best_error = 0.0, -1, float("inf")
+    # One best per region first, then choose between the regions. They are
+    # the distinct candidates: offsets inside a region differ by
+    # milliseconds, offsets in different regions by whole bars.
+    found = []
     for region in regions:
         lo, hi = edges[region] - MATCH_MS, edges[region + 1] + MATCH_MS
+        best = None
         for offset in np.arange(lo, hi, ALIGN_STEP_MS):
             hits, error = score(float(offset))
-            if hits > best_hits or (hits == best_hits and error < best_error):
-                best_offset, best_hits, best_error = float(offset), hits, error
-    return best_offset, best_hits, best_error
+            if best is None or hits > best[0] or (hits == best[0]
+                                                  and error < best[1]):
+                best = (hits, error, float(offset))
+        if best is not None:
+            found.append(best)
+    if not found:
+        return 0.0, 0, float("inf")
+
+    by_time = sorted(found, key=lambda c: (-c[0], c[1]))
+    if heard is None or note_at is None:
+        hits, error, offset = by_time[0]
+        return offset, hits, error
+
+    # The TIMES still answer. The pitches may only OVERRULE them, and only
+    # when they disagree overwhelmingly -- the same shape as the tempo check
+    # further down, and for the same reason: a criterion that is usually
+    # right must not be replaced by one that is occasionally better.
+    #
+    # Measured over the eight play-along takes there are: where the two
+    # already agree the ratio is 1.00-1.05, where the pitch answer is WORSE
+    # it is 1.83-1.93 (and once 0.51), and on the take the times cannot
+    # place at all it is 4.51. So the window is 1.93 to 4.51 and the value
+    # is 3.0 -- above every disagreement that was wrong and well below the
+    # one that was right.
+    by_pitch = max(found, key=lambda c: (agreement(c[2]), c[0], -c[1]))
+    settled = agreement(by_time[0][2])
+    if agreement(by_pitch[2]) >= max(settled, 1e-9) * ALIGN_PITCH_DOUBT:
+        hits, error, offset = by_pitch
+    else:
+        hits, error, offset = by_time[0]
+    return offset, hits, error
 
 
 # A stated practice speed is checked against the audio, never believed. The
@@ -169,7 +314,8 @@ def check_tempo(strike_ms, onsets, stated):
     return best_tempo, note
 
 
-def best_alignment(strike_ms, onsets, tempo=None):
+def best_alignment(strike_ms, onsets, tempo=None, strike_midi=None,
+                   written=None):
     """(offset, hits, tempo) for the best fit, over one tempo or all of them.
 
     Reading a slowed-down take against the written grid is not a small error
@@ -178,11 +324,13 @@ def best_alignment(strike_ms, onsets, tempo=None):
     So the tempo is part of the fit unless the caller states it.
     """
     if tempo is not None:
-        offset, hits, _ = best_offset_at(strike_ms, onsets, tempo)
+        offset, hits, _ = best_offset_at(strike_ms, onsets, tempo,
+                                         strike_midi, written)
         return offset, hits, tempo
     best = (0.0, -1, float("inf"), 1.0)
     for factor in TEMPO_FACTORS:
-        offset, hits, error = best_offset_at(strike_ms, onsets, factor)
+        offset, hits, error = best_offset_at(strike_ms, onsets, factor,
+                                             strike_midi, written)
         # Prefer the tempo that explains more strikes; on a tie, the tighter
         # fit. A tie broken by neither would silently prefer 50 %, whose
         # stretched grid has a written onset near almost any strike.
@@ -264,7 +412,12 @@ def main() -> int:
     if doubt:
         print(doubt + "\n")
         stated = None
-    offset, aligned, tempo = best_alignment(strike_ms, onsets, tempo)
+    offset, aligned, tempo = best_alignment(
+        strike_ms, onsets, tempo,
+        [None if (s.note.unpitched
+                  or getattr(s.note, "subharmonic", False))
+         else s.note.midi_note for s in strikes],
+        [(n.timestamp_ms, n.midi_note) for n in timeline.notes])
 
     print(f"{wav_path.name}: {len(audio) / rate:.0f}s, {rate} Hz")
     print(f"Song: {Path(song).name} — {len(onsets)} Anschlaege geschrieben")
