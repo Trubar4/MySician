@@ -263,6 +263,27 @@ class TestReachingTheTunerWhileSearching:
         assert app._menu.is_searching
         assert app._menu._search_text == before
 
+    def test_a_capital_U_with_no_shift_bit_still_reaches_it(self, tmp_path):
+        """What the player's machine actually sent: the key arrived carrying
+        a capital "U" and `event.mod` had no shift bit in it at all, so the
+        letter went into the search box. The character is the request."""
+        app, opened, pygame = self._app(tmp_path)
+        app._menu.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_f, unicode="f", mod=0))
+        app._handle_menu_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_u, unicode="U", mod=0))
+        assert opened == ["menu"]
+        assert app._menu._search_text == ""
+
+    def test_every_way_a_keyboard_can_say_shift(self, tmp_path):
+        app, opened, pygame = self._app(tmp_path)
+        for mod in (pygame.KMOD_SHIFT, pygame.KMOD_LSHIFT, pygame.KMOD_RSHIFT,
+                    pygame.KMOD_LSHIFT | pygame.KMOD_NUM):
+            opened.clear()
+            app._handle_menu_event(pygame.event.Event(
+                pygame.KEYDOWN, key=pygame.K_u, unicode="U", mod=mod))
+            assert opened == ["menu"], mod
+
     def test_a_plain_u_still_types_into_the_search(self, tmp_path):
         """Otherwise the letter would be unreachable, which is worse than
         having to hold shift for the tuner."""

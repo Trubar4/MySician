@@ -1082,6 +1082,28 @@ scores **30 %** of its written notes; read where the pitches point, **86 %**.
   one. Counted in, 62 % of the arpeggio take's strikes voted for that dense chorus; counted out, the true place wins two to one.
 - **Every other take is unmoved**, which is what makes the change safe: all seven earlier play-along takes align exactly where they did.
 
+## A Song Is As Long As It Is WRITTEN, Not As Long As Its Notes
+
+"Whats up ist am Ende nicht mehr sync. Stimmt die Songlaenge nicht zum Tab?" The right question, and the answer is that the FILES agree and
+the app did not:
+
+| | |
+|---|---|
+| tab, 80 bars at a constant 3.69 s | **295.4 s** |
+| recording | 292.5 s, music from 2.3 s to 291.0 s |
+| what the app called the song's length | **243.5 s** |
+
+`Timeline.duration_ms` was the end of the last NOTE. This tab's guitar sits out the outro, so fourteen written bars carry nothing — and the
+app then agreed the song was over **fifty-two seconds before the music was**. The picture stops, the recording plays on, and from the inside
+that is indistinguishable from a sync fault. It is the length of the written piece now, or the last note where that runs past the final bar
+line (a let-ring note may, and a song is not over while something is still sounding).
+
+Measured across the songs to hand: "What's Up" **+51.9 s**, Kid Rock +1.6 s, the other two exactly nothing. So it is rare and it is total when
+it happens.
+
+**And the auto-sync still cannot place this song**, which is the other half and is not fixed by this: 5 of 41 windows readable, and the
+unreadable ones cluster at exactly ±4 and ±8 bars — 14.8 s and 29.5 s — because the verse is one four-chord loop. See the chapter below.
+
 ## A Song With Four Chords And Nothing Else
 
 "Whats up ist am Ende nicht mehr sync." The run log named it and the offline measurement confirmed it: `mp3_sync_points 4`, the last at **178 s
@@ -1331,6 +1353,18 @@ top jumped five semitones to the bottom: a whole recording rebuilt, seconds of s
   to find out where it went is bad enough; this one reloads the song and rebuilds the stretched recording, so finding out costs seconds.
 - **One helper answers both**, so the line cannot advertise a tuning the key refuses — the same property `K` and its HUD line are held to, and
   the test asserts it over every position in the list rather than asserting the wording.
+
+## Three Ways A Keyboard Can Say Shift, And Only One Was Asked
+
+`Shift+U` opens the tuner from the song list with the search box open, and it did not work on the player's machine: the key arrived carrying a
+capital **"U"** with **no shift bit in `event.mod` at all**, so the guard fell through and the letter went into the search.
+
+Three signals now, and any of them is the request: the event's own modifiers (the normal answer), the live keyboard state
+(`pygame.key.get_mods()`, which catches a stale `event.mod`), and the CHARACTER — a capital U is what was typed, however the layout produced
+it. With caps lock on the two swap over, which is the price and is small: the letter is still typeable with shift held.
+
+`pygame.key.get_mods()` needs the video system and raises without it, so it is wrapped. **A key handler that can raise takes the app down with
+it**, and it is asked on every keystroke in the song list.
 
 ## The Diary Was Right And The Page Was Yesterday
 

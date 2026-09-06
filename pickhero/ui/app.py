@@ -26,6 +26,20 @@ from pickhero.ui import scrolling
 from pickhero.ui.scrolling import PlayingScreen
 
 
+def _shift_held() -> bool:
+    """Is a shift key down right now, as the keyboard sees it.
+
+    Asked as well as `event.mod`, which arrived without the shift bit on the
+    player's machine. Guarded because it needs the video system: pygame
+    raises without it, and a key handler that can raise takes the app down
+    with it.
+    """
+    try:
+        return bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+    except pygame.error:
+        return False
+
+
 class App:
     """Main application with game loop."""
 
@@ -164,8 +178,19 @@ class App:
         # exactly when this is wanted, and the search survives it -- the
         # tuner only changes which screen is drawn, so the list comes back
         # filtered the way it was left.
-        if (event.type == pygame.KEYDOWN and event.key == pygame.K_u
-                and event.mod & pygame.KMOD_SHIFT):
+        #
+        # Three signals, because ONE of them was not enough on the player's
+        # machine: the key arrived carrying a capital "U" with no shift bit
+        # in `event.mod` at all, and the letter went into the search box.
+        # The event's own modifiers are the normal answer, the live keyboard
+        # state catches a stale one, and the CHARACTER catches the rest --
+        # a capital U is the request however the layout produced it. With
+        # caps lock on the two swap over, which is the price and is small:
+        # the letter is still typeable, with shift held.
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_u and (
+                event.mod & pygame.KMOD_SHIFT
+                or _shift_held()
+                or event.unicode == "U"):
             self._open_tuner("menu")
             return
         if event.type == pygame.KEYDOWN and not self._menu.is_searching:

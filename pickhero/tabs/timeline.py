@@ -128,7 +128,23 @@ class Timeline:
         # both were being recomputed over every note in the song, several
         # times a frame. On a dense song that was the single biggest cost in
         # the whole loop.
-        self._duration_ms = max((n.end_ms for n in self._notes), default=0.0)
+        # As long as the WRITTEN PIECE, not as long as the notes. A tab
+        # whose final bars are empty -- an outro the guitar sits out -- ends
+        # here the moment the last note stops, and everything downstream
+        # then agrees that the song is over while the recording plays on.
+        # Measured on the player's own files: "What's Up" writes 80 bars of
+        # 3.69 s, so the piece runs 295.4 s, and its last note is at 243.5.
+        # Fifty-two seconds of music with the picture already finished, and
+        # from the inside that is indistinguishable from a sync fault.
+        # (Kid Rock loses 1.6 s to the same thing; the other two lose none.)
+        #
+        # The larger of the two rather than the bars alone, because a
+        # let-ring note may sound past the last bar line and a song is not
+        # over while something is still ringing.
+        self._duration_ms = max(
+            max((n.end_ms for n in self._notes), default=0.0),
+            self._measures[-1].end_ms if self._measures else 0.0,
+        )
         # How far back a note can START and still be sounding now. Notes are
         # sorted by their start, so this is what turns "which notes are
         # sounding" from a scan of the whole song into a slice of it.
