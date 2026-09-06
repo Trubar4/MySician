@@ -47,6 +47,15 @@ songs/*.gp4
 songs/*.gp5
 songs/*.gpx
 songs/*.gp
+# ...and the recording that sits beside the tab, which is the same song and
+# the same copyright. Only half of this rule was written down, so a backing
+# track picked with Shift+U landed in `git status` as an untracked file and
+# would eventually have been committed by whoever was tidying up.
+songs/*.mp3
+songs/*.ogg
+songs/*.wav
+songs/*.m4a
+songs/*.flac
 !songs/.gitkeep
 
 # Temp files
