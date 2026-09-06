@@ -3539,11 +3539,18 @@ class PlayingScreen:
         stat_font = _get_font("consolas", 28)
         hint_font = _get_font("arial", 18)
 
-        center_y = h // 2 - 80
+        # Every line is STACKED on the measured height of the one above it,
+        # never placed at an offset of its own. Fixed offsets are how "New
+        # Best!" at +132 in the big font came to be drawn through the weakest
+        # section at +140 in the small one -- the two were laid out on the
+        # assumption that the other was absent. Same rule as the footer and
+        # the sync panel: the block grows, it does not collide.
+        lines: list[tuple[pygame.Surface, int]] = []
 
-        # "Song Complete!" header
-        header_surf = header_font.render("Song Complete!", True, t.hud_accent)
-        surface.blit(header_surf, (w // 2 - header_surf.get_width() // 2, center_y))
+        def say(surface_line, gap: int = 4) -> None:
+            lines.append((surface_line, gap))
+
+        say(header_font.render("Song Complete!", True, t.hud_accent), 14)
 
         if self._audio_enabled and self._matcher is not None:
             # Accuracy stats
@@ -3552,34 +3559,25 @@ class PlayingScreen:
                 f"Accuracy: {stats['accuracy_percent']:.1f}%  "
                 f"({stats['hits']}/{stats['total']})"
             )
-            acc_surf = stat_font.render(accuracy_text, True, t.hud_text)
-            surface.blit(acc_surf, (w // 2 - acc_surf.get_width() // 2, center_y + 60))
+            say(stat_font.render(accuracy_text, True, t.hud_text), 10)
 
             # How many strikes were HEARD at all, next to how many scored.
             # Without it a low percentage says only that something is wrong;
             # with it, it says which thing. Far fewer strikes than notes is
             # the microphone path; as many strikes as notes and a low score
             # is the matching, and they are fixed in different places.
-            heard_surf = hint_font.render(self._heard_line(), True, t.hud_text)
-            surface.blit(heard_surf,
-                         (w // 2 - heard_surf.get_width() // 2, center_y + 92))
+            say(hint_font.render(self._heard_line(), True, t.hud_text))
 
             # And what the SCORE rests on. One strike credits a whole chord,
             # so a number that mixes "heard" with "credited to the strum"
             # cannot answer "was I really that good".
             credit = self._credit_line()
             if credit:
-                credit_surf = hint_font.render(credit, True, t.hud_text)
-                surface.blit(credit_surf,
-                             (w // 2 - credit_surf.get_width() // 2,
-                              center_y + 110))
+                say(hint_font.render(credit, True, t.hud_text))
 
-            # "New Best!" indicator
             if self._is_new_best:
-                best_surf = stat_font.render("New Best!", True, (255, 220, 50))
-                surface.blit(best_surf, (w // 2 - best_surf.get_width() // 2, center_y + 132))
+                say(stat_font.render("New Best!", True, (255, 220, 50)), 10)
 
-            # Weakest sections
             weak = getattr(self, "_weakest_sections", [])
             if weak:
                 section = weak[0]
@@ -3587,33 +3585,31 @@ class PlayingScreen:
                     f"Weakest: bars {section[0]+1}-{section[1]+1} "
                     f"({section[2]:.0f}%) -- press L to loop"
                 )
-                weak_surf = hint_font.render(weak_text, True, t.feedback_close)
-                surface.blit(weak_surf, (w // 2 - weak_surf.get_width() // 2, center_y + 140))
+                say(hint_font.render(weak_text, True, t.feedback_close), 10)
 
-            # Practice recommendations
-            rec_y = center_y + 170
             for rec in self._recommendations:
-                rec_surf = hint_font.render(rec, True, t.hud_accent)
-                surface.blit(rec_surf, (w // 2 - rec_surf.get_width() // 2, rec_y))
-                rec_y += 24
+                say(hint_font.render(rec, True, t.hud_accent), 6)
 
-            # Controls hint
-            hint_y = max(center_y + 180, rec_y + 10)
-            hint_text = "SPACE to replay  |  L to loop weak section  |  ESC to menu"
-            hint_surf = hint_font.render(hint_text, True, t.hud_text)
-            surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, hint_y))
+            say(hint_font.render(
+                "SPACE to replay  |  L to loop weak section  |  ESC to menu",
+                True, t.hud_text), 8)
 
             # Where the run log went. A file written silently is a file
             # nobody sends, and this one is the whole point of writing it.
             if self._run_log_note:
-                log_surf = hint_font.render(self._run_log_note, True, t.hud_text)
-                surface.blit(log_surf,
-                             (w // 2 - log_surf.get_width() // 2, hint_y + 26))
+                say(hint_font.render(self._run_log_note, True, t.hud_text))
         else:
-            # Auto-scroll completion — no stats
-            hint_text = "SPACE to replay  |  ESC to menu"
-            hint_surf = hint_font.render(hint_text, True, t.hud_text)
-            surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, center_y + 70))
+            say(hint_font.render("SPACE to replay  |  ESC to menu",
+                                 True, t.hud_text), 14)
+
+        # Centred on the screen as a BLOCK, so a run with recommendations and
+        # one without are both readable rather than one of them hanging off
+        # the bottom edge.
+        total = sum(line.get_height() + gap for line, gap in lines)
+        y = max(12, (h - total) // 2)
+        for line, gap in lines:
+            surface.blit(line, (w // 2 - line.get_width() // 2, y))
+            y += line.get_height() + gap
 
     def _heard_line(self) -> str:
         """What the ear did, said apart from what the scoring did."""
@@ -4003,7 +3999,15 @@ class PlayingScreen:
         fh.write(f"sample_rate\t{getattr(capture, '_sample_rate', ac.sample_rate)}\n")
         describe = getattr(capture, "describe_device", None)
         fh.write(f"input_device\t{describe() if describe else '(unknown)'}\n")
-        fh.write(f"dropped_buffers\t{getattr(capture, 'dropped_buffers', 0)}\n")
+        dropped = getattr(capture, "dropped_buffers", 0)
+        busy = getattr(capture, "dropped_while_busy", 0)
+        # Said apart, because they mean opposite things. A dropout while a
+        # background measurement is running costs nothing -- it does not use
+        # the microphone and the player is not meant to be playing -- and the
+        # same number during a run loses notes at random.
+        fh.write(f"dropped_buffers\t{dropped}"
+                 + (f"\t({busy} of them while measuring — those cost nothing)"
+                    if busy else "") + "\n")
         # The OUTPUT, which this log never mentioned. A run where the sound
         # went wrong and a run where it did not are otherwise identical here.
         fh.write(f"output_device\t{output.describe()}\n")
@@ -5405,6 +5409,13 @@ class PlayingScreen:
 
         self._auto_sync_progress = (0.0, "reading the recording")
         self._sync_lines = ["SYNC   listening to the recording…"]
+        # Seconds of FFT on a worker thread is enough to starve the audio
+        # callback on a laptop, and the player reports dropouts here. Marking
+        # the capture does not prevent them -- only the machine can do that --
+        # but it makes the run log able to say that these particular ones were
+        # harmless, which "130 dropped buffers" on its own cannot.
+        if self._audio_capture is not None:
+            self._audio_capture.busy = True
         self._auto_sync_thread = threading.Thread(target=work, daemon=True)
         self._auto_sync_thread.start()
 
@@ -5412,6 +5423,8 @@ class PlayingScreen:
         """Store what the listening found, on the main thread."""
         result, self._auto_sync_result = self._auto_sync_result, None
         self._auto_sync_thread = None
+        if self._audio_capture is not None:
+            self._audio_capture.busy = False
         if result is None:
             return
         state = result[0]

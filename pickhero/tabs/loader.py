@@ -416,7 +416,7 @@ def _list_gpif_tracks(path: str | Path) -> list[dict]:
     exception is swallowed into "no tracks" -- which looks like a song with
     one track rather than like a format that was never read.
     """
-    root = ET.fromstring(_read_gpif(path))
+    root = _gpif_root(path)
     tracks = []
     tracks_el = root.find("Tracks")
     for index, t in enumerate(tracks_el.findall("Track") if tracks_el is not None
@@ -463,6 +463,47 @@ def _is_gpif_file(path: str | Path) -> bool:
     Everything past this point is the same parser.
     """
     return _is_gp7_file(path) or gpx.is_gpx_file(path)
+
+
+# One parsed document, kept for as long as the file has not changed. Opening
+# a song reads it once for the notes, once for the MIDI backing and once for
+# the guide track, and a track change does the same three again -- the same
+# bytes, the same parse, three times over. Measured on the player's own
+# files, where the cost is ALL in the parse and none of it in the unzipping:
+#
+#   4 Non Blondes  3.9 MB GPIF   entpacken 5.0 ms   parsen 150.8 ms
+#   Kid Rock       2.9 MB        entpacken 4.0 ms   parsen 142.4 ms
+#
+# So a track change spent 712 ms on "What's Up" and 60 ms on a small file,
+# nearly all of it re-parsing XML that had not changed. Two entries, because
+# nothing here ever works on more than one song at a time and a stale tree
+# would be far worse than a slow one.
+_GPIF_CACHE: dict[Path, tuple[tuple[int, float], ET.Element]] = {}
+_GPIF_CACHE_MAX = 2
+
+
+def _gpif_root(path: str | Path) -> ET.Element:
+    """The GPIF document, parsed once per version of the file.
+
+    Keyed by size and modification time, the same rule the song index uses:
+    a file that has not changed is not read again, and one that HAS is read
+    afresh rather than believed. Nothing in this module mutates the tree --
+    every append here is to a Python list -- so one parse can be shared.
+    """
+    key = Path(path)
+    try:
+        stat = key.stat()
+        stamp = (stat.st_size, stat.st_mtime)
+    except OSError:
+        return ET.fromstring(_read_gpif(path))
+    cached = _GPIF_CACHE.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    root = ET.fromstring(_read_gpif(path))
+    if len(_GPIF_CACHE) >= _GPIF_CACHE_MAX:
+        _GPIF_CACHE.clear()
+    _GPIF_CACHE[key] = (stamp, root)
+    return root
 
 
 def _read_gpif(path: str | Path) -> str:
@@ -729,7 +770,7 @@ def _gpif_bar_repeat(mb: ET.Element) -> BarRepeat:
 
 def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline:
     """Load a GPIF score — GP6 (.gpx), GP7 or GP8 (.gp)."""
-    root = ET.fromstring(_read_gpif(path))
+    root = _gpif_root(path)
 
     # ── Parse lookup tables ──────────────────────────────────────────────
 
@@ -969,7 +1010,7 @@ def _extract_gp7_backing_track(
     exclude_track_indices: set[int] | None = None,
 ) -> BackingTrack:
     """Extract non-guitar tracks from a GPIF score as MIDI events."""
-    root = ET.fromstring(_read_gpif(path))
+    root = _gpif_root(path)
 
     # Reuse the same lookup tables as _load_gp7_file
     # Rhythms

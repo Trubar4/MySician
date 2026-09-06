@@ -1209,6 +1209,17 @@ Two faults in the sync panel, and the second is this project's oldest one.
   session, so nothing on screen could tell a synced song from one nobody had touched — the most expensive setting in the app, invisible. The
   panel is rebuilt on load when the song has anchors, and stays silent when it has none.
 
+## The Score Was Drawn Through The Section It Names
+
+Two lines of the completion overlay were placed at fixed offsets — "New Best!" at +132 in the 28 px font, the weakest section at +140 in the
+18 px one — so a run that was both a personal best AND had a weak section drew one through the other, by **26 px**. Each line had been laid out
+on the assumption that the other was absent.
+
+Every line is stacked on the measured height of the one above it now, and the block is centred as a whole, so a run with three recommendations
+and one with none are both readable instead of one of them hanging off the bottom edge. Same rule as the footer and the sync panel, which have
+each been fixed for this once already. The test asserts the PROPERTY — no two lines overlap, in the case where every one of them is present —
+rather than any particular position.
+
 ## A Run Log That Says The App Is Innocent
 
 The player's log after a "Tonabsturz", with 31 seeks in it:
@@ -2009,6 +2020,39 @@ what it does not have is an old screen.
   `_playable_track_indices` read it again to ask which are guitars. For a GP6 container that is the BCFZ decompression, twice. It is read once
   now and kept, keyed by the file: a song's tracks cannot change while it sits there being played. Measured: 2 reads per open → 1, and per
   instrument change → 0.
+
+## The Same File, Parsed Three Times For One Keypress
+
+"Der Spurwechsel dauert noch immer sehr lange." The screen teardown and the double track-list read were fixed a week ago and it was still slow,
+because the expensive thing was never those. `_load_song` reads the file for the NOTES, then again for the MIDI backing, then again for the guide
+track — the same bytes, the same parse, three times, and a track change does all three afresh.
+
+Measured on the player's own files, the cost is entirely in the XML parse and none of it in the unzipping:
+
+| | GPIF | unzip | parse | whole track change |
+|---|---|---|---|---|
+| 4 Non Blondes | 3.9 MB | 5.0 ms | **150.8 ms** | 712 → **184 ms** |
+| Kid Rock | 2.9 MB | 4.0 ms | **142.4 ms** | 494 → **138 ms** |
+| Papa Roach | 0.4 MB | 0.6 ms | 10.1 ms | 60 → **24 ms** |
+
+- **`_gpif_root` keeps the parsed document**, keyed by size and modification time — the same rule the song index uses, so a file that has not
+  changed is not read again and one that HAS is read afresh rather than believed.
+- **Nothing in the loader mutates the tree** (every `append` in that module is to a Python list), which is what makes one parse shareable and
+  is asserted rather than assumed.
+- **Two entries.** Nothing here works on more than one song at a time, and a stale tree would be far worse than a slow one.
+- What is left is the three note extractions themselves, which are real work per track: 35 ms each on the biggest file.
+
+## A Dropout While Measuring Is Not A Dropout While Playing
+
+"Beim Syncen zeigt es ab und zu an, dass über 130 audio dropouts waren." `Ctrl+S` is seconds of FFT over the whole recording on a worker
+thread, and on a laptop that is enough to starve the audio callback. But **the measurement does not use the microphone**, and the player is not
+meant to be playing during it — so those dropouts cost nothing, while the same number during a run loses notes at random.
+
+Counted together, a harmless number and a serious one look identical, which is the fault this project keeps paying for. `dropped_while_busy` is
+counted apart and the run log says so: `dropped_buffers 130 (130 of them while measuring — those cost nothing)`.
+
+**This is instrumentation, not a fix, and must not be written up as one.** That the sync thread is what starves the callback is the
+best-founded suspect and has not been shown: it cannot be reproduced here, since this machine has no input device. The next log answers it.
 
 ## What Is In A Song, Without Opening It
 

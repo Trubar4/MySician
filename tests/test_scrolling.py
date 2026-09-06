@@ -3688,3 +3688,89 @@ class TestSlowingTheTabDown:
         self._set(screen, 2.5)
         screen._adjust_scroll_factor(0.1)
         assert "fastest" in screen._status_note_text()
+
+
+class TestTheCompletionOverlayDoesNotDrawThroughItself:
+    """"New Best!" sat at +132 in the big font and the weakest section at
+    +140 in the small one: two lines laid out on the assumption that the
+    other was absent. Every line is stacked on the measured height of the
+    one above it now, so the block grows instead of colliding.
+    """
+
+    def _screen(self, *, best, weak, recommendations):
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=1000.0 * i, midi_note=40 + i,
+                           string=6, fret=i, duration_ms=500.0, measure=0)
+                 for i in range(8)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "t"
+        screen._audio_enabled = True
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        screen._song_completed = True
+        screen._is_new_best = best
+        screen._weakest_sections = [(43, 44, 40.0)] if weak else []
+        screen._recommendations = recommendations
+        screen._run_log_note = "Run written to C:\\x\\run.txt"
+        return screen
+
+    def _boxes(self, screen):
+        """Where each line of the OVERLAY was drawn, and how tall it was.
+
+        The overlay is asked for directly rather than through render(): a
+        whole frame blits the board, the notes and the HUD as well, and a
+        spy that cannot tell those apart is measuring the wrong thing.
+        """
+        import pygame
+        from pickhero.ui.scrolling import _Layout
+
+        pygame.init()
+        surface = pygame.display.set_mode((950, 522))
+        layout = _Layout(screen_w=950, screen_h=522,
+                         lane_height=60.0, note_h=40.0,
+                         hit_zone_x=150.0, usable_width=800.0,
+                         pixels_per_ms=0.2,
+                         visible_window_ms=4000.0)
+        drawn = []
+
+        class Recorder:
+            """pygame.Surface is immutable, so the surface is wrapped rather
+            than patched. Everything else passes straight through."""
+
+            def __init__(self, target):
+                self._target = target
+
+            def blit(self, source, dest, *args, **kwargs):
+                # The dimming sheet is the full screen; the lines are not.
+                if (isinstance(dest, tuple) and source.get_width() < 950
+                        and source.get_height() < 200):
+                    drawn.append((dest[1], source.get_height()))
+                return self._target.blit(source, dest, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._target, name)
+
+        screen._draw_completion_overlay(Recorder(surface), layout)
+        return sorted(drawn)
+
+    def test_the_worst_case_has_no_two_lines_on_top_of_each_other(self):
+        """Everything at once: a new best AND a weak section AND advice."""
+        screen = self._screen(best=True, weak=True,
+                              recommendations=["Up 8% -- nice work!",
+                                               "Try bars 44-45 on loop."])
+        boxes = self._boxes(screen)
+        overlapping = [(a, b) for a, b in zip(boxes, boxes[1:])
+                       if a[0] + a[1] > b[0]]
+        assert not overlapping, overlapping
+
+    def test_and_it_still_fits_on_the_screen(self):
+        screen = self._screen(best=True, weak=True,
+                              recommendations=["one", "two", "three"])
+        boxes = self._boxes(screen)
+        assert boxes[0][0] >= 0
+        assert boxes[-1][0] + boxes[-1][1] <= 522
+
+    def test_a_plain_run_is_not_pushed_off_the_top(self):
+        boxes = self._boxes(self._screen(best=False, weak=False,
+                                         recommendations=[]))
+        assert boxes[0][0] > 0

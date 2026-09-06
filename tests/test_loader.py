@@ -362,3 +362,60 @@ class TestRepeatsAreActuallyPlayed:
         """The control: canon.gp5 has none, and must read exactly as before."""
         tl = load_gp_file(FIXTURES / "canon.gp5", track_index=0)
         assert len(tl) == 1489
+
+
+class TestTheFileIsParsedOncePerVersion:
+    """Opening a song reads it for the notes, for the MIDI backing and for
+    the guide track, and a track change does the same three again. Measured
+    on the player's own files the cost is ALL in the XML parse and none of
+    it in the unzipping -- 150 ms of a 236 ms read on a 3.9 MB document --
+    so the same bytes were parsed three times for one keypress.
+    """
+
+    def _gpif(self, tmp_path):
+        """A minimal GP7 container: a zip with a GPIF document inside."""
+        import zipfile
+        from pathlib import Path
+
+        path = Path(tmp_path) / "song.gp"
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("Content/score.gpif",
+                        "<GPIF><Score><Title>t</Title></Score></GPIF>")
+        return path
+
+    def test_a_second_read_does_not_parse_again(self, tmp_path):
+        from pickhero.tabs import loader
+
+        loader._GPIF_CACHE.clear()
+        path = self._gpif(tmp_path)
+        first = loader._gpif_root(path)
+        assert loader._gpif_root(path) is first
+
+    def test_a_file_that_CHANGED_is_read_afresh(self, tmp_path):
+        """Keyed by size and modification time, the same rule the song index
+        uses: a stale tree would be far worse than a slow one."""
+        import os
+        import zipfile
+        from pickhero.tabs import loader
+
+        loader._GPIF_CACHE.clear()
+        path = self._gpif(tmp_path)
+        first = loader._gpif_root(path)
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("Content/score.gpif",
+                        "<GPIF><Score><Title>other</Title>"
+                        "<Artist>a</Artist></Score></GPIF>")
+        os.utime(path, (0, 0))
+        second = loader._gpif_root(path)
+        assert second is not first
+        assert second.findtext("./Score/Title") == "other"
+
+    def test_it_does_not_grow_without_bound(self, tmp_path):
+        from pickhero.tabs import loader
+
+        loader._GPIF_CACHE.clear()
+        for i in range(6):
+            folder = tmp_path / str(i)
+            folder.mkdir()
+            loader._gpif_root(self._gpif(folder))
+        assert len(loader._GPIF_CACHE) <= loader._GPIF_CACHE_MAX

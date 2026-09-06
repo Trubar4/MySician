@@ -273,6 +273,17 @@ class AudioCapture:
         # machine that drops audio steadily cannot be diagnosed from the
         # scoring, because the symptom is notes going missing at random.
         self.dropped_buffers = 0
+        # ...and how many of them fell while something else in this process
+        # was working the CPU hard. A background measurement (Ctrl+S reads
+        # the whole recording) is seconds of FFT on a worker thread, and on
+        # a laptop that is enough to starve the audio callback. A dropout
+        # THERE costs nothing -- the measurement does not use the microphone
+        # and the player is not meant to be playing -- while the same number
+        # during a run loses notes at random. Counting them together makes a
+        # harmless number and a serious one look identical, which is the
+        # fault this project keeps paying for.
+        self.dropped_while_busy = 0
+        self.busy = False
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
         """Sounddevice callback — runs in audio thread."""
@@ -287,6 +298,8 @@ class AudioCapture:
             # way took detection from 42 of 46 strikes down to 17, while the
             # same drops with the counter still advancing cost only two.
             self.dropped_buffers += 1
+            if self.busy:
+                self.dropped_while_busy += 1
 
         # indata shape: (frames, channels). The guitar is in ONE input of the
         # interface, so the channel carrying it is the one to listen to --
@@ -480,6 +493,7 @@ class AudioCapture:
         # the audio itself. A fresh stream knows nothing about the last one.
         self._channel_energy = None
         self.dropped_buffers = 0
+        self.dropped_while_busy = 0
 
         # Drain any leftover notes
         while not self.note_queue.empty():
