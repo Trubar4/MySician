@@ -1475,3 +1475,53 @@ class TestTheLogSaysWhatTheSyncPointsCover:
 
     def test_a_song_with_no_points_says_nothing_rather_than_zero(self):
         assert "mp3_sync_covers" not in self._log([])
+
+
+class TestARecordingCarriedToAnotherMachine:
+    """The stored path is the absolute one the file chooser returned, so
+    settings carried to a second machine point at a folder that is not
+    there. `merge_stats.py` exists to carry the sync points across, and they
+    arrive useless if the recording beside them cannot be found.
+    """
+
+    def _config(self, tmp_path, stored):
+        from pickhero.config import Config
+
+        config = Config()
+        config.songs_dir = str(tmp_path)
+        config.set_mp3_path_for("song", str(stored))
+        return config
+
+    def test_a_path_that_exists_is_used_as_it_stands(self, tmp_path):
+        here = tmp_path / "take.mp3"
+        here.write_bytes(b"x")
+        assert self._config(tmp_path, here).mp3_path_for("song") == str(here)
+
+    def test_a_path_from_the_other_machine_finds_the_file_by_name(
+            self, tmp_path):
+        (tmp_path / "take.mp3").write_bytes(b"x")
+        config = self._config(tmp_path, r"C:\Users\Someone\Music\take.mp3")
+        assert config.mp3_path_for("song") == str(tmp_path / "take.mp3")
+
+    def test_and_the_sync_points_are_not_dropped_by_that(self, tmp_path):
+        """Same name, same recording -- the rule the anchors already follow.
+        Dropping them here would throw away the most expensive setting in
+        the app for the sake of a drive letter."""
+        (tmp_path / "take.mp3").write_bytes(b"x")
+        config = self._config(tmp_path, r"C:\Users\Someone\Music\take.mp3")
+        config.set_mp3_anchors_for("song", [(1000.0, -250.0)])
+        config.mp3_path_for("song")
+        assert config.mp3_anchors_for("song") == [(1000.0, -250.0)]
+
+    def test_a_recording_that_is_nowhere_stays_what_it_was(self, tmp_path):
+        """So the app can still name the file it cannot find. A path
+        silently emptied is a backing track that vanished without a word."""
+        config = self._config(tmp_path, r"C:\Users\Someone\Music\gone.mp3")
+        assert config.mp3_path_for("song").endswith("gone.mp3")
+
+    def test_a_song_with_no_recording_is_still_empty(self, tmp_path):
+        from pickhero.config import Config
+
+        config = Config()
+        config.songs_dir = str(tmp_path)
+        assert config.mp3_path_for("song") == ""

@@ -235,10 +235,38 @@ class Config:
             self.backing_offset_ms = float(offset_ms)
 
     def mp3_path_for(self, song_key: str) -> str:
-        """The recording chosen for this song, or "" if there is none."""
+        """The recording chosen for this song, or "" if there is none.
+
+        The stored value is the absolute path the file chooser returned, so
+        settings carried to a SECOND MACHINE point at a folder that is not
+        there -- and the app then reports the recording as moved, with the
+        sync points sitting uselessly beside it. `merge_stats.py` exists to
+        carry exactly those points across, and this is what makes them
+        arrive usable.
+
+        So a stored path that no longer exists falls back to a file of the
+        same NAME in the songs folder. Same name, same recording: that is
+        the rule the anchors already follow -- re-picking a file after
+        moving it keeps the work, because it is not a different recording --
+        and it is why nothing here drops the sync points.
+
+        Nothing is written back. Each machine keeps the path it was given,
+        which is what lets the merge stay one-way and idempotent.
+        """
         if not song_key:
             return ""
-        return str(self.song_mp3_paths.get(song_key, "") or "")
+        stored = str(self.song_mp3_paths.get(song_key, "") or "")
+        if not stored:
+            return ""
+        if Path(stored).exists():
+            return stored
+        # The file NAME, whichever machine wrote the path. A backslash is not
+        # a separator on POSIX, so `Path(r"C:\\x\\take.mp3").name` is the whole
+        # string there -- and the settings file travels between machines,
+        # which is the entire point of looking a name up at all.
+        name = stored.replace("\\", "/").rsplit("/", 1)[-1]
+        beside = Path(self.songs_dir) / name
+        return str(beside) if name and beside.exists() else stored
 
     def set_mp3_path_for(self, song_key: str, path: str) -> None:
         """Remember (or, with an empty path, forget) this song's recording."""

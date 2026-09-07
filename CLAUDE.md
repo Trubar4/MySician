@@ -1389,6 +1389,20 @@ Seventeen points measured by ear or by Ctrl+S are the most expensive thing in a 
 - **Where they live:** `~/.pickhero/settings.json`, under `song_mp3_anchors`, keyed by the tab file's name without its extension. Written the
   moment a point is set, so nothing has to be saved by hand — and renaming the tab file starts the song over, which is what that key means.
 
+## Sync Points Only Arrive If The Recording Does
+
+`merge_stats.py` carries a song's sync points to the second machine, and they landed there useless: `song_mp3_paths` stores the ABSOLUTE path the
+file chooser returned, so a settings file written on one computer points at a folder the other does not have. The app then reports the recording
+as moved, and the most expensive setting in it sits beside a backing track that will not play.
+
+- **A stored path that no longer exists falls back to a file of the same NAME in the songs folder.** Same name, same recording -- which is the
+  rule the anchors already follow, since re-picking a file after moving it keeps the work. Nothing is dropped and nothing is written back: each
+  machine keeps the path it was given, which is what lets the merge stay one-way and idempotent.
+- **The name is split on both separators.** A backslash is not a separator on POSIX, so `Path(r"C:\x\take.mp3").name` is the whole string there
+  -- and a settings file that travels between machines is the entire reason a name is being looked up at all.
+- **A recording that is nowhere still reports its stored path**, so the app can name the file it cannot find. A path silently emptied is a
+  backing track that vanished without a word.
+
 ## Five Points By Hand Before Every Song Is Not A Feature
 
 Sync points work and the other tools ask for them, but placing five of them by ear before every song is a chore that will not be done twice.
