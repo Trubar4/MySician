@@ -28,7 +28,9 @@ What this therefore reports, and nothing else:
 
 - **A strike that never arrived** is the one unambiguous fault. Nothing was
   played there, or nothing loud enough to be heard.
-- **A clean reading of a different pitch** says which fret was hit instead.
+- **A clean reading of a different pitch, within a hand's reach**, says which
+  fret was hit instead. Further out than that is not a finger -- see
+  REACH_SEMITONES.
 - **Timing** is honest even where the pitch is not: a subharmonic strike
   proves something was struck at that moment, whatever it was.
 - Everything else is COUNTED and named as unreadable rather than dressed up
@@ -53,12 +55,26 @@ DEFAULT_HIT_MS = 200.0
 DEFAULT_LATE_MS = 440.0
 # A bar with fewer notes than this cannot say anything about a passage.
 MIN_BAR_NOTES = 4
+# How far a wrong pitch may be from the written one and still be something a
+# HAND did. Five semitones is about a hand's span up the neck, and it is also
+# the distance between two adjacent strings -- so it covers both a fret slip
+# and a string slip.
+#
+# Beyond that it is not the playing. Measured over two complete runs of the
+# same song, 108 clean readings of a wrong pitch: the 69 within reach are
+# read at a median confidence of 1.000 and only 1 % below 0.95, while the 39
+# further out sit at 0.990 with 31 % below 0.95 -- and their intervals are
+# -14, -17, -19, -21, which no guitarist fingers by accident. They are a
+# lower string still ringing under the note, which is the detector's business
+# and not the player's. Counted as mistakes they were a third of the advice.
+REACH_SEMITONES = 5
 # What counts as a passage worth naming. Not a grade: a bar under this, in a
 # run whose readable notes mostly land, is where the practice time goes.
 WEAK_SHARE = 0.62
-# Fewer readable notes than this in a passage and the verdict is "could not
-# be read", not "played badly".
-MIN_READABLE = 6
+# A passage whose failures are mostly unreadable is not a passage that was
+# played badly. A SHARE and not a count: the first version demanded six
+# readable failures, so a bar with three -- all of them clean wrong pitches,
+# which is as clear as this gets -- was reported as unreadable.
 
 
 class Run:
@@ -147,6 +163,8 @@ class Run:
         difference = strike["midi"] - note["midi"]
         if difference % 12 == 0:
             return "octave"
+        if abs(difference) > REACH_SEMITONES:
+            return "struck, out of reach"
         return f"wrong pitch ({difference:+d})"
 
 
@@ -328,9 +346,10 @@ def report(run: Run) -> str:
                              + (f", techniques: "
                                 f"{' '.join(passage['techniques'])}"
                                 if passage["techniques"] else ""))
-            if passage["readable"] < MIN_READABLE:
-                lines.append("      Not enough of it could be read to say "
-                             "anything about the playing.")
+            failures = sum(passage["reasons"].values())
+            if failures and passage["readable"] / failures < 0.5:
+                lines.append("      Mostly unreadable here -- little of this "
+                             "is about the playing.")
             for reason, count in sorted(passage["reasons"].items(),
                                         key=lambda kv: -kv[1])[:3]:
                 lines.append(f"      {count:3}x {reason}")

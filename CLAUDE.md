@@ -1366,6 +1366,25 @@ it. With caps lock on the two swap over, which is the price and is small: the le
 `pygame.key.get_mods()` needs the video system and raises without it, so it is wrapped. **A key handler that can raise takes the app down with
 it**, and it is asked on every keystroke in the song list.
 
+## The Footer Was Wider Than The Screen, So Both Ends Were Gone
+
+Twenty-three keyboard shortcuts are **2986 px** of text and the player's window is **1911**. `_blit_footer_lines` shrank the font until the
+widest line fitted -- and when even the smallest still overflowed by a thousand pixels it drew it anyway, centred, which cuts BOTH ends. On the
+player's screenshot the first entry and the last are simply not there, which is why a newly added key looked like a key that had never shipped.
+
+It wraps at the `|` the entries already carry, so a shortcut is never broken across two lines and nothing is lost. A single entry wider than the
+screen is left alone: shortening the text is a decision for whoever wrote it.
+
+## One Helper For Every Way A Keyboard Says Shift
+
+`Shift+U` needed three signals to work on the player's machine -- the event's modifiers, the live keyboard state, and the character -- because
+the key arrived carrying a capital letter with **no shift bit in `event.mod` at all**. That was written up as a fix for one key, and it was not:
+`Shift+C` then fell through to the plain `C` that raises the noise gate, for exactly the same reason, and every other shifted shortcut in the
+playing screen was one report away from the same thing.
+
+`shift_held(event)` is the one implementation now, used by all eleven of them and by the song list. **The class of fault is closed rather than
+the two instances of it** -- which is what "one plan, four readers" means when the readers are keyboard shortcuts.
+
 ## The Diary Was Right And The Page Was Yesterday
 
 "Wie lange habe ich heute gespielt? Davor waren es nur unter 3 min." Nothing was lost: the dashboard was rebuilt only when the APP closed, so

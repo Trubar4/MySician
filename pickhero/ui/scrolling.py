@@ -535,6 +535,54 @@ def clear_font_cache() -> None:
     _BLOCK_CACHE.clear()
 
 
+def shift_held(event) -> bool:
+    """Was SHIFT down for this key press -- however the keyboard says so.
+
+    Three signals, because one was not enough on the player's machine: a key
+    arrived carrying a capital letter with no shift bit in `event.mod` at
+    all, and the shortcut fell through to its unshifted twin. The event's own
+    modifiers are the normal answer, the live keyboard state catches a stale
+    one, and the CHARACTER catches the rest -- a capital letter is what was
+    typed, whatever the layout did to say it.
+
+    `pygame.key.get_mods()` needs the video system and raises without it, so
+    it is guarded: a key handler that can raise takes the app down with it.
+    """
+    if getattr(event, "mod", 0) & pygame.KMOD_SHIFT:
+        return True
+    try:
+        if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+            return True
+    except pygame.error:
+        pass
+    letter = getattr(event, "unicode", "") or ""
+    return len(letter) == 1 and letter.isalpha() and letter.isupper()
+
+
+def _wrap_on_bars(line: str, font, width: int) -> list[str]:
+    """Break one footer line into as many as it takes to fit `width`.
+
+    At the "|" the entries already carry, so a shortcut is never split down
+    the middle. A single entry wider than the screen is left alone -- there
+    is nothing to be done about it here, and shortening the text is a
+    decision for whoever wrote it.
+    """
+    if font.size(line)[0] <= width:
+        return [line]
+    out: list[str] = []
+    current = ""
+    for part in line.split("|"):
+        candidate = part if not current else f"{current}|{part}"
+        if current and font.size(candidate)[0] > width:
+            out.append(current.strip())
+            current = part
+        else:
+            current = candidate
+    if current.strip():
+        out.append(current.strip())
+    return out or [line]
+
+
 def format_time(ms: float) -> str:
     """Format milliseconds as M:SS."""
     total_seconds = max(0, int(ms / 1000))
@@ -1046,7 +1094,7 @@ class PlayingScreen:
         now = self._playback_ms
         if event.mod & pygame.KMOD_CTRL:
             return now + direction * SEEK_SECTION_MS
-        if event.mod & pygame.KMOD_SHIFT:
+        if shift_held(event):
             starts = [m.start_ms for m in self._timeline.measures]
             if starts:
                 # A margin, so pressing back from just after a bar line goes
@@ -1429,7 +1477,7 @@ class PlayingScreen:
         elif event.key == pygame.K_HOME:
             self.seek(0)
         elif event.key == pygame.K_a:
-            if event.mod & pygame.KMOD_SHIFT:
+            if shift_held(event):
                 self._reopen_output()
             else:
                 self._toggle_audio()
@@ -1444,12 +1492,12 @@ class PlayingScreen:
         elif event.key == pygame.K_p:
             self._toggle_loop()
         elif event.key == pygame.K_r:
-            return self._next_tuning(-1 if event.mod & pygame.KMOD_SHIFT
+            return self._next_tuning(-1 if shift_held(event)
                                      else +1)
         elif (event.key == pygame.K_s and event.mod & pygame.KMOD_CTRL
-                and not event.mod & pygame.KMOD_SHIFT):
+                and not shift_held(event)):
             self._start_auto_sync()
-        elif event.key == pygame.K_s and event.mod & pygame.KMOD_SHIFT:
+        elif event.key == pygame.K_s and shift_held(event):
             if self._sync_key_held:
                 return None                    # a repeat, not a second press
             self._sync_key_held = True
@@ -1458,14 +1506,14 @@ class PlayingScreen:
             else:
                 self._set_sync_point()
         elif event.key == pygame.K_b:
-            if event.mod & pygame.KMOD_SHIFT:
+            if shift_held(event):
                 self._toggle_guide_track()
             else:
                 self._toggle_backing()
         elif event.key == pygame.K_x:
             self._take_gate_by_hand()
             self.set_noise_gate_db(self._noise_gate_db - 5)
-        elif event.key == pygame.K_c and event.mod & pygame.KMOD_SHIFT:
+        elif event.key == pygame.K_c and shift_held(event):
             # Tested BEFORE the plain C below, which raises the noise gate:
             # an `elif` chain is read in order, so a shifted key placed after
             # its unshifted twin is never reached at all.
@@ -1479,7 +1527,7 @@ class PlayingScreen:
             self._take_gate_by_hand()
             self.set_noise_gate_db(self._noise_gate_db + 5)
         elif event.key == pygame.K_t:
-            if event.mod & pygame.KMOD_SHIFT:
+            if shift_held(event):
                 self._toggle_tab_mode()
             else:
                 self._cycle_theme()
@@ -1510,7 +1558,7 @@ class PlayingScreen:
         elif event.key in (pygame.K_n, pygame.K_m):
             self._nudge_backing(1 if event.key == pygame.K_m else -1, event.mod)
         elif event.key == pygame.K_u:
-            if event.mod & pygame.KMOD_SHIFT:
+            if shift_held(event):
                 self._choose_mp3_backing()
             else:
                 self._toggle_mp3_backing()
@@ -1531,14 +1579,14 @@ class PlayingScreen:
         elif event.key == pygame.K_h:
             self._show_help = not self._show_help
         elif event.key == pygame.K_y:
-            if event.mod & pygame.KMOD_SHIFT:
+            if shift_held(event):
                 self._export_timing_samples()
             else:
                 self._show_timing = not self._show_timing
         elif event.key == pygame.K_w:
             self._toggle_wait_mode()
         elif event.key == pygame.K_k:
-            if event.mod & pygame.KMOD_SHIFT:
+            if shift_held(event):
                 self._reset_latency_offset()
             else:
                 self._auto_sync_timing()
@@ -3120,7 +3168,17 @@ class PlayingScreen:
         self, surface: pygame.Surface, layout: _Layout,
         lines: tuple[str, ...], color: tuple[int, int, int],
     ) -> int:
-        """Centre the footer lines, shrinking until the widest one fits.
+        """Centre the footer lines, shrinking and WRAPPING until they fit.
+
+        Shrinking alone was not enough: twenty-three keyboard shortcuts are
+        2986 px of text and the player's window is 1911, so the smallest font
+        still overflowed by a thousand pixels -- and a line drawn wider than
+        the screen is centred, which cuts BOTH ends. Measured on the player's
+        own screenshot: the first entry and the last were simply not there,
+        and a shortcut nobody can see is a shortcut nobody presses.
+
+        Wrapped at the separators the entries already have, so a key is never
+        broken across two lines.
 
         Returns the y the block STARTS at, because whatever is stacked above
         it has to know where it ends -- the sync panel used to be placed at a
@@ -3129,7 +3187,9 @@ class PlayingScreen:
         w = layout.screen_w
         for size in self.FOOTER_FONT_SIZES:
             font = _get_font("arial", size)
-            rendered = [font.render(line, True, color) for line in lines]
+            wrapped = [part for line in lines
+                       for part in _wrap_on_bars(line, font, w - 16)]
+            rendered = [font.render(part, True, color) for part in wrapped]
             if max(s.get_width() for s in rendered) <= w - 16:
                 break
         line_h = rendered[0].get_height() + 2

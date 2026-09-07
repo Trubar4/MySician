@@ -3774,3 +3774,93 @@ class TestTheCompletionOverlayDoesNotDrawThroughItself:
         boxes = self._boxes(self._screen(best=False, weak=False,
                                          recommendations=[]))
         assert boxes[0][0] > 0
+
+
+class TestTheFooterFitsOnTheScreen:
+    """Twenty-three shortcuts are 2986 px of text and the player's window is
+    1911. Shrinking the font was not enough -- the smallest still overflowed
+    by a thousand pixels -- and a line drawn wider than the screen is
+    centred, which cuts BOTH ends. On the player's screenshot the first entry
+    and the last were simply not there.
+    """
+
+    def _font(self):
+        import pygame
+        from pickhero.ui.scrolling import _get_font
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        return _get_font("arial", 13)
+
+    def test_a_line_that_fits_is_left_alone(self):
+        from pickhero.ui.scrolling import _wrap_on_bars
+
+        font = self._font()
+        assert _wrap_on_bars("A: one  |  B: two", font, 4000) == \
+            ["A: one  |  B: two"]
+
+    def test_a_long_one_is_broken_at_the_separators(self):
+        from pickhero.ui.scrolling import _wrap_on_bars
+
+        font = self._font()
+        line = "  |  ".join(f"KEY{i}: does a thing" for i in range(20))
+        parts = _wrap_on_bars(line, font, 600)
+        assert len(parts) > 1
+        assert all(font.size(p)[0] <= 600 for p in parts)
+
+    def test_no_shortcut_is_split_down_the_middle(self):
+        from pickhero.ui.scrolling import _wrap_on_bars
+
+        font = self._font()
+        entries = [f"KEY{i}: does a thing" for i in range(20)]
+        parts = _wrap_on_bars("  |  ".join(entries), font, 600)
+        rejoined = [e.strip() for p in parts for e in p.split("|")]
+        assert rejoined == entries
+
+    def test_and_nothing_is_lost(self):
+        from pickhero.ui.scrolling import _wrap_on_bars
+
+        font = self._font()
+        line = "  |  ".join(f"KEY{i}: x" for i in range(40))
+        parts = _wrap_on_bars(line, font, 400)
+        for i in range(40):
+            assert any(f"KEY{i}: x" in p for p in parts), i
+
+    def test_one_entry_too_wide_for_the_screen_is_left_as_it_is(self):
+        """There is nothing to be done about it here, and shortening the
+        text is a decision for whoever wrote it."""
+        from pickhero.ui.scrolling import _wrap_on_bars
+
+        font = self._font()
+        assert _wrap_on_bars("X" * 400, font, 200) == ["X" * 400]
+
+    def test_the_real_footer_fits_the_players_window(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen, _Layout
+
+        pygame.init()
+        surface = pygame.display.set_mode((1911, 1096))
+        timeline = _make_timeline(notes=[
+            NoteEvent(timestamp_ms=0.0, midi_note=40, string=6, fret=0,
+                      duration_ms=500.0, measure=0)])
+        screen = PlayingScreen(timeline, config=Config(), song_key="t")
+        layout = _Layout(screen_w=1911, screen_h=1096, lane_height=60.0,
+                         note_h=40.0, hit_zone_x=150.0, usable_width=1700.0,
+                         pixels_per_ms=0.2, visible_window_ms=4000.0)
+        widest = []
+
+        class Recorder:
+            def __init__(self, target):
+                self._target = target
+
+            def blit(self, source, dest, *args, **kwargs):
+                widest.append(source.get_width())
+                return self._target.blit(source, dest, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._target, name)
+
+        screen._blit_footer_lines(Recorder(surface), layout,
+                                  screen._footer_lines(), (200, 200, 200))
+        assert widest and max(widest) <= 1911

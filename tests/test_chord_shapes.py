@@ -316,3 +316,60 @@ class TestTheChordBlocks:
             screen.render(surface)
         off = (time.perf_counter() - started) / 60
         assert on - off < 0.004, (on, off)
+
+
+class TestEveryWayAKeyboardCanSayShift:
+    """The player's machine sent a capital letter with no shift bit in
+    event.mod at all, so Shift+U fell through to the search box and Shift+C
+    fell through to the noise gate. One helper answers for every shortcut in
+    the playing screen now, so the class of fault is closed rather than the
+    two instances of it.
+    """
+
+    def _screen(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        notes = [_note(s, f, m, 1000.0) for s, f, m in
+                 ((6, 0, 40), (5, 2, 47), (4, 2, 52))]
+        timeline = Timeline(notes, SongMetadata(title="t", tempo=120))
+        return PlayingScreen(timeline, config=Config(), song_key="t")
+
+    def _press(self, screen, **kwargs):
+        import pygame
+
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN,
+                                               key=pygame.K_c, **kwargs))
+
+    def test_the_event_says_so(self):
+        import pygame
+
+        screen = self._screen()
+        self._press(screen, mod=pygame.KMOD_SHIFT, unicode="C")
+        assert screen._chord_mode
+
+    def test_only_the_character_says_so(self):
+        """What the player's keyboard actually sent."""
+        screen = self._screen()
+        self._press(screen, mod=0, unicode="C")
+        assert screen._chord_mode
+
+    def test_a_plain_c_still_reaches_the_noise_gate(self):
+        screen = self._screen()
+        before = screen._noise_gate_db
+        self._press(screen, mod=0, unicode="c")
+        assert not screen._chord_mode
+        assert screen._noise_gate_db != before
+
+    def test_it_survives_a_key_with_no_unicode_at_all(self):
+        """Some events carry none, and a key handler that raises takes the
+        app down with it."""
+        import pygame
+
+        screen = self._screen()
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN,
+                                               key=pygame.K_c, mod=0))
+        assert not screen._chord_mode

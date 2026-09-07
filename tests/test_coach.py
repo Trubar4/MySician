@@ -125,8 +125,7 @@ class TestAPassageIsNamedByItsBars:
         run = _log(tmp_path, strikes, notes)
         weak = coach.passages(run)[0]
         assert weak["readable"] == 0
-        assert coach.MIN_READABLE > 0
-        assert "Not enough of it could be read" in coach.report(run)
+        assert "Mostly unreadable here" in coach.report(run)
 
 
 class TestWhatMakesARunUnreadable:
@@ -196,3 +195,41 @@ class TestASongWithNoBarsToName:
         path = tmp_path / "run.txt"
         path.write_text(text, encoding="utf-8")
         assert coach.Run(path).notes[0]["bar"] is None
+
+
+class TestAWrongPitchNoHandCouldHaveMade:
+    """Measured over two complete runs of one song, 108 clean readings of a
+    wrong pitch: the 69 within five semitones are read at a median confidence
+    of 1.000 with 1 % below 0.95, while the 39 further out sit at 0.990 with
+    31 % below -- and their intervals are -14, -17, -19, -21, which nobody
+    fingers by accident. They are a lower string still ringing under the
+    note. Counted as mistakes they were a third of the advice.
+    """
+
+    def _why(self, tmp_path, played_midi):
+        run = _log(tmp_path, [(1010.0, played_midi, False, False)],
+                   [(1000.0, 1, 6, 3, 40, "-", 1, "miss")])
+        return run.why(run.notes[0])
+
+    @pytest.mark.parametrize("semitones", [-5, -3, -1, 1, 2, 5])
+    def test_within_a_hand_it_is_the_playing(self, tmp_path, semitones):
+        why = self._why(tmp_path, 40 + semitones)
+        assert why == f"wrong pitch ({semitones:+d})"
+        assert why.startswith(coach.PLAYER_FAULTS)
+
+    @pytest.mark.parametrize("semitones", [-21, -19, -14, -7, 6, 8, 11])
+    def test_beyond_it_it_is_not(self, tmp_path, semitones):
+        why = self._why(tmp_path, 40 + semitones)
+        assert why == "struck, out of reach"
+        assert not why.startswith(coach.PLAYER_FAULTS)
+
+    def test_an_octave_is_still_its_own_answer(self, tmp_path):
+        """It is green on screen and is the commonest reading this detector
+        produces, so it must not become "out of reach" on the way past."""
+        assert self._why(tmp_path, 52) == "octave"
+        assert self._why(tmp_path, 28) == "octave"
+
+    def test_the_boundary_is_a_hand_and_a_string(self, tmp_path):
+        """Five semitones is about a hand's span AND the gap between two
+        adjacent strings, so it covers a fret slip and a string slip."""
+        assert coach.REACH_SEMITONES == 5

@@ -17,6 +17,7 @@ from pickhero.progress import ProgressTracker
 from pickhero.tabs.loader import extract_backing_track, load_gp_file
 from pickhero.ui.colors import set_theme
 from pickhero.ui.calibration_menu import CalibrationMenuScreen
+from pickhero.ui.scrolling import shift_held
 from pickhero.ui.tuner_menu import TunerMenuScreen
 from pickhero.ui.device_menu import DeviceMenuScreen
 from pickhero.ui.download_menu import DownloadMenuScreen
@@ -24,20 +25,6 @@ from pickhero.ui.menu import MenuScreen
 from pickhero.ui.settings_menu import SettingsMenuScreen
 from pickhero.ui import scrolling
 from pickhero.ui.scrolling import PlayingScreen
-
-
-def _shift_held() -> bool:
-    """Is a shift key down right now, as the keyboard sees it.
-
-    Asked as well as `event.mod`, which arrived without the shift bit on the
-    player's machine. Guarded because it needs the video system: pygame
-    raises without it, and a key handler that can raise takes the app down
-    with it.
-    """
-    try:
-        return bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
-    except pygame.error:
-        return False
 
 
 class App:
@@ -187,10 +174,8 @@ class App:
         # a capital U is the request however the layout produced it. With
         # caps lock on the two swap over, which is the price and is small:
         # the letter is still typeable, with shift held.
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_u and (
-                event.mod & pygame.KMOD_SHIFT
-                or _shift_held()
-                or event.unicode == "U"):
+        if (event.type == pygame.KEYDOWN and event.key == pygame.K_u
+                and shift_held(event)):
             self._open_tuner("menu")
             return
         if event.type == pygame.KEYDOWN and not self._menu.is_searching:
