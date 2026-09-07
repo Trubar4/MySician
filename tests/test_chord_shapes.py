@@ -166,14 +166,14 @@ class TestTheCardsOnScreen:
         assert screen._chord_shapes == []
         assert screen._chord_now_and_next() == (None, None)
 
-    def test_shift_c_turns_them_off_and_says_so(self):
+    def test_shift_c_turns_the_mode_on_and_off_and_says_so(self):
         import pygame
 
         screen, _ = self._screen()
-        assert screen._chord_cards
+        screen._chord_mode = True
         screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_c, mod=pygame.KMOD_SHIFT))
-        assert not screen._chord_cards
+        assert not screen._chord_mode
         assert "off" in screen._status_note_text()
 
     def test_drawing_one_costs_a_fraction_of_a_frame(self):
@@ -190,9 +190,129 @@ class TestTheCardsOnScreen:
         for _ in range(60):
             screen.render(surface)
         with_cards = (time.perf_counter() - started) / 60
-        screen._chord_cards = False
+        screen._chord_mode = False
         started = time.perf_counter()
         for _ in range(60):
             screen.render(surface)
         without = (time.perf_counter() - started) / 60
         assert with_cards - without < 0.002, (with_cards, without)
+
+
+class TestTheChordBlocks:
+    """Six fret numbers spread down six lanes are not a shape. A block that
+    spans the strings says "this is one grip" before a number has been read.
+
+    It goes UNDER the note heads rather than instead of them: the heads keep
+    their own per-string verdicts, which is the thing this app spent a whole
+    chapter learning to report.
+    """
+
+    def _screen(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        notes = [_note(s, f, m, 1000.0) for s, f, m in
+                 ((6, 0, 40), (5, 2, 47), (4, 2, 52))]
+        notes.append(_note(3, 7, 62, 2000.0))           # a single note
+        timeline = Timeline(notes, SongMetadata(title="t", tempo=120))
+        screen = PlayingScreen(timeline, config=Config(), song_key="t")
+        screen._chord_mode = True
+        screen.render(surface)
+        return screen, surface
+
+    def test_a_chord_gets_one_block(self):
+        screen, surface = self._screen()
+        screen._playback_ms = 500.0
+        screen.render(surface)
+        blocks = screen._chord_blocks_in_view(screen._last_layout)
+        assert len(blocks) == 1
+        assert blocks[0][4].name == "E5"
+
+    def test_a_single_note_gets_none(self):
+        """Kid Rock writes 12 chords in 444 moments; a block round every
+        lone note would be a box round the whole song."""
+        screen, surface = self._screen()
+        screen._playback_ms = 1900.0
+        screen.render(surface)
+        blocks = screen._chord_blocks_in_view(screen._last_layout)
+        assert all(b[4].strings >= 2 for b in blocks)
+        assert all(b[5][0].timestamp_ms == 1000.0 for b in blocks)
+
+    def test_the_block_spans_exactly_the_strings_that_are_written(self):
+        screen, surface = self._screen()
+        screen._playback_ms = 500.0
+        screen.render(surface)
+        x, width, top, bottom, shape, notes = \
+            screen._chord_blocks_in_view(screen._last_layout)[0]
+        layout = screen._last_layout
+        assert top == pytest.approx(layout.lane_top + 3 * layout.lane_height)
+        assert bottom == pytest.approx(layout.lane_top + 6 * layout.lane_height)
+
+    def test_one_wrong_string_colours_the_whole_block_wrong(self):
+        """The block cannot show six answers, so it shows the worst -- a
+        chord with one string wrong is not a chord that went well. The heads
+        on top keep the detail."""
+        from pickhero.matcher import MatchType
+        from pickhero.ui.colors import get_theme
+
+        screen, surface = self._screen()
+        screen._audio_enabled = True
+        notes = [n for n in screen._timeline.notes if n.timestamp_ms == 1000.0]
+        states = {id(notes[0]): MatchType.MISS}
+
+        class Stub:
+            def get_note_state(self, note):
+                return states.get(id(note), MatchType.HIT)
+
+        screen._matcher = Stub()
+        assert screen._chord_block_colour(notes) == get_theme().feedback_miss
+        states.clear()
+        assert screen._chord_block_colour(notes) == get_theme().feedback_hit
+
+    def test_a_chord_still_being_played_is_not_judged(self):
+        from pickhero.matcher import MatchType
+        from pickhero.ui.colors import get_theme
+
+        screen, surface = self._screen()
+        screen._audio_enabled = True
+
+        class Stub:
+            def get_note_state(self, note):
+                return MatchType.PENDING
+
+        screen._matcher = Stub()
+        notes = [n for n in screen._timeline.notes if n.timestamp_ms == 1000.0]
+        assert screen._chord_block_colour(notes) == get_theme().lane_line
+
+    def test_the_mode_is_off_until_it_is_asked_for(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        timeline = Timeline([_note(6, 0, 40, 0.0)],
+                            SongMetadata(title="t", tempo=120))
+        assert not PlayingScreen(timeline, config=Config(),
+                                 song_key="t")._chord_mode
+
+    def test_the_blocks_cost_a_fraction_of_a_frame(self):
+        import time
+
+        screen, surface = self._screen()
+        screen._playback_ms = 500.0
+        for _ in range(5):
+            screen.render(surface)
+        started = time.perf_counter()
+        for _ in range(60):
+            screen.render(surface)
+        on = (time.perf_counter() - started) / 60
+        screen._chord_mode = False
+        started = time.perf_counter()
+        for _ in range(60):
+            screen.render(surface)
+        off = (time.perf_counter() - started) / 60
+        assert on - off < 0.004, (on, off)

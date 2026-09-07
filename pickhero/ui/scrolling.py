@@ -140,6 +140,10 @@ LEGATO_ARC_STEPS = 12
 # this many heads instead: long enough to tell a chug from a dead note, short
 # enough that a muted riff reads as the stubs it sounds like.
 PALM_MUTE_MAX_HEADS = 1.3
+# How strongly a chord block tints the board under its notes. A tint and not
+# a fill: the notes are the thing being read, and a solid slab under them
+# would fight them for attention.
+CHORD_BLOCK_ALPHA = 54
 # A palm-muted run is marked once, at its start, the way paper tab writes
 # "P.M." and dashes it onward -- a disc over every note of a muted riff hides
 # the music behind its own labelling. A silence longer than this starts a new
@@ -462,6 +466,32 @@ _HEAD_CACHE: dict = {}
 _HEAD_CACHE_MAX = 256
 
 
+_BLOCK_CACHE: dict = {}
+_BLOCK_CACHE_MAX = 64
+
+
+def _chord_block_surface(width: int, height: int, colour) -> pygame.Surface:
+    """One chord block, tinted and outlined, ready to blit.
+
+    Cached for the same reason the note heads are: an SRCALPHA surface per
+    block per frame cost 2.0 ms of a 16.7 ms budget on a real song, which is
+    an eighth of the frame spent allocating pictures that repeat. A song
+    chooses one head size, so the blocks come in very few sizes too.
+    """
+    key = (width, height, tuple(colour))
+    got = _BLOCK_CACHE.get(key)
+    if got is not None:
+        return got
+    if len(_BLOCK_CACHE) >= _BLOCK_CACHE_MAX:
+        _BLOCK_CACHE.clear()
+    block = pygame.Surface((width, height), pygame.SRCALPHA)
+    pygame.draw.rect(block, (*colour, CHORD_BLOCK_ALPHA),
+                     block.get_rect(), border_radius=8)
+    pygame.draw.rect(block, colour, block.get_rect(), 2, border_radius=8)
+    _BLOCK_CACHE[key] = block
+    return block
+
+
 def _head_surface(width: int, height: int, colour, border) -> pygame.Surface:
     """One note head, ready to blit. Same shape for every note.
 
@@ -502,6 +532,7 @@ def clear_font_cache() -> None:
     """
     _get_font.cache_clear()
     _HEAD_CACHE.clear()
+    _BLOCK_CACHE.clear()
 
 
 def format_time(ms: float) -> str:
@@ -819,10 +850,12 @@ class PlayingScreen:
         # rasterising a whole song is seconds and seconds in the game loop
         # is a frozen app.
         self._tab_mode: bool = False
-        # The two grip cards, on by default: a chord is a shape the
-        # hand makes, and six fret numbers spread down six lanes are
-        # not one. Built once per song, like the chord names.
-        self._chord_cards: bool = True
+        # The chord extension: the two grip cards AND the blocks that say
+        # which notes are one chord. ONE switch, because it is one idea --
+        # "show me the chords" -- and two keys for two halves of an answer
+        # is how a panel ends up with settings nobody can find. Off by
+        # default: it is an extension to the normal view, not the view.
+        self._chord_mode: bool = False
         self._chord_shapes: list = []
         self._tab_engraving = None
         self._tab_due: bool = False
@@ -1436,9 +1469,9 @@ class PlayingScreen:
             # Tested BEFORE the plain C below, which raises the noise gate:
             # an `elif` chain is read in order, so a shifted key placed after
             # its unshifted twin is never reached at all.
-            self._chord_cards = not self._chord_cards
-            self._say("Chord grips on" if self._chord_cards
-                      else "Chord grips off")
+            self._chord_mode = not self._chord_mode
+            self._say("Chord view on — grips and blocks"
+                      if self._chord_mode else "Chord view off")
         elif event.key == pygame.K_c:
             # C is the key that walked this player's gate to the old ceiling,
             # five decibels at a time, on advice the app kept repeating --
@@ -1547,6 +1580,9 @@ class PlayingScreen:
         self._draw_lanes(surface, layout)
         self._draw_loop_region(surface, layout)
         self._draw_hit_zone(surface, layout)
+        # UNDER the notes: the block says "these belong together and this is
+        # what it is called", the heads keep saying which string went right.
+        self._draw_chord_blocks(surface, layout)
         self._draw_notes(surface, layout)
         self._draw_chord_names(surface, layout)
         self._draw_chord_cards(surface, layout)
@@ -2054,6 +2090,104 @@ class PlayingScreen:
             last = name
         return out
 
+    def _chord_blocks_in_view(self, layout: _Layout):
+        """(x, width, top, bottom, shape, notes) for each chord on screen.
+
+        Grouped from the VISIBLE notes only, which is a couple of dozen, so
+        this stays a per-frame cost that does not grow with the song -- the
+        loop this project has had to move out of a frame three times.
+        """
+        view_start = self._playback_ms - LEFT_MARGIN_MS
+        view_end = (self._playback_ms + self._visible_window_ms
+                    + RIGHT_MARGIN_MS)
+        notes = [n for n in self._timeline.get_notes_in_range(
+            view_start, view_end) if self._note_passes_filter(n)]
+        at: dict[int, list] = {}
+        for note in notes:
+            at.setdefault(int(round(note.timestamp_ms)), []).append(note)
+
+        from pickhero.tabs.chord_shapes import shape_of
+
+        out = []
+        for when in sorted(at):
+            group = at[when]
+            if len(group) < 2:
+                continue
+            shape = shape_of(group)
+            if shape is None:
+                continue
+            x = self.note_x(float(when), self._playback_ms,
+                            layout.hit_zone_x, layout.pixels_per_ms)
+            head = self._head_px if self._head_px is not None else layout.note_h
+            width = max(2 * (head / 2), min(
+                self.sustain_width(max(n.duration_ms for n in group),
+                                   layout.pixels_per_ms),
+                head * 4))
+            if x + width < 0 or x > layout.screen_w:
+                continue
+            strings = [n.string for n in group]
+            top = layout.lane_top + (min(strings) - 1) * layout.lane_height
+            bottom = layout.lane_top + max(strings) * layout.lane_height
+            out.append((x, width, top, bottom, shape, group))
+        return out
+
+    def _chord_block_colour(self, notes) -> tuple[int, int, int]:
+        """What a whole chord's worth of verdicts looks like as one colour.
+
+        The block cannot show six answers, so it shows the WORST of them --
+        a chord with one string wrong is not a chord that went well. The
+        per-string detail is not lost: the heads are drawn on top of this and
+        keep their own colours, which is the whole reason the block goes
+        underneath rather than instead.
+        """
+        t = get_theme()
+        if not self._audio_enabled or self._matcher is None:
+            return t.lane_line
+        states = [self._matcher.get_note_state(n) for n in notes]
+        if any(s is MatchType.PENDING for s in states):
+            return t.lane_line
+        if any(s is MatchType.MISS for s in states):
+            return t.feedback_miss
+        if any(s is MatchType.CLOSE for s in states):
+            return t.feedback_close
+        return t.feedback_hit
+
+    def _draw_chord_blocks(self, surface: pygame.Surface,
+                           layout: _Layout) -> None:
+        """Draw each chord as ONE object with its name on it (Shift+C).
+
+        Six fret numbers spread down six lanes are not a shape. A block that
+        spans the strings says "this is one grip" before a single number has
+        been read, which is what the reference app's big coloured slabs do.
+
+        It is a tint, not a fill: the notes are the thing being read and a
+        solid slab under them would fight them for attention. The name sits
+        at the block's LEADING edge, because that is the moment the hand has
+        to be ready -- the same reason a note's leading edge is its time.
+        """
+        if not self._chord_mode:
+            return
+        blocks = self._chord_blocks_in_view(layout)
+        if not blocks:
+            return
+        t = get_theme()
+        font = _get_font("arial", 22)
+        for x, width, top, bottom, shape, notes in blocks:
+            colour = self._chord_block_colour(notes)
+            rect = pygame.Rect(int(x), int(top), max(1, int(width)),
+                               max(1, int(bottom - top)))
+            surface.blit(_chord_block_surface(rect.width, rect.height, colour),
+                         rect.topleft)
+            label = font.render(shape.name, True, t.note_text)
+            shadow = font.render(shape.name, True, (0, 0, 0))
+            # A white name over an amber string is invisible, which is the
+            # same reason every technique line here carries a shadow.
+            lx, ly = rect.left + 6, rect.top - label.get_height() - 2
+            if ly < layout.lane_top:
+                ly = rect.top + 4
+            surface.blit(shadow, (lx + 1, ly + 1))
+            surface.blit(label, (lx, ly))
+
     def _chord_now_and_next(self):
         """The grip being played and the one after it.
 
@@ -2083,7 +2217,7 @@ class PlayingScreen:
         Silent on a song with no chords in it -- a panel that is always there
         and usually empty is a panel nobody looks at.
         """
-        if not self._chord_cards or not self._chord_shapes:
+        if not self._chord_mode or not self._chord_shapes:
             return
         from pickhero.ui.chord_view import card_size, draw_diagram
 
@@ -2950,7 +3084,7 @@ class PlayingScreen:
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
             "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
             "|  R: play in another tuning (Shift+R: back)  "
-            "|  Shift+C: chord grips  "
+            "|  Shift+C: chord view  "
             "|  Ctrl+S: sync to the recording automatically  "
             "|  Shift+S: sync point here (Ctrl+Shift+S: clear)  "
             "|  Shift+A: reopen audio output (if the sound goes bad)  "

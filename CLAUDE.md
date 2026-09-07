@@ -2207,6 +2207,20 @@ has to make, which is why every songbook, every chord app and Yousician draw a g
 - **`Shift+C` is tested before the plain `C`** that raises the noise gate. An `elif` chain is read in order, so a shifted key placed after its
   unshifted twin is never reached — which is exactly how the first version of this shipped inert.
 
+**And the blocks go UNDER the note heads, not instead of them.** The reference app draws a chord as one coloured slab and nothing else, which it
+can afford because it does not report per-string feedback; this app spent a whole chapter learning to say WHICH string was wrong, and a slab
+would throw that away. So the block is a tint that spans the strings of the grip with the name at its leading edge, and the heads keep their own
+colours on top of it. Strictly more than six separate heads, never less.
+
+- **The block shows the WORST verdict of its strings.** A chord with one string wrong is not a chord that went well, and the block cannot show
+  six answers; the detail is on the heads.
+- **Its name sits at the LEADING edge**, because that is the moment the hand has to be ready — the same reason a note's leading edge is its time.
+- **One switch for both halves.** Cards and blocks are one idea, and two keys for two halves of an answer is how a panel ends up with settings
+  nobody can find. **Off by default**: it is an extension to the normal view, not the view.
+- **The blocks are cached surfaces**, for the same reason the note heads are: an SRCALPHA surface per block per frame cost **2.0 ms of a 16.7 ms
+  budget** on a real song. Cached it is **0.94 ms** and the cache holds six entries, because a song chooses one head size and the blocks come in
+  very few sizes with it.
+
 ## The Chord Name Is Not In The Tab Either
 
 Guitar Pro has a field for it, and it is empty: **5601 beats in the player's own tab, not one chord name** — the same story as the fingering.
