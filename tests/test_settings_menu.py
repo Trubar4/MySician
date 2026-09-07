@@ -211,3 +211,67 @@ class TestItDraws:
         """Resizable window, and the settings list is the longest one there
         is."""
         _screen().render(pygame.Surface((640, 400)))
+
+
+class TestTheChordViewIsFindable:
+    """The player turned it on with Shift+C, could not find it in the
+    settings screen, and reasonably concluded it did not exist. Anything set
+    once and then living on invisibly belongs on that screen -- that is the
+    whole reason it is there.
+    """
+
+    def _screen(self):
+        from pickhero.config import Config
+        from pickhero.ui.settings_menu import SettingsMenuScreen
+
+        config = Config()
+        return SettingsMenuScreen(config), config
+
+    def test_there_is_a_row_for_it(self):
+        screen, _ = self._screen()
+        assert any(row.key == "chords" for row in screen._rows)
+
+    def test_it_shows_what_it_is_set_to(self):
+        screen, config = self._screen()
+        row = next(r for r in screen._rows if r.key == "chords")
+        assert row.value() == "off"
+        config.chord_view = True
+        assert row.value() == "on"
+
+    def test_and_changing_it_there_changes_the_setting(self):
+        screen, config = self._screen()
+        row = next(r for r in screen._rows if r.key == "chords")
+        row.adjust(1)
+        assert config.chord_view is True
+
+    def test_it_is_marked_when_it_is_not_standard(self):
+        """A row that is not on its standard value is the one that explains
+        a surprise, which is what the marking is for."""
+        screen, config = self._screen()
+        row = next(r for r in screen._rows if r.key == "chords")
+        assert row.is_default()
+        config.chord_view = True
+        assert not row.is_default()
+
+    def test_the_song_screen_starts_from_it_and_writes_it_back(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.tabs.timeline import (NoteEvent, SongMetadata, Timeline)
+        from pickhero.ui.scrolling import PlayingScreen
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        config = Config()
+        config.chord_view = True
+        config.save = lambda: None
+        timeline = Timeline(
+            [NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=40,
+                       string=6, fret=0, measure=0)],
+            SongMetadata(title="t", tempo=120))
+        screen = PlayingScreen(timeline, config=config, song_key="t")
+        assert screen._chord_mode
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_c, mod=pygame.KMOD_SHIFT,
+            unicode="C"))
+        assert not screen._chord_mode
+        assert config.chord_view is False

@@ -29,6 +29,11 @@ datas += collect_data_files("certifi")
 # feature that only works in the development tree is a feature the player
 # does not have.
 datas += collect_data_files("verovio")
+# The build stamp, written by build.bat just before this runs. Without it in
+# the bundle the EXE cannot say which version it is, and "is it fixed" and
+# "did it reach the machine" become the same question.
+if os.path.exists(os.path.join("pickhero", "_build_stamp.txt")):
+    datas += [(os.path.join("pickhero", "_build_stamp.txt"), "pickhero")]
 # resvg rasterises the engraving. SDL's own SVG loader accepts verovio's
 # output and draws 20 pixels of it, which is why this is here at all -- and
 # it is resvg rather than cairosvg because cairosvg needs a cairo the Windows

@@ -609,6 +609,14 @@ class MenuScreen:
             tune_label = self._tuning_filter or "all"
             fav = "on" if self._favourites_only else "off"
             hint = f"F or /: search  |  M: favourite (Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+        # The build, bottom right and out of the way. It is asked for
+        # exactly once per report -- "which version are you running" --
+        # and answering it has cost several rounds.
+        from pickhero.build_info import build_stamp
+        stamp = _get_font("arial", 11).render(
+            build_stamp(), True, t.lane_line)
+        surface.blit(stamp, (w - stamp.get_width() - 8,
+                             h - stamp.get_height() - 2))
         hint_surf = hint_font.render(hint, True, t.hud_text)
         surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
 

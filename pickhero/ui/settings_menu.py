@@ -100,6 +100,9 @@ class SettingsMenuScreen:
                 pass
             return f"device #{index}"
 
+        def toggle_chord_view() -> None:
+            c.chord_view = not c.chord_view
+
         def toggle_auto_gate() -> None:
             c.audio.auto_gate = not c.audio.auto_gate
 
@@ -179,6 +182,13 @@ class SettingsMenuScreen:
                     is_default=lambda: (c.audio.auto_gate
                                         or c.audio.noise_gate_db
                                         == default.audio.noise_gate_db)),
+            Setting("chords", "Chord view",
+                    lambda: "on" if c.chord_view else "off",
+                    lambda step: toggle_chord_view(),
+                    note="Draws each chord as one block with its name, and "
+                         "the grip you are on beside the one coming next. "
+                         "Shift+C in the song.",
+                    is_default=lambda: c.chord_view == default.chord_view),
             Setting("window", "Hit window",
                     lambda: f"{c.timing_window_ms:.0f} ms", adjust_window,
                     note="How far off the beat a note still counts. Wider is "

@@ -903,7 +903,7 @@ class PlayingScreen:
         # "show me the chords" -- and two keys for two halves of an answer
         # is how a panel ends up with settings nobody can find. Off by
         # default: it is an extension to the normal view, not the view.
-        self._chord_mode: bool = False
+        self._chord_mode: bool = bool(getattr(config, "chord_view", False))
         self._chord_shapes: list = []
         self._tab_engraving = None
         self._tab_due: bool = False
@@ -1518,6 +1518,9 @@ class PlayingScreen:
             # an `elif` chain is read in order, so a shifted key placed after
             # its unshifted twin is never reached at all.
             self._chord_mode = not self._chord_mode
+            if hasattr(self._config, "chord_view"):
+                self._config.chord_view = self._chord_mode
+                self._config.save()
             self._say("Chord view on — grips and blocks"
                       if self._chord_mode else "Chord view off")
         elif event.key == pygame.K_c:
@@ -4229,6 +4232,13 @@ class PlayingScreen:
         capture = self._audio_capture
         ac = self._config.audio
         fh.write("# MySician run log\n")
+        # WHICH BUILD wrote this. Three fixes in a row came back as "does
+        # nothing" while their code was in the tree and under test, and each
+        # was an older EXE -- without this line "is it fixed" and "did it
+        # reach the machine" are the same question with no way to tell them
+        # apart.
+        from pickhero.build_info import build_stamp
+        fh.write(f"build\t{build_stamp()}\n")
         fh.write(f"song\t{self._song_key}\n")
         fh.write(f"notes_written\t{len(self._timeline.notes)}\n")
         # How far the run actually got. D can be pressed at any moment, and a

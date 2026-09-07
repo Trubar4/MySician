@@ -109,6 +109,11 @@ class Config:
     # the song you have finished should not open slowed down because something
     # else needed it. Anything not in here starts at full speed.
     song_tempo_factors: dict = field(default_factory=dict)
+    # The chord extension: grip diagrams and a block round each chord. A
+    # setting rather than screen state, because the player looked for it in
+    # the settings screen -- which is the right place for anything set once
+    # and then living on invisibly.
+    chord_view: bool = False
     timing_window_ms: float = 150.0
     audio_latency_offset_ms: float = 0.0
     chord_threshold_ms: float = 50.0

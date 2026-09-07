@@ -1366,6 +1366,21 @@ it. With caps lock on the two swap over, which is the price and is small: the le
 `pygame.key.get_mods()` needs the video system and raises without it, so it is wrapped. **A key handler that can raise takes the app down with
 it**, and it is asked on every keystroke in the song list.
 
+## Which Build Is This? Nothing Could Say
+
+Three fixes in a row came back as "does nothing" — `Shift+U` in the search box, `Shift+C` in the song, and the footer that would not wrap. All
+three were in the tree, under test, and green. All three were an older EXE, and each one cost a round trip to establish, because **nothing in the
+app could say which version was running**: "is it fixed" and "did it reach the machine" were the same question with no way to tell them apart.
+
+- **`build.bat` stamps the build** with the short commit and the time, `pickhero.spec` carries the file into the EXE, and `build_info.py` reads
+  it back. Running from a checkout there is no stamp, so the git HEAD is read STRAIGHT OFF THE FILESYSTEM — no subprocess, because this is asked
+  while the window is coming up and a build stamp must never be why the app is slow to start or fails to start.
+- **It is in the run log (`build`) and bottom-right in the song list.** The log is what gets sent; the list is what the player can read without
+  playing anything.
+- **Neither answer is a crash.** No stamp and no git gives "unknown build", which is itself information.
+
+The stamp is generated, so it is gitignored: it describes one machine's build and never belongs in the tree.
+
 ## The Footer Was Wider Than The Screen, So Both Ends Were Gone
 
 Twenty-three keyboard shortcuts are **2986 px** of text and the player's window is **1911**. `_blit_footer_lines` shrank the font until the
@@ -1863,6 +1878,15 @@ speed, and full speed is never written (an entry saying 1.0 says nothing).
   Same rule as everywhere else here: a tool that reports a number without checking the assumption underneath it is measuring itself.
 - **The settings screen shows it as "per song", not as a value.** A global number that no longer decides anything is a lie on a screen whose
   entire job is saying what is set.
+
+## The Chord View Was A Key And Not A Setting
+
+"Shift+C fehlt auch im Settingsmenü." Right, and that screen exists for exactly this: anything set once and then living on invisibly. The chord
+view was screen state, so it was forgotten at every song and could not be found anywhere — which is indistinguishable from a feature that does
+not exist, and is how the player reasonably concluded it did not.
+
+It is `Config.chord_view` now: a row on the settings screen, marked when it is not standard, and written back when `Shift+C` toggles it in the
+song. The key and the row are the same setting, which is the rule every other pair on that screen already follows.
 
 ## A Setting You Cannot See Is A Setting You Cannot Undo
 
