@@ -2174,6 +2174,39 @@ that is hard to read in the first place.
   hue is not in the set and two colours of the same family stand in for it. Neighbouring lanes never share a hue, because the lane above is
   the one a note can be confused with — asserted, not eyeballed.
 
+## A Chord Is A Shape, And Six Lanes Cannot Show One
+
+"Schaffen wir alternativ eine ähnliche View zu dieser bei Akkorden?" — the reference app keeps two chord diagrams in the corner: the grip being
+played and the one coming next. Six fret numbers spread down six lanes say which notes to play and nothing whatsoever about the shape the hand
+has to make, which is why every songbook, every chord app and Yousician draw a grid.
+
+**What the files carry was measured before anything was drawn**, across the player's own three songs:
+
+| | Whats up | Kid Rock | Leave A Light On |
+|---|---|---|---|
+| moments with two strings or more | 100 of 280 | 12 of 444 | 251 of 533 |
+| **of those, nameable** | **100 %** | 92 % | 96 % |
+| **distinct grips in the whole song** | **3** | 7 | 13 |
+
+- **The shape is always there.** Every note has a string and a fret, so the grid comes out of the tab itself — a reading of what is written,
+  which is the line `chords.py` already walks.
+- **A song's whole vocabulary is three to thirteen grips**, so it is built once per song (`changes_in`) and never in a frame. Measured on the
+  board: 0.25 ms of a 16.7 ms budget.
+- **Which FINGER is not available and is therefore not drawn.** Two of the three songs carry no fingering at all; the third gives a finger for
+  **41 of 120 positions** and `finger="None"` for the rest. A diagram that colours the fingers on one song and greys them on the next teaches
+  nothing, and colouring a guess would be the invention this project refuses everywhere else.
+- **A GP file MAY carry the transcriber's own diagrams** (`DiagramCollection`, with muted and barred strings) and one of the three does, with
+  15 items against the 13 shapes computed from the notes. Not read: a picture that is better on one song in three is worse than one that is the
+  same everywhere.
+- **The card shows the grip being PLAYED, not the nearest one.** A chord is held until the next one starts, so a card that flipped at the
+  halfway point would take the shape away exactly while the hand is still on it.
+- **Only the CHANGES are kept.** 241 chord moments in one song are 86 grip changes: showing the same grip again at every strum is eight bars of
+  noise and buries the moment that actually needs preparing — the same rule the chord NAMES on the board already follow.
+- **Silent on a song that has none.** Kid Rock writes 12 chords in 444 moments; a panel that is always there and usually empty is a panel
+  nobody looks at.
+- **`Shift+C` is tested before the plain `C`** that raises the noise gate. An `elif` chain is read in order, so a shifted key placed after its
+  unshifted twin is never reached — which is exactly how the first version of this shipped inert.
+
 ## The Chord Name Is Not In The Tab Either
 
 Guitar Pro has a field for it, and it is empty: **5601 beats in the player's own tab, not one chord name** — the same story as the fingering.

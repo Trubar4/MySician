@@ -819,6 +819,11 @@ class PlayingScreen:
         # rasterising a whole song is seconds and seconds in the game loop
         # is a frozen app.
         self._tab_mode: bool = False
+        # The two grip cards, on by default: a chord is a shape the
+        # hand makes, and six fret numbers spread down six lanes are
+        # not one. Built once per song, like the chord names.
+        self._chord_cards: bool = True
+        self._chord_shapes: list = []
         self._tab_engraving = None
         self._tab_due: bool = False
         self._tab_error: str = ""
@@ -1427,6 +1432,13 @@ class PlayingScreen:
         elif event.key == pygame.K_x:
             self._take_gate_by_hand()
             self.set_noise_gate_db(self._noise_gate_db - 5)
+        elif event.key == pygame.K_c and event.mod & pygame.KMOD_SHIFT:
+            # Tested BEFORE the plain C below, which raises the noise gate:
+            # an `elif` chain is read in order, so a shifted key placed after
+            # its unshifted twin is never reached at all.
+            self._chord_cards = not self._chord_cards
+            self._say("Chord grips on" if self._chord_cards
+                      else "Chord grips off")
         elif event.key == pygame.K_c:
             # C is the key that walked this player's gate to the old ceiling,
             # five decibels at a time, on advice the app kept repeating --
@@ -1537,6 +1549,7 @@ class PlayingScreen:
         self._draw_hit_zone(surface, layout)
         self._draw_notes(surface, layout)
         self._draw_chord_names(surface, layout)
+        self._draw_chord_cards(surface, layout)
         self._draw_hud(surface, layout)
 
         if self._show_timing:
@@ -2012,6 +2025,8 @@ class PlayingScreen:
         # look-ahead is bought and sold in width.
         self._head_h_px = max(head, layout.note_h)
         self._chord_names = self._build_chord_names()
+        from pickhero.tabs.chord_shapes import changes_in
+        self._chord_shapes = changes_in(self._timeline)
         self._scroll_speed_signature = self._filter_signature()
 
     def _build_chord_names(self) -> list[tuple[float, str]]:
@@ -2038,6 +2053,54 @@ class PlayingScreen:
             out.append((when, name))
             last = name
         return out
+
+    def _chord_now_and_next(self):
+        """The grip being played and the one after it.
+
+        The grip being PLAYED, not the nearest one: a chord is held until the
+        next one starts, so the card must stay up for as long as the hand is
+        on it. Bisect rather than a scan -- this runs sixty times a second
+        over a list that grows with the song, which is exactly the loop this
+        project has had to move out of a frame three times already.
+        """
+        shapes = self._chord_shapes
+        if not shapes:
+            return None, None
+        i = bisect.bisect_right([w for w, _ in shapes], self._playback_ms) - 1
+        now = shapes[i][1] if i >= 0 else None
+        nxt = shapes[i + 1][1] if i + 1 < len(shapes) else None
+        # Before the first chord there is nothing being played, so the first
+        # one is what is COMING -- which is the more useful of the two while
+        # the count-in runs.
+        if now is None:
+            return None, shapes[0][1]
+        return now, nxt
+
+    def _draw_chord_cards(self, surface: pygame.Surface,
+                          layout: _Layout) -> None:
+        """The grip now and the grip next, top left (Shift+C).
+
+        Silent on a song with no chords in it -- a panel that is always there
+        and usually empty is a panel nobody looks at.
+        """
+        if not self._chord_cards or not self._chord_shapes:
+            return
+        from pickhero.ui.chord_view import card_size, draw_diagram
+
+        now, nxt = self._chord_now_and_next()
+        if now is None and nxt is None:
+            return
+        w, h = card_size()
+        small_w, small_h = card_size(0.82)
+        x = 12
+        y = max(layout.lane_top - h - 8, 8)
+        if now is not None:
+            draw_diagram(surface, pygame.Rect(x, y, w, h), now, label="now")
+            x += w + 8
+        if nxt is not None:
+            draw_diagram(surface,
+                         pygame.Rect(x, y + (h - small_h), small_w, small_h),
+                         nxt, label="next", dim=True)
 
     def _draw_chord_names(self, surface: pygame.Surface,
                           layout: _Layout) -> None:
@@ -2887,6 +2950,7 @@ class PlayingScreen:
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
             "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
             "|  R: play in another tuning (Shift+R: back)  "
+            "|  Shift+C: chord grips  "
             "|  Ctrl+S: sync to the recording automatically  "
             "|  Shift+S: sync point here (Ctrl+Shift+S: clear)  "
             "|  Shift+A: reopen audio output (if the sound goes bad)  "
