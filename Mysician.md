@@ -1,3 +1,13 @@
+
+:: auf NB1 den ganzen Ordner auf einen Stick
+xcopy /E /I "%USERPROFILE%\.pickhero" D:\pickhero-vom-nb1
+:: auf NB2
+python tools\merge_stats.py --from D:\pickhero-vom-nb1 --dry-run
+python tools\merge_stats.py --from D:\pickhero-vom-nb1
+
+
+
+
 #To Dos
 Sync nochmals testen
 Längere Töne (zB am Anfang von Californication)
