@@ -1835,6 +1835,61 @@ press lands at the far end. The 95 % the player saw is the one frame that render
   unfixed code, which is the only thing that makes it worth having.
 - The scroll factor gets the same gate. It is the same fault, and two answers to one question is how this project has been bitten before.
 
+## Two Complaints Pulling On One Knob — NOT DIAGNOSED, NOT BUILT
+
+"Bei schnelleren Songs wie I'd die for you oder Love walked in wird das Bild irgendwie unscharf und ich kann Töne kaum erkennen." Written
+down before anything is built, because the first measurement says the obvious fix is the one that makes the OTHER complaint worse.
+
+**The same player, the same week, asked for opposite things from `+`/`-`:**
+
+| | px/s | smear at 60 Hz | the notes |
+|---|---|---|---|
+| `-` (0.8x) | 172 | 2.9 px | **denser** — the complaint before this one |
+| 1.0x | 275 | 4.6 px | |
+| `+` (1.5x) | 412 | 6.9 px | further apart |
+| `+` (2.5x) | 683 | **11.4 px** | furthest apart |
+
+So "the notes are too dense" wants `+` and "the picture is unsharp" wants `-`. **The knob cannot answer both**, and any fix that only moves
+it is trading one report for the other. That is the finding; everything below is a candidate.
+
+**The arithmetic that makes "unsharp" a real thing and not an impression.** A 60 Hz screen HOLDS each frame for 16.7 ms while the eye tracks
+the moving note smoothly, so an object at `v` px/s is smeared across `v / 60` pixels. It is a property of sample-and-hold displays and no
+amount of drawing quality touches it. Measured on the songs to hand at 1.0x:
+
+| | px/s | smear | share of a fret digit |
+|---|---|---|---|
+| Kid Rock rhythm | 128 | 2.1 px | 6 % |
+| Papa Roach | 191 | 3.2 px | 10 % |
+| Kid Rock lead | 275 | 4.6 px | 15 % |
+| **Bon Jovi, "I'd Die For You"** | **432** | **7.2 px** | **23 %** |
+
+The song the player named is the fastest scroller measured here, at normal speed, and it smears nearly a quarter of the digit's width. That
+is consistent with the report and does not prove it: **nothing has been reproduced or measured on the player's machine**, and "Love Walked
+In" is not in `songs/` at all.
+
+**Three candidates, fixed in three different places. None is established.**
+
+- **Persistence blur** (the table above). Only two levers exist: fewer px/s, or more frames a second. It is the one candidate whose size is
+  already known.
+- **Frame pacing.** `App.run` uses `clock.tick(60)` — a SOFTWARE timer — and `set_mode` is called without `vsync=1`. An unsynced 60 against a
+  60 Hz panel beats slowly in and out of phase, which reads as juddering rather than as smooth motion, and is a different complaint wearing
+  the same word. `vsync=1` is one argument; whether it helps has not been tried, and it can fail to be honoured at all.
+- **Pixel quantisation.** A note's x is a float landing on whole pixels, so each frame rounds by up to half a pixel. At 4-7 px of travel a
+  frame that is a tenth of the motion, arriving as jitter on top of the smear.
+
+**And the promising direction is neither of those, which is why this is written down rather than fixed in a hurry:**
+
+- **The lane's vertical space is free.** "A Note Head Is Squeezed Sideways, Not Downwards" measured 53 % of the lane height unused on a dense
+  song. Look-ahead is bought and sold in WIDTH only, so a taller, bolder head costs nothing at all and is the one improvement that does not
+  come out of the other complaint's budget.
+- **`Shift+T` does not scroll.** `_tab_scroll_for` HOLDS the page while the current system is on screen and moves only at a line break, so a
+  page view has no persistence blur by construction. It may simply be the right view for a fast song, and nobody has asked the player to try
+  it for this.
+
+**What the next session needs before building anything:** the two `.gp` files (they are not here), and the player's `frame_ms_median` /
+`frames_over_budget_percent` / `clock_ratio` from a run log of one of them — because a machine dropping frames and a machine smearing them
+look identical on screen and are fixed in different places, which is this project's oldest lesson.
+
 ## Slowing The Tab Down Did Nothing At All
 
 "Kleiner machen geht nicht richtig — es haengt meist bei Groesse 1 und ignoriert kleiner machen. Groesser machen geht, aber das macht den Bildlauf schneller."
