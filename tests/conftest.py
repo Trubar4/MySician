@@ -19,3 +19,19 @@ def isolated_config(tmp_path, monkeypatch):
         config_module, "CONFIG_FILE", tmp_path / ".pickhero" / "settings.json"
     )
     yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_font_cache():
+    """Fonts do not survive a pygame session, and several tests end one.
+
+    `scrolling` caches fonts and the surfaces drawn with them, which is what
+    took the playing screen from 15 ms a frame to 1.5 ms. A font kept across
+    `pygame.quit()` is a dangling pointer, so a test that quits pygame would
+    otherwise segfault the NEXT test that draws -- which is exactly what
+    happened, and it is a real hazard rather than a test artifact.
+    """
+    from pickhero.ui import scrolling
+    scrolling.clear_font_cache()
+    yield
+    scrolling.clear_font_cache()

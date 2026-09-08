@@ -46,6 +46,17 @@ if not exist "%SPEC%" (
     exit /b 1
 )
 
+:: ── Stamp the build ────────────────────────────────────────────────────────
+:: So the running app can say which version it is. Three fixes in a row were
+:: reported as "does nothing" while their code was in the tree and tested --
+:: every one of them an older EXE, and each cost a round trip to establish.
+
+python -c "import subprocess,datetime,pathlib;sha=subprocess.run(['git','rev-parse','--short=8','HEAD'],capture_output=True,text=True).stdout.strip() or 'no-git';pathlib.Path('pickhero/_build_stamp.txt').write_text(sha+' built '+datetime.datetime.now().strftime('%%Y-%%m-%%d %%H:%%M'),encoding='utf-8')"
+if exist pickhero\_build_stamp.txt (
+    set /p STAMP=<pickhero\_build_stamp.txt
+    echo Build stamp: !STAMP!
+)
+
 :: ── Build ──────────────────────────────────────────────────────────────────
 
 echo.

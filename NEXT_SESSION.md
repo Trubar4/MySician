@@ -4,71 +4,66 @@ Alles ab der Trennlinie in eine neue Unterhaltung kopieren.
 
 ---
 
-Wir arbeiten weiter an **MySician** (Repo `Trubar4/MySician`, Branch
-`claude/handoff-claude-md-review-va3ph4`). Lies zuerst `HANDOFF.md` und
-`CLAUDE.md` — dort steht der Stand, mein Setup und warum die Dinge so gebaut
-sind, wie sie sind.
+Wir arbeiten weiter an **MySician** (Repo `Trubar4/MySician`). Lies zuerst
+`HANDOFF.md` und `CLAUDE.md` — dort steht der Stand, mein Setup und warum die
+Dinge so gebaut sind, wie sie sind. Der Branch, auf dem gearbeitet wird, steht
+in der Datei `UPLOAD_BRANCH` im Repo-Hauptverzeichnis.
 
 Kurz zu mir: ich bin nicht technisch ("vibecoding"). Bitte **auf Deutsch
 antworten**, Befehle zum Kopieren geben, und erklären, was eine Änderung für
-mich als Spieler bedeutet. Ich spiele Metal und übe bei Yousician auf
-Pro-Level — daran messe ich die App.
+mich als Spieler bedeutet. Ich spiele vorwiegend Rock und Metal (auch Pop und
+Country) und übe bei Yousician auf Pro-Level — daran messe ich die App.
 
-**Fang mit Thema 1 an, aber frag mich zuerst nach dem Messergebnis — bau
-nichts, bevor du es kennst.** Genau dafür wurde der Bericht gebaut: damit wir
-nicht mehr raten.
+## Meine ursprüngliche Reihenfolge ist abgearbeitet
 
-**1. Timing — das Messgerät steht, das Ergebnis fehlt**
+1. **Erkennung** — erledigt. Zuletzt **98,4 % (61/62)** und **96,8 % (58+2/62)**
+   im Timing-Test. Die Ursache der alten 34,6 % war der **Eingangspegel**, nicht
+   der Detektor: ein zu leises Signal verliert kaum Anschläge, es benennt sie
+   falsch. Steht mit Messtabelle in `CLAUDE.md`.
+2. **Klingende Saiten** — gemessen und zum Teil repariert. Es kommt **nie** eine
+   falsche Note zurück; klingende Nachbarn kosten Anschläge **ganz ohne
+   Tonhöhe**, und nur im Schnellen. Solche Anschläge werden jetzt gerettet,
+   wenn dort genau eine Note geschrieben steht (schnell/klingend 8/14 → 10/14,
+   gedämpfte Kontrolle gewinnt exakt nichts).
+3. **MP3-Backing** — erledigt, inklusive **Zeitdehnung**: unter 100 % läuft die
+   Aufnahme mit, in richtiger Tonhöhe (höchstens 15 Cent Abweichung, gegen
+   −385 Cent bei bloßem Langsamerspielen).
+4. **Einstellungsbildschirm** — erledigt. **`O`** in der Songliste. Zeigt alles,
+   was einmal eingestellt wird, und **markiert, was vom Standard abweicht**.
 
-Letzte Sitzung haben wir den Timing-Bericht gebaut (Taste **Y**,
-`Shift+Y` schreibt die Rohwerte als CSV). Er zeigt die Verteilung meiner
-Anschläge und benennt das Problem: `fine`, `latency`, `scatter`, `mixed` oder
-`per_string`.
+## Was ich noch testen soll (bitte danach fragen)
 
-Ich wollte `songs/timing_test_100bpm.gp5` einmal durchspielen und **Y**
-drücken. Frag mich nach dem Befund (oder nach dem Screenshot / der CSV),
-bevor du irgendetwas änderst. Was er sagt, entscheidet, was zu tun ist:
+- Den **Einstellungsbildschirm**, die **Zeitdehnung** und die **Bend-Bewertung**
+  im echten Lauf — und für die Bends die Aufnahme aus Block 6.
+- Das offene Experiment: läuft `record_reference.py` parallel mit, während die
+  App wertet, verdirbt das die Wertung? Der 34,6-%-Lauf hatte genau das, und
+  derselbe Mitschnitt liest offline 97,4 %. Bis das geklärt ist, gilt: **eine
+  Wertung, die während einer Referenzaufnahme entsteht, ist kein Beweis.**
 
-- `latency` → **K** erledigt es bereits, es gibt nichts zu bauen.
-- `scatter` → liegt nicht an der App. Sag mir das bitte klar, statt etwas
-  zu erfinden.
-- `mixed` → erst **K**, dann neu messen, dann weiterreden.
-- `per_string` → **das ist der Fall, in dem gebaut wird**: Offsets pro Saite.
-  Die Daten dafür stecken in der CSV von `Shift+Y`.
-- Zu wenige Messwerte → im Bericht steht, wie viele Anschläge nicht
-  zuordenbar waren; das zuerst anschauen.
+## Was als Nächstes offen ist (`HANDOFF.md` hat die Details)
 
-Schon ausgeschlossen und nicht nochmal herzuleiten: es liegt nicht an
-schlechten GP-Dateien (die Testdatei ist exakt auf dem Raster gebaut), nicht
-an Wall-Clock-Jitter (Anschläge werden aus dem Sample-Zähler gestempelt) und
-nicht an einem weglaufenden Auto-Sync (auf ±300 ms begrenzt, Shift+K setzt
-zurück). Die Datenausbeute ist ebenfalls schon behoben — sie lag bei 39 % und
-liegt jetzt bei 98 %.
+- Nichts Gebautes mehr offen. Was bleibt, ist Spielen und Messen — siehe oben.
 
-**2. Bend-Auswertung**
+## Erledigt und nicht neu aufzurollen (Details in `HANDOFF.md`)
 
-Die Optik steht (Kurve in der Note, Badge ½/1/1½). Die Bewertung ist bewusst
-großzügig: akzeptiert wird der ganze Tonhöhenbereich, den der Bend abdeckt,
-weil der Detektor keinen Tonhöhenverlauf liefert. Mein Ziel: die Zielhöhe
-sollte **ca. auf einen Viertelton genau** stimmen — der Übergang darf
-fließend und ungenau sein, wie bei Yousician auch. Dafür bräuchte es einen
-Verlauf über die Notendauer statt eines einzelnen Werts pro Anschlag.
+- Timing: gemessen, Urteil `latency`, mit `K` erledigt; Per-Saiten-Offsets sind
+  ausgeschlossen. Der Befund "ich würde eilen" ist **zurückgezogen** — er war
+  ein Artefakt unzuverlässiger Tonhöhen, ein sauberer Lauf zeigt 0,1 %.
+- Akkorde werden rot: Ursache gefunden, 54 % → 100 % bei null Fehlalarmen.
+  Zweisaitige Powerchords zählen jetzt auch ohne Tonhöhe.
+- Suchen/Schleife öffnen das Eingabegerät nicht mehr neu (das waren die 10
+  Sekunden Hänger).
+- Ein verworfener Puffer hält die Uhr nicht mehr an.
+- Bundfilter überlebt keinen Neustart mehr; Notengröße nutzt jetzt die Höhe der
+  Spur; Stimmung steht im HUD.
+- Der Run-Log (**`D`**, und automatisch am Songende) benennt jeden Anschlag,
+  jede geschriebene Note und den Pegel. Wenn etwas unklar ist: diese Datei
+  schicken, nicht raten.
 
-**3. Akkorde in schneller Folge**
+## Meine Festlegungen
 
-Die Saitenprüfung enthält sich unter ~335 ms Abstand (also bei Achteln ab ca.
-90 BPM), weil ein kürzeres Fenster nachweislich falsche Urteile liefert — das
-ist gemessen, siehe `tools/sweep_chord_window.py`. Schneller ginge nur mit
-einem anderen Ansatz: analysieren, *bevor* der nächste Anschlag kommt, statt
-danach. Das ist Forschung, kein Umbau — bitte erst abschätzen, ob es sich
-lohnt.
-
-**4. Palm Mutes und Dead Notes**
-
-Stehen in den GP-Dateien, werden aber wie normale Noten gezeichnet. Der
-kleinste Brocken von den fünf.
-
-**5. GP7-Techniken**
-
-GP7-Dateien laden, tragen aber keine Bends und Slides — dieser Pfad parst das
-XML von Hand. GP3–GP5 laufen über pyguitarpro und sind vollständig.
+- Wo eine Note gegriffen wird, darf nie einen Unterschied machen.
+- Ein Oktavfehler darf grün bleiben.
+- Eine Dead Note zählt allein durch den Anschlag.
+- Ein zu flacher Bend ist gelb, nicht rot.
+- Bei Sechssaiten-Akkorden im Zweifel tolerant.

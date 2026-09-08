@@ -34,7 +34,10 @@ import pickhero.audio.chord_verify as cv  # noqa: E402
 from analyze_reference import load_wav, nm, onsets  # noqa: E402
 
 SKIP_MS = 40.0
-DEFAULT_LENGTHS = [341, 320, 300, 290, 280, 270, 260, 250, 240, 220, 200, 180]
+# Deliberately reaches well below the floor in use. The floor went stale once
+# already: the sweep gated on it, printed "below floor" with nothing judged,
+# and so could never show that shorter windows had become safe.
+DEFAULT_LENGTHS = [341, 300, 280, 260, 240, 220, 200, 190, 180, 170, 160, 140]
 
 # What the TAB asks for on the takes that deliberately play something else.
 # The manifest records what was PLAYED, which is what makes it a false-alarm
@@ -120,7 +123,13 @@ def main():
     session = Path(args.session)
     manifest, takes, audio, strikes = load_takes(session)
     print(f"{manifest['device']}  {manifest['samplerate']} Hz")
-    print(f"{len(takes)} chord takes, floor in use = {cv.MIN_WINDOW_MS:.0f} ms\n")
+    floor_in_use = cv.MIN_WINDOW_MS
+    print(f"{len(takes)} chord takes, floor in use = {floor_in_use:.0f} ms\n")
+    # Lift the floor for the duration: verify() refuses below it, so leaving it
+    # in place makes every shorter length report nothing judged and no false
+    # alarms -- which reads as "no data" but looks like "nothing to gain", and
+    # is how the floor came to sit 80 ms above where the takes allowed.
+    cv.MIN_WINDOW_MS = 1.0
 
     for k in (args.min_hz_seconds or [cv.MIN_HZ_SECONDS]):
         cv.MIN_HZ_SECONDS = k
@@ -131,7 +140,7 @@ def main():
             judged, alarms, caught, errors = evaluate(
                 win_ms, takes, audio, strikes, verbose=args.verbose
             )
-            usable = "" if win_ms >= cv.MIN_WINDOW_MS else "   below floor"
+            usable = "" if win_ms >= floor_in_use else "   below the floor in use"
             print(f"  {win_ms:6d}ms  {judged:6d}  {alarms:12d}  "
                   f"{caught:6d} / {errors:<4d}{usable}")
         print()

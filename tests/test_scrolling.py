@@ -4,15 +4,21 @@ Tests the pure computation functions in PlayingScreen without needing
 a running PyGame display.
 """
 
+import time
 import pygame
 import pytest
 
-from pickhero.config import Config
-from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
+from pickhero.config import MAX_GATE_DB, MIN_GATE_DB, Config
+from pickhero.tabs.timeline import (MeasureInfo, NoteEvent, SongMetadata,
+                                    Timeline)
+from pickhero.ui import scrolling
 from pickhero.ui.scrolling import (
     MIN_NOTE_WIDTH_PX,
+    ROOM_SAMPLES,
     PlayingScreen,
     format_time,
+    gate_band,
+    suggested_gate_db,
 )
 
 
@@ -184,17 +190,61 @@ class TestTempoFactor:
         screen.set_tempo_factor(0.68)
         assert screen._tempo_factor == pytest.approx(0.70)
 
-    def test_tempo_factor_from_config(self):
+    def test_the_speed_belongs_to_the_song(self):
+        """The solo being learned at 70 % is still at 70 % tomorrow."""
         from pickhero.config import Config
-        config = Config(tempo_factor=0.75)
-        screen = PlayingScreen(_make_timeline(), config=config)
+        config = Config()
+        config.set_tempo_factor_for("solo", 0.75)
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="solo")
         assert screen._tempo_factor == pytest.approx(0.75)
 
-    def test_tempo_factor_config_clamped_on_init(self):
+    def test_another_song_opens_at_full_speed(self):
+        """A song that never needed slowing must not inherit what the last
+        one needed -- which is what a single global speed did."""
         from pickhero.config import Config
-        config = Config(tempo_factor=0.2)
-        screen = PlayingScreen(_make_timeline(), config=config)
-        assert screen._tempo_factor == 0.5
+        config = Config()
+        config.set_tempo_factor_for("solo", 0.6)
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="other")
+        assert screen._tempo_factor == 1.0
+
+    def test_a_song_never_slowed_opens_at_full_speed(self):
+        from pickhero.config import Config
+        screen = PlayingScreen(_make_timeline(), config=Config(), song_key="new")
+        assert screen._tempo_factor == 1.0
+
+    def test_changing_the_speed_stores_it_for_this_song(self):
+        from pickhero.config import Config
+        config = Config()
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="solo")
+        screen.set_tempo_factor(0.7)
+        assert config.tempo_factor_for("solo") == pytest.approx(0.7)
+
+    def test_full_speed_is_not_stored(self):
+        """Storing 1.0 fills the file with entries that say nothing, and full
+        speed is what a song opens at anyway."""
+        from pickhero.config import Config
+        config = Config()
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="solo")
+        screen.set_tempo_factor(0.7)
+        screen.set_tempo_factor(1.0)
+        assert "solo" not in config.song_tempo_factors
+
+    def test_a_stored_speed_out_of_range_is_ignored(self):
+        from pickhero.config import Config
+        config = Config()
+        config.song_tempo_factors["solo"] = 0.2
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="solo")
+        assert screen._tempo_factor == 1.0
+
+    def test_tools_can_still_read_the_speed_in_use(self):
+        """record_reference writes it into a take's manifest, and an analysis
+        that does not know the speed reads a stretched take against the wrong
+        grid -- which cost a whole session once."""
+        from pickhero.config import Config
+        config = Config()
+        screen = PlayingScreen(_make_timeline(), config=config, song_key="solo")
+        screen.set_tempo_factor(0.65)
+        assert config.tempo_factor == pytest.approx(0.65)
 
 
 class TestLoopState:
@@ -357,8 +407,431 @@ class TestSustainWidth:
         assert PlayingScreen.sustain_width(short, 0.5) < PlayingScreen.note_width(short, 0.5)
 
 
+class TestSteppingThroughPlayableTunings:
+    """A player thinks in tunings, not in semitones, so R steps through the
+    tunings the song can actually be played in -- the ones a uniform shift
+    away, which are the ones where every fret number still holds."""
+
+    def _screen(self, tuning_name="Drop C", transpose=0):
+        from pickhero.audio.note_utils import NAMED_TUNINGS
+        shape = dict(NAMED_TUNINGS)[tuning_name]
+        played = {s: v + transpose for s, v in shape.items()}
+        song = Timeline(
+            [NoteEvent(timestamp_ms=0.0, duration_ms=500.0,
+                       midi_note=36 + transpose, string=6, fret=0)],
+            SongMetadata(title="t", tempo=120, tuning=played),
+            measures=[MeasureInfo(index=0, start_ms=0.0, end_ms=2000.0)])
+        return PlayingScreen(song, config=Config(), song_key="s",
+                             transpose=transpose)
+
+    def test_it_works_back_to_the_written_tuning(self):
+        from pickhero.audio.note_utils import NAMED_TUNINGS, tuning_name
+        screen = self._screen("Drop C", transpose=2)
+        assert tuning_name(screen.written_tuning()) == "Drop C"
+        assert tuning_name(screen._timeline.metadata.tuning) == "Drop D"
+
+    def test_stepping_up_asks_the_app_to_reload(self):
+        screen = self._screen("Drop C")
+        assert screen._next_tuning(+1) == ("transpose", 1)
+
+    def test_and_the_note_names_the_tuning_not_the_semitones(self):
+        screen = self._screen("Drop C")
+        screen._next_tuning(+1)
+        assert "Drop C#" in screen._status_note_text()
+
+    def test_stepping_down_from_the_written_one(self):
+        screen = self._screen("Drop C")
+        assert screen._next_tuning(-1) == ("transpose", -1)
+
+    def test_it_walks_back_to_as_written(self):
+        screen = self._screen("Drop C", transpose=1)
+        assert screen._next_tuning(-1) == ("transpose", 0)
+        assert "as written" in screen._status_note_text()
+
+    def test_a_tuning_of_its_own_shape_says_so_and_does_nothing(self):
+        """DADGAD is nobody's transposition, so there is nothing to step to
+        and the key must say that rather than look dead."""
+        screen = self._screen("DADGAD")
+        assert screen._next_tuning(+1) is None
+        assert "cannot be swapped" in screen._status_note_text()
+
+    def test_r_is_the_key_and_shift_r_goes_back(self):
+        screen = self._screen("Drop C")
+        up = screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_r, mod=0))
+        assert up == ("transpose", 1)
+        down = screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_r, mod=pygame.KMOD_SHIFT))
+        assert down == ("transpose", -1)
+
+    def test_the_hud_names_both_tunings(self):
+        """The fret numbers on screen belong to the WRITTEN song; without
+        saying so, they belong to a song nobody can find."""
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        screen = self._screen("Drop C", transpose=2)
+        screen.render(surface)          # must not raise
+        assert screen._transpose == 2
+
+    def test_the_hud_names_what_comes_next(self):
+        """A key that walks a list nobody can see is a key you press to find
+        out where it went -- and this one rebuilds the whole recording."""
+        screen = self._screen("Drop C")
+        label = screen.tuning_step_label()
+        assert "Drop C#" in label and "Drop B" in label
+
+    def test_and_the_label_never_promises_a_step_the_key_refuses(self):
+        """One helper answers both, so the line cannot advertise a tuning
+        pressing the key does not reach."""
+        for transpose in (-3, -2, -1, 0, 1, 2):
+            screen = self._screen("Drop C", transpose=transpose)
+            label = screen.tuning_step_label()
+            for step, half in ((+1, 0), (-1, 1)):
+                named = label.split("Shift+R")[half].split("\u2192")[-1].strip()
+                asked = screen._next_tuning(step)
+                if named == "—":
+                    assert asked is None, (transpose, step, label)
+                else:
+                    assert asked is not None, (transpose, step, label)
+                    assert named in screen._status_note_text()
+
+    def test_the_top_of_the_list_says_so_instead_of_wrapping(self):
+        """Ordered by pitch the two ends are five semitones apart, so a wrap
+        turns one press into a jump to the other end of the guitar -- and a
+        whole recording rebuilt for a tuning nobody asked for."""
+        screen = self._screen("Drop C", transpose=2)      # Drop D, the top
+        assert screen._next_tuning(+1) is None
+        assert "highest" in screen._status_note_text()
+
+    def test_and_so_does_the_bottom(self):
+        screen = self._screen("Drop C", transpose=-3)     # Drop A, the floor
+        assert screen._next_tuning(-1) is None
+        assert "lowest" in screen._status_note_text()
+
+    def test_a_song_with_nowhere_to_step_says_nothing_at_all(self):
+        assert self._screen("DADGAD").tuning_step_label() == ""
+
+
+class TestNoteHeadsAreDrawnOnceAndBlittedAfter:
+    """Measured on the player's own song: a frame makes 48 rounded-rect
+    calls -- 24 notes, fill and border -- and 46 of the 48 are the SAME size,
+    because one head size is chosen for the whole song. Rounding is what
+    costs: 24 heads drawn is 0.519 ms, the same 24 blitted is 0.056 ms.
+    """
+
+    def test_the_same_head_is_built_once(self):
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        scrolling.clear_font_cache()
+        first = scrolling._head_surface(44, 44, (200, 120, 60), (10, 10, 10))
+        again = scrolling._head_surface(44, 44, (200, 120, 60), (10, 10, 10))
+        assert again is first
+
+    def test_a_different_colour_is_a_different_head(self):
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        scrolling.clear_font_cache()
+        one = scrolling._head_surface(44, 44, (200, 120, 60), (10, 10, 10))
+        two = scrolling._head_surface(44, 44, (60, 200, 120), (10, 10, 10))
+        assert one is not two
+
+    def test_it_looks_exactly_like_drawing_it_in_place(self):
+        """The whole point is that nothing on screen changes."""
+        import numpy as np
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        scrolling.clear_font_cache()
+        drawn = pygame.Surface((96, 44), pygame.SRCALPHA)
+        rect = pygame.Rect(0, 0, 96, 44)
+        pygame.draw.rect(drawn, (200, 120, 60), rect, border_radius=22)
+        pygame.draw.rect(drawn, (10, 10, 10), rect, width=2, border_radius=22)
+        cached = scrolling._head_surface(96, 44, (200, 120, 60), (10, 10, 10))
+        colour = pygame.surfarray.array3d(drawn).astype(int)
+        colour2 = pygame.surfarray.array3d(cached).astype(int)
+        alpha = pygame.surfarray.array_alpha(drawn).astype(int)
+        alpha2 = pygame.surfarray.array_alpha(cached).astype(int)
+        assert (np.abs(colour - colour2).sum(axis=2) > 8).sum() == 0
+        assert (np.abs(alpha - alpha2) > 8).sum() == 0
+
+    def test_the_cache_belongs_to_the_pygame_session(self):
+        """A Surface kept across pygame.quit() is a dangling pointer, the
+        same as a Font -- and the heads carry the theme's colours, which a
+        theme change moves."""
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        scrolling._head_surface(44, 44, (1, 2, 3), (4, 5, 6))
+        assert scrolling._HEAD_CACHE
+        scrolling.clear_font_cache()
+        assert scrolling._HEAD_CACHE == {}
+
+    def test_it_cannot_grow_without_bound(self):
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        scrolling.clear_font_cache()
+        for i in range(scrolling._HEAD_CACHE_MAX + 20):
+            scrolling._head_surface(40 + i % 7, 44, (i % 250, 1, 2), (0, 0, 0))
+        assert len(scrolling._HEAD_CACHE) <= scrolling._HEAD_CACHE_MAX
+
+    def test_a_frame_of_a_real_board_builds_only_a_handful(self, monkeypatch):
+        """A dense song's notes are nearly all one size, so the cache stays
+        tiny -- and the feedback colours are discrete, not a fade, so an
+        animation cannot thrash it."""
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        scrolling.clear_font_cache()
+        notes, measures = [], []
+        for bar in range(40):
+            for i in range(8):
+                notes.append(NoteEvent(
+                    timestamp_ms=bar * 2000.0 + i * 250.0, duration_ms=250.0,
+                    midi_note=40 + i % 12, string=1 + i % 6, fret=i % 13,
+                    measure=bar))
+            measures.append(MeasureInfo(index=bar, start_ms=bar * 2000.0,
+                                        end_ms=(bar + 1) * 2000.0))
+        song = Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=measures)
+        screen = PlayingScreen(song, config=Config())
+        for frame in range(60):
+            screen._playback_ms = 20_000.0 + frame * 16.0
+            screen.render(surface)
+        after_one_second = len(scrolling._HEAD_CACHE)
+        assert 0 < after_one_second <= 24, after_one_second
+        # And it STOPS growing, which is the property that matters: six
+        # string colours plain and dimmed, plus the open-string grey, is all
+        # a board of one head size can ask for.
+        for frame in range(60, 600):
+            screen._playback_ms = 20_000.0 + frame * 16.0
+            screen.render(surface)
+        assert len(scrolling._HEAD_CACHE) == after_one_second
+
+
+class TestEveryNoteHeadIsRoundedTheSame:
+    """"Im Moment sind die breiteren Noten weniger abgerundet und mehr eckig."
+
+    The corner was `min(head width / 2, head height / 2)`, and the head is
+    squeezed SIDEWAYS to buy look-ahead while keeping the lane's height -- so
+    on any dense song a sustained note was drawn with corners fitted to a
+    width it does not have, and read as a box beside the round short ones.
+    The curvature is the height's business and nothing else's.
+    """
+
+    def _song(self, per_bar=4, bars=6, duration=150.0):
+        notes, measures = [], []
+        step = 2000.0 / per_bar
+        for bar in range(bars):
+            for i in range(per_bar):
+                notes.append(NoteEvent(
+                    timestamp_ms=bar * 2000.0 + i * step, duration_ms=duration,
+                    midi_note=40 + i % 12, string=1 + i % 6, fret=i % 13,
+                    measure=bar))
+            measures.append(MeasureInfo(index=bar, start_ms=bar * 2000.0,
+                                        end_ms=(bar + 1) * 2000.0))
+        return Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=measures)
+
+    def _heads(self, screen, monkeypatch=None):
+        """(width, height, corner radius) of every note head drawn.
+
+        Read off the head cache rather than by listening for draw calls: a
+        head is built once and blitted after that, so there is no per-note
+        draw call left to listen for.
+        """
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        screen.render(surface)                      # sizes the heads
+        scrolling._HEAD_CACHE.clear()
+        screen._draw_notes(surface, screen._layout(surface))
+        return [(w, h, h // 2) for w, h, _, _ in scrolling._HEAD_CACHE]
+
+    def test_a_short_and_a_long_note_curve_the_same(self, monkeypatch):
+        # A quick note and a held one, each with room of its own so the
+        # neighbour cap does not make them the same width.
+        notes = [
+            NoteEvent(timestamp_ms=0.0, duration_ms=150.0, midi_note=40,
+                      string=6, fret=0, measure=0),
+            NoteEvent(timestamp_ms=2000.0, duration_ms=1800.0, midi_note=45,
+                      string=5, fret=3, measure=1),
+        ]
+        song = Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=[MeasureInfo(index=b, start_ms=b * 2000.0,
+                                              end_ms=(b + 1) * 2000.0)
+                                  for b in range(3)])
+        heads = self._heads(PlayingScreen(song, config=Config()))
+        widths = {w for w, _, _ in heads}
+        assert len(widths) > 1, "this song would not show the fault at all"
+        assert len({r for _, _, r in heads}) == 1
+
+    def test_the_curve_is_half_the_HEIGHT(self, monkeypatch):
+        screen = PlayingScreen(self._song(), config=Config())
+        heads = self._heads(screen, monkeypatch)
+        for _, height, corner in heads:
+            assert corner == height // 2
+
+    def test_a_square_head_comes_out_round(self, monkeypatch):
+        """Which is the other half of the ask: small ones are circles."""
+        screen = PlayingScreen(self._song(), config=Config())
+        heads = self._heads(screen, monkeypatch)
+        square = [(w, h, r) for w, h, r in heads if w == h]
+        assert square, "no short note on this board"
+        for w, h, r in square:
+            assert r * 2 >= min(w, h)
+
+    def test_a_dense_song_squeezes_the_head_and_keeps_the_curve(
+            self, monkeypatch):
+        """The case the old rule got wrong: the head is narrower than the
+        lane is tall, so half the WIDTH is smaller than half the height."""
+        screen = PlayingScreen(self._song(per_bar=16, bars=60),
+                               config=Config())
+        heads = self._heads(screen, monkeypatch)
+        assert screen._head_px < screen._head_h_px, "not squeezed at all"
+        for _, height, corner in heads:
+            assert corner == height // 2
+
+
+class TestALetRingNoteEndsWithTheSong:
+    """The last note on a string has no neighbour, and "rings until something
+    else is played" then meant "for ever". `int(inf)` raises, so every song
+    whose last note on any string is let-ring crashed the frame it reached.
+    """
+
+    def _song(self, let_ring):
+        notes = [
+            # The last note on string 6, so it has no neighbour to stop it.
+            NoteEvent(timestamp_ms=0.0, duration_ms=500.0, midi_note=40,
+                      string=6, fret=0, measure=0, let_ring=let_ring),
+            NoteEvent(timestamp_ms=4000.0, duration_ms=500.0, midi_note=50,
+                      string=3, fret=0, measure=2),
+        ]
+        return Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=[MeasureInfo(index=b, start_ms=b * 2000.0,
+                                              end_ms=(b + 1) * 2000.0)
+                                  for b in range(3)])
+
+    def test_the_last_let_ring_note_draws(self):
+        pygame.init()
+        screen = PlayingScreen(self._song(True), config=Config())
+        surface = pygame.display.set_mode((1280, 720))
+        screen.render(surface)              # raised OverflowError before
+
+    def _widest_body(self, screen, monkeypatch=None):
+        """How wide the note is actually DRAWN."""
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        screen.render(surface)                      # sizes the heads
+        scrolling._HEAD_CACHE.clear()
+        screen._draw_notes(surface, screen._layout(surface))
+        return max(w for w, _, _, _ in scrolling._HEAD_CACHE)
+
+    def test_and_it_is_still_longer_than_its_written_value(self, monkeypatch):
+        """The point of let ring: the string is never damped, so it sounds on
+        to the end of the song rather than for its written eighth."""
+        ringing = PlayingScreen(self._song(True), config=Config())
+        plain = PlayingScreen(self._song(False), config=Config())
+        assert (self._widest_body(ringing, monkeypatch)
+                > self._widest_body(plain, monkeypatch) + 100)
+
+
+class TestShiftAReachesBothThingsThatMakeSound:
+    """"Audio reopened bringt nichts. Komisches Dauerbrummen bleibt bis ich
+    die App schliesse."
+
+    Two things in this process make sound: the mixer, which plays the
+    recording, and the MIDI synth, which plays the backing. Shift+A reached
+    only the first, so a synth still holding a note could not be silenced by
+    the one key whose whole job is making the sound sane again.
+    """
+
+    def test_all_sound_off_and_reset_go_out_too(self):
+        """CC 123 asks a note to release; a long tail keeps sounding and a
+        held sustain pedal keeps it sounding for ever."""
+        from pickhero.audio import midi_playback
+
+        sent = []
+
+        class _Port:
+            def write_short(self, status, data1, data2):
+                sent.append((status, data1, data2))
+
+        midi_playback._silence(_Port(), reset_controllers=True)
+        controllers = {d1 for status, d1, _ in sent if status & 0xF0 == 0xB0}
+        assert controllers == {midi_playback.ALL_SOUND_OFF_CC,
+                               midi_playback.ALL_NOTES_OFF_CC,
+                               midi_playback.RESET_CONTROLLERS_CC}
+        channels = {status & 0x0F for status, _, _ in sent}
+        assert channels == set(range(16))
+
+    def test_but_a_seek_does_not_reset_the_controllers(self):
+        """CC 121 puts volume, pan and sustain back to their defaults -- what
+        clears a stuck pedal, and what would undo the mix the tab asked for.
+        A held arrow key is 25 seeks a second, and each one used to send 48
+        messages to the synth."""
+        from pickhero.audio import midi_playback
+
+        sent = []
+
+        class _Port:
+            def write_short(self, status, data1, data2):
+                sent.append((status, data1, data2))
+
+        midi_playback._silence(_Port())
+        controllers = {d1 for status, d1, _ in sent if status & 0xF0 == 0xB0}
+        assert midi_playback.RESET_CONTROLLERS_CC not in controllers
+        assert len(sent) == 32
+
+    def test_panic_reaches_the_port_not_a_player(self, monkeypatch):
+        """A player dropped without being closed still has its notes
+        sounding, and by definition nothing is tracking them."""
+        from pickhero.audio import midi_playback
+
+        sent = []
+
+        class _Port:
+            def write_short(self, *args):
+                sent.append(args)
+
+        monkeypatch.setattr(midi_playback, "_SHARED_OUTPUT", _Port())
+        assert midi_playback.panic() is True
+        assert sent
+
+    def test_and_says_so_when_there_is_no_synth_at_all(self, monkeypatch):
+        from pickhero.audio import midi_playback
+        monkeypatch.setattr(midi_playback, "_SHARED_OUTPUT", None)
+        assert midi_playback.panic() is False
+
+    def test_the_key_silences_the_synth_before_touching_the_mixer(
+            self, monkeypatch):
+        from pickhero.audio import midi_playback, output
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        order = []
+        monkeypatch.setattr(midi_playback, "panic",
+                            lambda: (order.append("midi"), True)[1])
+        monkeypatch.setattr(output, "reopen",
+                            lambda: (order.append("mixer"), True)[1])
+        monkeypatch.setattr(output, "describe", lambda: "x")
+        screen._reopen_output()
+        assert order == ["midi", "mixer"]
+        assert "MIDI synth silenced" in screen._status_note_text()
+
+    def test_no_midi_output_is_a_different_answer(self, monkeypatch):
+        from pickhero.audio import midi_playback, output
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        monkeypatch.setattr(midi_playback, "panic", lambda: False)
+        monkeypatch.setattr(output, "reopen", lambda: True)
+        monkeypatch.setattr(output, "describe", lambda: "x")
+        screen._reopen_output()
+        assert "no MIDI output" in screen._status_note_text()
+
+
 class TestNeighbourGaps:
-    """Notes may not take more room than they have before their neighbour."""
+    """A note may not take more room than it has before the NEXT one.
+
+    This used to take the smaller of the gaps before and after, so a note was
+    shortened by something that had already finished. Measured on the
+    player's own tab: a tied note of 1562 ms, 490 px of sustain, cut to 98 px
+    by an eighth note that came BEFORE it -- which is why a note held across
+    two beats was still drawn for one. Every long note following a quick one
+    on its string was drawn short.
+    """
 
     def _n(self, ts, string, dur=500.0):
         return NoteEvent(timestamp_ms=ts, duration_ms=dur, midi_note=40,
@@ -368,12 +841,26 @@ class TestNeighbourGaps:
         gaps = PlayingScreen._neighbour_gaps([self._n(0.0, 6)])
         assert gaps.get((0.0, 6)) is None
 
-    def test_gap_is_to_the_nearest_neighbour_on_the_same_string(self):
+    def test_the_gap_is_forwards_only(self):
         notes = [self._n(0.0, 6), self._n(200.0, 6), self._n(1000.0, 6)]
         gaps = PlayingScreen._neighbour_gaps(notes)
-        assert gaps[(200.0, 6)] == pytest.approx(200.0)   # backwards, not 800
         assert gaps[(0.0, 6)] == pytest.approx(200.0)
-        assert gaps[(1000.0, 6)] == pytest.approx(800.0)
+        # 800 forwards, NOT 200 backwards: what came before has already
+        # ended and cannot be run into.
+        assert gaps[(200.0, 6)] == pytest.approx(800.0)
+
+    def test_the_last_note_on_a_string_is_limited_by_nothing(self):
+        notes = [self._n(0.0, 6), self._n(200.0, 6)]
+        assert PlayingScreen._neighbour_gaps(notes).get((200.0, 6)) is None
+
+    def test_a_held_note_after_a_quick_one_keeps_its_length(self):
+        """The player's own bar: an eighth, then a note tied across two
+        beats. The tie was merged correctly and then drawn as an eighth."""
+        notes = [self._n(664.0, 2, dur=312.5),
+                 self._n(976.0, 2, dur=1562.5),
+                 self._n(4000.0, 2, dur=312.5)]
+        gaps = PlayingScreen._neighbour_gaps(notes)
+        assert gaps[(976.0, 2)] > 1562.5
 
     def test_other_strings_do_not_constrain(self):
         """Different lanes never collide, so they must not shrink each other."""
@@ -420,23 +907,53 @@ class TestScrollSpeed:
         screen = self._screen(spacing_ms=1000.0)
         assert screen._visible_window_ms == pytest.approx(BASE_VISIBLE_WINDOW_MS)
 
-    def test_notes_are_the_same_size_whatever_the_song(self):
-        """The window gives way first, so notes keep their size across songs
-        of very different density."""
+    def test_notes_keep_full_size_while_the_window_can_afford_it(self):
+        """The window gives way first. Only once shrinking it further would
+        leave too little warning to read a fret number does the note size
+        move at all."""
         sizes = {round(self._screen(spacing_ms=sp)._head_px, 3)
-                 for sp in (1000.0, 280.0, 125.0)}
+                 for sp in (1000.0, 600.0, 280.0)}
         assert len(sizes) == 1
 
-    def test_the_trim_never_changes_note_size(self):
-        """Notes changing size is the one thing this display must not do, so
-        the trim moves the speed and nothing else."""
+    def test_a_song_too_dense_to_read_buys_time_with_note_size(self):
+        """At full size a dense tab gave 1.5 s of warning at 683 px/s -- a
+        note crossing the screen faster than it can be read, never mind
+        fingered. Head size is the only currency available for that."""
+        from pickhero.ui.scrolling import READABLE_WINDOW_MS
+        roomy = self._screen(spacing_ms=1000.0)
+        dense = self._screen(spacing_ms=90.0)
+        assert dense._head_px < roomy._head_px
+        assert dense._visible_window_ms > 1500.0
+
+    def test_the_notes_never_shrink_past_a_readable_fret_number(self):
+        """Two digits still have to fit, or the trade buys nothing."""
+        from pickhero.ui.scrolling import MIN_HEAD_PX
+        for spacing in (90.0, 40.0, 10.0):
+            assert self._screen(spacing_ms=spacing)._head_px >= MIN_HEAD_PX
+
+    def test_speeding_up_never_changes_note_size(self):
+        """The rule is that notes must not change size WHILE SCROLLING, and
+        for a while it was read as "never", which is what made slowing down
+        do nothing at all. Speeding up still costs nothing: it only ever
+        gives the notes more room."""
         screen = self._screen(spacing_ms=600.0)
         sizes = set()
-        for factor in (0.4, 0.7, 1.0, 1.5, 2.5):
+        for factor in (1.0, 1.5, 2.5):
             screen._config.scroll_speed_factor = factor
             screen._recompute_scroll_speed()
             sizes.add(round(screen._head_px, 3))
         assert len(sizes) == 1
+
+    def test_the_size_is_decided_once_and_then_holds(self):
+        """Within one setting it must never move -- a head that changes
+        while the song scrolls is the fault this rule exists for."""
+        screen = self._screen(spacing_ms=600.0)
+        screen._config.scroll_speed_factor = 0.6
+        screen._recompute_scroll_speed()
+        first = screen._head_px
+        for _ in range(5):
+            screen._recompute_scroll_speed()
+            assert screen._head_px == first
 
     def test_speeding_up_always_gives_notes_more_room(self):
         screen = self._screen(spacing_ms=600.0)
@@ -713,6 +1230,61 @@ class TestBendDrawing:
         assert top == pytest.approx(170.0)
 
 
+class TestPalmMuteMarking:
+    """"PM" goes on the note that OPENS a run, the way paper tab writes it.
+
+    A muted metal riff flags every note it contains. A badge over each of them
+    is a row of discs covering the music it is supposed to describe, so the
+    label goes on the first note and the choked note bodies carry it onward.
+    """
+
+    def _n(self, ts, string=6, palm_mute=False):
+        return NoteEvent(timestamp_ms=ts, duration_ms=200.0, midi_note=40,
+                         string=string, fret=0, palm_mute=palm_mute)
+
+    def test_only_the_first_note_of_a_run_is_marked(self):
+        notes = [self._n(ts, palm_mute=True) for ts in (0.0, 300.0, 600.0)]
+        starts = PlayingScreen._palm_mute_run_starts(notes)
+        assert starts == {(0.0, 6)}
+
+    def test_an_unmuted_note_ends_the_run(self):
+        notes = [self._n(0.0, palm_mute=True), self._n(300.0),
+                 self._n(600.0, palm_mute=True)]
+        starts = PlayingScreen._palm_mute_run_starts(notes)
+        assert starts == {(0.0, 6), (600.0, 6)}
+
+    def test_a_long_silence_starts_a_new_run(self):
+        """The badge has to come back when the riff does, a chorus later."""
+        notes = [self._n(0.0, palm_mute=True), self._n(60_000.0, palm_mute=True)]
+        starts = PlayingScreen._palm_mute_run_starts(notes)
+        assert starts == {(0.0, 6), (60_000.0, 6)}
+
+    def test_a_muted_chord_is_marked_once_on_its_lowest_string(self):
+        """Palm muting is the picking hand resting on the strings: it applies
+        to the whole stroke, so three stacked badges only crowd the lanes."""
+        notes = [self._n(0.0, string=s, palm_mute=True) for s in (6, 5, 4)]
+        starts = PlayingScreen._palm_mute_run_starts(notes)
+        assert starts == {(0.0, 6)}
+
+    def test_nothing_is_marked_without_a_palm_mute(self):
+        assert PlayingScreen._palm_mute_run_starts(
+            [self._n(0.0), self._n(300.0)]
+        ) == set()
+
+    def test_a_dead_stroke_does_not_break_the_run(self):
+        """Chug, chug, muted stroke, chug is the commonest metal rhythm there
+        is. The picking hand never leaves the strings, so the run continues --
+        counted as a break, it re-badges every second note of the riff."""
+        notes = [
+            self._n(0.0, palm_mute=True),
+            NoteEvent(timestamp_ms=300.0, duration_ms=200.0, midi_note=40,
+                      string=6, fret=0, dead=True),
+            self._n(600.0, palm_mute=True),
+        ]
+        starts = PlayingScreen._palm_mute_run_starts(notes)
+        assert starts == {(0.0, 6)}
+
+
 class TestSlideTargets:
     def test_finds_the_next_note_on_the_same_string(self):
         first = NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,
@@ -750,10 +1322,14 @@ class TestFooterCompleteness:
     LABELS = {
         "SPACE": "SPACE", "ESCAPE": "ESC", "LEFT": "LEFT", "RIGHT": "RIGHT",
         "HOME": "HOME", "PAGEDOWN": "PgDn", "PAGEUP": "PgUp", "TAB": "TAB",
-        "a": "A: audio", "b": "B: backing", "c": "X/C", "f": "F: frets",
+        "a": "A: audio", "b": "B: backing", "c": "X/C", "d": "D: run log",
+        "e": "E: skip a rest", "f": "F: frets",
         "g": "G: hit window", "h": "H: help", "i": "I/O", "j": "J: strings",
         "k": "K: sync", "l": "L: weakest", "m": "N/M", "n": "N/M",
-        "o": "I/O", "p": "P: toggle", "t": "T: theme", "v": "V: chords",
+        "r": "R: play in another tuning",
+        "o": "I/O", "p": "P: toggle", "s": "Shift+S: sync point",
+        "t": "T: theme", "u": "U: audio track",
+        "v": "V: chords",
         "w": "W: wait", "x": "X/C", "y": "Y: timing",
         "COMMA": ",/.", "PERIOD": ",/.",
         "PLUS": "+/-", "EQUALS": "+/-", "MINUS": "+/-",
@@ -869,3 +1445,2735 @@ class TestTimingOverlay:
             [80.0 + i for i in range(20)], tmp_path, monkeypatch)
         screen._show_timing = True
         screen.render(surface)
+
+
+class TestAutoSync:
+    """K applies exactly what the timing report calls latency, and no more.
+
+    Deciding it a second time here by a looser rule only produces the two
+    answers disagreeing. That really happened: a measurement taken over notes
+    carrying bends and slides scattered by +-75 ms, passed the old check
+    because it had enough samples, and left an offset built out of noise
+    sitting in the config for days.
+    """
+
+    def _screen_with(self, deltas, tempo=1.0):
+        from pickhero.matcher import NoteMatcher, TimingSample
+        from pickhero.tabs.timeline import SongMetadata, Timeline
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        # Before the samples: changing the speed resets them, on purpose.
+        screen.set_tempo_factor(tempo)
+        matcher = NoteMatcher(Timeline([], SongMetadata(title="x", tempo=100)))
+        for i, d in enumerate(deltas):
+            matcher.timing_errors_ms.append(d)
+            matcher.timing_samples.append(
+                TimingSample(delta_ms=d, string=6, midi_note=40,
+                             note_ms=1000.0 * i)
+            )
+        screen._matcher = matcher
+        return screen
+
+    def _offset(self, screen):
+        return screen._config.audio_latency_offset_ms
+
+    def test_plain_latency_is_removed(self):
+        screen = self._screen_with([118, 122, 120, 125, 119, 121, 123, 120,
+                                    124, 119])
+        screen._auto_sync_timing()
+        assert self._offset(screen) == pytest.approx(-120, abs=4)
+
+    def test_scattered_timing_is_refused(self):
+        """No single offset fixes strikes that disagree with each other, and
+        applying one anyway is a guess dressed up as a measurement."""
+        screen = self._screen_with([-90, 80, -70, 95, -85, 75, -60, 88,
+                                    -95, 70, 82, -78])
+        screen._auto_sync_timing()
+        assert self._offset(screen) == 0.0
+
+    def test_timing_already_fine_is_left_alone(self):
+        screen = self._screen_with([2, -3, 1, 4, -2, 0, 3, -1, 2, -4])
+        screen._auto_sync_timing()
+        assert self._offset(screen) == 0.0
+
+    def test_too_few_samples_does_nothing(self):
+        screen = self._screen_with([120, 118, 122])
+        screen._auto_sync_timing()
+        assert self._offset(screen) == 0.0
+
+    def test_what_it_stores_is_real_time_not_song_time(self):
+        """The samples are song milliseconds and the setting is real ones.
+        Stored unconverted, an offset calibrated at 70 % would be a seventh
+        too small the moment the song went back to full speed -- and the
+        player has no way to see that, because the number on screen looks
+        exactly the same either way."""
+        screen = self._screen_with([118, 122, 120, 125, 119, 121, 123, 120,
+                                    124, 119], tempo=0.5)
+        screen._auto_sync_timing()
+        # 120 ms of song at half speed is 240 ms of the world.
+        assert self._offset(screen) == pytest.approx(-240, abs=8)
+
+    def test_and_that_is_what_the_matcher_then_gets_back(self):
+        """Round trip: measure at one speed, and the strikes land on the beat
+        at that same speed rather than being corrected twice."""
+        screen = self._screen_with([118, 122, 120, 125, 119, 121, 123, 120,
+                                    124, 119], tempo=0.5)
+        screen._auto_sync_timing()
+        assert screen._sync_offset_song_ms() == pytest.approx(-120, abs=4)
+
+    def test_applying_clears_the_measurements_it_used(self):
+        """Otherwise a second press would count the same error twice instead
+        of measuring what is left."""
+        screen = self._screen_with([120] * 10)
+        screen._auto_sync_timing()
+        assert screen._matcher.timing_samples == []
+
+    def test_a_press_is_remembered_so_a_residual_can_be_named(self):
+        screen = self._screen_with([120] * 10)
+        assert not screen._sync_applied
+        screen._auto_sync_timing()
+        assert screen._sync_applied
+
+    def test_resetting_the_sync_forgets_that_too(self):
+        screen = self._screen_with([120] * 10)
+        screen._auto_sync_timing()
+        screen._reset_latency_offset()
+        assert not screen._sync_applied
+        assert self._offset(screen) == 0.0
+
+
+class TestSyncAdviceMatchesWhatKDoes:
+    """The HUD line and the key must never disagree.
+
+    A line that offers K while K refuses teaches the player that the panel
+    lies -- and it is not a hypothetical: the HUD kept its own spread
+    thresholds for a while after K had moved to the report's verdict.
+    """
+
+    def _screen_with(self, deltas):
+        from pickhero.matcher import NoteMatcher, TimingSample
+        from pickhero.tabs.timeline import SongMetadata, Timeline
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        matcher = NoteMatcher(Timeline([], SongMetadata(title="x", tempo=100)))
+        for i, d in enumerate(deltas):
+            matcher.timing_errors_ms.append(d)
+            matcher.timing_samples.append(
+                TimingSample(delta_ms=d, string=6, midi_note=40,
+                             note_ms=1000.0 * i)
+            )
+        screen._matcher = matcher
+        return screen
+
+    CASES = [
+        ("plain latency", [118, 122, 120, 125, 119, 121, 123, 120, 124, 119]),
+        ("scattered", [-90, 80, -70, 95, -85, 75, -60, 88, -95, 70, 82, -78]),
+        ("already fine", [2, -3, 1, 4, -2, 0, 3, -1, 2, -4]),
+        ("too few", [120, 118, 122]),
+    ]
+
+    @pytest.mark.parametrize("label,deltas", CASES)
+    def test_the_line_offers_k_exactly_when_k_would_act(self, label, deltas):
+        screen = self._screen_with(deltas)
+        advice = screen._sync_advice()
+        offers_k = "K to auto-sync" in advice or "K again" in advice
+
+        before = screen._config.audio_latency_offset_ms
+        screen._auto_sync_timing()
+        acted = screen._config.audio_latency_offset_ms != before
+
+        assert offers_k == acted, f"{label}: line said {advice!r}, K acted={acted}"
+
+    def test_a_residual_is_named_rather_than_re_offered_as_a_first_sync(self):
+        screen = self._screen_with([120] * 10)
+        screen._auto_sync_timing()
+        # Fresh samples showing what the press did not take.
+        screen._matcher.reset_timing_samples()
+        for i, d in enumerate([49] * 10):
+            screen._matcher.timing_errors_ms.append(d)
+            from pickhero.matcher import TimingSample
+            screen._matcher.timing_samples.append(
+                TimingSample(delta_ms=d, string=6, midi_note=40, note_ms=1000.0 * i)
+            )
+        assert "still left, K again" in screen._sync_advice()
+
+    def test_nothing_is_offered_before_there_is_anything_to_measure(self):
+        assert "still measuring" in self._screen_with([]).\
+            _sync_advice()
+
+
+class TestSyncLineIsAlwaysThere:
+    """Shift+K must visibly do something.
+
+    The line used to be hidden whenever the offset was zero and nothing had
+    been measured -- which is precisely the state Shift+K creates. The one key
+    whose whole job is to put the offset back to zero therefore looked like it
+    had done nothing, and the player pressed it again and again.
+    """
+
+    def _screen(self):
+        from pickhero.matcher import NoteMatcher
+        from pickhero.tabs.timeline import SongMetadata, Timeline
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._matcher = NoteMatcher(
+            Timeline([], SongMetadata(title="x", tempo=100))
+        )
+        screen._audio_enabled = True
+        return screen
+
+    def test_advice_exists_with_nothing_measured_yet(self):
+        assert self._screen()._sync_advice() != ""
+
+    def test_resetting_to_zero_leaves_something_to_show(self):
+        screen = self._screen()
+        screen._adjust_latency_offset(-135.0)
+        assert screen._config.audio_latency_offset_ms == -135.0
+        screen._reset_latency_offset()
+        assert screen._config.audio_latency_offset_ms == 0.0
+        # The state Shift+K produces still has a line to render.
+        assert screen._sync_advice() != ""
+
+
+class TestAudioClockAnchor:
+    """Changing the practice speed must not move the strikes.
+
+    A strike is stamped in recorded time, which runs at real speed; the song
+    runs at a fraction of it. The product of the two is only a song position
+    when both are counted from the same moment, so touching the speed has to
+    move that moment -- otherwise every strike after the change is displaced
+    by (elapsed x change), which grows for the rest of the song and no sync
+    offset can take it back.
+    """
+
+    class _FakeCapture:
+        def __init__(self, elapsed_ms: float):
+            self._elapsed = elapsed_ms
+            self.drained = 0
+
+        def elapsed_ms(self) -> float:
+            return self._elapsed
+
+        def get_notes(self):
+            self.drained += 1
+            return []
+
+        def get_strike_windows(self):
+            return []
+
+    def _screen(self, *, elapsed_ms, playback_ms, tempo=1.0):
+        from pickhero.matcher import NoteMatcher
+        config = Config()
+        config.tempo_factor = tempo
+        screen = PlayingScreen(_make_timeline(), config=config)
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._audio_capture = self._FakeCapture(elapsed_ms)
+        screen._playback_ms = playback_ms
+        screen._audio_anchor_ms = 0.0
+        screen._audio_anchor_song_ms = 0.0
+        screen._matcher.audio_offset_ms = 0.0
+        return screen
+
+    def _song_position(self, screen, strike_ms):
+        """Where the app decides a strike stamped at strike_ms happened."""
+        return strike_ms * screen._tempo_factor + screen._matcher.audio_offset_ms
+
+    def test_a_strike_keeps_its_place_across_a_speed_change(self):
+        # 20 s of audio have gone by at full speed, so the song is at 20 s.
+        screen = self._screen(elapsed_ms=20_000.0, playback_ms=20_000.0)
+        screen.set_tempo_factor(0.8)
+        # The very next strike is stamped where the audio clock stands now,
+        # and must still read as the song position the player can see.
+        assert self._song_position(screen, 20_000.0) == pytest.approx(20_000.0)
+
+    def test_later_strikes_advance_at_the_new_speed(self):
+        screen = self._screen(elapsed_ms=20_000.0, playback_ms=20_000.0)
+        screen.set_tempo_factor(0.5)
+        # One further second of playing is half a second of song.
+        assert self._song_position(screen, 21_000.0) == pytest.approx(20_500.0)
+
+    def test_the_sync_offset_survives_the_change(self):
+        """And it is scaled, because it is a delay of the real world.
+
+        The sound card's buffer and aubio's analysis window are a fixed
+        number of SAMPLES; neither knows the song has been slowed down. A
+        strike is stamped in recorded time and scaled into song time, so its
+        compensation is scaled with it. Applied unscaled it over-corrects by
+        (1 - tempo) of itself -- 66 ms of a 200 ms hit window on the player's
+        70 % run, spent before they had played anything.
+        """
+        screen = self._screen(elapsed_ms=10_000.0, playback_ms=10_000.0)
+        screen._config.audio_latency_offset_ms = -60.0
+        screen.set_tempo_factor(0.75)
+        assert self._song_position(screen, 10_000.0) == pytest.approx(9_955.0)
+
+    def test_full_speed_is_untouched_by_the_scaling(self):
+        """Every offset ever calibrated was calibrated at some speed, and at
+        full speed the two times are the same thing."""
+        screen = self._screen(elapsed_ms=10_000.0, playback_ms=10_000.0)
+        screen._config.audio_latency_offset_ms = -60.0
+        screen.set_tempo_factor(1.0)
+        assert self._song_position(screen, 10_000.0) == pytest.approx(9_940.0)
+
+    def test_the_offset_the_player_set_is_what_stays_in_the_config(self):
+        """Scaling happens on the way to the matcher, not in the setting. A
+        value that changed itself when you slowed the song down could never
+        be judged by feel, and K would fight it every run."""
+        screen = self._screen(elapsed_ms=1000.0, playback_ms=1000.0)
+        screen._config.audio_latency_offset_ms = -60.0
+        screen.set_tempo_factor(0.5)
+        assert screen._config.audio_latency_offset_ms == pytest.approx(-60.0)
+        assert screen._sync_offset_song_ms() == pytest.approx(-30.0)
+
+    def test_strikes_stamped_before_the_change_are_dropped(self):
+        """They were stamped under the old speed and would be read under the
+        new one, which puts them somewhere they never were."""
+        screen = self._screen(elapsed_ms=10_000.0, playback_ms=10_000.0)
+        screen.set_tempo_factor(0.9)
+        assert screen._audio_capture.drained == 1
+
+
+class TestRunLog:
+    """The file that says what the audio path actually did."""
+
+    def _played_screen(self):
+        from pickhero.audio.detector import DetectedNote
+        from pickhero.audio.input import TimestampedNote
+        from pickhero.matcher import NoteMatcher
+        notes = [
+            NoteEvent(timestamp_ms=1000.0, midi_note=40, string=6, fret=0,
+                      duration_ms=500.0, measure=0),
+            NoteEvent(timestamp_ms=2000.0, midi_note=45, string=5, fret=0,
+                      duration_ms=500.0, measure=0),
+        ]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "test.gp5"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        struck = TimestampedNote(
+            note=DetectedNote(40, 82.4, 0.95, "E2", True), timestamp_ms=1010.0)
+        screen._matcher.process_detected_notes([struck], 1010.0)
+        return screen
+
+    def _log_text(self, screen) -> str:
+        import io
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        return buffer.getvalue()
+
+    def test_the_note_table_names_the_BAR_a_note_is_in(self):
+        """Milliseconds locate a note for a machine and for nobody else.
+        "Practise bars 36 to 45" is something a player can act on."""
+        text = self._log_text(self._played_screen())
+        header = [l for l in text.splitlines()
+                  if l.startswith("note_ms\t")][0]
+        assert header.split("\t") == ["note_ms", "bar", "string", "fret",
+                                      "midi", "tech", "chord", "verdict"]
+
+    def test_and_the_bar_is_the_one_the_note_is_really_in(self):
+        from pickhero.matcher import NoteMatcher
+        notes = [
+            NoteEvent(timestamp_ms=100.0, midi_note=40, string=6, fret=0,
+                      duration_ms=200.0, measure=0),
+            NoteEvent(timestamp_ms=2100.0, midi_note=45, string=5, fret=0,
+                      duration_ms=200.0, measure=1),
+        ]
+        timeline = Timeline(
+            notes, SongMetadata(title="Test", tempo=120),
+            measures=[MeasureInfo(index=0, start_ms=0.0, end_ms=2000.0),
+                      MeasureInfo(index=1, start_ms=2000.0, end_ms=4000.0)])
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "t"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        rows = [l.split("\t") for l in self._log_text(screen).splitlines()
+                if l and l[0].isdigit() and len(l.split("\t")) == 8]
+        assert [r[1] for r in rows] == ["1", "2"]
+
+    def test_it_names_the_fret_and_what_the_tab_asked_for(self):
+        """A run of bends and a stretch across four frets fail for different
+        reasons and are practised differently."""
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=0.0, midi_note=40, string=6, fret=12,
+                           duration_ms=500.0, measure=0,
+                           bend=((0.0, 0.0), (0.5, 2.0)), palm_mute=True)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "t"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        row = [l.split("\t") for l in self._log_text(screen).splitlines()
+               if l.startswith("0.0\t")][0]
+        assert row[3] == "12"
+        assert set(row[5]) == {"b", "p"}
+
+    def test_a_note_the_tab_asks_nothing_of_says_so_with_a_dash(self):
+        """An empty cell in a tab-separated table is a column that has gone
+        missing, not a note with no technique."""
+        row = [l.split("\t") for l in self._log_text(self._played_screen())
+               .splitlines() if l.startswith("1000.0\t")][0]
+        assert row[5] == "-"
+
+    def test_it_says_how_many_strings_were_written_at_that_moment(self):
+        """A four-string chord credited from one strike and a single note
+        heard as itself are two different things, and the log has to be able
+        to tell a reader which it was looking at."""
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=0.0, midi_note=40 + i, string=6 - i,
+                           fret=0, duration_ms=500.0, measure=0)
+                 for i in range(3)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "t"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        rows = [l.split("\t") for l in self._log_text(screen).splitlines()
+                if l.startswith("0.0\t")]
+        assert [r[6] for r in rows] == ["3", "3", "3"]
+
+    def test_it_names_the_practice_speed(self):
+        screen = self._played_screen()
+        screen._tempo_factor = 0.8
+        assert "tempo_percent\t80" in self._log_text(screen)
+
+    def test_every_strike_gets_a_line(self):
+        text = self._log_text(self._played_screen())
+        strikes = [line for line in text.splitlines() if "\thit\t" in line]
+        assert len(strikes) == 1
+
+    def test_a_strike_says_which_note_it_was_credited_to(self):
+        text = self._log_text(self._played_screen())
+        line = next(l for l in text.splitlines() if "\thit\t" in l)
+        assert line.split("\t")[8] == "1000.0"
+
+    def test_every_written_note_gets_a_verdict(self):
+        text = self._log_text(self._played_screen())
+        table = text.split("# every written note and how it ended up")[1]
+        rows = [r for r in table.splitlines() if r and not r.startswith("note_ms")]
+        assert len(rows) == 2
+
+    def test_a_note_never_struck_reads_as_pending_not_as_hit(self):
+        text = self._log_text(self._played_screen())
+        table = text.split("# every written note and how it ended up")[1]
+        assert "2000.0\t-\t5\t0\t45\t-\t1\tpending" in table
+
+    def test_the_counts_that_explain_a_bad_score_are_in_the_header(self):
+        text = self._log_text(self._played_screen())
+        for key in ("dropped_buffers", "sample_rate", "hit_window_ms",
+                    "sync_offset_ms", "strings_taken_back", "notes_written",
+                    "rescued_notes", "input_device"):
+            assert f"{key}\t" in text
+
+    def test_it_names_the_input_it_was_listening_to(self):
+        """A log reporting a silent stream without saying WHICH device was
+        silent cannot tell a wrong device from a blocked one -- and on a
+        machine listing the same interface under MME, DirectSound and WASAPI
+        that is the whole question."""
+        screen = self._played_screen()
+        class Capture:
+            def describe_device(self):
+                return "Focusrite USB — index 7, 2 of 2 channel(s) at 48000 Hz"
+        screen._audio_capture = Capture()
+        assert "Focusrite USB" in self._log_text(screen)
+
+    def test_writing_it_reports_where_it_went(self, tmp_path):
+        screen = self._played_screen()
+        screen._export_run_log()
+        assert "run_test_gp5_" in screen._run_log_note
+
+    def test_it_says_so_when_there_is_nothing_to_write(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._export_run_log()
+        assert "audio was off" in screen._run_log_note
+
+
+class TestPausingIsNotStoppingEverything:
+    """The space bar cost a device open and an MP3 re-decode, each way.
+
+    Reported as: pausing or seeking with a backing recording freezes the
+    picture for up to three seconds and the sound stutters coming back. Three
+    separate faults, all of them here.
+    """
+
+    def _screen(self, mp3=None):
+        # A song long enough to have somewhere to be, and started past the
+        # count-in: at position 0 the space bar counts in instead of playing.
+        notes = [NoteEvent(timestamp_ms=60_000.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=0, measure=0)]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        screen._mp3_player = mp3
+        screen._playback_ms = 30_000.0
+        return screen
+
+    class _FakeMp3:
+        ready = True
+        time_scale = 1.0
+        suspended = False
+        # Whether it is really sounding. Mirrors the real player, because
+        # that is what decides which of the two keeps time.
+        playing = False
+        def __init__(self):
+            self.stopped = 0
+            self.seeks = 0
+            self.suspends = []
+        def pause(self):
+            self.stopped += 1
+            self.suspended = False
+        def seek(self, ms):
+            self.seeks += 1
+            self.suspended = False
+        def set_suspended(self, value):
+            if value != self.suspended:
+                self.suspends.append(value)
+            self.suspended = value
+        def update(self, ms, correct=True): pass
+        def position_ms(self): return 0.0
+        def drift_ms(self, ms): return 0.0
+
+    def test_pausing_holds_the_recording_instead_of_stopping_it(self):
+        """Stopping means play(start=) to come back, which decodes the file up
+        to that point -- seconds, four minutes in, on a thin laptop."""
+        mp3 = self._FakeMp3()
+        screen = self._screen(mp3)
+        screen.toggle_play()                 # play
+        screen.toggle_play()                 # pause
+        assert mp3.suspends[-1] is True
+        assert mp3.stopped == 0
+
+    def test_resuming_lifts_the_hold_rather_than_seeking_again(self):
+        mp3 = self._FakeMp3()
+        screen = self._screen(mp3)
+        screen.toggle_play()
+        seeks_after_start = mp3.seeks
+        screen.toggle_play()                 # pause
+        screen.toggle_play()                 # resume
+        assert mp3.suspends[-1] is False
+        assert mp3.seeks == seeks_after_start
+        assert mp3.stopped == 0
+
+    def test_the_frame_loop_does_not_undo_the_hold(self):
+        """_update_mp3 runs every frame while paused too, and stopping there
+        would cancel the suspension on the very next one."""
+        mp3 = self._FakeMp3()
+        screen = self._screen(mp3)
+        screen.toggle_play()
+        screen.toggle_play()                 # paused
+        for _ in range(5):
+            screen._update_mp3()
+        assert mp3.stopped == 0
+        assert mp3.suspended is True
+
+    def test_muting_really_stops_it(self):
+        """Only a PAUSE is a hold. Muting has to be silence, not a pause that
+        resumes the moment the song does."""
+        mp3 = self._FakeMp3()
+        screen = self._screen(mp3)
+        screen._mp3_muted = True
+        screen._update_mp3()
+        assert mp3.stopped >= 1
+
+    def test_pausing_leaves_the_input_device_open(self):
+        """Closing and reopening it is a real device open on Windows -- the
+        same fault that made every arrow key freeze the app for seconds."""
+        screen = self._screen()
+        stops = []
+        class Capture:
+            def is_running(self): return True
+            def stop(self): stops.append(1)
+            def elapsed_ms(self): return 0.0
+            def get_notes(self): return []
+            def get_strike_windows(self): return []
+        from pickhero.matcher import NoteMatcher
+        screen._audio_enabled = True
+        screen._audio_capture = Capture()
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._playing = True
+        screen.toggle_play()                 # pause
+        assert stops == []
+
+    def test_resuming_reanchors_instead_of_reopening(self):
+        screen = self._screen()
+        starts = []
+        class Capture:
+            def is_running(self): return True
+            def stop(self): starts.append("stop")
+            def start(self): starts.append("start")
+            def elapsed_ms(self): return 4000.0
+            def get_notes(self): return []
+            def get_strike_windows(self): return []
+        from pickhero.matcher import NoteMatcher
+        screen._audio_enabled = True
+        screen._audio_capture = Capture()
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen.toggle_play()                 # play
+        assert starts == []
+        assert screen._audio_anchor_ms == pytest.approx(4000.0)
+
+    def test_a_closed_device_is_still_opened(self):
+        """Re-anchoring only works on a stream that is actually there."""
+        screen = self._screen()
+        opened = []
+        class Capture:
+            def is_running(self): return False
+            def stop(self): pass
+            def start(self): opened.append(1)
+            def elapsed_ms(self): return 0.0
+            def get_notes(self): return []
+            def get_strike_windows(self): return []
+        from pickhero.matcher import NoteMatcher
+        screen._audio_enabled = True
+        screen._audio_capture = Capture()
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen.toggle_play()
+        assert opened == [1]
+
+    def test_the_clock_starts_after_the_slow_work_not_before(self):
+        """Set first, whatever the device and the decoder take is charged to
+        the song, and the picture jumps forward by it on the next frame."""
+        screen = self._screen()
+        started_at = screen._playback_ms
+        screen.toggle_play()
+        assert screen._last_tick is not None
+        # Nothing has been drawn yet, so no song time may have passed.
+        screen.update()
+        assert screen._playback_ms - started_at < 200.0
+
+
+class TestScrubbingDoesNotDecodeTwentyFiveTimesASecond:
+    """A held arrow key repeats every 40 ms, and every repeat was a
+    play(start=) -- which decodes the file up to that point, on the frame's
+    own thread. One press must still be immediate: a loop turn is a seek too,
+    and delaying that would start the recording late every time round."""
+
+    def _screen(self):
+        notes = [NoteEvent(timestamp_ms=60_000.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=0, measure=0)]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        screen._mp3_player = TestPausingIsNotStoppingEverything._FakeMp3()
+        screen._playback_ms = 30_000.0
+        screen._playing = True
+        return screen
+
+    def test_one_seek_reaches_the_recording_at_once(self):
+        screen = self._screen()
+        screen.seek(31_000.0)
+        assert screen._mp3_player.seeks == 1
+
+    def test_a_burst_of_seeks_becomes_one(self):
+        screen = self._screen()
+        for i in range(20):
+            screen.seek(31_000.0 + i * 100)
+        assert screen._mp3_player.seeks == 1
+        assert screen._mp3_pending_seek_ms is not None
+
+    def test_the_last_position_is_the_one_that_lands(self):
+        """Scrubbing forward and stopping must not leave the recording at the
+        first position of the burst."""
+        import time as _time
+        screen = self._screen()
+        for i in range(5):
+            screen.seek(31_000.0 + i * 1000)
+        screen._mp3_last_seek_at = _time.perf_counter() - 1.0   # they stopped
+        screen._update_mp3()
+        assert screen._mp3_pending_seek_ms is None
+        assert screen._mp3_player.seeks == 2
+
+    def test_the_recording_is_silent_while_it_is_being_scrubbed(self):
+        """Playing on from where it was is worse than nothing here."""
+        screen = self._screen()
+        for i in range(5):
+            screen.seek(31_000.0 + i * 100)
+        assert screen._mp3_player.suspended is True
+
+
+class TestAStalledFrameDoesNotTeleportTheSong:
+    """"It stands still and then jumps." A frame blocked for three seconds
+    advanced the song by three seconds, scrolling a bar of music past
+    uncredited and landing the picture somewhere the player never saw."""
+
+    def _screen(self):
+        # An empty timeline is zero milliseconds long and clamps every
+        # position to 0, which would make this assert nothing at all.
+        notes = [NoteEvent(timestamp_ms=60_000.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=0, measure=0)]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        screen._playing = True
+        screen._playback_ms = 10_000.0
+        return screen
+
+    def test_a_long_frame_advances_the_song_by_at_most_the_cap(self):
+        import time as _time
+        from pickhero.ui.scrolling import MAX_FRAME_STALL_S
+        screen = self._screen()
+        screen._last_tick = _time.perf_counter() - 3.0      # a 3 s stall
+        screen.update()
+        assert screen._playback_ms <= 10_000.0 + MAX_FRAME_STALL_S * 1000.0 + 50
+
+    def test_an_ordinary_frame_is_untouched(self):
+        import time as _time
+        screen = self._screen()
+        screen._last_tick = _time.perf_counter() - 0.016
+        screen.update()
+        assert screen._playback_ms == pytest.approx(10_016.0, abs=12.0)
+
+
+class TestReadingTheFretNumber:
+    """Reported as not being able to tell 11 from 12 in a fast solo.
+
+    Measured on the app as it stood: a ONE-digit fret was drawn at 42 px and
+    a TWO-digit one at 21 px in the same song -- half the size -- because the
+    head was squeezed sideways to buy look-ahead and a number is wider than
+    it is tall. The head's width is sized for the widest label in the song
+    now, so only the case that was broken pays for it.
+    """
+
+    def _song(self, spacing_ms, frets):
+        notes = []
+        t = 0.0
+        for i, fret in enumerate(frets * 12):
+            notes.append(NoteEvent(timestamp_ms=t, duration_ms=spacing_ms * 0.8,
+                                   midi_note=40 + fret, string=(i % 3) + 1,
+                                   fret=fret, measure=i // 8))
+            t += spacing_ms
+        return _make_timeline(notes=notes)
+
+    def _measure(self, spacing_ms, frets):
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = PlayingScreen(self._song(spacing_ms, frets), config=Config())
+        screen.render(surface)
+        layout = screen._last_layout
+        head = screen._head_px or layout.note_h
+        half_h = (screen._head_h_px or layout.note_h) / 2
+        font = screen._fret_font(head / 2, half_h, screen._fret_digits)
+        return head, font.get_height(), screen._visible_window_ms
+
+    def test_a_two_digit_fret_gets_a_head_wide_enough_for_it(self):
+        head, digit, _ = self._measure(111.0, [10, 13, 12, 11, 15, 13])
+        assert digit >= 30
+
+    def test_a_song_of_single_digit_frets_is_left_alone(self):
+        """It never had the problem, so it must not pay for the cure."""
+        wide, _, window = self._measure(111.0, [3, 5, 2, 7, 0, 4])
+        assert wide < 30
+        assert window >= 3500.0
+
+    def test_the_look_ahead_it_costs_is_bounded(self):
+        """Trading time for size is allowed; trading away the warning is not."""
+        from pickhero.ui.scrolling import MIN_VISIBLE_WINDOW_MS
+        _, _, window = self._measure(111.0, [10, 13, 12, 11, 15, 13])
+        assert window > MIN_VISIBLE_WINDOW_MS
+
+    def test_a_roomy_song_is_unchanged(self):
+        head, digit, window = self._measure(300.0, [10, 13, 12, 11, 15, 13])
+        assert digit >= 38 and window > 5000.0
+
+    def test_the_head_never_grows_past_its_lane(self):
+        """Wider than tall buys nothing: the height is already free."""
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = PlayingScreen(self._song(111.0, [10, 13, 12]), config=Config())
+        screen.render(surface)
+        assert screen._head_px <= screen._last_layout.note_h + 0.001
+
+    def test_the_digits_are_bold(self):
+        """A thin stroke is the first thing to go at speed, which is exactly
+        when the fret number matters most."""
+        pygame.init()
+        pygame.display.set_mode((100, 100))
+        from pickhero.ui.scrolling import _get_font
+        plain = _get_font("consolas", 30, False)
+        heavy = _get_font("consolas", 30, True)
+        assert plain is not heavy
+        assert heavy.size("12")[0] >= plain.size("12")[0]
+
+
+class TestAnOpenStringLooksLikeOne:
+    """The lane already says WHICH string, so the colour is free to say the
+    thing the position cannot -- and "nothing to fret" is the most useful
+    thing it can say."""
+
+    def test_an_open_string_is_grey(self):
+        from pickhero.ui.colors import OPEN_STRING_COLOR, STRING_COLORS
+        assert OPEN_STRING_COLOR not in STRING_COLORS.values()
+
+    def test_it_is_not_one_of_the_feedback_colours(self):
+        """The two palettes must never be confusable -- green, yellow and red
+        say how it went, not what to play."""
+        from pickhero.ui.colors import OPEN_STRING_COLOR, get_theme
+        pygame.init()
+        theme = get_theme()
+        for name in ("feedback_hit", "feedback_close", "feedback_miss"):
+            assert getattr(theme, name) != OPEN_STRING_COLOR
+
+
+class TestTheBoardTheNotesSitOn:
+    """Without landmarks the notes float in an empty band and the only way to
+    know where you are is to read the number -- which is the thing that is
+    hard to read."""
+
+    def _screen(self, bars=8):
+        from pickhero.tabs.timeline import MeasureInfo
+        notes = [NoteEvent(timestamp_ms=i * 500.0, duration_ms=200.0,
+                           midi_note=40, string=(i % 6) + 1, fret=3,
+                           measure=i // 4) for i in range(40)]
+        measures = [MeasureInfo(index=i, start_ms=i * 2000.0,
+                                end_ms=(i + 1) * 2000.0) for i in range(bars)]
+        timeline = Timeline(notes, SongMetadata(title="x", tempo=120),
+                            measures=measures)
+        return PlayingScreen(timeline, config=Config())
+
+    def test_the_bar_lines_are_drawn_as_fret_wires(self):
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = self._screen()
+        drawn = []
+        real = pygame.draw.line
+        import pickhero.ui.scrolling as scr
+        screen.render(surface)          # a layout to work from
+        screen._playback_ms = 1000.0
+        try:
+            pygame.draw.line = lambda s, c, a, b, w=1: drawn.append((a, b)) or None
+            screen._draw_frets(surface, screen._last_layout,
+                               6 * screen._last_layout.lane_height)
+        finally:
+            pygame.draw.line = real
+        # Vertical lines: same x at both ends.
+        assert drawn and all(a[0] == b[0] for a, b in drawn)
+
+    def test_a_song_with_no_bars_draws_none_rather_than_guessing(self):
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen.render(surface)
+        screen._draw_frets(surface, screen._last_layout, 300.0)   # must not raise
+
+    def test_a_bar_line_is_barely_above_the_board(self):
+        """A landmark is noticed when looked for and not otherwise. Drawn as a
+        lit wire it pulled the eye off the notes, which is the opposite of
+        what it is there for."""
+        pygame.init()
+        from pickhero.ui.colors import get_theme
+        from pickhero.ui.scrolling import BAR_LINE_COLOR
+        board = get_theme().lane_bg_even
+        lift = sum(BAR_LINE_COLOR) - sum(board)
+        assert 0 < lift < 120, "a bar line must whisper, not shout"
+        assert BAR_LINE_COLOR != get_theme().hit_zone
+
+    def test_bars_too_close_together_are_thinned_out(self):
+        """A fast song puts bars a few pixels apart and the board turns into a
+        picket fence behind the notes."""
+        from pickhero.tabs.timeline import MeasureInfo
+        from pickhero.ui.scrolling import MIN_BAR_LINE_GAP_PX
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        notes = [NoteEvent(timestamp_ms=i * 120.0, duration_ms=100.0,
+                           midi_note=40, string=1, fret=3, measure=i)
+                 for i in range(400)]
+        measures = [MeasureInfo(index=i, start_ms=i * 120.0,
+                                end_ms=(i + 1) * 120.0) for i in range(400)]
+        screen = PlayingScreen(
+            Timeline(notes, SongMetadata(title="x", tempo=200), measures=measures),
+            config=Config())
+        screen.render(surface)
+        drawn = []
+        real = pygame.draw.line
+        try:
+            pygame.draw.line = lambda s, c, a, b, w=1: drawn.append(a[0])
+            screen._draw_frets(surface, screen._last_layout, 300.0)
+        finally:
+            pygame.draw.line = real
+        gaps = [b - a for a, b in zip(sorted(drawn), sorted(drawn)[1:])]
+        assert not gaps or min(gaps) >= MIN_BAR_LINE_GAP_PX * 0.5
+
+    def test_a_roomy_song_keeps_every_bar(self):
+        from pickhero.tabs.timeline import MeasureInfo
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        notes = [NoteEvent(timestamp_ms=i * 500.0, duration_ms=200.0,
+                           midi_note=40, string=1, fret=3, measure=i // 4)
+                 for i in range(40)]
+        measures = [MeasureInfo(index=i, start_ms=i * 2000.0,
+                                end_ms=(i + 1) * 2000.0) for i in range(10)]
+        screen = PlayingScreen(
+            Timeline(notes, SongMetadata(title="x", tempo=120), measures=measures),
+            config=Config())
+        screen.render(surface)
+        drawn = []
+        real = pygame.draw.line
+        try:
+            pygame.draw.line = lambda s, c, a, b, w=1: drawn.append(a[0])
+            screen._draw_frets(surface, screen._last_layout, 300.0)
+        finally:
+            pygame.draw.line = real
+        assert len(drawn) >= 2
+
+    def test_the_low_strings_are_thicker_than_the_high_ones(self):
+        """One weight throws away the strongest cue for which lane is which."""
+        from pickhero.ui.scrolling import STRING_THICKNESS
+        assert STRING_THICKNESS[0] < STRING_THICKNESS[-1]
+        assert list(STRING_THICKNESS) == sorted(STRING_THICKNESS)
+
+    def test_the_wound_strings_are_warm_and_the_plain_ones_are_not(self):
+        from pickhero.ui.scrolling import PLAIN_TINT, WOUND_TINT
+        assert WOUND_TINT[0] - WOUND_TINT[2] > 60      # brass: red over blue
+        assert abs(PLAIN_TINT[0] - PLAIN_TINT[2]) < 20  # steel: neutral
+
+
+class TestANoteIsNotOverBecauseTheClockPassedIt:
+    """Reported as distracting: a note goes DARK for a moment and then turns
+    green. It was not a glitch -- it was the whole width of the hit window
+    being drawn as "already missed". The verdict cannot arrive any sooner:
+    the strike is still inside the window (200 ms) and the late window
+    (370 ms) beyond it, and a chord verdict trails its strike by ~380 ms by
+    design.
+    """
+
+    def _screen(self):
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=3, measure=0),
+                 NoteEvent(timestamp_ms=9000.0, duration_ms=400.0,
+                           midi_note=45, string=5, fret=3, measure=0)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._audio_enabled = True
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=200.0)
+        return screen, timeline.notes[0]
+
+    def _colour_of(self, screen, note):
+        """What _draw_notes would paint this note, by the same rules."""
+        from pickhero.matcher import MatchType
+        from pickhero.ui.colors import STRING_COLORS, dimmed
+        base = STRING_COLORS[note.string]
+        if screen._audio_enabled and screen._matcher is not None:
+            over = (screen._matcher.get_note_state(note)
+                    is not MatchType.PENDING)
+        else:
+            over = note.timestamp_ms < screen._playback_ms
+        if screen._audio_enabled:
+            return screen._feedback.get_note_color(
+                note, base, screen._playback_ms, over)
+        return dimmed(base) if over else base
+
+    def test_a_note_inside_its_own_window_is_still_full_colour(self):
+        from pickhero.ui.colors import STRING_COLORS
+        screen, note = self._screen()
+        screen._playback_ms = 1100.0        # 100 ms past it, window is 200
+        assert self._colour_of(screen, note) == STRING_COLORS[note.string]
+
+    def test_it_is_still_full_colour_deep_into_the_late_window(self):
+        from pickhero.ui.colors import STRING_COLORS
+        screen, note = self._screen()
+        screen._playback_ms = 1400.0
+        assert self._colour_of(screen, note) == STRING_COLORS[note.string]
+
+    def test_once_the_matcher_calls_it_missed_it_turns_red(self):
+        from pickhero.ui.colors import get_theme
+        screen, note = self._screen()
+        results = screen._matcher.process_detected_notes([], 3000.0)
+        screen._feedback.add_results(results, 3000.0)
+        screen._playback_ms = 3000.0
+        assert self._colour_of(screen, note) == get_theme().feedback_miss
+
+    def test_a_note_that_was_hit_turns_green_with_no_dark_step_before_it(self):
+        from pickhero.audio.detector import DetectedNote
+        from pickhero.audio.input import TimestampedNote
+        from pickhero.ui.colors import STRING_COLORS, get_theme
+        screen, note = self._screen()
+        seen = []
+        for ms in (1050.0, 1100.0, 1150.0):
+            screen._playback_ms = ms
+            seen.append(self._colour_of(screen, note))
+        struck = TimestampedNote(
+            note=DetectedNote(40, 82.4, 0.95, "E2", True), timestamp_ms=1160.0)
+        results = screen._matcher.process_detected_notes([struck], 1160.0)
+        screen._feedback.add_results(results, 1160.0)
+        screen._playback_ms = 1160.0
+        seen.append(self._colour_of(screen, note))
+        # Full colour throughout, then green. Nothing dimmed in between.
+        assert seen[:3] == [STRING_COLORS[note.string]] * 3
+        assert seen[3] == get_theme().feedback_hit
+
+    def test_with_audio_off_the_clock_is_still_the_answer(self):
+        """Nothing is coming to decide it, so there is nothing to wait for."""
+        from pickhero.ui.colors import STRING_COLORS, dimmed
+        screen, note = self._screen()
+        screen._audio_enabled = False
+        screen._playback_ms = 1100.0
+        assert self._colour_of(screen, note) == dimmed(STRING_COLORS[note.string])
+
+
+class TestTheHitLineStandsProudOfTheBoard:
+    def test_it_runs_past_the_board_top_and_bottom(self):
+        """Flush with the edge it is one more vertical among the fret wires;
+        past it, it is the thing the board scrolls through -- and the
+        overhang stays visible where a long note covers the line itself."""
+        pygame.init()
+        surface = pygame.Surface((1400, 800))
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen.render(surface)
+        layout = screen._last_layout
+        drawn = []
+        real = pygame.draw.line
+        try:
+            pygame.draw.line = lambda s, c, a, b, w=1: drawn.append((a, b, w))
+            screen._draw_hit_zone(surface, layout)
+        finally:
+            pygame.draw.line = real
+        from pickhero.ui.scrolling import HIT_LINE_OVERHANG_PX
+        (_, top), (_, bottom), _ = drawn[-1]
+        assert top < layout.lane_top
+        assert bottom > layout.lane_top + 6 * layout.lane_height
+        assert HIT_LINE_OVERHANG_PX > 0
+
+
+class TestTheBoardIsAnObjectOnABackground:
+    def test_the_board_and_the_surround_are_told_apart(self):
+        """They were ten points apart -- near-black on near-black -- so the
+        board dissolved into the screen and the notes floated. BOTH themes:
+        the light one had the identical problem the other way up."""
+        from pickhero.ui.colors import DARK_THEME, LIGHT_THEME
+        for theme in (DARK_THEME, LIGHT_THEME):
+            distance = sum(abs(a - b) for a, b in zip(theme.bg, theme.lane_bg_even))
+            assert distance > 40, theme.bg
+
+
+class TestTheStringColoursStayApartFromTheFeedback:
+    """Two palettes share the screen and must never be confusable: one says
+    WHICH STRING, the other says HOW IT WENT."""
+
+    def test_no_string_colour_is_near_a_feedback_colour(self):
+        pygame.init()
+        from pickhero.ui.colors import STRING_COLORS, get_theme
+        theme = get_theme()
+        feedback = (theme.feedback_hit, theme.feedback_close, theme.feedback_miss)
+        for string, colour in STRING_COLORS.items():
+            for fb in feedback:
+                distance = sum(abs(a - b) for a, b in zip(colour, fb))
+                assert distance > 120, f"string {string} is too close to {fb}"
+
+    def test_neighbouring_lanes_do_not_share_a_hue(self):
+        """The lane above is the one a note can be confused with."""
+        import colorsys
+        from pickhero.ui.colors import STRING_COLORS
+        def hue(c):
+            return colorsys.rgb_to_hsv(*[v / 255 for v in c])[0] * 360
+        for s in range(1, 6):
+            a, b = hue(STRING_COLORS[s]), hue(STRING_COLORS[s + 1])
+            apart = min(abs(a - b), 360 - abs(a - b))
+            assert apart > 25, f"strings {s} and {s + 1} share a hue"
+
+    def test_every_string_colour_carries_white_text(self):
+        from pickhero.ui.colors import STRING_COLORS
+        for string, colour in STRING_COLORS.items():
+            # Rec. 601 luma: the digit is white with a dark outline, so a
+            # colour that is nearly white would lose the digit entirely.
+            luma = 0.299 * colour[0] + 0.587 * colour[1] + 0.114 * colour[2]
+            assert luma < 200, f"string {string} is too pale for white type"
+
+
+class TestDrawingTheSameTextAgain:
+    """Measured: one frame of the playing screen rasterised 62 text surfaces,
+    and that was 79 % of the frame -- against 8 % for drawing the notes. The
+    footer alone was 66 %, and the footer is the list of keyboard shortcuts,
+    which never changes at all. Caching it took a frame from 15.2 ms to
+    1.5 ms, and a dense song from unplayable to 2.7 ms."""
+
+    def _font(self):
+        pygame.init()
+        from pickhero.ui.scrolling import _get_font
+        return _get_font("arial", 14)
+
+    def test_the_same_text_comes_back_as_the_same_surface(self):
+        font = self._font()
+        first = font.render("Tempo: 80 %", True, (255, 255, 255))
+        assert font.render("Tempo: 80 %", True, (255, 255, 255)) is first
+
+    def test_different_text_is_drawn_afresh(self):
+        font = self._font()
+        assert (font.render("1:04", True, (255, 255, 255))
+                is not font.render("1:05", True, (255, 255, 255)))
+
+    def test_the_colour_is_part_of_it(self):
+        """Green and red say completely different things about a note."""
+        font = self._font()
+        assert (font.render("hit", True, (0, 255, 0))
+                is not font.render("hit", True, (255, 0, 0)))
+
+    def test_asking_twice_gives_the_same_font_object(self):
+        """Otherwise every lookup would hand back an empty cache."""
+        pygame.init()
+        from pickhero.ui.scrolling import _get_font
+        assert _get_font("arial", 14) is _get_font("arial", 14)
+
+    def test_it_does_not_grow_without_end(self):
+        """A clock ticking through a long song must not become a leak."""
+        font = self._font()
+        from pickhero.ui.scrolling import _CachedFont
+        for i in range(_CachedFont.MAX_ENTRIES + 40):
+            font.render(f"{i}", True, (255, 255, 255))
+        assert len(font._cache) <= _CachedFont.MAX_ENTRIES
+
+    def test_the_cache_can_be_dropped_with_the_pygame_session(self):
+        """A font kept across pygame.quit() is a dangling pointer, and
+        rendering with it segfaults -- verified, not assumed."""
+        pygame.init()
+        from pickhero.ui import scrolling
+        first = scrolling._get_font("arial", 14)
+        scrolling.clear_font_cache()
+        assert scrolling._get_font("arial", 14) is not first
+
+    def test_a_font_still_answers_the_questions_a_font_answers(self):
+        """The wrapper delegates, so layout code is untouched by all this."""
+        font = self._font()
+        assert font.get_height() > 0
+        assert font.size("abc")[0] > 0
+
+
+class TestHowLongAFrameTook:
+    """"Slow and stuttering" is a feeling, and a feeling cannot say whether
+    the drawing is behind or something arrives in bursts."""
+
+    def _screen(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._playing = True
+        return screen
+
+    def test_frames_are_only_counted_while_the_song_runs(self):
+        """A frame spent on a paused picture says nothing about keeping up."""
+        screen = self._screen()
+        screen._playing = False
+        screen.record_frame_ms(50.0)
+        assert screen._frame_ms == []
+
+    def test_the_log_reports_the_median_and_the_tail(self):
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = self._screen()
+        screen._matcher = NoteMatcher(_make_timeline())
+        for ms in [8.0] * 90 + [40.0] * 10:
+            screen.record_frame_ms(ms)
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        text = buffer.getvalue()
+        assert "frame_ms_median\t8.0" in text
+        assert "frame_ms_worst\t40.0" in text
+        assert "frames_over_budget_percent\t10" in text
+
+    def test_a_long_session_does_not_become_a_leak(self):
+        screen = self._screen()
+        for _ in range(PlayingScreen.FRAME_SAMPLES + 500):
+            screen.record_frame_ms(8.0)
+        assert len(screen._frame_ms) == PlayingScreen.FRAME_SAMPLES
+
+    def test_nothing_measured_says_so_rather_than_dividing_by_zero(self):
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = self._screen()
+        screen._matcher = NoteMatcher(_make_timeline())
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "frame_ms\t(nothing measured)" in buffer.getvalue()
+
+
+class TestALogFromHalfARun:
+    """D can be pressed at any moment, and most of the time it will be.
+
+    Two thirds of a song not yet reached leaves two thirds of the notes
+    PENDING, and hits divided by notes_written then reads as a catastrophic
+    score. A number is only readable next to what it is a number of, which is
+    the same lesson the stated practice speed taught the analysis.
+    """
+
+    def _half_played(self):
+        from pickhero.audio.detector import DetectedNote
+        from pickhero.audio.input import TimestampedNote
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=1000.0 * i, midi_note=40, string=6,
+                           fret=0, duration_ms=400.0, measure=0)
+                 for i in range(1, 11)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "half.gp5"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        for i in range(1, 4):
+            struck = TimestampedNote(
+                note=DetectedNote(40, 82.4, 0.95, "E2", True),
+                timestamp_ms=1000.0 * i + 10.0)
+            screen._matcher.process_detected_notes([struck], 1000.0 * i + 10.0)
+        screen._playback_ms = 3500.0
+        return screen
+
+    def _text(self, screen):
+        import io
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        return buffer.getvalue()
+
+    def test_it_says_how_many_notes_the_run_actually_reached(self):
+        text = self._text(self._half_played())
+        assert "notes_written\t10" in text
+        assert "notes_reached\t3" in text
+        assert "notes_not_reached\t7" in text
+
+    def test_it_says_where_the_playhead_stopped(self):
+        text = self._text(self._half_played())
+        assert "reached_ms\t3500" in text
+        assert "played_to_the_end\tFalse" in text
+
+    def test_a_finished_run_says_that_instead(self):
+        screen = self._half_played()
+        screen._song_completed = True
+        assert "played_to_the_end\tTrue" in self._text(screen)
+
+    def test_a_loop_is_named_because_the_bars_were_played_many_times(self):
+        screen = self._half_played()
+        screen._loop_enabled = True
+        screen._loop_start_ms = 1000.0
+        screen._loop_end_ms = 3000.0
+        assert "loop\t1000-3000 ms" in self._text(screen)
+
+    def test_no_loop_writes_no_loop_line(self):
+        assert "\nloop\t" not in self._text(self._half_played())
+
+    def test_the_screen_says_it_was_only_part_of_the_song(self):
+        screen = self._half_played()
+        screen._export_run_log()
+        assert "up to 4 s" in screen._run_log_note
+
+
+class TestHeardLine:
+    """A low score has two completely different causes and one number.
+
+    Notes never heard are a microphone problem; notes heard and not credited
+    are a matching problem. The completion screen has to say which, or the
+    next session is spent guessing again -- which is exactly what happened.
+    """
+
+    def _screen_with(self, outcomes, taken_back=0):
+        from pickhero.matcher import NoteMatcher, StrikeTrace
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._matcher.strike_trace = [
+            StrikeTrace(strike_ms=0.0, adjusted_ms=0.0, playback_ms=0.0,
+                        midi_note=40, confidence=0.9, unpitched=False,
+                        subharmonic=False, outcome=o, note_ms=None,
+                        semitones=None)
+            for o in outcomes
+        ]
+        screen._matcher.chord_strings_corrected = taken_back
+        return screen
+
+    def test_it_counts_the_strikes_that_were_heard(self):
+        screen = self._screen_with(["hit", "hit", "unmatched"])
+        assert "3 strikes heard" in screen._heard_line()
+
+    def test_it_counts_the_strikes_that_landed_separately(self):
+        screen = self._screen_with(["hit", "close", "unmatched"])
+        assert "2 of them landed" in screen._heard_line()
+
+    def test_a_taken_back_string_is_not_counted_as_a_strike(self):
+        """It is the same strike being judged again, not another one."""
+        screen = self._screen_with(["hit", "string_taken_back"], taken_back=1)
+        assert "1 strikes heard" in screen._heard_line()
+
+    def test_taken_back_strings_are_named_when_there_are_any(self):
+        screen = self._screen_with(["hit"], taken_back=2)
+        assert "2 strings taken back" in screen._heard_line()
+
+    def test_nothing_taken_back_says_nothing_about_it(self):
+        screen = self._screen_with(["hit"])
+        assert "taken back" not in screen._heard_line()
+
+
+class TestLevelAdvice:
+    """"Gate: -65 dB" is a number, not an instruction.
+
+    A player whose signal sits under the gate sees notes go unrecognised and
+    has no way to know that a threshold, not their playing, is eating them.
+    """
+
+    def _screen(self, peak, floor, gate=-60.0):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        # A stopped song has nothing to measure, so the advice stays quiet;
+        # every case here is about a song that is running.
+        screen._playing = True
+        screen._noise_gate_db = gate
+        screen._signal_peak_db = peak
+        screen._signal_floor_db = floor
+        # The advice is the MANUAL path: with the automatic gate on there is
+        # no key to press, and the app does it. See TestTheAutomaticGate.
+        screen._auto_gate = False
+        return screen
+
+    def test_a_healthy_level_says_nothing(self):
+        assert self._screen(peak=-20.0, floor=-75.0)._level_advice() == ""
+
+    def test_nothing_is_claimed_before_anything_was_heard(self):
+        assert self._screen(peak=-120.0, floor=0.0)._level_advice() == ""
+
+    def test_a_gate_above_the_playing_says_so(self):
+        advice = self._screen(peak=-35.0, floor=-75.0, gate=-40.0)._level_advice()
+        assert "X" in advice and "eating your notes" in advice
+
+    def test_a_signal_too_weak_for_the_detector_says_so(self):
+        """Measured rather than assumed: below about -40 dB the strikes keep
+        arriving and their pitch rots, which reads as bad playing."""
+        advice = self._screen(peak=-50.0, floor=-90.0, gate=-80.0)._level_advice()
+        assert "too quiet" in advice and "wrong note" in advice
+
+    def test_a_stopped_song_says_nothing(self):
+        """The peak decays while nothing is played, so the completion screen
+        would otherwise report a level fault that is not there."""
+        screen = self._screen(peak=-50.0, floor=-90.0, gate=-80.0)
+        screen._playing = False
+        assert screen._level_advice() == ""
+
+    def test_clipping_is_named_before_anything_else(self):
+        """Distortion destroys the period YIN looks for, so it outranks a
+        quiet-signal reading that the same run would also produce."""
+        advice = self._screen(peak=-2.0, floor=-70.0)._level_advice()
+        assert "Too loud" in advice
+
+    def test_background_noise_reaching_the_gate_says_so(self):
+        advice = self._screen(peak=-20.0, floor=-58.0)._level_advice()
+        assert "C" in advice and "noise" in advice.lower()
+
+    def test_raising_the_gate_can_silence_the_noise_advice(self):
+        screen = self._screen(peak=-20.0, floor=-58.0)
+        assert screen._level_advice() != ""
+        screen._noise_gate_db = suggested_gate_db(-20.0, -58.0)
+        assert screen._level_advice() == ""
+
+    def test_it_names_the_value_to_reach(self):
+        """Pressing a key an unknown number of times is not an instruction."""
+        advice = self._screen(peak=-35.0, floor=-75.0, gate=-40.0)._level_advice()
+        assert f"{suggested_gate_db(-35.0, -75.0):.0f} dB" in advice
+
+
+    def test_levels_are_only_tracked_while_the_song_runs(self):
+        screen = self._screen(peak=-120.0, floor=0.0)
+        screen._playing = False
+        screen._track_levels(-20.0)
+        assert screen._signal_peak_db == -120.0
+
+    def test_the_peak_decays_so_one_loud_accident_does_not_stick(self):
+        screen = self._screen(peak=-120.0, floor=0.0)
+        screen._track_levels(-10.0)
+        for _ in range(1000):
+            screen._track_levels(-70.0)
+        assert screen._signal_peak_db < -20.0
+
+    def test_a_silent_frame_does_not_erase_the_peak_at_once(self):
+        screen = self._screen(peak=-120.0, floor=0.0)
+        screen._track_levels(-20.0)
+        screen._track_levels(-70.0)
+        assert screen._signal_peak_db == pytest.approx(-20.05)
+
+
+class TestTheAdviceCannotContradictItself:
+    """It could, and the player followed it in circles.
+
+    "Barely above the gate -- press X" and "background noise reaches the gate
+    -- press C" name keys that undo each other, and a gate satisfying both
+    needed 18 dB between the loudest and quietest recent hop. Under that --
+    which is most of a distorted rock song, since the tracked peak decays and
+    the floor recovers between strikes -- no gate existed and the panel asked
+    for X, then C, then X, for ever. The player pressed C until the gate hit
+    the old -20 dB ceiling, where it discarded 40 % of the audio and deleted
+    every quiet single note in the song.
+    """
+
+    def _advice(self, peak, floor, gate):
+        screen = PlayingScreen.__new__(PlayingScreen)
+        screen._playing = True
+        screen._signal_peak_db = peak
+        screen._signal_floor_db = floor
+        screen._noise_gate_db = gate
+        screen._auto_gate = False
+        # No room measured: this class is about the gate keys, and a room
+        # the input cannot hear past is a different rule.
+        screen._room_samples = []
+        screen._level_samples = []
+        return screen._level_advice()
+
+    def _follow(self, peak, floor, gate):
+        """Press whatever key the advice names, until it stops naming one."""
+        pressed = []
+        for _ in range(60):
+            advice = self._advice(peak, floor, gate)
+            if "press X" in advice:
+                gate = max(MIN_GATE_DB, gate - 5)
+                pressed.append("X")
+            elif "press C" in advice:
+                gate = min(MAX_GATE_DB, gate + 5)
+                pressed.append("C")
+            else:
+                return "".join(pressed), gate
+        return "".join(pressed) + "...", gate
+
+    @pytest.mark.parametrize("peak,floor", [
+        (-10.0, -28.0),      # 18 dB of range: the boundary case
+        (-14.0, -26.0),      # what a distorted rock signal really looks like
+        (-18.0, -30.0),
+        (-12.0, -24.0),
+        (-30.0, -36.0),      # barely any range at all
+    ])
+    def test_following_it_always_stops(self, peak, floor):
+        pressed, _ = self._follow(peak, floor, -20.0)
+        assert not pressed.endswith("...")
+
+    @pytest.mark.parametrize("start", [-90.0, -75.0, -60.0, -50.0])
+    def test_and_never_reverses_direction(self, start):
+        pressed, _ = self._follow(-14.0, -26.0, start)
+        assert "XC" not in pressed and "CX" not in pressed
+
+    def test_a_gate_no_band_can_hold_still_protects_the_notes(self):
+        """When the signal has too little range for any gate to satisfy both,
+        the two failures are not equals: a gate under the room costs spurious
+        onsets that the confidence filter throws away, a gate over the playing
+        costs the strikes themselves."""
+        lowest, highest = gate_band(-14.0, -26.0)
+        assert lowest > highest                      # no gate satisfies both
+        _, settled = self._follow(-14.0, -26.0, -20.0)
+        assert settled <= highest
+
+    def test_the_ceiling_is_where_the_detector_gives_up(self):
+        """There is nothing to be won by gating away audio that could still
+        have been read: at a -44 dB loudest hop the pitch is right 83 % of
+        the time."""
+        assert gate_band(0.0, -120.0)[1] == MAX_GATE_DB
+
+    def test_the_keys_cannot_walk_outside_the_useful_range(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        for _ in range(40):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, key=pygame.K_c, mod=0))
+        assert screen._noise_gate_db == MAX_GATE_DB
+        for _ in range(40):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, key=pygame.K_x, mod=0))
+        assert screen._noise_gate_db == MIN_GATE_DB
+
+
+
+class TestTheAutomaticGate:
+    """The gate sets itself from the room, and only ever comes down.
+
+    Swept over four real play-along takes (tools/sweep_noise_gate.py): every
+    gate from -80 dB up to the knee reads exactly the same notes, and the knee
+    itself moves 15 dB between takes -- -55 dB on one, -40 dB on another --
+    because it follows the interface gain, which the player cannot see. So
+    there is no optimum to hunt for, only a ceiling to stay under, and a
+    ceiling that moves is exactly what a person cannot be asked to track.
+    """
+
+    def _screen(self, gate=-60.0, auto=True):
+        config = Config()
+        config.audio.noise_gate_db = gate
+        config.audio.auto_gate = auto
+        screen = PlayingScreen(_make_timeline(), config=config)
+        screen._noise_gate_db = gate
+        return screen
+
+    def _hear_room(self, screen, db, frames=ROOM_SAMPLES):
+        screen._playing = False
+        for _ in range(frames):
+            screen._track_levels(db)
+
+    def test_the_room_is_what_it_hears_while_the_song_is_not_running(self):
+        screen = self._screen()
+        self._hear_room(screen, -70.0)
+        assert screen.room_db() == pytest.approx(-70.0)
+
+    def test_the_count_in_counts_as_room(self):
+        """The song is not running and the player is not meant to be playing:
+        the longest clean window a run ever offers."""
+        screen = self._screen()
+        screen._playing = True
+        screen._playback_ms = -2000.0
+        for _ in range(ROOM_SAMPLES):
+            screen._track_levels(-72.0)
+        assert screen.room_db() == pytest.approx(-72.0)
+
+    def test_playing_is_never_mistaken_for_room(self):
+        screen = self._screen()
+        screen._playing = True
+        screen._playback_ms = 100.0
+        for _ in range(ROOM_SAMPLES * 2):
+            screen._track_levels(-12.0)
+        assert screen.room_db() is None
+
+    def test_too_little_heard_is_no_answer(self):
+        """Better no gate than one set from four frames of silence."""
+        screen = self._screen()
+        self._hear_room(screen, -70.0, frames=ROOM_SAMPLES - 1)
+        assert screen.room_db() is None
+
+    def test_a_quiet_room_gets_a_gate_under_it(self):
+        screen = self._screen(gate=-30.0)
+        self._hear_room(screen, -70.0)
+        screen._auto_gate_from_room()
+        assert screen._noise_gate_db == -64.0
+
+    def test_a_loud_room_does_not_lift_the_gate_past_the_ceiling(self):
+        """A gate over the playing costs the strikes themselves; room noise
+        costs spurious onsets the confidence filter already throws away."""
+        screen = self._screen()
+        self._hear_room(screen, -20.0)
+        screen._auto_gate_from_room()
+        assert screen._noise_gate_db == MAX_GATE_DB
+
+    def test_it_does_nothing_when_switched_off(self):
+        screen = self._screen(gate=-30.0, auto=False)
+        self._hear_room(screen, -70.0)
+        screen._auto_gate_from_room()
+        assert screen._noise_gate_db == -30.0
+
+    def test_a_gate_inside_the_playing_is_lowered(self):
+        screen = self._screen(gate=-30.0)
+        screen._playing = True
+        screen._playback_ms = 100.0
+        screen._track_levels(-4.0)
+        assert screen._noise_gate_db == MAX_GATE_DB
+
+    def test_it_is_never_raised_while_a_song_runs(self):
+        """Raising it mid-song can only delete strikes, and a strike that
+        never arrives cannot be recovered by anything downstream."""
+        screen = self._screen(gate=-75.0)
+        screen._playing = True
+        screen._playback_ms = 100.0
+        for db in (-4.0, -20.0, -60.0, -8.0):
+            screen._track_levels(db)
+        assert screen._noise_gate_db == -75.0
+
+    def test_it_settles_and_cannot_flap(self):
+        """The loudest heard only rises, so the level it demands only rises:
+        once satisfied this can never fire again."""
+        screen = self._screen(gate=-30.0)
+        screen._playing = True
+        screen._playback_ms = 100.0
+        seen = [screen._noise_gate_db]
+        for db in (-4.0, -35.0, -12.0, -50.0, -6.0, -41.0):
+            screen._track_levels(db)
+            seen.append(screen._noise_gate_db)
+        assert seen == sorted(seen, reverse=True)      # never goes back up
+        assert len(set(seen)) == 2                     # one change, then still
+        assert seen[1:] == [MAX_GATE_DB] * 6           # and it settled at once
+
+    def test_a_signal_too_weak_to_judge_moves_nothing(self):
+        """Below the detector's own limit the fault is the interface's gain,
+        which _level_advice names and no gate can fix."""
+        screen = self._screen(gate=-45.0)
+        screen._playing = True
+        screen._playback_ms = 100.0
+        screen._track_levels(-55.0)
+        assert screen._noise_gate_db == -45.0
+
+    def test_pressing_a_key_takes_the_gate_by_hand(self):
+        """An automatic that silently undoes the next song what you just set
+        is worse than one that was never offered."""
+        screen = self._screen()
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, key=pygame.K_x, mod=0))
+        assert not screen._auto_gate
+        assert not screen._config.audio.auto_gate
+
+    def test_the_room_is_heard_before_the_first_note(self):
+        """The input used to be opened when the count-in ENDED, so there was
+        never a moment of room to measure and the automatic had nothing to go
+        on -- a run log said "(nicht gemessen)" and the gate never moved."""
+        screen = self._screen()
+        screen._audio_enabled = True
+        opened = []
+        screen._start_capture_only = lambda: opened.append("open")
+        screen._resume_audio = lambda: opened.append("resume")
+        screen._playback_ms = 0.0
+        screen._count_in_ms = 2400.0
+        screen.toggle_play()
+        assert screen._playback_ms < 0                  # counting in
+        assert opened == ["open"]
+
+    def test_and_the_stream_is_not_reopened_when_the_song_starts(self):
+        """A device open on Windows is seconds; the count-in already has one
+        and the clocks are agreed by anchoring instead of by restarting."""
+        import inspect
+        from pickhero.ui.scrolling import PlayingScreen as PS
+        source = inspect.getsource(PS._start_audio)
+        assert "is_running" in source
+        assert source.index("is_running") < source.index("self._audio_capture.start()")
+
+    def test_and_the_advice_says_nothing_while_it_is_automatic(self):
+        """It would name a key the app is already pressing for you."""
+        screen = self._screen()
+        screen._playing = True
+        screen._signal_peak_db = -20.0
+        screen._signal_floor_db = -58.0
+        assert screen._level_advice() == ""
+
+    def test_but_the_gain_is_still_the_players_job(self):
+        screen = self._screen()
+        screen._playing = True
+        screen._signal_peak_db = -2.0
+        screen._signal_floor_db = -70.0
+        assert "Too loud" in screen._level_advice()
+
+
+
+class TestSeekingInSteps:
+    """A beat places a loop marker; it does not reach the chorus.
+
+    At 273 ms a beat, four minutes of song is nine hundred presses, and key
+    repeat is 40 ms -- half a minute of holding the key while the picture
+    scrolls past. So the same ladder the backing-track offset uses.
+    """
+
+    def _screen(self):
+        notes = [NoteEvent(timestamp_ms=t, duration_ms=200.0, midi_note=40,
+                           string=6, fret=0)
+                 for t in range(0, 120_000, 500)]
+        meta = SongMetadata(title="x", artist="y", tempo=120)
+        measures = [MeasureInfo(index=i, start_ms=i * 2000.0,
+                                end_ms=(i + 1) * 2000.0) for i in range(60)]
+        timeline = Timeline(notes, meta, measures=measures)
+        return PlayingScreen(timeline, config=Config())
+
+    def _press(self, screen, key, mod=0):
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, key=key, mod=mod))
+        return screen.position_ms()
+
+    def test_a_plain_arrow_still_moves_one_beat(self):
+        screen = self._screen()
+        screen.seek(30_000.0)
+        assert self._press(screen, pygame.K_RIGHT) == pytest.approx(
+            30_000.0 + screen._ms_per_beat)
+
+    def test_shift_lands_on_the_bar_line(self):
+        """Snapped, not a fixed number of beats: it stays on the bars through
+        a time-signature change and lands where the tab is drawn."""
+        screen = self._screen()
+        screen.seek(30_500.0)
+        assert self._press(screen, pygame.K_RIGHT, pygame.KMOD_SHIFT) == 32_000.0
+
+    def test_and_back_reaches_the_bar_before_this_one(self):
+        screen = self._screen()
+        screen.seek(32_000.0)
+        assert self._press(screen, pygame.K_LEFT, pygame.KMOD_SHIFT) == 30_000.0
+
+    def test_shift_back_from_just_after_a_bar_line_does_not_stand_still(self):
+        screen = self._screen()
+        screen.seek(32_010.0)
+        assert self._press(screen, pygame.K_LEFT, pygame.KMOD_SHIFT) == 30_000.0
+
+    def test_ctrl_moves_half_a_minute(self):
+        screen = self._screen()
+        screen.seek(30_000.0)
+        assert self._press(screen, pygame.K_RIGHT, pygame.KMOD_CTRL) == 60_000.0
+
+    def test_it_cannot_walk_off_either_end(self):
+        screen = self._screen()
+        screen.seek(0.0)
+        assert self._press(screen, pygame.K_LEFT, pygame.KMOD_CTRL) == 0.0
+        screen.seek(screen._timeline.duration_ms)
+        assert (self._press(screen, pygame.K_RIGHT, pygame.KMOD_CTRL)
+                <= screen._timeline.duration_ms)
+
+    def test_a_song_with_no_bars_still_seeks(self):
+        """A tab that parsed without measure info must not make the key dead."""
+        notes = [NoteEvent(timestamp_ms=0.0, duration_ms=20_000.0,
+                           midi_note=40, string=6, fret=0)]
+        screen = PlayingScreen(
+            Timeline(notes, SongMetadata(title="x", tempo=120)),
+            config=Config())
+        screen.seek(1_000.0)
+        moved = self._press(screen, pygame.K_RIGHT, pygame.KMOD_SHIFT)
+        assert moved > 1_000.0
+
+    def test_the_footer_names_all_three(self):
+        """A key that is bound but undocumented is a key nobody finds."""
+        footer = " ".join(self._screen()._footer_lines())
+        assert "Shift: bar" in footer and "Ctrl: 30s" in footer
+
+
+class TestChangingTrackKeepsThePlace:
+    """The tracks of one file share a clock: bar 40 of the rhythm guitar is
+    bar 40 of the lead. Somebody comparing two versions of a passage changes
+    track precisely BECAUSE they are at that passage."""
+
+    def test_the_screen_can_say_where_it_is(self):
+        notes = [NoteEvent(timestamp_ms=t, duration_ms=200.0, midi_note=40,
+                           string=6, fret=0) for t in range(0, 60_000, 500)]
+        screen = PlayingScreen(
+            Timeline(notes, SongMetadata(title="x", tempo=120)),
+            config=Config())
+        screen.seek(12_345.0)
+        assert screen.position_ms() == pytest.approx(12_345.0)
+
+    def test_the_app_carries_it_across_the_reload(self):
+        import inspect
+        from pickhero.ui.app import App
+        source = inspect.getsource(App._handle_playing_event)
+        assert "position_ms()" in source and "resume_at_ms" in source
+        assert "resume_at_ms" in inspect.signature(App._load_song).parameters
+
+    def test_and_clamps_it_to_a_shorter_track(self):
+        import inspect
+        from pickhero.ui.app import App
+        source = inspect.getsource(App._load_song)
+        assert "min(resume_at_ms" in source
+
+class TestTopRightHudDoesNotOverlap:
+    """The gate used to be drawn straight over the hit count.
+
+    The block above it renders two lines and the spacing had been counted for
+    one, which is the kind of thing a fixed pixel offset does the moment
+    anything above it grows.
+    """
+
+    def test_draw_stats_reports_where_it_ended(self):
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        from pickhero.ui.feedback import FeedbackRenderer
+        font = pygame.font.SysFont("arial", 14)
+        surface = pygame.Surface((320, 240))
+        renderer = FeedbackRenderer()
+        stats = {"hits": 57, "close": 3, "misses": 2, "total": 62,
+                 "accuracy_percent": 91.9}
+        end = renderer.draw_stats(surface, stats, font, 300, 36)
+        assert end >= 36 + 2 * font.get_height()
+        pygame.display.quit()
+
+
+class TestSeekingDoesNotReopenTheDevice:
+    """Seeking used to close and reopen the audio input device.
+
+    On Windows that is a real device open, and it happened on every arrow key
+    and every loop turn -- the player reported the app freezing for about ten
+    seconds after a seek. The clock still has to learn that the song moved,
+    but re-anchoring does that without touching the hardware.
+    """
+
+    class _FakeCapture:
+        def __init__(self):
+            self.starts = 0
+            self.stops = 0
+
+        def start(self):
+            self.starts += 1
+
+        def stop(self):
+            self.stops += 1
+
+        def elapsed_ms(self):
+            return 20_000.0
+
+        def get_notes(self):
+            return []
+
+        def get_strike_windows(self):
+            return []
+
+        def get_signal_db(self):
+            return -40.0
+
+        def get_tuner_data(self):
+            return (0.0, 0.0)
+
+    def _screen(self):
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=t, duration_ms=200.0, midi_note=40,
+                           string=6, fret=0, measure=0)
+                 for t in (1000.0, 30000.0)]
+        timeline = Timeline(notes, SongMetadata(title="T", tempo=100))
+        screen = PlayingScreen(timeline, config=Config())
+        screen._matcher = NoteMatcher(timeline)
+        screen._audio_capture = self._FakeCapture()
+        screen._audio_enabled = True
+        screen._playing = True
+        screen._playback_ms = 5000.0
+        return screen
+
+    def test_seeking_leaves_the_stream_alone(self):
+        screen = self._screen()
+        screen.seek(12000.0)
+        assert screen._audio_capture.stops == 0
+        assert screen._audio_capture.starts == 0
+
+    def test_seeking_still_moves_the_audio_clock(self):
+        """Leaving the device alone must not mean leaving the clock wrong."""
+        screen = self._screen()
+        screen.seek(12000.0)
+        # A strike stamped at the capture's current position must read as the
+        # song position the player can see.
+        adjusted = 20_000.0 * screen._tempo_factor + screen._matcher.audio_offset_ms
+        assert adjusted == pytest.approx(12000.0)
+
+    def test_a_loop_turn_leaves_the_stream_alone(self):
+        """Loops happen every few seconds -- this one mattered most."""
+        screen = self._screen()
+        screen._loop_enabled = True
+        screen._loop_start_ms = 1000.0
+        screen._loop_end_ms = 6000.0
+        screen._last_tick = None
+        screen._playback_ms = 6500.0
+        screen.update()
+        assert screen._audio_capture.stops == 0
+        assert screen._audio_capture.starts == 0
+        assert screen._playback_ms == 1000.0
+
+
+class TestRunLogRecordsTheLevel:
+    """A weak input does not lose strikes, it corrupts their pitch -- which is
+    indistinguishable from bad playing unless the level is written down."""
+
+    def _screen(self, levels):
+        from pickhero.matcher import NoteMatcher
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._song_key = "song"
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._level_samples = list(levels)
+        return screen
+
+    def _log(self, screen):
+        import io
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        return buffer.getvalue()
+
+    def test_the_loudest_hop_is_written(self):
+        text = self._log(self._screen([-60.0, -30.0, -45.0]))
+        assert "level_loudest_db\t-30.0" in text
+
+    def test_the_share_under_the_gate_is_written(self):
+        screen = self._screen([-70.0, -70.0, -30.0, -30.0])
+        screen._config.audio.noise_gate_db = -60.0
+        assert "level_under_gate_percent\t50" in self._log(screen)
+
+    def test_a_run_with_no_audio_says_so_rather_than_inventing_a_number(self):
+        assert "(nothing measured)" in self._log(self._screen([]))
+
+
+class TestHeadUsesTheHeightItHas:
+    """A head squeezed narrow by a dense song is still full height.
+
+    Measured on the case the player reported -- a real song at 135 BPM whose
+    sixteenths put the notes 111 ms apart: the head sits at its 26 px floor
+    inside a 56 px lane, leaving 53 % of the height unused. Look-ahead is
+    bought and sold in WIDTH, so keeping the height costs nothing at all.
+    """
+
+    def _screen(self, spacing_ms, fret=5):
+        notes = [
+            NoteEvent(timestamp_ms=i * spacing_ms, duration_ms=150.0,
+                      midi_note=40 + (i % 6), string=6 - (i % 6), fret=fret,
+                      measure=i // 8)
+            for i in range(60)
+        ]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        surface = pygame.Surface((1277, 771))
+        screen._recompute_scroll_speed(screen._layout(surface))
+        return screen
+
+    def test_a_dense_song_keeps_its_height(self):
+        screen = self._screen(111.0)
+        assert screen._head_px < screen._head_h_px
+
+    def test_a_roomy_song_stays_round(self):
+        screen = self._screen(600.0)
+        assert screen._head_px == pytest.approx(screen._head_h_px)
+
+    def test_the_height_costs_no_look_ahead(self):
+        """The whole point: it is free. Width is the currency, not height."""
+        screen = self._screen(111.0)
+        window_with_height = screen._visible_window_ms
+        screen._head_h_px = screen._head_px       # as it was before
+        screen._recompute_scroll_speed(screen._layout(pygame.Surface((1277, 771))))
+        assert screen._visible_window_ms == pytest.approx(window_with_height)
+
+    def test_every_fret_number_is_the_same_size(self):
+        """A lone 5 towering over the 15 beside it reads as emphasis the
+        music never asked for."""
+        notes = [
+            NoteEvent(timestamp_ms=i * 400.0, duration_ms=150.0, midi_note=40,
+                      string=6, fret=(5 if i % 2 else 15), measure=0)
+            for i in range(20)
+        ]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        screen._recompute_scroll_speed(screen._layout(pygame.Surface((1277, 771))))
+        assert screen._fret_digits == 2
+
+    def test_the_number_fills_the_width_it_has(self):
+        """Where the digits grew: the old rule was a fixed multiple of the
+        radius and left room unused. The HEIGHT does not help a two-digit
+        label -- at a 26 px head the width is what binds -- so the height's
+        gain is the size of the note itself, not of the number."""
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        screen = self._screen(111.0)
+        font = screen._fret_font(13.0, 23.5, 2)
+        assert font.get_height() > int(13.0 * 1.1)     # the old rule
+        assert font.render("20", True, (0, 0, 0)).get_width() <= 26
+        pygame.display.quit()
+
+    def test_a_flat_head_is_limited_by_its_height(self):
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        screen = self._screen(111.0)
+        flat = screen._fret_font(40.0, 8.0, 2)
+        assert flat.get_height() <= 16
+        pygame.display.quit()
+
+
+class TestDMustLookLikeItDidSomething:
+    """The run log was written and never mentioned unless the song ended.
+
+    Pressing D in the middle of a song wrote the file and put its note only
+    on the completion screen, so on a four-minute song the key was
+    indistinguishable from a dead one -- which is exactly what the player
+    reported. And leaving the song wrote nothing at all, so the run most
+    worth reading was the one that produced no file.
+    """
+
+    def _screen(self, tmp_path, monkeypatch):
+        import pickhero.config as config_module
+        from pickhero.matcher import NoteMatcher
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / ".pickhero")
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=200.0,
+                           midi_note=64, string=1, fret=0)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline)
+        screen._matcher = NoteMatcher(timeline)
+        screen._song_key = "a song"
+        return screen
+
+    def test_d_mid_song_says_where_the_file_went(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._playback_ms = 500.0
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_d, mod=0))
+        written = list((tmp_path / ".pickhero").glob("run_*.txt"))
+        assert len(written) == 1
+        note = screen._status_note_text()
+        # The name AND that it is only half a run: a number is readable only
+        # next to what it is a number of.
+        assert written[0].name in note and "up to" in note
+
+    def test_the_note_expires_rather_than_outliving_the_moment(
+        self, tmp_path, monkeypatch
+    ):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._say("something happened")
+        assert screen._status_note_text() == "something happened"
+        screen._status_note_until = time.monotonic() - 1.0
+        assert screen._status_note_text() == ""
+
+    def test_audio_off_says_so_on_screen_too(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._matcher = None
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_d, mod=0))
+        assert "audio was off" in screen._status_note_text()
+        assert not list((tmp_path / ".pickhero").glob("run_*.txt"))
+
+    def test_leaving_a_song_writes_the_run(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._playback_ms = 500.0
+        screen.stop_audio()
+        written = list((tmp_path / ".pickhero").glob("run_*.txt"))
+        assert len(written) == 1
+        assert "notes_reached" in written[0].read_text()
+
+    def test_a_finished_song_is_not_written_twice(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._song_completed = True
+        screen._export_run_log()
+        screen.stop_audio()
+        assert len(list((tmp_path / ".pickhero").glob("run_*.txt"))) == 1
+
+    def test_nothing_is_written_when_audio_was_never_on(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._matcher = None
+        screen.stop_audio()
+        assert not list((tmp_path / ".pickhero").glob("run_*.txt"))
+
+
+class TestThePicturesOwnClock:
+    """Whether the notes keep real time is a number, not an impression.
+
+    A player reporting the visualisation falling behind the sound is
+    reporting one ratio, and without it in the log the app cannot be told
+    apart from the recording running away -- which is fixed somewhere else
+    entirely.
+    """
+
+    def _screen(self, tmp_path, monkeypatch):
+        import pickhero.config as config_module
+        from pickhero.matcher import NoteMatcher
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / ".pickhero")
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=200.0,
+                           midi_note=64, string=1, fret=0)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline)
+        screen._matcher = NoteMatcher(timeline)
+        screen._song_key = "a song"
+        return screen
+
+    def test_a_stall_is_counted_and_the_lost_time_named(self, tmp_path,
+                                                        monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._playing = True
+        ticks = iter([0.0, 0.016, 1.016])
+        monkeypatch.setattr(time, "perf_counter", lambda: next(ticks))
+        screen.update()   # sets _last_tick
+        screen.update()   # an ordinary frame
+        screen.update()   # a one-second stall
+        assert screen._clock_stalls == 1
+        lost = screen._clock_real_ms - screen._clock_song_ms
+        assert 740 < lost < 760      # 1000 ms spent, 250 ms of it credited
+        assert screen._clock_song_ms / screen._clock_real_ms < 0.3
+
+    def test_an_honest_machine_reads_one(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._playing = True
+        ticks = iter([0.0, 0.016, 0.032, 0.048])
+        monkeypatch.setattr(time, "perf_counter", lambda: next(ticks))
+        for _ in range(4):
+            screen.update()
+        assert screen._clock_stalls == 0
+        assert screen._clock_song_ms == screen._clock_real_ms
+
+    def test_the_run_log_carries_it(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._clock_real_ms = 30_000.0
+        screen._clock_song_ms = 29_400.0
+        screen._clock_stalls = 3
+        screen._export_run_log()
+        text = list((tmp_path / ".pickhero").glob("run_*.txt"))[0].read_text()
+        assert "clock_ratio\t0.9800" in text
+        assert "clock_lost_ms\t600" in text
+        assert "clock_stalls\t3" in text
+
+
+class TestAnInputThatHearsTheRoom:
+    """Neither too loud nor too quiet, and useless -- the case that had no
+    rule.
+
+    The run that produced this was on a laptop's built-in microphone array,
+    picked up as Windows' default recording device: room -37.3 dB against a
+    playing median of -37.2, a tenth of a decibel apart, 24 of 25 strikes
+    carrying no pitch at all, 7 notes credited out of 127 reached. The peak
+    was -9.2 dB, so both existing rules stayed silent and the player was
+    shown nothing at all.
+    """
+
+    def _screen(self, peak, room, playing):
+        """A screen whose room and playing level are both what they say.
+
+        The level samples are what the median is taken from, so they are fed
+        the playing level with the peak on top -- the same shape the real
+        collector produces.
+        """
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._playing = True
+        screen._signal_peak_db = peak
+        screen._signal_floor_db = room
+        screen._noise_gate_db = -50.0
+        for _ in range(ROOM_SAMPLES):
+            screen._room_samples.append(room)
+            screen._level_samples.append(playing)
+        screen._level_samples.append(peak)
+        return screen
+
+    def test_the_run_that_produced_the_rule_is_named(self):
+        """The laptop microphone array: 0.1 dB between room and playing."""
+        advice = self._screen(peak=-9.2, room=-37.3,
+                              playing=-37.2)._level_advice()
+        assert "hearing the room" in advice and "D in the song list" in advice
+
+    def test_the_players_interface_is_not_convicted(self):
+        """The first version used the gate ceiling as a proxy for the gap and
+        convicted a Focusrite on the very next run: -50.4 room against -29.6
+        playing is 21 dB apart and perfectly healthy."""
+        assert self._screen(peak=-14.6, room=-50.4,
+                            playing=-29.6)._level_advice() == ""
+
+    def test_it_outranks_the_automatic_gate(self):
+        """With the automatic on the advice says nothing about the gate --
+        but this is not about the gate, and no key on the screen fixes it."""
+        screen = self._screen(peak=-9.2, room=-37.3, playing=-37.2)
+        screen._auto_gate = True
+        assert "hearing the room" in screen._level_advice()
+
+    @pytest.mark.parametrize("room", [-70.0, -86.0, -69.0, -84.0])
+    def test_it_never_fires_on_the_reference_takes(self, room):
+        """The four takes the automatic gate was fitted against measure rooms
+        of about -70 to -86 dB against playing around -25."""
+        assert self._screen(peak=-14.0, room=room,
+                            playing=-25.0)._level_advice() == ""
+
+    def test_an_unmeasured_room_claims_nothing(self):
+        screen = self._screen(peak=-14.0, room=-37.3, playing=-37.2)
+        screen._room_samples.clear()
+        assert screen._level_advice() == ""
+
+    def test_nothing_played_yet_claims_nothing(self):
+        screen = self._screen(peak=-14.0, room=-37.3, playing=-37.2)
+        screen._level_samples.clear()
+        assert screen._level_advice() == ""
+
+    def test_a_stopped_song_stays_silent(self):
+        screen = self._screen(peak=-9.2, room=-37.3, playing=-37.2)
+        screen._playing = False
+        assert screen._level_advice() == ""
+
+
+class TestLeavingWritesOneLogNotTwo:
+    """stop_audio is reached more than once on the way out.
+
+    The player's upload had two logs a second apart for one run, and the
+    second was written after the recording had been closed -- so it was
+    missing every mp3 line while claiming to describe the same run.
+    """
+
+    def _screen(self, tmp_path, monkeypatch):
+        import pickhero.config as config_module
+        from pickhero.matcher import NoteMatcher
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / ".pickhero")
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=200.0,
+                           midi_note=64, string=1, fret=0)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline)
+        screen._matcher = NoteMatcher(timeline)
+        screen._song_key = "a song"
+        screen._playback_ms = 500.0
+        return screen
+
+    def test_two_calls_write_one_file(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.stop_audio()
+        screen.stop_audio()
+        assert len(list((tmp_path / ".pickhero").glob("run_*.txt"))) == 1
+
+    def test_the_guard_never_silences_d(self, tmp_path, monkeypatch):
+        """The guard is for the way out, not for the key. D is a request."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.stop_audio()
+        screen._run_log_note = ""
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_d, mod=0))
+        assert "Run written" in screen._run_log_note
+
+
+class TestTheEndScreenIsNotADeadEnd:
+    """Reaching the last bar put the score up and nothing took it down.
+
+    An arrow key then moved the song under a picture still showing the
+    score, so the player had to leave and start over to hear the last bars
+    again -- which is exactly what syncing a recording asks them to do.
+    """
+
+    def _screen(self):
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=200.0,
+                           midi_note=64, string=1, fret=0)]
+        screen = PlayingScreen(_make_timeline(notes=notes))
+        screen._song_completed = True
+        screen._playback_ms = screen._timeline.duration_ms
+        return screen
+
+    def test_seeking_back_leaves_the_completion_screen(self):
+        screen = self._screen()
+        screen.seek(0.0)
+        assert not screen._song_completed
+
+    def test_the_arrow_key_is_enough(self):
+        screen = self._screen()
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_LEFT, mod=pygame.KMOD_CTRL))
+        assert not screen._song_completed
+        assert screen._playback_ms < screen._timeline.duration_ms
+
+    def test_staying_at_the_end_keeps_the_score_up(self):
+        """Seeking to the very end is not leaving it."""
+        screen = self._screen()
+        screen.seek(screen._timeline.duration_ms + 5_000)
+        assert screen._song_completed
+
+
+class TestSlowingTheTabDown:
+    """"Kleiner machen geht nicht richtig -- es haengt bei Groesse 1."
+
+    It did nothing at all. The window was clamped back to the size at which
+    every note keeps its full head, so every factor below 1.0 produced the
+    identical picture. Measured on three real songs before the fix: 0.4,
+    0.6, 0.8 and 1.0 gave the same window and the same pixels per second,
+    with the head at 44 px against a 26 px floor -- room that was never
+    spent. And a second floor, fitted for reading a number at 430 px/s,
+    blocked every song containing a two-digit fret outright.
+    """
+
+    def _screen(self, frets, spacing_ms=200.0, count=60):
+        notes = [NoteEvent(timestamp_ms=i * spacing_ms, duration_ms=150.0,
+                           midi_note=40 + (i % 5), string=1 + (i % 6),
+                           fret=frets[i % len(frets)])
+                 for i in range(count)]
+        screen = PlayingScreen(_make_timeline(notes=notes), config=Config())
+        screen._recompute_scroll_speed(screen._layout(pygame.Surface((1280, 720))))
+        return screen
+
+    def _pps(self, screen):
+        layout = screen._layout(pygame.Surface((1280, 720)))
+        return layout.usable_width / (screen._visible_window_ms / 1000.0)
+
+    def _set(self, screen, factor):
+        screen._config.scroll_speed_factor = factor
+        screen._scroll_speed_signature = None
+        screen._recompute_scroll_speed(screen._layout(pygame.Surface((1280, 720))))
+
+    def test_minus_really_slows_the_picture(self):
+        screen = self._screen([3])
+        self._set(screen, 1.0)
+        fast = self._pps(screen)
+        self._set(screen, 0.6)
+        assert self._pps(screen) < fast * 0.95
+
+    def test_a_two_digit_song_can_be_slowed_too(self):
+        """The case that was blocked outright, and it is most rock songs."""
+        screen = self._screen([12, 10, 3])
+        self._set(screen, 1.0)
+        fast = self._pps(screen)
+        self._set(screen, 0.6)
+        assert self._pps(screen) < fast * 0.95
+
+    def test_slowing_is_paid_for_in_head_size(self):
+        screen = self._screen([3])
+        self._set(screen, 1.0)
+        big = screen._head_px
+        self._set(screen, 0.5)
+        assert screen._head_px < big
+
+    def test_it_never_goes_under_the_hard_floor(self):
+        from pickhero.ui.scrolling import MIN_HEAD_PX
+        screen = self._screen([12, 10])
+        for factor in (0.4, 0.5, 0.6, 0.7, 0.8, 0.9):
+            self._set(screen, factor)
+            assert screen._head_px >= MIN_HEAD_PX - 0.01
+
+    def test_speeding_up_never_shrinks_the_head(self):
+        """Faster only ever gives the notes more room."""
+        screen = self._screen([3])
+        self._set(screen, 1.0)
+        base = screen._head_px
+        for factor in (1.2, 1.6, 2.5):
+            self._set(screen, factor)
+            assert screen._head_px >= base - 0.01
+
+    def test_a_press_that_changes_nothing_is_put_back(self):
+        """The factor used to walk to 0.4 while the picture stood still, so
+        the number on screen described a setting nothing honoured."""
+        screen = self._screen([12, 10])
+        screen._last_layout = screen._layout(pygame.Surface((1280, 720)))
+        self._set(screen, 0.5)
+        settled = screen._scroll_factor()
+        screen._adjust_scroll_factor(-0.1)
+        assert screen._scroll_factor() == settled
+        assert "as small as they may get" in screen._status_note_text()
+
+    def test_a_press_that_works_says_what_it_did(self):
+        screen = self._screen([3])
+        screen._last_layout = screen._layout(pygame.Surface((1280, 720)))
+        self._set(screen, 1.0)
+        screen._adjust_scroll_factor(-0.1)
+        note = screen._status_note_text()
+        assert "0.9x" in note and "ahead" in note
+
+    def test_the_end_of_the_range_is_named(self):
+        screen = self._screen([3])
+        screen._last_layout = screen._layout(pygame.Surface((1280, 720)))
+        self._set(screen, 2.5)
+        screen._adjust_scroll_factor(0.1)
+        assert "fastest" in screen._status_note_text()
+
+
+class TestTheCompletionOverlayDoesNotDrawThroughItself:
+    """"New Best!" sat at +132 in the big font and the weakest section at
+    +140 in the small one: two lines laid out on the assumption that the
+    other was absent. Every line is stacked on the measured height of the
+    one above it now, so the block grows instead of colliding.
+    """
+
+    def _screen(self, *, best, weak, recommendations):
+        from pickhero.matcher import NoteMatcher
+        notes = [NoteEvent(timestamp_ms=1000.0 * i, midi_note=40 + i,
+                           string=6, fret=i, duration_ms=500.0, measure=0)
+                 for i in range(8)]
+        timeline = _make_timeline(notes=notes)
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "t"
+        screen._audio_enabled = True
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        screen._song_completed = True
+        screen._is_new_best = best
+        screen._weakest_sections = [(43, 44, 40.0)] if weak else []
+        screen._recommendations = recommendations
+        screen._run_log_note = "Run written to C:\\x\\run.txt"
+        return screen
+
+    def _boxes(self, screen):
+        """Where each line of the OVERLAY was drawn, and how tall it was.
+
+        The overlay is asked for directly rather than through render(): a
+        whole frame blits the board, the notes and the HUD as well, and a
+        spy that cannot tell those apart is measuring the wrong thing.
+        """
+        import pygame
+        from pickhero.ui.scrolling import _Layout
+
+        pygame.init()
+        surface = pygame.display.set_mode((950, 522))
+        layout = _Layout(screen_w=950, screen_h=522,
+                         lane_height=60.0, note_h=40.0,
+                         hit_zone_x=150.0, usable_width=800.0,
+                         pixels_per_ms=0.2,
+                         visible_window_ms=4000.0)
+        drawn = []
+
+        class Recorder:
+            """pygame.Surface is immutable, so the surface is wrapped rather
+            than patched. Everything else passes straight through."""
+
+            def __init__(self, target):
+                self._target = target
+
+            def blit(self, source, dest, *args, **kwargs):
+                # The dimming sheet is the full screen; the lines are not.
+                if (isinstance(dest, tuple) and source.get_width() < 950
+                        and source.get_height() < 200):
+                    drawn.append((dest[1], source.get_height()))
+                return self._target.blit(source, dest, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._target, name)
+
+        screen._draw_completion_overlay(Recorder(surface), layout)
+        return sorted(drawn)
+
+    def test_the_worst_case_has_no_two_lines_on_top_of_each_other(self):
+        """Everything at once: a new best AND a weak section AND advice."""
+        screen = self._screen(best=True, weak=True,
+                              recommendations=["Up 8% -- nice work!",
+                                               "Try bars 44-45 on loop."])
+        boxes = self._boxes(screen)
+        overlapping = [(a, b) for a, b in zip(boxes, boxes[1:])
+                       if a[0] + a[1] > b[0]]
+        assert not overlapping, overlapping
+
+    def test_and_it_still_fits_on_the_screen(self):
+        screen = self._screen(best=True, weak=True,
+                              recommendations=["one", "two", "three"])
+        boxes = self._boxes(screen)
+        assert boxes[0][0] >= 0
+        assert boxes[-1][0] + boxes[-1][1] <= 522
+
+    def test_a_plain_run_is_not_pushed_off_the_top(self):
+        boxes = self._boxes(self._screen(best=False, weak=False,
+                                         recommendations=[]))
+        assert boxes[0][0] > 0
+
+
+class TestTheFooterFitsOnTheScreen:
+    """Twenty-three shortcuts are 2986 px of text and the player's window is
+    1911. Shrinking the font was not enough -- the smallest still overflowed
+    by a thousand pixels -- and a line drawn wider than the screen is
+    centred, which cuts BOTH ends. On the player's screenshot the first entry
+    and the last were simply not there.
+    """
+
+    def _font(self):
+        import pygame
+        from pickhero.ui.scrolling import _get_font
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        return _get_font("arial", 13)
+
+    def test_a_line_that_fits_is_left_alone(self):
+        from pickhero.ui.scrolling import _wrap_on_bars
+
+        font = self._font()
+        assert _wrap_on_bars("A: one  |  B: two", font, 4000) == \
+            ["A: one  |  B: two"]
+
+    def test_a_long_one_is_broken_at_the_separators(self):
+        from pickhero.ui.scrolling import _wrap_on_bars
+
+        font = self._font()
+        line = "  |  ".join(f"KEY{i}: does a thing" for i in range(20))
+        parts = _wrap_on_bars(line, font, 600)
+        assert len(parts) > 1
+        assert all(font.size(p)[0] <= 600 for p in parts)
+
+    def test_no_shortcut_is_split_down_the_middle(self):
+        from pickhero.ui.scrolling import _wrap_on_bars
+
+        font = self._font()
+        entries = [f"KEY{i}: does a thing" for i in range(20)]
+        parts = _wrap_on_bars("  |  ".join(entries), font, 600)
+        rejoined = [e.strip() for p in parts for e in p.split("|")]
+        assert rejoined == entries
+
+    def test_and_nothing_is_lost(self):
+        from pickhero.ui.scrolling import _wrap_on_bars
+
+        font = self._font()
+        line = "  |  ".join(f"KEY{i}: x" for i in range(40))
+        parts = _wrap_on_bars(line, font, 400)
+        for i in range(40):
+            assert any(f"KEY{i}: x" in p for p in parts), i
+
+    def test_one_entry_too_wide_for_the_screen_is_left_as_it_is(self):
+        """There is nothing to be done about it here, and shortening the
+        text is a decision for whoever wrote it."""
+        from pickhero.ui.scrolling import _wrap_on_bars
+
+        font = self._font()
+        assert _wrap_on_bars("X" * 400, font, 200) == ["X" * 400]
+
+    def test_the_real_footer_fits_the_players_window(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen, _Layout
+
+        pygame.init()
+        surface = pygame.display.set_mode((1911, 1096))
+        timeline = _make_timeline(notes=[
+            NoteEvent(timestamp_ms=0.0, midi_note=40, string=6, fret=0,
+                      duration_ms=500.0, measure=0)])
+        screen = PlayingScreen(timeline, config=Config(), song_key="t")
+        layout = _Layout(screen_w=1911, screen_h=1096, lane_height=60.0,
+                         note_h=40.0, hit_zone_x=150.0, usable_width=1700.0,
+                         pixels_per_ms=0.2, visible_window_ms=4000.0)
+        widest = []
+
+        class Recorder:
+            def __init__(self, target):
+                self._target = target
+
+            def blit(self, source, dest, *args, **kwargs):
+                widest.append(source.get_width())
+                return self._target.blit(source, dest, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._target, name)
+
+        screen._blit_footer_lines(Recorder(surface), layout,
+                                  screen._footer_lines(), (200, 200, 200))
+        assert widest and max(widest) <= 1911
+
+
+class TestSkippingALongRest:
+    """E jumps over a stretch with nothing written on this track.
+
+    Measured before it was built: over every track of the four songs to hand,
+    a guitar track's inner rests are 4-6 s (part of the music) or 12 s and up
+    (a section it does not play), with nothing in between -- so any threshold
+    from 7 to 12 s finds the same rests and GAP_MIN_MS is not on a knife edge.
+    """
+
+    class _MockSurface:
+        def __init__(self, w, h):
+            self._size = (w, h)
+
+        def get_size(self):
+            return self._size
+
+    def _screen(self, notes, duration_pad_ms=0.0):
+        from pickhero.ui.scrolling import PlayingScreen
+        end = max(n.end_ms for n in notes) + duration_pad_ms
+        song = Timeline(
+            notes, SongMetadata(title="t", tempo=120),
+            measures=[MeasureInfo(index=0, start_ms=0.0, end_ms=end)])
+        screen = PlayingScreen(song, config=Config())
+        layout = screen._layout(self._MockSurface(1280, 720))
+        screen._last_layout = layout
+        screen._recompute_scroll_speed(layout)
+        return screen
+
+    @staticmethod
+    def _note(at_ms, dur=500.0):
+        return NoteEvent(timestamp_ms=at_ms, duration_ms=dur,
+                         midi_note=40, string=6, fret=0)
+
+    def _with_a_rest(self):
+        # 0-1 s of notes, then twenty seconds of nothing, then more.
+        notes = [self._note(0.0), self._note(500.0)]
+        notes += [self._note(21_000.0 + i * 500.0) for i in range(4)]
+        return self._screen(notes)
+
+    def test_a_short_rest_is_not_a_rest(self):
+        """Four bars at 120 BPM is music, and the player counts through it."""
+        notes = [self._note(0.0), self._note(6_000.0)]
+        assert self._screen(notes)._rests == []
+
+    def test_a_long_rest_is_found_with_its_next_note(self):
+        screen = self._with_a_rest()
+        assert screen._rests == [(1_000.0, 21_000.0)]
+
+    def test_a_note_still_sounding_is_not_a_rest(self):
+        """Counted from the END of the notes before it, not from their onset.
+
+        Skipping over a held note would skip a note that is still being
+        scored, which costs the player the note.
+        """
+        notes = [self._note(0.0, dur=20_000.0), self._note(21_000.0)]
+        assert self._screen(notes)._rests == []
+
+    def test_the_outro_is_not_offered_as_a_jump(self):
+        """There is no next note to land in front of."""
+        notes = [self._note(0.0), self._note(500.0)]
+        screen = self._screen(notes, duration_pad_ms=60_000.0)
+        assert screen._rests == []
+
+    def test_the_key_lands_a_lead_in_before_the_next_note(self):
+        from pickhero.ui.scrolling import GAP_LEAD_IN_MS
+        screen = self._with_a_rest()
+        screen._playback_ms = 2_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(21_000.0 - GAP_LEAD_IN_MS)
+
+    def test_it_never_jumps_backwards(self):
+        screen = self._with_a_rest()
+        screen._playback_ms = 19_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(19_000.0)
+
+    def test_a_track_with_no_rest_says_so_rather_than_moving(self):
+        screen = self._screen([self._note(0.0), self._note(1_000.0)])
+        screen._playback_ms = 500.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(500.0)
+        assert screen._status_note_text()
+
+    def test_a_loop_outranks_the_skip(self):
+        """Jumping out of a loop would be undone on the very next frame."""
+        screen = self._with_a_rest()
+        screen._playback_ms = 2_000.0
+        screen._set_loop_start(0.0)
+        screen._set_loop_end(5_000.0)
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(2_000.0)
+        assert "Loop" in screen._status_note_text()
+
+    def test_the_hud_speaks_only_inside_the_rest(self):
+        screen = self._with_a_rest()
+        screen._playback_ms = 500.0
+        assert screen._rest_hud_text() is None
+        screen._playback_ms = 5_000.0
+        assert "E" in (screen._rest_hud_text() or "")
+
+    def test_the_hud_goes_quiet_once_the_next_note_is_near(self):
+        """Inside the lead-in there is nothing left worth skipping."""
+        screen = self._with_a_rest()
+        screen._playback_ms = 20_000.0
+        assert screen._rest_hud_text() is None
+
+    def test_the_outro_is_announced_even_though_it_cannot_be_skipped(self):
+        notes = [self._note(0.0), self._note(500.0)]
+        screen = self._screen(notes, duration_pad_ms=60_000.0)
+        screen._playback_ms = 10_000.0
+        assert "Nothing left to play" in (screen._rest_hud_text() or "")
+
+    def test_the_key_is_in_the_footer(self):
+        screen = self._with_a_rest()
+        assert any("E:" in line for line in screen._footer_lines())
+
+    def test_the_rest_list_is_built_once_per_song_and_never_in_a_frame(self):
+        """A walk over every note, so it must not run 60 times a second."""
+        pygame.init()
+        try:
+            surface = pygame.Surface((1280, 720))
+            screen = self._with_a_rest()
+            screen._playback_ms = 5_000.0
+            screen.render(surface)
+            calls = []
+            original = screen._build_rests
+            screen._build_rests = lambda: calls.append(1) or original()
+            for i in range(60):
+                screen._playback_ms = 5_000.0 + i * 16.7
+                screen.render(surface)
+            assert calls == []
+        finally:
+            pygame.quit()
+
+
+class TestAPressMustBuySomethingVisible:
+    """+/- refuse a step that changes nothing anybody can see.
+
+    Measured over the guitar tracks of the four songs to hand: while the trade
+    is live a step moves the window by 7-17 %, and the one dead step -- 0.7x
+    to 0.6x, once the head is already on its floor -- buys 1.7 %. The old
+    guard only refused a step that bought under one millisecond, so the dead
+    one stored a new number and redrew nothing.
+    """
+
+    class _MockSurface:
+        def __init__(self, w, h):
+            self._size = (w, h)
+
+        def get_size(self):
+            return self._size
+
+    def _screen(self, spacing_ms, count=200):
+        from pickhero.ui.scrolling import PlayingScreen
+        notes = [
+            NoteEvent(timestamp_ms=i * spacing_ms, duration_ms=spacing_ms * 0.8,
+                      midi_note=40, string=6, fret=12)
+            for i in range(count)
+        ]
+        screen = PlayingScreen(Timeline(notes, SongMetadata(tempo=120)),
+                               config=Config())
+        layout = screen._layout(self._MockSurface(1280, 720))
+        screen._last_layout = layout
+        screen._recompute_scroll_speed(layout)
+        return screen
+
+    def test_a_step_that_moves_the_picture_is_taken(self):
+        from pickhero.ui.scrolling import SCROLL_FACTOR_STEP
+        screen = self._screen(spacing_ms=400.0)
+        before = screen._visible_window_ms
+        screen._adjust_scroll_factor(SCROLL_FACTOR_STEP)
+        assert screen._visible_window_ms != pytest.approx(before)
+        assert screen._config.scroll_speed_factor == pytest.approx(1.1)
+
+    def test_the_dead_step_at_the_floor_is_put_back(self):
+        """0.6x -> 0.5x once the head is on its floor.
+
+        Concrete rather than a restatement of the constant: on this song the
+        head reaches 26 px at 0.6x, so the next press buys 222 ms of a 13.1 s
+        window -- 1.7 %, which is nothing anybody can see. The old guard let
+        it through because it only refused a step worth under one
+        millisecond, and the player was left with a number that had moved and
+        a picture that had not.
+        """
+        from pickhero.ui.scrolling import SCROLL_FACTOR_STEP
+        screen = self._screen(spacing_ms=400.0)
+        screen._config.scroll_speed_factor = 0.6
+        screen._recompute_scroll_speed()
+        at_floor = screen._visible_window_ms
+        assert screen._head_px == pytest.approx(26.0, abs=0.5)
+
+        screen._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
+        assert screen._config.scroll_speed_factor == pytest.approx(0.6)
+        assert screen._visible_window_ms == pytest.approx(at_floor)
+        assert screen._status_note_text()
+
+        # And the step just above it, which is worth 14 %, is still taken.
+        screen._config.scroll_speed_factor = 0.8
+        screen._recompute_scroll_speed()
+        screen._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
+        assert screen._config.scroll_speed_factor == pytest.approx(0.7)
+
+
+    def test_the_hud_names_the_direction_of_each_key(self):
+        """A player who wants the notes further apart and presses - gets the
+        opposite, and nothing on screen said which way either key goes."""
+        pygame.init()
+        try:
+            screen = self._screen(spacing_ms=300.0)
+            surface = pygame.Surface((1280, 720))
+            drawn = []
+
+            class _Watched:
+                def __init__(self, font):
+                    self._font = font
+
+                def render(self, text, *a, **k):
+                    drawn.append(text)
+                    return self._font.render(text, *a, **k)
+
+                def __getattr__(self, name):
+                    return getattr(self._font, name)
+
+            real_get_font = scrolling._get_font
+            scrolling._get_font = lambda *a, **k: _Watched(real_get_font(*a, **k))
+            try:
+                screen._playback_ms = 1000.0
+                screen.render(surface)
+            finally:
+                scrolling._get_font = real_get_font
+            line = next((d for d in drawn if d.startswith("Scroll:")), "")
+            assert "further apart" in line and "look-ahead" in line
+        finally:
+            pygame.quit()
+
+
+class TestOneShortPressIsOneStep:
+    """A burst of key repeats must move a discrete setting by one step.
+
+    Measured: `pygame.key.set_repeat(300, 40)` is one global setting for every
+    key, and 40 ms is 25 steps a second. The practice speed has ELEVEN
+    positions, so 700 ms of holding crosses the whole range from 100 % to
+    50 % -- and every repeat that arrives during a stalled frame is drained
+    together and applied in one go. The player reported exactly that: a short
+    press on PgDn showing 95 % for a moment and then 50 %.
+    """
+
+    def _screen(self):
+        from pickhero.ui.scrolling import PlayingScreen
+        notes = [NoteEvent(timestamp_ms=i * 500.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=3) for i in range(40)]
+        return PlayingScreen(
+            Timeline(notes, SongMetadata(tempo=120),
+                     measures=[MeasureInfo(index=0, start_ms=0.0,
+                                           end_ms=20_000.0)]),
+            config=Config(), song_key="s")
+
+    @staticmethod
+    def _press(screen, key):
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=key, mod=0, unicode=""))
+
+    @staticmethod
+    def _release(screen, key):
+        screen.handle_event(pygame.event.Event(pygame.KEYUP, key=key, mod=0))
+
+    def test_a_burst_drained_in_one_frame_is_one_step(self):
+        """Ten repeats arriving together, which is what a stalled frame does."""
+        screen = self._screen()
+        assert screen._tempo_factor == pytest.approx(1.0)
+        for _ in range(10):
+            self._press(screen, pygame.K_PAGEDOWN)
+        assert screen._tempo_factor == pytest.approx(0.95)
+
+    def test_the_first_press_is_never_delayed(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_PAGEDOWN)
+        assert screen._tempo_factor == pytest.approx(0.95)
+
+    def test_letting_go_makes_the_next_press_instant(self):
+        """Two deliberate presses both count, however fast they arrive."""
+        screen = self._screen()
+        self._press(screen, pygame.K_PAGEDOWN)
+        self._release(screen, pygame.K_PAGEDOWN)
+        self._press(screen, pygame.K_PAGEDOWN)
+        assert screen._tempo_factor == pytest.approx(0.90)
+
+    def test_holding_still_walks_the_setting(self):
+        """Gated, not blocked: the key has to keep working when held."""
+        from pickhero.ui.scrolling import STEP_KEY_REPEAT_S
+        screen = self._screen()
+        for i in range(4):
+            screen._step_key_at -= STEP_KEY_REPEAT_S
+            self._press(screen, pygame.K_PAGEDOWN)
+        assert screen._tempo_factor == pytest.approx(0.80)
+
+    def test_the_other_direction_is_a_different_key(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_PAGEDOWN)
+        self._press(screen, pygame.K_PAGEUP)
+        assert screen._tempo_factor == pytest.approx(1.0)
+
+    def test_the_scroll_factor_is_gated_the_same_way(self):
+        """22 positions, crossed in 1.14 s of holding. Same fault, same fix."""
+        screen = self._screen()
+        screen._last_layout = None
+        before = screen._config.scroll_speed_factor
+        for _ in range(10):
+            self._press(screen, pygame.K_MINUS)
+        moved = before - screen._config.scroll_speed_factor
+        assert moved <= 0.1 + 1e-9

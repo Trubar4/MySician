@@ -133,8 +133,15 @@ class TestLoadGPFile:
         assert tl.metadata.tempo == 120
 
     def test_demo_v5_track0(self):
+        """771, not the 729 this asserted before repeats were played.
+
+        The file opens with |: over bars 0-2 and a first/second-time ending;
+        the loader walked every bar once and silently dropped the repeat AND
+        the second ending, so bar 4 was never played at all. The old number
+        was the bug written down.
+        """
         tl = load_gp_file(FIXTURES / "Demo_v5.gp5", track_index=0)
-        assert len(tl) == 729
+        assert len(tl) == 771
         assert tl.metadata.tempo == 165
         assert tl.metadata.track_name == "Rhythm Guitar"
 
@@ -238,6 +245,53 @@ class TestTechniques:
             assert note.bend == ()
             assert not note.slide_to_next
             assert note.slide_in == 0 and note.slide_out == 0
+            assert not note.dead
+            assert not note.palm_mute
+
+
+class TestMuting:
+    """Palm mutes and dead notes come out of the file at all.
+
+    Both were being dropped: a palm mute was drawn as a note that rings for
+    its full written length, and a dead note as an ordinary note on the fret
+    the tab uses to say where the hand damps -- which the player then could
+    not hit, because damping a string produces no such pitch.
+    """
+
+    def test_a_dead_note_is_flagged_as_dead(self):
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        assert [n for n in notes if n.dead], "Effects.gp5 has a dead note"
+
+    def test_a_dead_note_is_still_an_event(self):
+        """It is played, so it has to be in the timeline to be drawn and
+        scored -- skipping it would silently drop notes from a riff."""
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        dead = [n for n in notes if n.dead][0]
+        assert dead.duration_ms > 0
+        assert 1 <= dead.string <= 6
+
+    def test_palm_mute_is_flagged(self):
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        assert [n for n in notes if n.palm_mute], "Effects.gp5 has a palm mute"
+
+    def test_palm_mute_does_not_change_the_pitch(self):
+        """The picking hand chokes the note; it does not transpose it. Scoring
+        therefore stays exactly as it is for an open note."""
+        notes = load_gp_file(FIXTURES / "Effects.gp5").notes
+        muted = [n for n in notes if n.palm_mute][0]
+        open_same_fret = [
+            n for n in notes
+            if not n.palm_mute and n.string == muted.string
+            and n.fret == muted.fret
+        ]
+        for note in open_same_fret:
+            assert note.midi_note == muted.midi_note
+
+    def test_the_two_are_independent(self):
+        """A muted riff mixes them, so neither may imply the other."""
+        notes = load_gp_file(FIXTURES / "Demo_v5.gp5").notes
+        assert [n for n in notes if n.dead and not n.palm_mute]
+        assert [n for n in notes if n.palm_mute and not n.dead]
 
 
 class TestLegato:
@@ -256,3 +310,112 @@ class TestLegato:
         for note in load_gp_file(FIXTURES / "notes.gp5").notes:
             assert not note.hammer_to_next
             assert not note.leads_into_next
+
+
+class TestRepeatsAreActuallyPlayed:
+    """A tab that lines up with a recording only because it repeats.
+
+    Demo_v5.gp5 opens with |: over bars 0-2 and a first/second-time ending,
+    which is exactly the structure that used to be dropped: the section played
+    once and the second ending never at all.
+    """
+
+    def _plan(self):
+        import guitarpro
+        from pickhero.tabs.loader import (_bar_repeat, _build_tempo_map,
+                                          repeat_order)
+        song = guitarpro.parse(str(FIXTURES / "Demo_v5.gp5"))
+        headers = list(song.measureHeaders)
+        return headers, repeat_order([_bar_repeat(h) for h in headers])
+
+    def test_the_repeated_section_is_played_twice(self):
+        headers, order = self._plan()
+        assert order[:8] == [0, 1, 2, 3, 0, 1, 2, 4]
+
+    def test_no_written_bar_is_left_unplayed(self):
+        headers, order = self._plan()
+        assert set(order) == set(range(len(headers)))
+
+    def test_the_song_is_longer_than_what_is_written(self):
+        headers, order = self._plan()
+        assert len(order) > len(headers)
+
+    def test_the_measures_are_numbered_in_playing_order(self):
+        """A repeated section is two passes on screen, so saying "bar 12"
+        twice would make the weakest-section report name a place nobody can
+        find."""
+        tl = load_gp_file(FIXTURES / "Demo_v5.gp5", track_index=0)
+        assert [m.index for m in tl.measures] == list(range(len(tl.measures)))
+        assert all(b.start_ms >= a.start_ms
+                   for a, b in zip(tl.measures, tl.measures[1:]))
+
+    def test_the_backing_track_follows_the_same_plan(self):
+        """Two walks of their own is the same drift one level down."""
+        from pickhero.tabs.loader import extract_backing_track
+        tl = load_gp_file(FIXTURES / "Demo_v5.gp5", track_index=0)
+        backing = extract_backing_track(FIXTURES / "Demo_v5.gp5",
+                                        exclude_track_indices={0})
+        last = max(e.timestamp_ms for e in backing.events)
+        assert abs(last - tl.duration_ms) < 2000.0
+
+    def test_a_file_without_repeats_is_untouched(self):
+        """The control: canon.gp5 has none, and must read exactly as before."""
+        tl = load_gp_file(FIXTURES / "canon.gp5", track_index=0)
+        assert len(tl) == 1489
+
+
+class TestTheFileIsParsedOncePerVersion:
+    """Opening a song reads it for the notes, for the MIDI backing and for
+    the guide track, and a track change does the same three again. Measured
+    on the player's own files the cost is ALL in the XML parse and none of
+    it in the unzipping -- 150 ms of a 236 ms read on a 3.9 MB document --
+    so the same bytes were parsed three times for one keypress.
+    """
+
+    def _gpif(self, tmp_path):
+        """A minimal GP7 container: a zip with a GPIF document inside."""
+        import zipfile
+        from pathlib import Path
+
+        path = Path(tmp_path) / "song.gp"
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("Content/score.gpif",
+                        "<GPIF><Score><Title>t</Title></Score></GPIF>")
+        return path
+
+    def test_a_second_read_does_not_parse_again(self, tmp_path):
+        from pickhero.tabs import loader
+
+        loader._GPIF_CACHE.clear()
+        path = self._gpif(tmp_path)
+        first = loader._gpif_root(path)
+        assert loader._gpif_root(path) is first
+
+    def test_a_file_that_CHANGED_is_read_afresh(self, tmp_path):
+        """Keyed by size and modification time, the same rule the song index
+        uses: a stale tree would be far worse than a slow one."""
+        import os
+        import zipfile
+        from pickhero.tabs import loader
+
+        loader._GPIF_CACHE.clear()
+        path = self._gpif(tmp_path)
+        first = loader._gpif_root(path)
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("Content/score.gpif",
+                        "<GPIF><Score><Title>other</Title>"
+                        "<Artist>a</Artist></Score></GPIF>")
+        os.utime(path, (0, 0))
+        second = loader._gpif_root(path)
+        assert second is not first
+        assert second.findtext("./Score/Title") == "other"
+
+    def test_it_does_not_grow_without_bound(self, tmp_path):
+        from pickhero.tabs import loader
+
+        loader._GPIF_CACHE.clear()
+        for i in range(6):
+            folder = tmp_path / str(i)
+            folder.mkdir()
+            loader._gpif_root(self._gpif(folder))
+        assert len(loader._GPIF_CACHE) <= loader._GPIF_CACHE_MAX

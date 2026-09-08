@@ -74,11 +74,22 @@ def slide(kind: str):
     }[kind])
 
 
+def palm_mute():
+    """Palm-muted, for `beat`'s note specs. The pitch is unchanged."""
+    return ("palm_mute", True)
+
+
+def dead():
+    """A dead note (X in the tab): damped by the fretting hand, no pitch."""
+    return ("dead", True)
+
+
 def beat(voice, duration_value: int, notes):
     """One beat. `notes` is a list of (string, fret); empty means a rest.
 
     A note may carry techniques as (string, fret, effect, ...), where each
-    effect comes from `bend()` or `slide()`.
+    effect comes from `bend()`, `slide()`, `legato()`, `palm_mute()` or
+    `dead()`.
     """
     b = gp.Beat(voice=voice)
     b.duration = gp.Duration(duration_value)
@@ -95,6 +106,10 @@ def beat(voice, duration_value: int, notes):
                 note.effect.bend = payload
             elif kind == "hammer":
                 note.effect.hammer = payload
+            elif kind == "palm_mute":
+                note.effect.palmMute = payload
+            elif kind == "dead":
+                note.type = gp.NoteType.dead
             else:
                 note.effect.slides.append(payload)
         b.notes.append(note)

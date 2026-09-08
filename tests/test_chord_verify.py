@@ -9,8 +9,9 @@ import numpy as np
 import pytest
 
 from pickhero.audio.chord_verify import (
-    MIN_WINDOW_MS, ChordVerifier, StringVerdict, guard_samples, min_hz_for,
-    min_window_samples, samples_needed, skip_samples, window_samples,
+    CONFIRM_MARGIN_DB, MIN_WINDOW_MS, ChordVerifier, StringVerdict,
+    guard_samples, min_hz_for, min_window_samples, samples_needed,
+    skip_samples, window_samples,
 )
 from pickhero.audio.note_utils import midi_to_freq
 
@@ -85,6 +86,31 @@ class TestWindowSizing:
     def test_guard_is_short_next_to_the_skip(self):
         # Only has to keep the next attack out, not the note after it.
         assert 0 < guard_samples(SR) < skip_samples(SR)
+
+    def test_the_floor_is_where_the_sweep_said_it_could_be(self):
+        """The floor decides how fast a chord may be played and still be
+        checked, so it must track what the reference takes actually allow.
+
+        It went stale once: fitted at 280 ms when the analysis floor was a
+        fixed 150 Hz, then left there after MIN_HZ_SECONDS made shorter
+        windows honest. tools/sweep_chord_window.py finds no false alarm from
+        190 ms up and the first at 180 ms, so 200 ms keeps two steps of
+        margin -- and anything at or above 190 would be defensible. A value
+        below that is not, and one far above it is leaving verdicts unclaimed.
+        """
+        assert 190.0 <= MIN_WINDOW_MS <= 240.0
+
+    def test_chords_an_eighth_apart_can_still_be_judged(self):
+        """The point of the floor, stated as the music it allows.
+
+        Eighth notes at 110 BPM are 273 ms apart, which is ordinary rhythm
+        playing rather than a metal tempo -- the previous floor refused
+        anything faster than about 90 BPM.
+        """
+        needed_ms = 1000.0 * (skip_samples(SR) + min_window_samples(SR)
+                              + guard_samples(SR)) / SR
+        eighth_at_110bpm = 30_000.0 / 110.0
+        assert needed_ms < eighth_at_110bpm
 
 
 class TestAnalysisFloor:
@@ -251,3 +277,50 @@ class TestGuards:
         verifier = ChordVerifier()
         verdicts = verifier.verify(window([E2, B2]), SR, [E2, B2, B2])
         assert sorted(verdicts) == [E2, B2]
+
+
+class TestAcquittingIsNotConvicting:
+    """`verify` has to CHOOSE which note a string played and must not be
+    talked into the wrong one; `confirms` only asks whether the written note
+    is there and can never convict. One threshold for both was a borrowed
+    constant, and it refused ten of fifteen rescues on the player's arpeggio
+    -- every one with the written note winning outright, beaten on the margin
+    alone by a rival one or two semitones away.
+    """
+
+    def test_the_two_margins_are_separate_knobs(self):
+        verifier = ChordVerifier(margin_db=8.0, confirm_margin_db=2.0)
+        assert verifier.margin_db == 8.0
+        assert verifier.confirm_margin_db == 2.0
+
+    def test_confirming_uses_its_own(self):
+        """The written note wins by 3 dB: enough to acquit, not enough to
+        convict a string of having played something else."""
+        verifier = ChordVerifier(margin_db=8.0, confirm_margin_db=2.0)
+        scores = {40: -10.0, 41: -13.0}
+        assert verifier._decide(40, scores, allow_intruder=False,
+                                margin_db=2.0).correct
+        assert not verifier._decide(40, scores).correct
+
+    def test_and_a_rival_that_really_wins_is_still_refused(self):
+        """It only ever acquits -- it must not acquit the wrong note."""
+        verifier = ChordVerifier(confirm_margin_db=2.0)
+        assert not verifier._decide(40, {40: -20.0, 41: -8.0},
+                                    allow_intruder=False,
+                                    margin_db=2.0).correct
+
+    def test_a_note_too_quiet_to_be_there_is_refused_whatever_the_margin(self):
+        """The presence floor is a different question from the margin, and
+        loosening one must not loosen the other."""
+        verifier = ChordVerifier(present_db=-32.0, confirm_margin_db=0.0)
+        assert not verifier._decide(40, {40: -40.0, 41: -90.0},
+                                    allow_intruder=False,
+                                    margin_db=0.0).correct
+
+    def test_the_shipped_value_sits_between_the_two_populations(self):
+        """Measured: the 54 genuine rescues on the arpeggio take have a worst
+        margin of 2.2 dB, and the single confirmation on a DAMPED control --
+        where anything confirmed is a note being invented -- sits at 1.2 dB.
+        A value outside that window either invents notes or stops rescuing.
+        """
+        assert 1.2 < CONFIRM_MARGIN_DB <= 2.2

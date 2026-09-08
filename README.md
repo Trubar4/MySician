@@ -40,7 +40,7 @@ A regular microphone also works for acoustic guitar or as a quick test, though a
 
 ## Tab Sources
 
-PickHero reads Guitar Pro files (`.gp3`, `.gp4`, `.gp5`, `.gp7`, `.gp8`). You can get tabs from:
+PickHero reads Guitar Pro files (`.gp3`, `.gp4`, `.gp5`, `.gpx`, `.gp`, `.gp7`, `.gp8`) — every generation from GP3 to GP8. You can get tabs from:
 
 - **Songsterr** — 1M+ songs, GP5 download via built-in downloader
 - **GProTab.net** — 70K+ free Guitar Pro files
@@ -63,19 +63,52 @@ PickHero reads Guitar Pro files (`.gp3`, `.gp4`, `.gp5`, `.gp7`, `.gp8`). You ca
 
 ### Option 1: Download (no Python needed)
 
-Every push to this repo builds `MySician.exe` automatically via GitHub Actions.
+Every push builds `MySician.exe` via GitHub Actions, on every working branch.
 Go to [Actions](https://github.com/Trubar4/MySician/actions), open the newest
 green run, and download the **MySician** artifact (a ZIP containing the exe).
 
+This is the whole answer on a machine without a C++ compiler: `aubio` has
+shipped no wheel since 2019, so installing from source needs MSVC, while the
+build runner already has it. Put a `songs` folder next to the exe and run it.
+(The `tools/` scripts still need a local Python — but only
+`record_reference.py` matters day to day, and that one deliberately needs
+nothing but `sounddevice` and `numpy`, both of which install as wheels.)
+
 ### Option 2: Local development on Windows
 
-One-time setup:
+**The short version — a fresh machine, in one command:**
+
+```powershell
+git clone https://github.com/Trubar4/MySician.git
+cd MySician
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+`setup.ps1` finds a usable Python, builds the `.venv`, installs everything,
+and then checks that each module really imports rather than trusting pip's
+exit code. It names the one step that failed if one does. The `.venv` is not
+in the repository and never can be — it holds binaries built for one
+machine's Python — so a fresh clone has the code and nothing to run it with,
+and that is what this script is for.
+
+Note `git clone`, not `git pull <branch>`: `pull` expects a *remote* name, so
+a branch name there fails with "does not appear to be a git repository". To
+move an existing clone onto a branch: `git fetch origin` then
+`git switch <branch>`.
+
+**The long version**, if you would rather do it by hand or the script stops
+on something:
 
 1. **Python 3.12** from [python.org](https://www.python.org/downloads/) —
-   check *"Add python.exe to PATH"* in the installer. (3.10–3.12 work;
-   3.13+ does not — `aubio` and `pygame` have no wheels there and fail to
-   build. If another Python is also installed, create the venv explicitly
-   with `py -3.12 -m venv .venv`.)
+   check *"Add python.exe to PATH"* in the installer. 3.10–3.12 work and
+   3.13+ does not, and the reason is worth knowing so nobody spends an hour
+   on it: `aubio` has shipped **no wheel at all** since 0.4.9 in 2019, so it
+   is compiled from source on every Python — but it is written against the
+   numpy 1.x C API, and the last numpy 1.x (1.26.4) has no build for 3.13.
+   On 3.13 the compile would need numpy built from source too.
+   A newer Python can stay installed alongside; Windows handles several at
+   once and `setup.ps1` picks the right one through the `py` launcher. By
+   hand: `py -3.12 -m venv .venv`.
 2. **Microsoft C++ compiler** — needed because `aubio` compiles from source:
    - If you have Visual Studio installed: open *Visual Studio Installer* →
      *Modify* → check the workload **"Desktop development with C++"**
@@ -125,6 +158,7 @@ MySician/
 │   │   ├── detector.py      # aubio pitch + onset detection
 │   │   ├── chord_verify.py  # per-string chord checking (score-informed)
 │   │   ├── midi_playback.py # MIDI backing track playback
+│   │   ├── mp3_playback.py  # a recording as a backing track, kept in sync
 │   │   └── note_utils.py    # frequency → note/string/fret mapping
 │   ├── tabs/
 │   │   ├── loader.py        # pyguitarpro file reader, incl. bends and slides
@@ -161,7 +195,8 @@ Every key is also listed in the app's own footer, and explained under **H**.
 | `HOME` | restart |
 | `PgDn` `PgUp` | tempo down / up |
 | `A` | audio input on / off |
-| `B` | backing track on / off |
+| `B` | backing track on / off (the other instruments) |
+| `Shift+B` | hear your own part on / off |
 | `W` | wait mode — holds until you play the right note |
 | `I` `O` | set loop start / end |
 | `P` | loop on / off |
@@ -170,6 +205,10 @@ Every key is also listed in the app's own footer, and explained under **H**.
 | `G` | hit window (timing slack) |
 | `K` | auto-sync timing · `Shift+K` reset · `,` `.` nudge ±10 ms |
 | `N` `M` | backing track earlier / later (stored per song) |
+| `U` | recorded backing track on / off · `Shift+U` pick the file |
+| `Shift+N` `Shift+M` | shift the recording ±10 ms · `Ctrl` ±1 s · `Ctrl+Shift` ±10 s (up to 8 min) |
+| `Alt+N` `Alt+M` | shift the MIDI backing ±1 s (plain `N` `M` = ±10 ms, up to 10 s) |
+| `D` | save a run log (what every strike did) — works mid-song |
 | `X` `C` | noise gate down / up |
 | `Y` | timing report · `Shift+Y` save the measurements as CSV |
 | `TAB` | choose track |
@@ -177,6 +216,61 @@ Every key is also listed in the app's own footer, and explained under **H**.
 | `J` | per-string chord check on / off |
 | `F` | fret limit · `F1`–`F6` mute a string |
 | `T` | theme · `H` help · `ESC` song list |
+
+On the song list: `F` or `/` searches, `M` stars a song and `Shift+M` shows only the starred ones, `TAB` filters by tuning, `F5` reloads the list after copying a file in, `O` opens the settings screen — everything that is set once (device, noise gate, hit window, fret limit, muted strings, chord scoring, backing tracks, theme), with anything away from its standard value marked.
+
+## Practice diary
+
+Every sitting is appended to `~/.pickhero/practice_log.jsonl` — one line of JSON with the date, the song, the real minutes played, the notes you struck and, if the run was scored, the accuracy. Nothing in the app draws it; `tools/practice_report.py` adds it up:
+
+```bash
+python tools/practice_report.py              # the last 14 days
+python tools/practice_report.py --by month
+python tools/practice_report.py --by song
+python tools/practice_report.py --csv > practice.csv
+```
+
+And `tools/make_dashboard.py` turns the same file into a page:
+
+```bash
+python tools/make_dashboard.py --open        # writes ~/.pickhero/dashboard.html
+```
+
+One self-contained HTML file — practice calendar, minutes per month, minutes
+per song, the scored runs, and the last sittings. No CDN, no build step, no
+server: re-run it after practising and it is up to date.
+
+Practised on a second computer? Copy its `~/.pickhero` folder over and merge:
+
+```bash
+python tools/merge_stats.py --from D:/pickhero-vom-notebook --dry-run
+python tools/merge_stats.py --from D:/pickhero-vom-notebook
+```
+
+Sittings are merged by when they started and which song, so running it twice
+changes nothing the second time. Backups are left as `.bak`.
+
+It also brings the **per-song settings** across — practice speed, backing
+track, both offsets and the favourites — and deliberately leaves the audio
+device, the calibration and the latency offset alone: those describe an
+interface and a sound card, not a player. Anything the receiving machine
+already has wins.
+
+
+## Seven-string tabs
+
+The app plays six strings. A seven-string tab usually fits anyway, because a
+seven-string in B standard and a six-string in drop B share their lowest note:
+
+```bash
+python tools/retune.py "song.gp5" --dry-run
+python tools/retune.py "song.gp5"            # writes "song (drop-b).gp5"
+python tools/retune.py "song.gp5" --tuning drop-a
+```
+
+Every note keeps its exact pitch — only the string and fret change. Notes above
+the 24th fret of the new tuning are dropped and named; the tool compares the
+pitches before and after and fails rather than hand over a transposed tab.
 
 ## Reading the display
 

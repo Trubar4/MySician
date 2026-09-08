@@ -5,6 +5,7 @@ shared mode. AudioCapture must fall back to a rate/channel combination the
 device actually accepts, and keep the detector's sample rate in sync.
 """
 
+import numpy as np
 import pytest
 
 import pickhero.audio.input as input_mod
@@ -91,3 +92,97 @@ def test_query_devices_failure_still_resolves(monkeypatch):
     monkeypatch.setattr(input_mod.sd, "check_input_settings", fake_check_input_settings)
 
     assert capture._resolve_input_settings() == (48000, 1)
+
+
+class TestOverflowedBuffersAreStillUsed:
+    """A dropped buffer used to stop the clock, not just lose the audio.
+
+    Every strike is stamped from the ring's sample counter. Returning early
+    left that counter where it was, so each discarded buffer shifted the rest
+    of the song 10.7 ms early and the error accumulated. On a real take, 2 %
+    of buffers dropped that way took detection from 42 of 46 strikes to 17;
+    the same drops with the counter still advancing cost two.
+    """
+
+    def _capture(self):
+        from pickhero.audio.input import AudioCapture, _AudioRing, RING_SECONDS
+        from pickhero.config import Config
+        cap = AudioCapture(Config())
+        cap._sample_rate = 48000
+        cap.detector.sample_rate = 48000
+        cap._ring = _AudioRing(int(48000 * RING_SECONDS))
+        return cap
+
+    def _block(self, n=512):
+        return np.zeros((n, 1), dtype=np.float32)
+
+    def test_an_overflowed_buffer_still_advances_the_clock(self):
+        cap = self._capture()
+        cap._audio_callback(self._block(), 512, None, "input overflow")
+        assert cap._ring.written == 512
+
+    def test_the_clock_agrees_whether_or_not_there_was_an_overflow(self):
+        clean, flagged = self._capture(), self._capture()
+        for _ in range(10):
+            clean._audio_callback(self._block(), 512, None, None)
+            flagged._audio_callback(self._block(), 512, None, "input overflow")
+        assert clean._ring.written == flagged._ring.written
+
+    def test_overflows_are_counted_so_they_can_be_shown(self):
+        cap = self._capture()
+        cap._audio_callback(self._block(), 512, None, None)
+        assert cap.dropped_buffers == 0
+        cap._audio_callback(self._block(), 512, None, "input overflow")
+        cap._audio_callback(self._block(), 512, None, "input overflow")
+        assert cap.dropped_buffers == 2
+
+
+class TestADropoutWhileMeasuringIsNotADropoutWhilePlaying:
+    """A background measurement is seconds of FFT on a worker thread and can
+    starve the audio callback -- but it does not use the microphone, and the
+    player is not meant to be playing during it. Counting those together
+    with the ones that lose notes makes a harmless number and a serious one
+    look identical.
+    """
+
+    def _capture(self):
+        import numpy as np
+        from pickhero.audio.input import RING_SECONDS, AudioCapture, _AudioRing
+        from pickhero.config import Config
+
+        capture = AudioCapture(Config())
+        capture._sample_rate = 48000
+        capture.detector.sample_rate = 48000
+        capture.detector.reset()
+        capture._onset_collector.reset()
+        capture._ring = _AudioRing(int(48000 * RING_SECONDS))
+        return capture, np.zeros((512, 1), dtype=np.float32)
+
+    def test_a_quiet_run_counts_neither(self):
+        capture, block = self._capture()
+        capture._audio_callback(block, 512, None, None)
+        assert capture.dropped_buffers == 0
+        assert capture.dropped_while_busy == 0
+
+    def test_an_overflow_while_playing_counts_only_once(self):
+        capture, block = self._capture()
+        capture._audio_callback(block, 512, None, "overflow")
+        assert capture.dropped_buffers == 1
+        assert capture.dropped_while_busy == 0
+
+    def test_and_one_while_measuring_counts_in_both(self):
+        capture, block = self._capture()
+        capture.busy = True
+        capture._audio_callback(block, 512, None, "overflow")
+        assert capture.dropped_buffers == 1
+        assert capture.dropped_while_busy == 1
+
+    def test_the_clock_still_advances_through_a_dropout(self):
+        """The oldest lesson here: a status flag says samples were lost
+        BEFORE the callback, so the buffer in hand is good and the sample
+        counter must not stand still."""
+        capture, block = self._capture()
+        capture.busy = True
+        before = capture._ring.written
+        capture._audio_callback(block, 512, None, "overflow")
+        assert capture._ring.written == before + 512

@@ -252,3 +252,65 @@ class TestMidiPlayerSurvivesABadDevice:
         player.close()
         assert mp._SHARED_OUTPUT is live
         mp._SHARED_OUTPUT = None
+
+
+class TestSeekingDoesNotWalkTheWholeSong:
+    """A seek re-sends the instrument assignments, and it did that by copying
+    every event up to that point and scanning it -- 0.87 ms three minutes into
+    a full arrangement, per player, and a held arrow key is 25 seeks a
+    second."""
+
+    def _big(self):
+        from pickhero.audio.midi_playback import PROGRAM_CHANGE
+        events = [MidiEvent(timestamp_ms=0.0, channel=c,
+                            event_type=PROGRAM_CHANGE, data1=30)
+                  for c in range(6)]
+        t = 0.0
+        for _ in range(3000):
+            for ch in range(6):
+                events.append(MidiEvent(timestamp_ms=t, channel=ch,
+                                        event_type=0x90, data1=40 + ch, data2=90))
+            t += 111.0
+        return BackingTrack(events)
+
+    def test_it_costs_the_same_at_the_end_as_at_the_start(self):
+        import time
+        track = self._big()
+        def cost(at):
+            best = 1e9
+            for _ in range(5):
+                start = time.perf_counter()
+                for _ in range(200):
+                    track.get_program_changes_before(at)
+                best = min(best, time.perf_counter() - start)
+            return best
+        assert cost(300_000.0) < cost(5_000.0) * 3
+
+    def test_it_still_returns_the_latest_per_channel(self):
+        from pickhero.audio.midi_playback import PROGRAM_CHANGE
+        track = BackingTrack([
+            MidiEvent(timestamp_ms=0.0, channel=0, event_type=PROGRAM_CHANGE,
+                      data1=30),
+            MidiEvent(timestamp_ms=1000.0, channel=0,
+                      event_type=PROGRAM_CHANGE, data1=48),
+            MidiEvent(timestamp_ms=5000.0, channel=0,
+                      event_type=PROGRAM_CHANGE, data1=60),
+        ])
+        got = track.get_program_changes_before(2000.0)
+        assert [e.data1 for e in got] == [48]
+
+    def test_one_per_channel(self):
+        from pickhero.audio.midi_playback import PROGRAM_CHANGE
+        track = BackingTrack([
+            MidiEvent(timestamp_ms=0.0, channel=c, event_type=PROGRAM_CHANGE,
+                      data1=30 + c) for c in range(4)])
+        assert len(track.get_program_changes_before(1000.0)) == 4
+
+    def test_seeking_to_the_very_start_still_sends_them(self):
+        """They sit at t=0, and excluding them left every backing track
+        playing on whatever the synth happened to have on that channel."""
+        from pickhero.audio.midi_playback import PROGRAM_CHANGE
+        track = BackingTrack([MidiEvent(timestamp_ms=0.0, channel=0,
+                                        event_type=PROGRAM_CHANGE, data1=30)])
+        assert len(track.get_program_changes_before(0.0)) == 1
+        assert len(track.get_program_changes_before(-2000.0)) == 1

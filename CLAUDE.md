@@ -59,6 +59,21 @@ onset_detector.set_threshold(0.3)  # adjust based on testing
   rebuilt at the resolved rate
 - Noise gate: ignore buffers below configurable dB level
 
+## Which Input Of The Interface The Guitar Is In
+
+`_audio_callback` was written to downmix every channel "so the guitar is picked up no matter which interface input (1 or 2) it is plugged
+into" — and `_resolve_input_settings` asked for **mono first, then stereo**, which takes that chance away: Windows then hands over input 1
+alone and a guitar in input 2 arrives as silence. A stream that opens, a meter that reads nothing, and no error anywhere to say why. The two
+halves of the file contradicted each other and the resolver won.
+
+- **Stereo is probed first now**, falling back to mono for a device that really has one input.
+- **The channel is chosen, not averaged.** The mean would halve a guitar sitting in one input — 6 dB given away, where the pitch starts
+  rotting below −38 dB and collapses under −44, so a quiet take gets blamed on the player or the detector. The channel with the most energy
+  wins, held across buffers by an EMA so a rest cannot make it flap.
+- **The run log names the input** (`input_device`: name, index, channels of how many, resolved rate). A log reporting a silent stream without
+  saying WHICH device was silent cannot tell a wrong device from a blocked one — and on a machine listing the same interface under MME,
+  DirectSound and WASAPI, that is the whole question.
+
 ## Chord Verification
 
 Monophonic pitch detection cannot say which string of a chord was mis-fretted, so `audio/chord_verify.py` answers that separately, using the
@@ -72,13 +87,608 @@ tab as a prior. For each expected note it scores competing pitch hypotheses on t
   `AudioCapture` keeps a ring buffer and emits one `StrikeWindow` per strike; the matcher applies verdicts in `process_strike_windows`.
 - **The window ends at the next strike.** A window running into the following chord contains pitches the tab never expected there, and convicts
   strings that were played right — that is what made fast chord changes light up red. `_limit_pending_windows` trims to the gap actually
-  available; under `MIN_WINDOW_MS` (280 ms, so chords closer than ~335 ms) the strike is dropped and gets no verdict at all. Two things keep a
-  trimmed window honest: the analysis floor rises with `MIN_HZ_SECONDS / T`, since a short window cannot separate a semitone low down; and the
-  intruder tier — the one that convicts a string whose expected note is masked — is allowed only at the full length, having been fitted there.
+  available; under `MIN_WINDOW_MS` (200 ms, so chords closer than ~255 ms — eighths past about 118 BPM) the strike is dropped and gets no
+  verdict at all. Two things keep a trimmed window honest: the analysis floor rises with `MIN_HZ_SECONDS / T`, since a short window cannot
+  separate a semitone low down; and the intruder tier — the one that convicts a string whose expected note is masked — is allowed only at the
+  full length, having been fitted there.
+- **`MIN_WINDOW_MS` was stale for a whole cycle, and the sweep is what hid it.** It was fitted at 280 ms back when the analysis floor was a
+  fixed 150 Hz. `MIN_HZ_SECONDS` then made shorter windows honest, but nobody lowered the constant — and `sweep_chord_window.py` could not
+  report the winnings because it gated on the very value it was meant to test, printing "below floor" with nothing judged. The sweep now lifts
+  the floor for the duration of its run and reaches well below it. Re-measured: no false alarm anywhere from 190 ms up, the first at 180 ms.
+  **Any constant a tool is supposed to question must not also gate that tool.**
 - **Thresholds are calibrated, not guessed** — see `tools/analyze_reference.py`, `tools/sweep_chord_window.py` and `reference_recordings/`.
   Re-fit them with real takes rather than tuning by feel; `tools/record_reference.py` records a labelled set including deliberately wrong takes,
   which the calibration needs. Current state on that set: 33 strings judged, 0 false alarms, 7/7 deliberate one-fret errors caught at the full
-  window, and 0 false alarms at every window length down to 280 ms.
+  window, and 0 false alarms at every window length down to 190 ms.
+
+## Chords That Produce No Pitch
+
+A strummed chord regularly gives monophonic YIN no single period to lock onto, so a correctly played strum arrives carrying no pitch at
+all. Measured over `reference_recordings/`: strikes with no confident pitch run at **16-20 % on one or two strings** and **38-55 % from four
+strings up** — an open A minor produced none in five strikes. Scored on pitch alone those strums are red however well they were fretted,
+which is the "chords are not recognised" the player reports. It is not a speed problem: a fast single-note riff detects 47 of 49 and fast
+power chords 38 of 39.
+
+- **An unpitched strike credits a written chord of `MIN_UNPITCHED_CHORD_STRINGS` (2) strings or more.** It was 3 for one cycle, on the
+  argument that a pitchless strike is rare below three strings and crediting it would be leniency bought with nothing. The rate was right and
+  the conclusion was wrong: a two-string power chord goes pitchless on **16-20 %** of strikes, which is one in five of every chord in a metal
+  song, and the question was never the rate but whether a wrong finger still shows. Re-measured through the real path
+  (`tools/check_chord_credit.py`, power-chord takes now part of it): correct E5 **8/10 → 10/10**, G5 8/10 → 10/10, palm-muted E5
+  **16/20 → 20/20**, fast E5 76/78 → 78/78 — and every deliberate one-fret error still caught, the palm-muted wrong take convicting **more**
+  strings (6 → 10), not fewer. A single written note stays uncredited: a lone note with no pitch is what a dead note is for, and that path
+  already exists.
+- **The fifth of a power chord can never be confirmed, and that is not the same as never being checked.** Its partials are a subset of the
+  root's, so a correctly played fifth is unprovable — but a fifth on the wrong fret sounds a different pitch, whose own partials convict it
+  normally. That is why crediting a two-string shape is safe, and it is what the four error takes in `check_chord_credit.py` hold in place.
+- **This credits the strum, not the fretting.** The strike still goes to `chord_verify.py`, which reads the raw audio and convicts any string
+  it can positively show wrong. That is what makes crediting safe, and it is the same presumption of innocence run one level up: the strum
+  is assumed played until a partial says otherwise.
+- **Verified end to end on the reference takes** by `tools/check_chord_credit.py` — real audio through `AudioCapture`, scored by the matcher,
+  verdicts applied by the verifier. Correct chords go from 54 % credited to 100 %, while all three deliberate one-fret errors are still
+  caught (3, 9 and 6 string verdicts) and a chord with a string left out still passes. Re-run it after touching either the credit or the
+  verifier's thresholds; it exits non-zero when a correct take loses a string or an error slips through.
+- For an error take the tab must be the CORRECT shape: the manifest records what was **played**, so telling the verifier to expect the wrong
+  note asks it whether the error is the error it was given, and it rightly says no.
+
+## A Dropped Buffer Used To Stop The Clock
+
+Every strike is stamped from the ring buffer's sample counter, which is what keeps timestamps free of wall-clock jitter. `_audio_callback`
+used to `return` on any sounddevice status flag — so an overflowed buffer was discarded AND the counter stayed where it was. From then on
+every strike in the song was stamped 10.7 ms early per dropped buffer, and the error accumulated until nothing matched.
+
+Measured on a real play-along take (`reference_recordings/20260818_205930`), scored against the tab:
+
+| condition | strikes heard correctly |
+|---|---|
+| nothing dropped | 42 / 46 |
+| 2 % dropped, counter frozen (the bug) | 17 / 46 |
+| 2 % dropped, counter still advancing | 40 / 46 |
+
+**The lost audio was never the problem; the stopped clock was.** A status flag means samples were lost BEFORE the callback, so the buffer in
+hand is still good and is now processed like any other. Overflows are counted and shown in the HUD, because a machine that drops audio loses
+notes at random — indistinguishable, without a number on screen, from bad detection or bad playing.
+
+This is also the warning the "detection is the problem" chapter below needs: the player's app scored 24 % on a take whose audio the detector
+reads at 91 %. Everything measured from inside the app is measured through this.
+
+## The Two Clocks, And The Speed Between Them
+
+A strike is stamped in **recorded time** (the sample counter, real speed). The song runs in **song time**, which at 80 % practice speed
+advances at 0.8 of it. `song = recorded x tempo` is only a position when both are counted from the same instant, so anything that changes
+`tempo`, or restarts the stream, has to move that instant: `_reanchor_audio_clock()` sets the anchor to now and rewrites
+`matcher.audio_offset_ms` to `anchor_song - anchor_recorded x tempo + sync`. Without it, pressing PgDn mid-song displaces every later strike
+by `elapsed x change` — growing for the rest of the song, and not something `K` can take back. Strikes already queued at the moment of the
+change were stamped under the old speed and are dropped rather than read under the new one.
+
+**The latency compensation is a real-world delay and has to be scaled too.** `audio_latency_offset_ms` is the sound card's buffer plus
+aubio's analysis window — a fixed number of SAMPLES, indifferent to the practice speed. It was added to the song-time equation unscaled, so
+at 70 % it over-corrected by 30 % of itself. Measured on the player's own 70 % run with a −220 ms offset: every strike landed **114 ms before
+its note**, 66 of that this bug — a third of the 200 ms hit window, spent before they had played anything; scaled it comes back to −48 ms. At
+50 % it would be 110 ms, over half the window. Slowing a song down is what you do when a passage is too hard, and it was quietly making the
+scoring harder. `_sync_offset_song_ms()` is now the only reader; `K` measures in song time and therefore divides before storing, so an offset
+calibrated at one speed still holds at every other.
+
+`AudioCapture.start()` builds a **new** stream and a new ring every time. Called on a capture that is already running — which is what the
+signal meter before the count-in does — the old stream is never closed and keeps writing into the same ring, so the counter advances at twice
+real time. `_start_audio()` therefore always stops first.
+
+**This is also why a diagnostic has to be told the practice speed.** A take played at 80 % is stretched against the written tab; read at
+100 %, the first bar lines up and everything after it walks away. The player's own take read 22 % that way and **96 %** at the speed it was
+played. `record_reference.py` now writes `tempo_percent` into the manifest (straight from the app's settings) and `analyze_play_along.py`
+measures it when the manifest does not say.
+
+## Seeking Must Not Reopen The Input Device
+
+`seek()` and the loop restart used to close the sounddevice stream and open a new one, to give the matcher a fresh audio offset. On Windows
+that is a real device open: the player reported the app freezing for about **ten seconds** after every arrow key, and a loop turn does the
+same thing every few seconds. The offset was the only reason for it, and `_reanchor_audio_clock()` produces exactly that offset without
+touching the hardware — see "The Two Clocks" above. Nothing else in a seek needs the stream restarted.
+
+## When The Score Is Low, Say Which Half Is Low
+
+A percentage cannot be debugged. The player's take scored **34.6 % in the app** and **97.4 %** through the identical detector and matcher run
+over the recording offline — same audio, same song file, same hit window. Nothing on screen could say which of the two dozen steps in between
+lost the notes, and the session before it was spent guessing at the wrong one.
+
+Two things now answer that without another guess:
+
+- **The completion screen names strikes heard next to notes credited** (`_heard_line`). Far fewer strikes than notes is the microphone path;
+  as many strikes as notes with a low score is the matching. They are fixed in different places.
+- **`D` writes a full run log** to `~/.pickhero/` (and every scored run writes one by itself). One line per strike — raw stamp, adjusted
+  stamp, playback position, pitch, confidence, what became of it — plus every written note's final verdict, plus the header that explains a
+  run: resolved sample rate, dropped buffers, gate, thresholds, tempo, offsets, filters. `matcher.strike_trace` is written only and never
+  read back by the matcher.
+- **It works from half a run, and says that it is half a run.** `D` is pressed at any moment and mostly will be: a song abandoned a third of
+  the way in leaves two thirds of its notes PENDING, and hits over `notes_written` then reads as a catastrophe. So the header carries
+  `notes_reached`, `notes_not_reached`, `reached_ms`, `played_to_the_end` and the loop, and the HUD says "up to 40 s". Same lesson as the
+  stated practice speed: a number is only readable next to what it is a number of.
+
+## What A Run Log Answered, First Time Out
+
+The instrument paid for itself on the first run: **91.9 % (57/62)**, against 34.6 % on the run before it, with the log naming everything
+that was previously a guess — gate -65 dB, 0 dropped buffers, 44100 Hz resolved, no fret filter, no muted string, 0 strings taken back by
+the verifier, the clock anchored at 5.4 ms. Every candidate on the list was cleared by reading, not by trying things.
+
+What it could NOT say is which change did it, because two things moved at once: the fixes, and the player regenerating the timing test
+(their copy was the older 78-note build). The one difference nobody had considered is that the 34.6 % run had `record_reference.py`
+capturing from the same interface at the same time.
+
+**Measured since, and the recorder is innocent.** Two runs of the same song four minutes apart, one of them with `record_reference.py
+--play-along` capturing from the same interface: the recorded run scored **98.4 %** (61/62) and the unrecorded control **88.7 %** (55/62,
+six strings read a semitone flat in the eighth-note chords). Both logs show `dropped_buffers 0` and the same input level, so the second
+stream costs neither audio nor clock. The 34.6 % run had a different cause, and the offline replay of that take reading 97.4 % says the
+audio was never the problem.
+
+The five notes still lost were all named by the log rather than inferred: a two-string power chord that arrived pitchless (fixed, see the
+chord credit above) and two one-semitone misreads.
+
+## The Rushing That Was Not There
+
+Worth keeping as a warning about the reading, not about the playing.
+
+A run scoring 91.9 % exported samples whose error **ramped** inside every fast passage — 0.8 % on quarters, 4.2 % on eighths, 9.2 % on the
+eighth-note chords — resetting at each phrase. That is not a clock (a clock accumulates and never jumps back) and not scatter (it has a
+direction), so it was written up as the player rushing, which is the oldest fault in the book and fits the shape exactly.
+
+The next clean run, at 98.4 % with the input level fixed, shows **0.1 % over the same fifteen seconds**. Same player, same song, same
+week.
+
+So the ramp was almost certainly an artifact of unreliable pitches: when a strike is read as the wrong note it is attributed to whichever
+neighbour it fits, and in a passage of repeating pitches the attribution slides along with it, which draws a ramp out of nothing. **A
+timing sample is only worth as much as the pitch that anchored it** — so read `level_loudest_db` and the strikes-heard-vs-landed line in
+the run log BEFORE believing anything the timing report says about playing. Whether the player rushes at all is currently unknown, and
+the honest answer to give them is that it has not been measured.
+
+## A Weak Input Does Not Lose Notes, It Renames Them
+
+The obvious failure mode for a quiet signal is that strikes stop arriving. That is not what happens, and expecting it sends every
+diagnosis the wrong way. Measured by attenuating the player's own play-along take in steps and reading it back through the real
+detector — same audio, same code, only the gain changed:
+
+| loudest hop (the number the HUD shows) | strikes produced | heard with the right pitch |
+|---|---|---|
+| -20 dB | 60 | 96 % |
+| -32 dB | 56 | 96 % |
+| -38 dB | 59 | 91 % |
+| -44 dB | 58 | 83 % |
+| -50 dB | 34 | 52 % |
+| -56 dB | 5 | 9 % |
+
+**The strike count barely moves until the very bottom; the pitch rots long before.** So a low-scoring run with plenty of strikes heard
+is exactly what a weak input looks like — and also exactly what bad playing looks like, which is why the level is now written into the
+run log (`level_loudest_db`, `level_median_playing_db`, `level_under_gate_percent`) rather than left to be guessed at. The knee is
+around -38 dB and the collapse below -44, which is where `QUIET_PEAK_DB` comes from.
+
+The HUD advice is bounded by the same measurement, and is **silent while the song is not running**: the peak decays once the playing
+stops, so the completion screen used to report a level fault that was not there.
+
+**Confirmed on the instrument.** The run before had 56 strikes heard and only 25 landing on a written note — the exact signature above,
+strikes arriving with the wrong pitch. With the input turned up (`level_loudest_db` -10.2, median while playing -23.1) the same player,
+same song, same code: **98.4 %, 61 of 62**, 45 timing samples, nothing ambiguous. The level was the whole of it.
+
+## Neither Too Loud Nor Too Quiet, And Useless
+
+The first run log the player ever produced from the EXE scored **7 of 127 notes reached**, and every number in it was noise except one line:
+
+```
+input_device   Mikrofonarray (2- Intel® Smart  — index default, 2 of 2 channel(s) at 44100 Hz
+```
+
+The laptop's built-in microphone array, picked up as Windows' DEFAULT recording device because no device had been chosen. The guitar was never in the signal path at all.
+
+| | |
+|---|---|
+| room | **-37.3 dB** |
+| median while playing | **-37.2 dB** |
+| strikes in 59 s | 25 |
+| **strikes carrying no pitch** | **24 of 25** |
+| notes heard as themselves | 2 |
+
+**A tenth of a decibel between the room and the playing.** The input sounded the same whether the guitar was played or not, which is the whole diagnosis in one comparison — and the app said nothing, because `_level_advice` had a rule for too loud (`peak >= CLIPPING_DB`) and one for too quiet (`peak < QUIET_PEAK_DB`) and the peak was **-9.2 dB**, comfortably between them. A room mic in a room with speakers in it produces loud peaks; that is not the same as hearing an instrument.
+
+- **The threshold is the gate ceiling, not a number of its own.** A room needing `room + NOISE_MARGIN_DB` above `MAX_GATE_DB` is a room the detector cannot be protected from, whatever the player presses. That is a state, and it now has a sentence: *"Input is hearing the room, not the guitar — wrong device? Pick your interface with D in the song list."*
+- **It outranks the automatic gate.** With the automatic on, `_level_advice` deliberately says nothing about the gate — but this is not about the gate, and there is no key on that screen which fixes it.
+- **It never fires on the reference takes.** The four takes the automatic gate was fitted against measure rooms of about **-70 to -86 dB** — more than 13 dB of margin — and the empty-band case the gate advice already handles (a hot compressed signal, floor -26 dB) is a different quantity: the live floor BETWEEN strikes, not the room measured while the song is stopped.
+- **The run log carries the verdict, not two numbers eight lines apart** (`input_hears_the_room`). The same rule as strikes-heard beside notes-credited.
+
+**And the rest of that log was clean, which is the second half of the lesson.** `frames_over_budget_percent 0`, `mp3_worst_drift_ms 53`, `mp3_resyncs 0`, and the audio clock's 178-second leap between two strikes was a pause handled exactly as designed — the sample counter runs while the device stays open, and `_reanchor_audio_clock` put the offset back (the raw-to-adjusted offset is constant to 0.1 ms within each block either side of it). None of the app-side suspects for the picture/sound drift appear in it. **A wrong input device makes every other number in a run log unreadable**, so it has to be the first thing checked and the first thing the app is able to say.
+
+## The Advice Was Telling Them To Press Two Keys That Undo Each Other
+
+"It always shows me C and then X again. I am playing too quietly and too loudly." Both halves of that were true, and neither was about the
+playing. `_level_advice` had two rules naming opposite keys — "barely above the gate, press X" (X lowers the gate 5 dB) and "background noise
+reaches the gate, press C" (C raises it) — and a gate satisfying both needs `peak - floor >= QUIET_MARGIN_DB + NOISE_MARGIN_DB`, **18 dB**.
+The tracked peak decays 3 dB/s and the floor recovers upward at the same rate, so between strikes a distorted rock signal is well inside 18 dB
+and **no gate value exists**. Simulated over the player's own numbers: `X C X C X C…`, for ever.
+
+C had no bound and the ceiling was **-20 dB**, so following the advice ratcheted the gate to the top in eight presses. What that cost, measured
+on their run of a real song (1384 notes, 549 picks):
+
+| | |
+|---|---|
+| audio discarded by the gate | **40 %** (8 % at -30 dB) |
+| loudest hop / median while playing | -3.8 dB / -18.4 dB — the gate sat **1.6 dB under the median** |
+| picks that produced a strike at all | 377 of 549 |
+| **single-note picks heard** | **153 / 282 — 54 %** |
+| **chord picks heard** | **224 / 267 — 84 %** |
+| notes credited | 831 / 1384 — 60 % |
+
+**The gate was set for the loudest thing in the song and it deleted the quietest.** Section by section the hit rate simply follows how many
+strikes arrived: the clean single-note verses ran 0.39-0.56 strikes per pick and scored 11-30 %, the distorted chorus 0.78-1.07 and scored
+55-89 %. A six-string strum survives a gate that a single clean note cannot reach, which is why the score looked like "chords work, solos do
+not" and had nothing to do with either.
+
+- **The gate has a band, and the band can be empty.** `gate_band()` returns above-the-room and below-the-playing, and `lowest > highest` is a
+  real state — a hot, compressed signal has less than 18 dB to put a gate in. It has to be a state the advice can EXPRESS; being unable to say
+  it is what made the panel ask for both keys.
+- **When no gate satisfies both, the notes win.** A gate under the room costs spurious onsets, which the confidence filter and the candidate
+  search already throw away. A gate over the playing costs the strikes themselves, and a strike that never arrives cannot be recovered by
+  anything downstream. So X fires while the gate is above the band and C only while a real band exists to raise it INTO.
+- **The property is asserted, not the wording.** Press whatever key the advice names, from any gate, over a grid of levels: it always stops,
+  and never reverses direction. That is the thing that was broken; the sentence was only how it showed.
+- **The ceiling is where the DETECTOR gives up** (`MAX_GATE_DB`, -50 dB). At a -44 dB loudest hop the pitch still comes back right 83 % of the
+  time — see the table above — so there is nothing to be won by gating away audio that could still have been read. One clamp, in
+  `set_noise_gate_db`, so the keys, the settings screen and a saved file all land in the same range; a stored gate above the ceiling is
+  repaired on load, because it was only reachable through the bug.
+- **The advice names the value to reach**, not just the key. `suggested_gate_db` puts it on the 5 dB grid the keys move in, and the run log
+  prints the same number next to `level_under_gate_percent` — a percentage of discarded audio is only readable beside the value that would
+  not have discarded it.
+
+## The Gate Sets Itself, And Only Ever Downwards
+
+"Can we build it so the gate adjusts itself?" Yes — but the measurement changed what it should adjust TO. Swept over the four real play-along
+takes (`tools/sweep_noise_gate.py`, alignment and tempo fitted ONCE at -80 dB so a gate that deletes strikes cannot also choose the grid it is
+judged against):
+
+| gate | 20260824 | 20260818 | 20260819a | 20260819b |
+|---|---|---|---|---|
+| -80 … -55 dB | 43/62 | 42/62 | 27/62 | 44/62 |
+| -50 dB | 43 | 40 | 27 | 41 |
+| -40 dB | 42 | 41 | 27 | 35 |
+| -30 dB | 39 | 24 | 12 | 16 |
+| **-20 dB** | **24** | **0** | **0** | **0** |
+
+**The response is flat across the whole safe range and then falls off a cliff**, and at -20 dB three of the four takes produce literally
+nothing. So there is no optimum to hunt for — only a ceiling to stay under, which means a controller that hunts up and down is optimising
+something with no gradient and can only do harm on the way up.
+
+**The knee moves 15 dB between takes** — -55 dB on one, -40 dB on another — because it follows the interface gain, which is a knob on a box
+the app cannot see. That is what makes this worth automating: not that the right value is hard to compute, but that it is different every
+session and the player has no way to know it. And a gate costs nothing to keep low: a fully processed hop is **0.23 ms of its 11.6 ms**, so
+there is no work being saved by discarding audio either.
+
+- **The room is what the microphone hears while the song is NOT running**, including the count-in — the longest clean window a run offers,
+  since the player is not meant to be playing yet. `gate = room + NOISE_MARGIN_DB`, capped at `MAX_GATE_DB`.
+- **A low percentile of the PLAYING is not the room, and that was wrong for a day.** The run log estimated it as the quietest 2 % of the level
+  samples. Measured across one session's takes, that percentile runs from **-35 dB on a dense passage to -94 dB on a sparse one**, against a
+  recorded room of -73: it reports how busy the playing was. The log now prints the measured room or says `(nicht gemessen)`, and without one
+  it suggests no gate at all.
+- **Derived every song, not accumulated.** A value that only ever walks one way ends up wherever the last session left it.
+- **Mid-song it can only ever come DOWN.** `_loudest_db` only rises, so the level it demands only rises with it: once satisfied the correction
+  can never fire again, and it cannot flap the way the ADVICE it replaces did. Raising it mid-song could only delete strikes, and a strike that
+  never arrives cannot be recovered by anything downstream.
+- **Verified against the sweep it came from**: the rule picks -64, -78, -63 and -80 dB on the four takes and scores **43, 42, 27 and 44** —
+  the best value in the entire sweep, on every take, not one note lost. `sweep_noise_gate.py` exits non-zero if that ever stops being true.
+- **X or C switch the automatic off**, and so does the settings screen's own gate row. An automatic that silently undoes what you just set by
+  hand is worse than one that was never offered. With it on, `_level_advice` says nothing about the gate at all — it would be naming a key the
+  app is already pressing for you — and what is left there is the interface's GAIN, which no gate can fix and only a hand on the knob can.
+
+## Ringing Strings Defeat Detection
+
+Measured with one note per string at a time (a new note on a string physically stops the old one — a summed test that lets both ring is
+the synthetic trap `CLAUDE.md` warns about, and it produced a wrong root cause before this was corrected):
+
+| passage | sustain | pitch detected correctly |
+|---|---|---|
+| quarters moving ACROSS strings | damped | 8/8 |
+| quarters moving ACROSS strings | left ringing | **3/8** |
+| pedal riff, all on one string | left ringing | 8/8 |
+
+A line that walks across the neck while the strings it left keep sounding is polyphony, and monophonic YIN reports one pitch for it. On one
+string the problem cannot arise. The collector's `SKIP_FRAMES` is NOT the lever — sweeping it from 3 to 12 changes nothing, because the old
+note is still physically present however long you wait.
+
+Confirmed at the instrument, not only in simulation: the player reports that muting after every note makes far more of it register, and that the
+first note registers reliably once the string is damped before the next one. Over the whole timing test the same split appears — **59 % with
+everything left ringing, 100 % with each string damped as it is left**.
+
+**The player's own takes do not show this at all, and that has to be said before anything is built on the table above.** Splitting every
+written note in the three real play-along recordings by whether its predecessor shared its string:
+
+| predecessor | pitch heard right |
+|---|---|
+| same string | 133 / 159 |
+| **different string** | **40 / 40** |
+
+Not one string change costs anything. The catch is that in `timing_test_100bpm.gp5` every string change sits in the SLOW opening section,
+where the previous note has decayed long before the next arrives, while every fast passage stays on one string. So the takes cannot settle
+it either way — they hold the easy half of the case and none of the hard half.
+
+**Recorded and measured** (block 5 of `record_reference.py`, read by `tools/analyze_ringing.py`) — and the answer is not the one the
+synthesis gave:
+
+| line | exactly right | an octave out | a DIFFERENT note | no pitch at all | usable strikes |
+|---|---|---|---|---|---|
+| slow, damped | 12 | 0 | **0** | 3 | 80 % |
+| slow, ringing | 7 | 4 | **0** | 2 | 85 % |
+| fast, damped | 12 | 1 | **0** | 3 | 81 % |
+| fast, ringing | 6 | 2 | **0** | 6 | **57 %** |
+
+**Nothing ever comes back as a different note.** The synthetic 3-of-8 predicted wrong pitches and there are none — not one, in any take. What
+ringing strings actually cost is strikes that carry **no pitch at all**, and only at speed: slow is untouched, fast loses 24 points. Octave
+slips appear too, but the matcher grants octave equivalence on purpose, so they stay green and cost nothing on screen.
+
+That changes the fix, and made the planned one wrong: there is no wrong pitch to correct, only nothing to credit. See "Rescuing A Strike
+That Carries No Pitch" below.
+
+**Two tools lied before they told the truth here, both by walking two lists in step.** `analyze_ringing.py` reported 16 % for the DAMPED
+takes — the control, known to work — because one pitchless strike shifts every comparison after it; and the regression check then convicted
+the rescue of inventing notes for the same reason. Both use Needleman-Wunsch now. **A tool whose control comes back broken is measuring
+itself**, and neither number should have been believed for a moment.
+
+## Rescuing A Strike That Carries No Pitch
+
+A strike with no pitch is not evidence of nothing. On a line played across the strings without damping it is the commonest thing that
+happens at speed, and the note was played — the ringing neighbours simply left monophonic YIN no single period to lock onto.
+
+So when a strike arrives unpitched and a **single** note is written there, the matcher holds it (`_hold_for_rescue`) and asks
+`ChordVerifier.confirms` whether that written pitch is present in the audio window. Confirmed, the note is credited.
+
+- **It only ever acquits.** `verify` asks which of several expected notes each string played and can convict; `confirms` asks one question
+  about one note and can only answer yes or stay silent. No intruder tier: with a single expected note there is no chord to be masked by, so
+  "something else is louder" only says another string is still ringing, which is the premise rather than evidence.
+- **A note already marked MISS can still be rescued.** The window trails its strike by ~380 ms by design, so the verdict arrives after the
+  note has timed out; refusing it for being late would throw the evidence away for arriving exactly when it was always going to.
+- **A chord is not rescued and a dead note is not either** — both already have their own rule, and neither needs audio.
+- **Measured, with the damped takes as the control** (`tools/check_ringing_rescue.py`): fast ringing 8/14 → **12/14** (10/14 as first written up, which was
+  the batched harness — see "Four Tools Batched What The App Interleaves"), and every damped take gains exactly **nothing**. A rescue firing on a damped take would be a note being invented, which is what that check exists to catch; it
+  exits non-zero if one ever does. The chord takes and the play-along takes are unchanged.
+- It closes about half the gap, not all of it (57 % → 71 %, against 81 % damped). The two strikes it cannot recover are the high A4, whose
+  partials sit among the ringing lower strings' harmonics at a margin of 3-5 dB — too little to act on.
+
+## An Arpeggio Comes Back As One Note, And It Is Not Any Of Them
+
+The gate was fixed and the same song still scored 29 %. The run log said `level_under_gate_percent 0`, so nothing was being discarded — and
+yet **53 of the 62 strikes that matched nothing written were flagged `subharmonic`**. That flag is the whole answer.
+
+A subharmonic pitch is not a reading of one string. The detector folds it up from BELOW the guitar's range because several strings that are
+ringing together share that period — so its value names the chord sounding in the room, not the note just struck. Reconstructed from the log
+(a note rings until the next note on its own string, which the log gives):
+
+| what was ringing | what came back |
+|---|---|
+| A2 + E3 + B3 | **A2** |
+| G2 + D3 + B3 | **G2** |
+
+Fifteen of the twenty-three testable cases are exactly the common period of the sounding set. It appears here and not in block 5 because
+block 5 is a melodic LINE: consecutive notes are often dissonant and share no strong period. An arpeggio is the opposite — the tab writes
+single notes that are meant to ring into a chord, and consonant intervals have a very strong missing fundamental. So the same passage that
+sounds best is the one the detector reads worst.
+
+- **Where the pitch says nothing, ask the audio.** A subharmonic matching nothing written is worth as much about the note just struck as no
+  pitch at all, so it now goes where a pitchless strike already goes: `_hold_for_rescue`, and `ChordVerifier.confirms` reads the raw window
+  and says whether the written pitch is really there. No new mechanism — the one built for ringing strings, offered a case it was never shown.
+- **A subharmonic that DOES fit keeps its own rule.** It proves the strum outright and needs no audio; only the unmatched ones are held.
+- **An ordinary wrong pitch stays wrong.** A clean reading of one string is evidence, and the presumption of innocence does not extend to
+  ignoring it. The flag is what separates the two.
+- **The controls are what make it safe, and they are not this song.** `check_ringing_rescue.py` (damped takes gain +0, +0) and
+  `check_chord_credit.py` (every deliberate one-fret error still caught) both come back unchanged. `check_subharmonic_rescue.py` scores the
+  four play-along takes through the real matcher with the rule on and off: nothing lost, one note gained.
+- **That +1 is not the size of the effect and must not be quoted as one.** The timing test is single notes on one string, where the case
+  barely arises; the player's own song is 53 unmatched subharmonic strikes, 51 of them sitting on a written note that missed. **The gain on
+  that song is not measured** — there is no recording of it. Ask for `record_reference.py --play-along` before believing any number.
+- **The control has to hold the rule against ITSELF.** The first version of `check_subharmonic_rescue.py` compared the rule against a matcher
+  with no chord verifier at all, and reported a take losing a note to a rule that had not fired once — it was measuring the chord verdicts.
+  `subharmonic_rescue=False` exists for that one purpose.
+
+## The Onset Detector Never Heard The Arpeggio At All
+
+With the gate fixed and the subharmonic rule shipped, the same song scored 29 %. The rule had fired 25 times and credited **nothing**, and the
+reason was one line: `_hold_for_rescue` required **exactly one** pending written note. That was right for the case it was built for — a line
+across the strings, where the tab writes one note at a time — and silently wrong for an arpeggio, whose written notes overlap by design. On the
+player's take the window held two or three notes every single time. It now asks about the pending note whose own onset is NEAREST the strike;
+holding one does not consume it, since `_apply_rescue` only credits a note still not HIT or CLOSE when the window lands.
+
+That was worth +3 notes. The thing underneath it was worth ten times more, and it is not in the matcher at all.
+
+**`onset_threshold` was 0.3 — aubio's default — and at that value the detector hears 37 % of the picks in an arpeggio.** A new note under a
+ringing chord is a small change in spectral flux, so the onset never fires, and a strike that never arrives cannot be recovered by the matcher,
+the verifier or any rescue. Swept over the player's own take (`tools/sweep_onset_threshold.py`):
+
+| threshold | picks heard | right pitch |
+|---|---|---|
+| 0.40 | 29 % | 11 % |
+| **0.30** (was) | **37 %** | 12 % |
+| 0.15 | 57 % | 19 % |
+| **0.05** (now) | **83 %** | 26 % |
+| 0.02 | 87 % | 28 % |
+
+**A single-note line is indifferent to all of it** — the timing-test takes read 93-100 % of their picks at every value from 0.02 to 0.40, and
+only the count of spurious strikes moves. So the old value cost nothing on the material it was chosen against and most of the song on material
+nobody had recorded.
+
+Measured through the real matcher on that passage: **18 % → 39 %** from the threshold alone, **→ 44 %** with the rescue fix on top. On the four
+timing-test takes with a fixed tab: 60/62 unchanged, **38 → 45**, **36 → 44**, 62 → 61. Every deliberate one-fret error is still caught, and
+the palm-muted takes are unchanged.
+
+- **`onset_min_interval_ms` was built, measured and removed in the same hour.** The theory was that a low threshold lets a decay re-trigger, so
+  aubio's 50 ms minimum should rise. Above 100 ms it starts merging real chugs (the fast palm-mute take's 5th percentile gap is 75 ms), and at
+  50 ms nothing needed fixing: every fixed-tab control passes. A knob that changes nothing is a knob nobody can calibrate.
+- **A stored 0.3 is migrated**, the way a stored `buf_size` of 2048 is: there is no UI to set it, so the value came from the old default.
+
+## The Rescue Was Asking A Question With Half The Facts
+
+With the onset threshold fixed, the arpeggio's error budget is no longer about strikes arriving: 145 written picks, 134 strikes, **129 of them
+on the grid**. Of the 86 notes that still failed, **53 are "a strike is there and its pitch is subharmonic"** and only 12 have no strike at all.
+So the whole remaining question is what `ChordVerifier.confirms` does with those.
+
+The funnel said 32 held, 24 asked, **8 confirmed** — and the reason for the 16 refusals is not what it looked like:
+
+| why `confirms` said no | how many |
+|---|---|
+| the margin over the runner-up was under 8 dB | **14** |
+| a different note won outright | 2 |
+
+In those 14 the written note **won**, at -0.7 to -10.4 dB — practically the loudest thing in the window. It failed only because a rival
+hypothesis a semitone or two away scored nearly as high.
+
+**It scored high on partials that were not its own.** `confirms` passed `others=[]`, so every candidate could claim any partial in its bands,
+including those of the strings still ringing. It was built for a line played across the strings, where the neighbours are decaying and it
+hardly matters; in an arpeggio they are the loudest thing in the window.
+
+- **The tab already knows what is ringing** — a note sounds until the next note on its own string — so the matcher passes it
+  (`_sounding_beside`), and `_score` excludes those partials from every candidate. The same rule `verify` has always applied to the tones of a
+  chord, now applied to the tones that happen to be sounding.
+- **It cuts both ways, which is what makes it safe.** The written note's own score loses its shared partials too, and where its partials are
+  entirely a subset of what is already ringing, it becomes unconfirmable and the rescue abstains. That is the presumption of innocence, not a
+  loophole.
+- **Measured: the arpeggio goes 43 % → 49 %**, rescues 8 → 16, on the player's own recording against the real tab. The chorus take is
+  unchanged at 68 %, the damped control takes gain **+0**, every deliberate one-fret error is still caught, and no play-along take loses a
+  note.
+
+## Two Tools Measured Themselves, Again
+
+Both were caught only because a control came back wrong, which is the third time in this project.
+
+- **`MAX_QUEUED_WINDOWS` is 16, and every offline harness ignored it.** The app drains `get_strike_windows()` once a frame; the check tools
+  pushed a whole take through `_audio_callback` and collected once at the end, so the queue dropped everything but the **last sixteen** strikes.
+  On a 45-second take that is a quarter of them, and the verifier then appears to do nothing when it was never given anything to do — which is
+  exactly what the first run of `check_subharmonic_rescue.py` reported. All four check tools now drain as they go.
+- **`check_ringing_rescue.py` builds its tab out of the strikes** (`intended()` aligns what was detected against the line that was asked for),
+  so a detector setting that changes how many strikes there are also changes the ground truth. Lowering the onset threshold made a DAMPED take
+  appear to gain a note — the tool's own definition of inventing one. It pins `FITTED_ONSET_THRESHOLD` now: it tests the rescue, at the settings
+  the rescue was fitted at, and cannot be read as a verdict on those settings.
+
+## A Take Of The Chorus Could Not Be Read At All
+
+The player recorded the section that was asked for and it came back reported as "the intro again". The recording was right; the alignment
+could not express what it was. `best_offset_at` searched offsets from 0 to 30 s — where the SONG starts inside the recording — on the
+assumption that a take always begins at the beginning. A take that starts in the MIDDLE of the song needs the opposite: an offset as negative
+as the song is long. Forced into the only range it had, the search put a 45-second take of the last verse at the opening, where 48 of its 134
+strikes happened to land, and every number after that was read against the wrong bars.
+
+- **The search covers the whole song now**, and cheaply: the optimum always sits at some (strike − onset) difference, so those are the
+  candidates. Histogram them at the match width, then search finely around the busiest few regions — eight, not one, because the true offset
+  can lose the raw count to a dense passage that lines up with a different bar.
+- **Re-read, the take is the chorus**: song 133-177 s, **153 of 153 strikes on the grid**, 555 written notes over 149 picks. The material
+  that every chord question in this file needed and no recording had.
+- **The old numbers for that take are void**, not merely imprecise. This is the second time a default in the alignment path turned a good
+  recording into evidence of a broken detector, after `--play-along` guessed the song.
+
+## A Take Is Only Worth Its Manifest, Part Two
+
+`record_reference.py --play-along` took the song as an OPTIONAL argument defaulting to `timing_test_100bpm.gp5`. Run without it — which is how
+it was explained to the player — it recorded 45 seconds of a completely different piece and wrote the timing test's name into the manifest.
+Read against that tab the take scores **3 of 46 notes**, which looks precisely like a detector that has stopped working; read against the notes
+reconstructed from the run log, **58 of its 60 strikes** land on the grid. The song argument is required now.
+
+**A run log is a tab.** It prints every written note with its time, string and pitch, which is all that is needed to score a take of a song that
+is not in `songs/` — `sweep_onset_threshold.py --run-log` reads one, and that is how the arpeggio above was measured at all.
+
+## The Calibration Was Wrong And It Did Not Matter
+
+Worth writing down because the obvious conclusion was the wrong one. The player's stored calibration had the A string at **54.87 Hz (A1, an
+octave low)** and the high E at **109.83 Hz (A2 — the A string's pitch)**. `_correct_octave_jump` halves a frequency whose half lands within a
+semitone of a calibrated string, so a clean A2 would be pushed below the guitar's range and come back flagged as a subharmonic. It looked like
+the source of the subharmonic flood.
+
+**Measured on the take, with and without that calibration: 29 subharmonic strikes either way, and one note different in sixty.** The halving
+needs `confidence < 0.9` and the readings here are confident. So the calibration is a latent trap and should be re-run, but it explains none of
+this — and a fix shipped for it would have been a fix for nothing.
+
+## The Room Could Never Be Heard
+
+The automatic gate shipped inert, and the run log said so in as many words: `level_room_db (nicht gemessen)`. The room is what the microphone
+hears while the song is NOT running — and the input stream was opened by `_start_audio`, which runs when the count-in ENDS. There was never a
+moment with the device open and the song stopped, so the estimate never reached its minimum sample count and the gate never moved.
+
+- **The stream opens when the count-in BEGINS.** That is the window the design was written around; it just was not open yet.
+- **And `_start_audio` reuses it instead of reopening.** A device open on Windows is seconds — the freeze this project has now paid for at
+  seeks, at the pause and at the instrument change. The two clocks are agreed by anchoring to `elapsed_ms()` rather than by restarting the
+  counter, which is what `_reanchor_audio_clock` already did for every other case.
+- **A feature that cannot be seen working is indistinguishable from one that does not work**, and the only reason this was caught in a day is
+  that the log prints `(nicht gemessen)` instead of quietly printing a number.
+
+## Eighty Percent That Does Not Feel Like Eighty Percent
+
+"I think it is better now, but not good. From what turns green I have the feeling I was far worse than the 80 % it shows." That reading is
+correct, and the run log says why. Between two runs of the same song, twenty minutes apart, only the onset threshold changed:
+
+| notes in the chord | written | at 0.30 | at 0.05 | gain |
+|---|---|---|---|---|
+| 1 | 282 | 18 % | **50 %** | +91 |
+| 2 | 88 | 58 % | 81 % | +20 |
+| 4 | 532 | 73 % | **91 %** | +97 |
+| 5 | 290 | 78 % | 82 % | +14 |
+| **6** | **192** | **55 %** | **94 %** | **+74** |
+| | 1384 | 59 % | 81 % | +296 |
+
+The single-note gain is the arpeggio and it is real — scored against the true tab on the player's own recording, that passage reads 43 %
+where it read 18 %. **The chord gain is a different thing entirely**, and it is not a measurement of the playing.
+
+**A four- to six-string chord is credited from ONE strike.** The strum is heard; the fretting of the other five strings is not, and monophonic
+detection can never report a second chord tone to confirm them. `chord_verify.py` is what polices that, and it can only convict a string whose
+partials are not a subset of a lower one — which in an open chord is most of them. Over the whole song it took back **6 strings**. So at
+711 strikes instead of 359, nearly every written chord has a qualifying strike near it, and nearly every chord goes fully green.
+
+- **The two are counted apart now and reported apart.** `notes_heard_as_themselves` and `notes_credited_to_a_strum` in the run log, and a line
+  under the score: *"389 of them were heard as themselves, 729 credited to a strum that was heard"*. On the player's run that is the whole
+  answer — two thirds of the green rests on strums, not on notes. A percentage that mixes them cannot answer "was I really that good", and a
+  player who feels the score is too kind is reading something real. Confirmed on the next run by the app's own instrumentation: **220 heard,
+  657 credited to a strum**, from 239 productive strikes.
+- **The run log now splits the score by chord size**, which is the line that makes it obvious: on that run, single notes **20 %**,
+  four-string chords **94 %**. The percentage was never a lie; it was adding two different things.
+- **And it cannot be lowered by checking the strings, because a missing string is not measurable.** The takes recorded for exactly this
+  question say so (`tools/check_missing_string.py`): scored against the CORRECT shape, a power chord's omitted fifth reads **-48 dB against
+  -21 dB** for one that was played — 27 dB apart, plainly separable. The same test on a six-string E major, with the high e left out, reads
+  **-37 dB against -45 dB at the tenth percentile of the played ones**: a **14 dB overlap**, and the omitted string scores HIGHER than the
+  played one does in the correct take. In a full chord the high strings' own partials are buried under the harmonics of the low ones, so
+  there is nothing left to measure. No threshold exists, and "a chord with a string left out still passes" is therefore not a policy that can
+  simply be reversed.
+- **The number was not lowered, because nothing measurable says by how much.** The takes that fitted the chord credit are ISOLATED chords with
+  long gaps, where a verification window always arrives; in a dense song at 273 ms spacing it often does not. Tightening the credit is
+  therefore unmeasurable with the recordings that exist — and this project does not ship a threshold it cannot re-fit. What is needed is a
+  play-along recording of a strummed CHORUS, not another arpeggio.
+- **Two candidate fixes were built and thrown away for changing nothing measurable.** Narrowing the hit window from 200 ms to 80 ms moves the
+  arpeggio by one note (43 % → 42 %). Refusing to let a strum's own second onset trim its verification window — a real effect, since an
+  isolated strum fires again 53 to 181 ms later — leaves the window count on that recording at exactly 109 either way. A constant that changes
+  nothing is a constant nobody can calibrate, the same reason `onset_min_interval_ms` lasted an hour.
+
+## The Key That Wrote The File And Said Nothing
+
+"Mit D passiert nichts." It was doing its job perfectly and never saying so. `_run_log_note` was drawn **only inside
+`_draw_completion_overlay`**, so pressing `D` in the middle of a song wrote the file and put its confirmation on a screen the player would not
+see for another four minutes. The same fault, twice over: `_auto_gate_note` was assigned in two places and **read nowhere at all** — the
+automatic gate moved silently every song.
+
+- **A note that expires, over the footer.** `_say()` puts one line on screen for `STATUS_NOTE_SECONDS`; `_status_note_text()` returns it only
+  while it is still news. Both halves matter — a status message that outlives its situation is the fault this project already shipped for the
+  MP3 offset, and one that is never shown is this one.
+- **Leaving the song writes the run too.** Until now only reaching the last bar did, and nobody plays four minutes to the end while something is
+  being diagnosed — so the run most worth reading was reliably the one that produced no file. `stop_audio` writes it unless the song already
+  finished (which wrote its own). It says how far it got; that is what `notes_reached` is for.
+- **This is the fourth time.** A backing track that silently does not play, a `U` with no line to name `Shift+U`, an automatic gate that shipped
+  inert with `(nicht gemessen)` as its only tell, and now this. **A feature that cannot be seen working is indistinguishable from one that does
+  not work** — and here it cost a week of diagnosis, because the file the whole investigation depended on was never being produced.
+
+## Does The Picture Keep Real Time?
+
+"Bei Takt 9 liege ich mit der Visualisierung bereits 300 ms zurück. Bis Takt 17 sind es nochmals ca. 300 ms." At 132 BPM in 4/4 that is bar 9 at
+14.5 s and bar 17 at 29.1 s — **a linear 2.1 %**, from the first bars, not something that starts later. Two mechanisms produce exactly that and
+they are fixed in different places: the tab and the recording disagreeing (measured at −1.08 % for this song — see the chapter above), or the
+app's own clock losing time.
+
+The picture advances by `perf_counter` deltas capped at `MAX_FRAME_STALL_S` (250 ms), so **every stalled frame is song time discarded** — a
+machine that stalls scrolls slower than the wall, and the recording, which keeps its own clock in the sound card, walks away from it. That is a
+picture falling behind sound, and it had no number.
+
+- **`clock_real_s`, `clock_song_s`, `clock_ratio`, `clock_lost_ms`, `clock_stalls`** in the run log. Uncapped elapsed on one side, what was
+  actually credited on the other, so the difference IS the time the cap threw away. A ratio of 0.98 says the picture ran 2 % slow and names the
+  stalls that did it; a ratio of 1.000 says the app is honest and the divergence is in the files or in the recording's own transport
+  (`mp3_worst_drift_ms`, `mp3_resyncs`, `mp3_worst_seek_ms`).
+- **Not reset by a seek or a loop.** The question is what the machine did over the whole sitting, not since the last arrow key.
+- Same rule as strikes-heard beside notes-credited, and as `frame_ms_median` beside `frames_over_budget_percent`: a percentage cannot be
+  debugged, and two causes that look identical on screen have to be counted apart.
 
 ## Timing Diagnosis
 
@@ -88,6 +698,15 @@ one of five answers: `fine`, `latency`, `scatter`, `mixed`, `per_string`.
 - **The histogram is the diagnosis.** One narrow hill away from zero is latency and K removes it; one wide hill over zero is the playing and
   no offset touches it; a split between strings is the detector, and one global offset cannot fix that either. The axis always contains zero,
   because how far the group sits FROM the beat is the thing being shown.
+- **Only a note that really sounded its written pitch, on a pick of its own, may be timed** (`_times_its_own_strike`). A dead note has no pitch;
+  a bent or sliding one leaves its written pitch deliberately, and the collector reports the pitch it moved TO; a hammered, pulled or slid-into
+  one is never picked, so any strike credited to it belongs elsewhere. A hammer-on SOURCE is picked normally and still counts. This cost real
+  damage before it was enforced: a run over the technique test put 18 of its 24 samples on technique notes, scattered by ±75 ms, and `K` built
+  an offset out of it that then sat in the config for days swallowing a third of the real latency. Under the rule those 24 samples become 6 —
+  below the minimum — and `K` stays silent, which is the right answer. Real songs keep 88-92 % of their notes measurable.
+- **`K` and the HUD line that advertises it read the same verdict.** They used to apply different thresholds to the same samples, so the line
+  could offer a key that then did nothing — the failure that teaches a player the panel lies. One helper answers both, and the test asserts the
+  property rather than the wording: the line offers `K` exactly when pressing `K` changes the offset.
 - **Nothing is claimed inside its own noise.** A median built from loose strikes lands twenty-odd ms off the beat by chance, and two per-string
   medians of a couple of dozen samples differ by tens of ms the same way. Both are tested against the standard error of a median
   (`MEDIAN_SE_FACTOR`) before being called an effect — the same presumption of innocence the chord verifier runs on.
@@ -100,17 +719,1775 @@ one of five answers: `fine`, `latency`, `scatter`, `mixed`, `per_string`.
 ## Techniques (bends, slides, legato)
 
 `NoteEvent` carries what the tab wrote: `bend` as ((position 0..1, semitones), ...), plus `slide_to_next`, `slide_in`, `slide_out` and
-`hammer_to_next`. Extracted in `tabs/loader.py` from pyguitarpro's already-normalised effects; the hand-written GP7 XML path does not carry
-them yet.
+`hammer_to_next`. Extracted in `tabs/loader.py` — from pyguitarpro's already-normalised effects for GP3-5, and by hand from the GPIF XML for
+GP6, GP7 and GP8 (`_parse_gpif_notes`).
 
 - **Drawn inside the note, badge above it** — the way Yousician does it, and the only thing a six-lane layout allows: a curve arcing out of
   its lane reads as a note on the neighbouring string. The white technique line always gets a dark shadow (`_draw_technique_line`), because
   white on the amber string is invisible and an invisible technique will not be played.
-- **Scored so the drawing is not a lie.** A bend accepts the whole region it covers (`_build_pitch_ranges`) — judging how FAR it went needs a
-  pitch contour the detector does not produce. A hammered, pulled or slid-into note is never picked, so it inherits its source's verdict
+- **Scored so the drawing is not a lie.** A bend accepts the whole region it covers (`_build_pitch_ranges`), so a correctly played technique is
+  never marked wrong for leaving its written pitch. A hammered, pulled or slid-into note is never picked, so it inherits its source's verdict
   (`_legato_credit`); waiting for a strike on it could only ever end in a miss.
+## How Far The Bend Went
+
+"Judging how FAR a bend went needs a pitch contour the detector does not produce" was wrong in one word. The detector produces one every
+~11.6 ms, the audio thread already sends it (`is_onset=False` readings on the same queue), and the matcher was throwing it away at the top of
+`process_detected_notes`. Nothing new is measured; the readings are simply kept.
+
+- **It can only ever turn green into yellow.** The player's ruling: a bend that arrives short is a note played imperfectly, not a note missed.
+  A bend on a note already CLOSE or MISS is left alone — there is nothing left to take away.
+- **Two questions, both of which the player named.** Did it get there (highest reading against the written top, within a quarter tone), and was
+  it HELD (the tab says how long the bend stands at its top; touching the pitch on the way past is not holding it). The hold is only asked when
+  the tab writes a hold worth the name — a bend across a sixteenth has no plateau.
+- **Neither convicts on silence.** Too few readings inside the note returns "unknown" and the note keeps what it was given. Absence of evidence
+  is the commonest thing in this signal path, and the chord verifier learned the same lesson the hard way.
+- **The thresholds are measured now** (block 6, 2026-08-23, 18 bends). `tools/check_bends.py` prints the window each has to sit in — worst
+  correct take against best deliberate error — and then runs the real matcher over the same audio: all 12 correct bends green, all 6
+  deliberate errors yellow.
+  - **Tolerance 50 cents, and it cannot be tightened.** The player's correct bends land 7 to 51 cents ABOVE the written top — every one of
+    them overshoots. A 40-cent band starts marking their own good takes down; the deliberately shallow take misses by at least 63. Window
+    50-63, and the guessed 50 turned out to sit in it.
+  - **Hold 30 % of what the tab writes, as one unbroken run** (gap tolerated, below). Correct takes run 43-100 % of the written hold; the
+    not-held take reaches 0 %. The guessed 50 % was too strict and would have marked down a real take.
+  - **Both questions are one-sided.** Did it reach the top, and was it still up there. Overshoot is intonation, which nothing here was asked
+    to judge — and judging it would convict the very takes recorded to prove the rule works.
+- **Three things the recording changed, and each was a wrong answer first:**
+  - **Only picks are bends.** The onset detector fires again during a note's decay; those ghosts came back as bends that never left the
+    written pitch, and the first run of the tool duly reported that correct and shallow bends overlap so no threshold could work. A real pick
+    peaks at −6 to −8.5 dB and every ghost at −21 to −49. The app never had this problem — it reads the contour over the note's WRITTEN
+    window, out of the tab — but the tool did, and a tool whose control comes back broken is measuring itself.
+  - **An octave error is not the bend collapsing.** During a vibratoed bend the detector throws out readings 9, 18 and 36 semitones below the
+    written pitch. Left in, they read as the pitch falling off a cliff. `BEND_STRAY_SEMITONES` drops them.
+  - **A hold is a run, not a count and not a span.** Counting frames on target marks vibrato down (only 37 % of a vibratoed bend's readings
+    sit within a quarter tone — it is played by releasing and re-bending). A plain span from first to last lets a bend flicked up twice pass.
+    The longest run with a tolerated gap of 250 ms tells all three apart, and from 250 ms upward the reading stops changing, so the value sits
+    on a plateau rather than a knife edge.
+- **Measured where the hold is looked for, too.** Looking only inside the written hold window sounds stricter and is weaker: a bend let go
+  early takes the note with it, the window then holds no readings at all, and the rule abstains for want of evidence — which let two of three
+  deliberately-not-held bends through. The run is measured anywhere in the note; what the tab asks for is a duration, not a place.
+- **Wait mode stops the collection**, because it pins every timestamp to one instant and a contour whose readings all claim the same
+  millisecond cannot say how long anything was held — the same reason timing samples stop there.
+
 - **A sliding note gives up part of its sustain** so the connector has somewhere to be; back-to-back notes otherwise leave a few pixels.
 - `tools/make_technique_test.py` writes a GP5 stating exactly which technique is where, so a wrong drawing is the app's fault.
+
+## Handing The Tab To An Engraver
+
+A classic tab — six lines, fret numbers, and stems saying how long each note is — is music ENGRAVING, and this project is not going to grow a notation engine. **verovio** does it, is Python, ships as a wheel, runs offline, and renders 150 bars in **90 ms**; its timemap gives the millisecond of every note and its SVG carries an id per note, which is what a playhead and per-note colouring need. What it cannot do is read Guitar Pro. `tabs/musicxml.py` is the bridge.
+
+**The packaging question was asked first, and of a rendered page.** verovio carries 20 MB of fonts and schemas, imports perfectly happily without them, and then renders nothing — the exact class of fault this project keeps shipping. `tools/check_verovio.py` loads a tablature measure and fails unless the SVG really contains tablature AND becomes ink on a rasterised page — the second half was added after a page that passed every check turned out to be blank on screen; the Windows workflow runs it, and the EXE answers `--check-engraver` after it is built. The run log carries `engraver` (`ready` / `absent` / `present but its data files are missing`), because the EXE is the only place the answer counts.
+
+Two things had to exist in the reader before the bridge could be honest:
+
+- **`NoteEvent.duration_quarters`** — what the tab WROTE. Milliseconds cannot be read back into a note value: a tempo change or a triplet makes it ambiguous, and a stem is drawn from the written value or not at all.
+- **`MeasureInfo.beats` / `beat_type`** — 3/4 and 6/8 at one tempo are the same length of time and a different piece of music.
+
+Four things were measured rather than assumed, each after the export looked fine and the times did not:
+
+- **An empty bar must be given its length.** A bar with no notes collapsed to nothing and moved every bar after it: Bon Jovi lost **42 s** over the song and the timing test 6, with every onset count still correct. A `<rest measure="yes"/>` fixes it, and a bar rest is reading the tab, not inventing.
+- **`<forward>` is not honoured in the timemap; a rest is.** A bar padded with forwards renders at the right length and reports the wrong times — a playhead that drifts while the picture looks right.
+- **But a rest cannot sit where a note is still sounding**, and guitar tab overlaps constantly: a let-ring bass note under a run of eighths. That is what VOICES are for, and each onset now goes into the first voice whose cursor has reached it.
+- **The bar's tempo travels with it.** Without `<sound tempo>` verovio assumes 120 BPM and every position it reports is wrong by the ratio. And it is computed from this bar's start to the NEXT bar's start, not from its own `end_ms`: the GP3-5 reader sets `end_ms` from the last BEAT in the bar, so a sparsely filled bar reads short and its tempo comes out too fast.
+
+**And then the timemap turned out to be the wrong thing to measure against.** Chasing a tail of mistimed onsets through four wrong theories — each one measured, each one refuted — the isolation test finally said it plainly:
+
+| one bar: quarter, quarter REST, quarter, quarter | verovio reports |
+|---|---|
+| as standard notation | 0, 2, 3 — correct |
+| **as tablature** | **0, 3, 4** |
+
+**On a tab staff verovio mis-times rests**, advancing two quarters for one and overflowing the bar; `<forward>` is not honoured there either. So neither mechanism for silence survives a tablature staff, and every number its timemap reports for one is unreliable. Nothing in the export was wrong: the same document engraves correctly and reports wrongly.
+
+**That costs nothing, because the timemap was a convenience and never the authority.** The app already knows when every note sounds — from its own timeline, which is the clock everything else in this project is anchored to. What is wanted from an engraver is the PICTURE. So each exported note carries an id of ours (`n<index into timeline.notes>`), verovio puts it on the `<g>` in the SVG, and `note_positions` reads the pixel coordinates back: **1314 of 1314 and 746 of 746 notes found on the player's own two songs**. Time comes from us, position comes from verovio, and neither is asked about the other.
+
+**Four diagnostics in a row measured accumulated drift and called it a local fault** — per-bar error, first-divergence-in-order, onset counts per bar — because every one of them compared milliseconds against a clock that had already slipped. Comparing `qstamp` (quarters from the start, tempo-free) found the real first divergence in one run. When a measurement keeps blaming whatever it looks at, it is measuring itself.
+
+## The Zoom That Made A Bigger Picture Of The Same Thing
+
+`ui/tab_view.py` engraves the song once per song and zoom — 0.2 s for a whole one, and **1314 of 1314 and 746 of 746 notes placed** on the player's two songs at every zoom level — and answers one question per frame: where is the playhead. Two things it has to get right, and the first was wrong until it was measured:
+
+- **Zoom is the PAGE WIDTH, not verovio's `scale`.** Stepping the scale makes a bigger bitmap of the identical layout, and once it is blitted to the window nothing whatsoever changes on screen. Measured, the page width moves a real song from **2.1 to 10.4 bars per line**, which is what a zoom is for. The test asserts how far through the document the music reaches rather than the page count — the same song can fit on one page at two zoom levels and be laid out completely differently, which is how the first version of the test passed a broken feature.
+- **Positions are fractions of the page, never pixels.** A page whose viewBox is 24000 units wide rasterises to whatever SDL felt like — 1320 px here — and a mapping that ignores that is out by a factor of eighteen while looking entirely plausible.
+
+The playhead interpolates between the notes either side of the moment while they sit on the same line of the same page, and snaps otherwise: one sliding diagonally across a line break is worse than one that steps.
+
+**The completion overlay takes no decision of its own.** Every caller checks whether the song is over; the page view called it as well as `_draw_hud`, which already does, so the score was drawn over the page on every frame and the whole view looked like it showed nothing but the end of the song. One call, one guard, and the docstring now says which.
+
+**It is a MODE of the playing screen, not a screen of its own** (`Shift+T`). A second screen would be a second copy of the transport, both offsets, the loop, the tempo and the run log — and this project has already paid for four readers of one plan. `+`/`-` mean zoom there and scroll speed on the board, which is the same key meaning what the view it is pressed in is about.
+
+**Getting it inside the frame budget took two measurements and neither suspect was the one that mattered:**
+
+| | per frame |
+|---|---|
+| first version | **12.4 ms** (budget 16.7; the scrolling view costs 3.2) |
+| after slicing the verdict loop to the visible notes | 12.0 |
+| **after `convert()` on the page** | **4.1** |
+
+The loop over all 1314 notes was the obvious suspect and worth **0.4 ms**. The whole cost was the BLIT: an SVG loads as a 32-bit surface with an alpha channel the display does not share, and blitting the visible band cost **8.36 ms unconverted against 0.26 converted** (the page comes from resvg now, and the arithmetic is the same). Half a frame budget spent on a pixel format. The slice stays, because it is right and because the test that pins it is cheap — but the lesson is the older one: the thing that is slow is not the thing that looks expensive.
+
+And every page is scaled during the build, while the "engraving…" note is on screen: left until a page is first looked at, the scaling costs **50 ms at the page turn**, three dropped frames exactly where the player is reading. Two or three pages is a tenth of a second, once.
+
+## The Page That Loaded And Was Never Drawn
+
+"Tab View ist unsichtbar." The page was engraved, the playhead moved, the verdict dots were on screen in the right places — and between them
+was nothing at all. Every check the project had passed, because every one of them asked whether the SVG existed.
+
+**SDL's SVG loader accepts verovio's output, reports a sensible size, and draws almost nothing**: measured on a real page, **20 ink pixels out
+of 1.2 million**. A real rasteriser draws the same page at **11 %** ink. The claim written down here that "pygame can load it — no extra library
+needed" was made on a surface that loaded, and never on one that had anything on it. That is this project's own recurring fault, committed in
+the sentence that warns about it.
+
+- **`check_verovio.py` fails unless the SVG becomes PIXELS**, and counts them through the app's own path. A check that stops at "the file
+  parsed" is the check that passed this bug.
+- **It costs a few hundred ms a page**, which is why the whole build moved off the game loop.
+
+**And the obvious rasteriser was the wrong one, which only the Windows build could say.** cairosvg shipped first, the suite was green, and the
+release build failed one step later: `no library called "cairo-2" was found`. cairosvg installs perfectly happily on Windows and then finds no
+cairo, because cairo is a system library nobody has — and bundling it into the EXE is the same problem one layer down. **resvg-py** is one
+self-contained 1.2 MB wheel with nothing underneath it. Measured on three real songs, it draws the same page and draws it faster:
+
+| song | cairosvg | resvg | pixels strongly different |
+|---|---|---|---|
+| timing test | 195 ms, 19507 ink | **140 ms**, 18467 | 0.003 % |
+| canon | 566 ms, 103132 | **329 ms**, 97272 | 0.051 % |
+| Demo_v5 | 844 ms, 114930 | **327 ms**, 109378 | 0.035 % |
+
+The differences are antialiasing. **A dependency that cannot be installed on the target platform is worse than no dependency**, and the only
+reason this was caught in an hour is that the release workflow renders a page and counts its ink on the machine that matters.
+
+## verovio's Resource Path Is Thread-Local
+
+Rasterising three pages of a real song is **3.1 s** — verovio engraves in 0.2 s and the rasteriser spends the rest — and three seconds in the game
+loop is a frozen app, which this project has already shipped twice. So `_build_tab_engraving` starts a thread, `_take_tab_engraving` picks the
+result up on a later frame, and the "engraving… 40 %" note moves while it happens.
+
+**And on that thread verovio silently stopped working.** Its default resource path is set at import, in the main thread, and is **thread-local**:
+on any other thread the toolkit constructs without complaint, loads the score without complaint, and renders **212 characters of empty SVG**
+against 21712 with the path set. Nothing raises. The only tell is a blank page — the same failure mode as the loader above, one layer down.
+
+- **`engrave()` sets the path itself**, every time, on whatever thread is about to build a toolkit.
+- **`_engraver_state()` and `tools/check_verovio.py` now run their check ON a thread**, because that is where the app engraves. Asked on the
+  main thread, both report `ready` for a build whose every page is blank — a self-check that cannot see the fault it exists to catch.
+- The test that pins it engraves on a thread and requires notes on the page; it fails on the unfixed code, which is the only thing that makes
+  it worth having.
+- **A surface must be `convert()`ed on the thread that owns the display**, so the pages are rasterised on the worker and scaled and converted
+  in `_take_tab_engraving`. Converted anywhere else, the display converts them again on every blit — the 8.36 ms against 0.26 ms above.
+
+## Three Guitar Pro Generations, One Parser
+
+GP6 (`.gpx`), GP7 and GP8 (`.gp`) all store the same GPIF XML and differ only in what they wrap it in: GP7 and GP8 use a zip, GP6 uses a
+container of its own — BCFZ compression around a BCFS sector image. `tabs/gpx.py` unwraps that container and hands the XML to the parser that
+already existed, so there is no second loader and a fix for one generation is a fix for all three.
+
+- **`.gpx` was not even in the song list.** `GP_EXTENSIONS` had never included it, so the files never appeared to be opened in the first
+  place — the format work was the second half of the problem, not the first.
+- **A real GP6 file stops one byte short of the length it declares.** The decompressor must accept that rather than treat it as damage:
+  refusing it rejected **13 of alphaTab's 35 GP6 test files**, and the missing byte is padding inside the last 4 KB sector that no file's
+  contents reach. alphaTab swallows the same end-of-stream exception for the same reason.
+- **Verified against all 35 of those files** — every one decompresses, parses and loads through `load_gp_file`, yielding 843 notes with 6
+  bends, 16 slides and 54 hammer-ons. The committed tests build containers by hand instead, since the files are not ours to vendor; what they
+  hold still is the bit order and the sector arithmetic.
+- **Both bit orders are needed and they are not interchangeable.** The chunk headers are most-significant-bit first, the offsets and lengths
+  inside them least-significant first. Getting one backwards decompresses for a while and then collapses.
+- **GPIF writes a bend value of 50 per semitone** (the unit GP5 used, kept through GP8) and a bend position as a percentage. A middle point
+  with no position of its own sits **halfway**, not at zero — at zero the bend scoring would ask the player to hold a pitch before the string
+  has been struck.
+- **`list_tracks` reads GPIF too.** Without it the track picker was empty for every GP6/7/8 file, because the caller asked the GP3-5 parser,
+  the exception was swallowed, and "no tracks" looks like a song with one track rather than like a format nobody read.
+
+## The Page Wandered A Centimetre Once A Second
+
+"Der Screen wandert alle Sekunde rauf und runter um 1 cm. Das ist sehr irritierend." Two separate causes, and each on its own is enough.
+
+- **A note's y on a TAB staff is the STRING it is written on.** `at_ms` returned the note's own position, so an arpeggio rotating over three
+  strings moved the playhead up and down by the string spacing, and the scroll rule dutifully followed it. `TabPage.systems` groups the
+  placed notes into ROWS OF MUSIC — the six string lines of one staff sit a small even distance apart and the gap to the next row is several
+  times that, so the break is found from the spacing the page itself uses rather than from a constant that would need refitting at every zoom.
+  `at_ms` returns the system's band now, and "the same line" means the same band, so the playhead also interpolates across a whole system
+  instead of snapping at every string change.
+- **And the scroll rule moved on every frame.** Keeping the playhead at a fixed height means scrolling continuously, which cannot be read at
+  all. `_tab_scroll_for` HOLDS its position while the current system is fully on screen and moves only when the music has left it.
+- **The playhead is drawn across the system**, the way every notation app draws it. A short tick at the note's own height jumps between the
+  strings even with the scrolling held still.
+- **Rounding the y values to 1e-6 put a note a hair outside its own row**, which then became a band of its own and the page jumped to it. The
+  band's edges are compared against the very values that made them, so they are not rounded at all.
+
+## The Stutter Follows The SEEK, And Our Own State Is Innocent
+
+The player narrowed it themselves, and every clause is a measurement: *"Der Haenger kommt immer erst wenn ich gespult habe. Es ist egal ob
+Midi und MP3 ein sind oder nur MP3. U aus und B aus helfen nicht. Erst App zu loest das Problem. A aendert auch nichts. Andere Songs — gleiches
+Problem."*
+
+That rules out most of what had been suspected. It is not a stuck MIDI note (it happens with MP3 alone). It is not the mixer (`Shift+A` closes
+and reopens it). It is not the input stream (`A`). It is not the song. Turning both backings OFF afterwards does not clear it, so whatever a
+seek does is not undone by silence.
+
+**And our own state is innocent, measured rather than assumed.** 200 seeks through a real `PlayingScreen`, in batches, counting objects,
+threads and frame time after each:
+
+| | after 0 | 50 | 100 | 150 | 200 seeks |
+|---|---|---|---|---|---|
+| live objects | 40576 | 40575 | 40575 | 40575 | 40575 |
+| threads | 1 | 1 | 1 | 1 | 1 |
+| frame median | 1.68 ms | 1.82 | 1.78 | 1.83 | 1.83 |
+
+Nothing grows. So the fault is in what a seek does to a DEVICE, which is the half this machine cannot exercise — there is no MP3 decoder, no
+MIDI port and no real mixer here.
+
+- **What a seek touches on the audio side is `pygame.mixer.music.play(start=)` and the MIDI port**, and nothing else.
+- **The controller reset was made a PANIC-only thing.** `_all_notes_off` had grown to 48 messages per call — CC 120, CC 123 and CC 121 on all
+  sixteen channels — and it is called on every seek, which a held arrow key produces 25 times a second. CC 121 also puts volume, pan and
+  sustain back to their defaults, so a seek could change how the backing SOUNDS; that is wrong on its own terms, quite apart from the traffic.
+  A seek now sends 32 messages and never resets a controller; `panic()` and `close()` still send everything.
+- **The run log counts `seeks`**, because the variable the player identified as the trigger was the one number the log could not report.
+
+**This is not a diagnosis and must not be written up as one.** What is established is where it is NOT.
+
+## Shift+A Could Not Reach The Thing That Was Humming
+
+"Audio reopened bringt nichts. Starke Störgeräusche und komisches Dauerbrummen bleibt bis ich die App schließe."
+
+**Two things in this process make sound**, and the key that exists to make the sound sane again reached one of them. `output.reopen()` closes
+and reopens the MIXER, which plays the recording. The MIDI synth, which plays the backing, is a different device on a different port — so a
+synth still holding a note could be silenced by nothing short of closing the app, which is exactly what the player described.
+
+- **`Shift+A` silences the synth first, then reopens the mixer**, and says which of the two it reached. "reopened; MIDI synth silenced" against
+  "reopened; no MIDI output to silence" is the difference between two diagnoses, and a key that reports only success can settle neither.
+- **CC 123 was not enough on its own.** It asks a note to RELEASE: a patch with a long tail keeps sounding, and a stuck sustain pedal keeps it
+  sounding for ever. `_silence` sends **CC 120 (All Sound Off)** and **CC 121 (Reset All Controllers)** as well, on all sixteen channels.
+- **`panic()` is a module function, not a method.** A player dropped without being closed still has its notes sounding and by definition nothing
+  is tracking them; reaching the PORT is the whole point.
+- **The run log names `midi_output`**, because a log that names only the mixer cannot say that a hum surviving `Shift+A` is not the mixer.
+- **This is still not a diagnosis.** The hum has never been reproduced here. What changed is that the one key meant to fix it can now reach
+  both halves, and that its message says which half it reached — so the next report is evidence rather than another round of guessing.
+
+## The Recording Was Already There, And It Was The Chorus
+
+"Hab ich dir nicht schon vor ein paar Tagen ein Recording von Leave a light on gegeben?" Yes — three, on 2026-08-30, and asking for another was
+a failure to look. Two of them name the song in their manifest; one is 45 s of the CHORUS (song 132.5-177.2 s, 557 written notes), which is
+exactly the "play-along recording of a strummed CHORUS, not another arpeggio" the chord-credit chapter above says was needed and did not exist.
+
+**Read with the rescue funnel, it named a hole nobody was looking for.** On that take 153 strikes arrive, **92 of them subharmonic (60 %)** —
+and only **28** were ever held for rescue. The other 64 sat on a written CHORD, where `_hold_for_rescue` abstains by design, and were dropped
+outright.
+
+- **"It goes where a pitchless strike goes" was implemented for one of the two places it goes.** A pitchless strike is offered to
+  `_unpitched_chord_credit` FIRST and only held for the audio when no chord explains it. The subharmonic path skipped straight to the hold, so
+  on chord-written material — which is most of a rock song — it did nothing at all.
+- **A subharmonic is if anything STRONGER evidence of a strum than silence is.** It exists only because several strings are sounding together
+  and share a period, which is the very thing being credited. The matched-subharmonic path has said so since it was written ("the strum itself
+  is proven"); the unmatched one now says it too.
+- **Measured on the chorus take: 66.4 % → 69.5 %** (370 → 387 of 557), and the funnel goes 9 held / 3 confirmed → 28 held / 9 confirmed.
+- **All three controls hold.** `check_chord_credit.py`: every correct chord still credited in full, every deliberate one-fret error still
+  caught. `check_ringing_rescue.py`: the damped takes gain **+0**. `check_subharmonic_rescue.py`: no take loses a note, and one timing-test
+  take gains two.
+
+**And a second finding that is NOT fixed, written down so it is not rediscovered.** The 20-second take produced **one verification window for
+177 strikes**. It runs at 9 strikes a second with a median gap of 107 ms, and `_limit_pending_windows` drops any window trimmed under
+`MIN_WINDOW_MS`; only 1 % of its gaps clear 255 ms. So on dense strumming the chord verifier and the rescue are both inert — not wrong, absent.
+Both takes also show a hard floor of 64 ms in their gap distribution, which is a re-trigger and not a pick. Whether that is worth a separate
+onset rule is unmeasured; what is measured is that the evidence never arrives.
+
+## Four Tools Batched What The App Interleaves
+
+Asked to improve the arpeggio, the first measurement was of the measuring instrument, and it was wrong by a third.
+
+The app drains both audio queues **every frame**. All four check tools pushed a whole take through `_audio_callback`, collected the strikes and
+the windows into two lists, and then handed the matcher every strike followed by every window. Two bounded structures make that a different
+program, and both drop the OLDEST entry: `AudioCapture.strike_queue` holds 16, and `NoteMatcher._pending_rescues` holds 32. So a 134-strike
+take arrives with 70 holds and only the last 32 can still be answered.
+
+| the same events, the same code, only the ORDER | notes credited |
+|---|---|
+| batched (what the tools did) | **46.0 %** |
+| interleaved (what the app does) | **61.5 %** |
+
+**The app was never at 46 %.** Every arpeggio figure written down before this — the 43 %, the 49 %, the "8 held / 3 confirmed" funnels — was
+measured through the batched version and understates the rescue. `check_ringing_rescue.py`'s fast ringing take is 12/14, not the 10/14 in the
+chapter above.
+
+- **`tools/take_harness.py` is the one implementation**, returning `[("strike", …), ("window", …)]` in arrival order. Four copies of one
+  capture loop is the "four readers of one plan" fault this project has already paid for at the repeats and at the transpose.
+- **This is the fifth time a tool measured itself**, after `analyze_ringing.py`, `check_ringing_rescue.py`, the four drift diagnostics and the
+  `MIN_WINDOW_MS` sweep that gated on the value it was testing. The tell each time was a control that came back wrong; here it was a funnel
+  reporting 42 holds that were never asked about on a take whose gaps clear the window floor 83 % of the time.
+
+## Acquitting Is Not Convicting, And They Had One Threshold
+
+With the harness honest, the arpeggio's remaining loss is the verifier: 15 refusals, and instrumenting every one of them says why.
+
+| why `confirms` said no | how many |
+|---|---|
+| **the written note WON and lost on the margin** | **10** |
+| a different note won outright | 4 |
+| the written note was masked and unscorable | 1 |
+
+In those ten the written note is the strongest hypothesis in the window — −1.4, −6.0, −6.2, −6.3, −7.9, −8.3, −9.9, −11.8, −13.9, −18.0 dB —
+and is refused because a rival **one or two semitones away** scores within 8 dB of it.
+
+`MARGIN_DB` is 8 because at 5 dB `verify` mis-called a correctly played low E. But **`verify` and `confirms` ask different questions**, which
+this file already said in as many words and the code did not: `verify` must CHOOSE which note a string played and can convict, so it must not
+be talked into the wrong one; `confirms` only asks whether the written note is present and can never do anything but acquit. Borrowing the
+conviction threshold for the acquittal is the same class of mistake as `MIN_WINDOW_MS` being fitted against a floor that had since moved.
+
+- **`CONFIRM_MARGIN_DB` is 2.0, and it is fitted.** The two populations separate cleanly: over the arpeggio take the 54 rescues where the
+  written note wins have a worst margin of **2.2 dB** (10th percentile 6.2, median 12.6), and over the DAMPED control takes — where a
+  confirmation is by definition a note being invented, since nothing was left ringing — exactly one candidate wins, at **1.2 dB**. The window
+  is 1.2 to 2.2.
+- **The value sits at the top of that window because the two mistakes are not equal.** Refusing a real rescue costs one note of credit;
+  accepting a false one turns a wrong note green, which is the thing the player has already said the score does too much of.
+- **Everything else is untouched.** `present_db` still governs whether the note is loud enough to be there at all, and a rival that really wins
+  is still refused — the rule only ever acquits.
+- **Measured on the arpeggio: 61.5 % → 67.1 %** (99 → 108 of 161), rescues 44 → 54. The strummed chorus take goes 388 → 396. Every control
+  holds at the shipped value: the damped takes gain **+0**, all **7/7** deliberate one-fret errors are still caught, the palm-muted wrong take
+  stays at **0/57** green, and no play-along take loses a note.
+
+**What is left is not detection.** Of the 53 notes still missing on that take, **23 have a strike in the window that was credited to a
+NEIGHBOURING note** — and the tab writes 145 onset moments where 132 strikes were heard, so most of those are picks that were not played rather
+than picks that were not read. Crediting them would be crediting notes on no evidence. Nine are subharmonic strikes the verifier still refuses
+and eight have no strike within 650 ms.
+
+## Counting The Rescues That Did Not Happen
+
+A run of an acoustic arpeggio scored 24 %, and answering "why" meant reconstructing the funnel by hand out of the strike table: 95 strikes,
+**53 of them subharmonic (56 %)**, 12 rescued. That is the arpeggio case this file already has a chapter on, and the numbers are in line with
+it — but the interesting question, which of the two ways a rescue is lost, could not be read at all.
+
+- **Held but never asked** means the audio window never arrived, because the next strike came too soon and `_limit_pending_windows` trimmed it
+  away. **Asked but refused** means the verifier could not find the written note in the sound. They are fixed in completely different places.
+- The run log carries `rescue_held`, `rescue_no_window`, `rescue_asked`, `rescue_already_credited` and `rescue_refused` now.
+- **The first guess was wrong and the measurement said so.** Gaps between strikes on that take: 5th percentile 174 ms, median 314 ms, and
+  **91 % of windows clear the 200 ms floor**. So the windows were arriving and the loss is in the verifier, which is where the next attempt
+  belongs.
+
+## The Rhythm Cannot Place A Take Of A Song That Repeats Itself
+
+`best_offset_at` scored an alignment on TIMES alone, and the docstring said why in as many words: fitting on pitch would assume the answer to the
+question being asked. That is right about the danger and wrong about the alternative, and Kid Rock's "Rock On" settles it. Its verse repeats one
+rhythmic figure, so on a 45-second take of it the rhythm does not merely tie — **it actively prefers the wrong bars**. The true offset ranks
+**93rd** by strikes-on-the-grid, 48 against the winner's 66; its pitch agreement is **61 of 72 against 12**. Read where the times point, the take
+scores **30 %** of its written notes; read where the pitches point, **86 %**.
+
+- **The candidates come from both histograms** — where strikes pile up on written onsets, and where they pile up on onsets whose pitch they
+  carry. Without the second the true place is never even a candidate.
+- **The times still answer; the pitches may only OVERRULE them**, and only by `ALIGN_PITCH_DOUBT` (3.0). Over the eight play-along takes the
+  ratio is 1.00-1.05 where the two agree, 1.83-1.93 where the pitch answer is WORSE (and once 0.51), and 4.51 on the take the times cannot
+  place. The window is 1.93 to 4.51. Same shape as `TEMPO_DOUBT_RATIO`, and for the same reason: a criterion that is usually right must not be
+  replaced by one that is occasionally better.
+- **The evidence is an F-measure, not a hit count.** Counting only the strikes that find a note of their own pitch is free in a dense passage:
+  a chorus writing six strings a beat has some note of every pitch class at nearly every moment. Measured, that moved the arpeggio take from its
+  true place at song −1 s into a chord section at 125 s, where 615 notes sit under its 134 strikes. Both directions — what share of the strikes
+  landed on a note of their pitch, and what share of the notes written in the covered stretch got such a strike.
+- **A subharmonic is not evidence about a note.** It names the chord sounding in the room, which is the same reason the matcher never scores
+  one. Counted in, 62 % of the arpeggio take's strikes voted for that dense chorus; counted out, the true place wins two to one.
+- **Every other take is unmoved**, which is what makes the change safe: all seven earlier play-along takes align exactly where they did.
+
+## A Song Is As Long As It Is WRITTEN, Not As Long As Its Notes
+
+"Whats up ist am Ende nicht mehr sync. Stimmt die Songlaenge nicht zum Tab?" The right question, and the answer is that the FILES agree and
+the app did not:
+
+| | |
+|---|---|
+| tab, 80 bars at a constant 3.69 s | **295.4 s** |
+| recording | 292.5 s, music from 2.3 s to 291.0 s |
+| what the app called the song's length | **243.5 s** |
+
+`Timeline.duration_ms` was the end of the last NOTE. This tab's guitar sits out the outro, so fourteen written bars carry nothing — and the
+app then agreed the song was over **fifty-two seconds before the music was**. The picture stops, the recording plays on, and from the inside
+that is indistinguishable from a sync fault. It is the length of the written piece now, or the last note where that runs past the final bar
+line (a let-ring note may, and a song is not over while something is still sounding).
+
+Measured across the songs to hand: "What's Up" **+51.9 s**, Kid Rock +1.6 s, the other two exactly nothing. So it is rare and it is total when
+it happens.
+
+**And the auto-sync still cannot place this song**, which is the other half and is not fixed by this: 5 of 41 windows readable, and the
+unreadable ones cluster at exactly ±4 and ±8 bars — 14.8 s and 29.5 s — because the verse is one four-chord loop. See the chapter below.
+
+## A Song With Four Chords And Nothing Else
+
+"Whats up ist am Ende nicht mehr sync." The run log named it and the offline measurement confirmed it: `mp3_sync_points 4`, the last at **178 s
+of a 243 s song**, and sections reading `+0.80% +2.56% +3.51%`.
+
+Measured without the app (`check_song_sync.py`): **5 of 41 windows readable**, all of them before 2:48, at a fitted drift of **−3.0 %** where a
+real mismatch is about 1. The song is a four-chord loop repeating every eight bars, so the chroma matches equally well fourteen, twenty-eight and
+forty-two seconds away — the lag table is a staircase of exactly those. This is the hardest possible case for auto-sync and it is not going to be
+solved by a threshold.
+
+- **What the app can honestly do is say where its points stop.** `mp3_sync_covers` in the run log: the span the points span, and it as a share of
+  the song. Beyond the outermost point the map extrapolates a slope fitted on whatever was readable, and "synced at the start, apart at the end"
+  is exactly what that looks like from the inside. The count of points alone cannot say it.
+- **`MAX_DRIFT_RATE` was NOT lowered.** 3 % is inside it and wrong, which is an argument for tightening — and one counter-example is not a
+  calibration. The Godsmack chapter set 5 % deliberately generous, and moving it on one song would be fitting to that song.
+- **The fix for a song like this is a hand-placed point near the end** (`Shift+S`), which is what every other tool asks for too.
+
+## Is It The Files Or The App? Answer That First
+
+"The picture and the backing drift apart" has three causes and they are fixed in three different places: the tab is wrong, the recording is a
+different arrangement, or the app's playback loses time. `tools/check_song_sync.py` settles the first two **without the app**, so the third is
+only ever suspected once the other two are ruled out.
+
+On the song that prompted it (Bon Jovi, "I'd Die For You", a Songsterr download against an MP3 of the video):
+
+| | |
+|---|---|
+| tab | 147 bars, every one explicitly 4/4, **one** tempo automation of 132 BPM, no repeats, no jumps, no fermatas |
+| tab length | 267.3 s — exactly what the app shows |
+| recording | 270.6 s, **132.51 BPM** measured, CBR 192 kbps with an Info header |
+| tab against recording | **-1.08 %, i.e. 2.6 s over four minutes** |
+
+So the files agree and the 21 s the player sees is made in the app. Three things that measurement had to survive first:
+
+- **Beat tracking on a full band mix is not a measurement.** aubio's tempo gave 136 BPM, a phase fit 137.8, an onset cross-correlation 133.1 —
+  three answers on one file, none reproducible. Autocorrelating the onset envelope gives 132.51 and the same value in every 40-second slice.
+- **Onsets do not survive a dense mix; CHROMA does.** Matching note attacks put 133 of 343 strikes on the grid and the best offset jumped
+  between -39 s and +37 s at constant confidence. Comparing pitch-class energy instead gives a smooth curve with residuals under 0.4 s.
+- **A pop song rhymes with itself, so a lag search always finds something.** Three of seventeen windows matched the wrong chorus, 14 to 28 s
+  away. The first version gated them out by a confidence threshold — which had to be fitted per song and was therefore measuring the song. It
+  fits a robust line instead (median over pairwise slopes) and prints the residual per window: the outliers are named, counted, and cannot move
+  the answer. **Nothing pretends to identify an outlier in advance.**
+
+`mp3_worst_drift_ms` is updated on every frame, not only at a correction, so a run log can carry the answer for the remaining case.
+
+## The Offset Says Where It Starts, Not How Fast It Runs
+
+A recording gets a per-song offset, and an offset is a constant: it can put the first bar in the right place and nothing else. When the tab and the recording run at different speeds — 1.09 % on the song this was built for, 2.7 s over four minutes — the offset that is right at the start is wrong by two and a half seconds at the end, and there is no value that is right at both.
+
+**Shift+S takes the two.** Line the recording up near the start, line it up near the end, and the line between them is the speed. From offsets `O1` at song `S1` and `O2` at `S2`, `rate = rate_old x (1 - (O2-O1)/(S2-S1))`, and the offset is rewritten so the first point the player demonstrated does not move.
+
+- **It goes into the LENGTH of the built copy, never into `time_scale`.** The scale is what makes one real second advance the song by `tempo` seconds — put a correction there and the notes scroll at the wrong speed, which is the one thing this must not do. `_mp3_build_tempo()` is `tempo x rate`, so the practice speed and the correction both land in `timestretch.build` and nothing else changes.
+- **Measured end to end on the player's own files**, tab against recording by chroma:
+
+| | Wanderung | gesamt | groesster Rest |
+|---|---|---|---|
+| original | **-10.85 ms/s** | **-2.67 s** | 423 ms |
+| after the correction | **+0.00 ms/s** | **+0.00 s** | 464 ms |
+
+  The systematic walk is gone completely; what is left is the band's own tempo moving, which nothing can follow. **A repair, not a cure** — and the HUD and this file both say so rather than promising sync.
+- **`_mp3_source_fits` could not see it.** A rate correction changes the file while leaving `time_scale` exactly where it was, so the old check reported a fit and the copy was never built. `_mp3_loaded_build` records what the loaded source was made for; where it is unknown (a source this screen did not load) the scale still answers, but only while no correction is wanted.
+- **And the stretch cache would have served the wrong file.** `cache_name` put the tempo in the readable part rounded to whole percent and hashed only the path — fine while the speed moved in 5 % steps, silently wrong the moment corrections move in fractions of one: 0.9891 and 0.9932 both read `099` and shared a file, so a second attempt at syncing a recording would have played the first attempt's copy. The tempo is in the hash now.
+- **Two points closer than `MIN_SYNC_SPAN_MS` (30 s) are refused**, and the first point is KEPT — the offset moves in 10 ms steps, so over five seconds one keypress is 0.2 %, a fifth of the whole effect invented by the last key pressed. A rate outside 0.9-1.1 is refused outright and named: a real mismatch is about a percent, and playing a song at 80 % of its speed is indistinguishable from a broken recording.
+- **Below 0.1 % nothing is built.** That is the threshold `stretch` itself gives up at, so a build would return the audio unchanged — five seconds of work bought with nothing.
+
+## Two Clocks, And The Recording Is The One That Cannot Bend
+
+"Trotzdem sind die Aufnahmen in anderen Tools wie Songsterr oder GoPlayAlong perfekt gesynct. Meine Annahme: Es liegt bei uns." That is a
+proof, and it is right. The chapter above measured the drift correctly and then drew a conclusion the measurement does not support: **that no
+cure exists.** A varying rate has no single correction — but it has a piecewise one, and every tool that solves this problem uses exactly that.
+
+- **Go PlayAlong**: sync mode drags beats onto the audio; *"For most songs, 2–5 sync points are usually enough"*; auto-sync fills in the beats
+  between the points the player set. The audio is never touched.
+- **alphaTab**: a sync point is `(barIndex, occurence, ratioPosition, millisecondOffset)` — a place in the score and the millisecond in the
+  media where it happens.
+- **Guitar Pro 8**: the audio track has anchors set by double-clicking above the waveform, stored in the file.
+
+All three warp the SCORE onto the recording. None stretches the audio. Integrated over the drift curve measured on the player's own song, the
+worst error over four minutes:
+
+| | worst error |
+|---|---|
+| one offset (the offset keys alone) | **1313 ms** |
+| one offset and one rate (what shipped) | 241 ms |
+| 3 sync points | 107 ms |
+| **5 sync points** | **90 ms** |
+| 9 sync points | 27 ms |
+| 17 sync points | 7 ms |
+
+Five points cross the 100 ms where picture and sound stop reading as one event. That is the whole design: nothing is modelled, every point is
+a piece of the truth, and the line between two of them is the least that can be claimed.
+
+- **The correction is applied to the TAB, never to the recording.** A recording's clock is in the sound card and can only be bent by seeking,
+  and a seek is audible: following a 1 % warp that way means breaking the sound every five seconds for the whole song. The picture can be
+  pulled by a fraction of a millisecond a frame and nobody sees it. **Correct the cheap side** — and that inverts what this app did, which was
+  to seek the recording whenever it drifted 90 ms from a tab that was itself wrong.
+- **So while the recording sounds, IT keeps time** (`_mp3_leads`) and `_follow_recording` pulls the song clock towards `song_at(recording)`.
+  The pull is limited to `SYNC_PULL_FRACTION` (5 %) of the time that really passed, which is five times the authority needed to track a 1 %
+  mismatch and far too slow to see; past `SYNC_SNAP_MS` (1.5 s) it jumps, because that is not drift but a seek or a loop turn.
+  `Mp3Player.update(correct=False)` says the recording is not to be touched, and the pull carries the audio anchor and
+  `matcher.audio_offset_ms` with it — moving song time without them would put every strike out by the whole correction, 2.6 s by the end of
+  that song.
+- **The stretched copy is for the practice speed and nothing else now.** The sync rate used to be multiplied into `_mp3_build_tempo`, which
+  rebuilt the whole file for one percent — seconds of work, silence until it landed, a cache entry per attempt — to apply ONE rate to a
+  recording whose rate varies by a factor of three. Warping the tab does it for free, and leaving it in the file as well would apply it twice.
+- **`SyncMap` is exact in both directions** and the test asserts the round trip: the recording is a piecewise-linear function of song time, so
+  the inverse is piecewise linear over the same points. A segment's slope is bounded to `MIN_RATE`/`MAX_RATE`, so two points set close
+  together cannot imply a rate that runs the rest of the song away.
+- **Outside the outermost points it extrapolates** rather than holding a value: a recording drifting at the last point is still drifting after
+  it, and the slope is bounded so it cannot escape. A point near the end is still worth more than any extrapolation, which is what every tool
+  that does this tells its users.
+- **The run log carries `mp3_sync_points`, `mp3_sync_sections`, `mp3_worst_pull_ms` and `mp3_leads`.** A large pull with few points says where
+  the next point belongs; `mp3_leads no` says the map was never in play at all, which is a different fault from a map that is wrong.
+
+## The Panel Grew Downwards Into The Footer, And Vanished On Reopening
+
+Two faults in the sync panel, and the second is this project's oldest one.
+
+- **It was placed at a fixed height and grew DOWNWARD.** Three lines reached the keyboard shortcuts and drew over them. The footer is drawn
+  FIRST now and reports the y it starts at; everything at the bottom of the screen stacks upward from there, so a fourth line pushes the block
+  up instead of into the footer.
+- **Seventeen points do not fit across a window.** A line drawn wider than the screen is centred, so BOTH ends are cut — the first point and
+  the last, which are the two that matter most. `_fit_line` shrinks the MIDDLE away until it fits.
+- **A song opened with points already measured showed nothing.** They were stored and used all along; the panel simply started empty every
+  session, so nothing on screen could tell a synced song from one nobody had touched — the most expensive setting in the app, invisible. The
+  panel is rebuilt on load when the song has anchors, and stays silent when it has none.
+
+## The Score Was Drawn Through The Section It Names
+
+Two lines of the completion overlay were placed at fixed offsets — "New Best!" at +132 in the 28 px font, the weakest section at +140 in the
+18 px one — so a run that was both a personal best AND had a weak section drew one through the other, by **26 px**. Each line had been laid out
+on the assumption that the other was absent.
+
+Every line is stacked on the measured height of the one above it now, and the block is centred as a whole, so a run with three recommendations
+and one with none are both readable instead of one of them hanging off the bottom edge. Same rule as the footer and the sync panel, which have
+each been fixed for this once already. The test asserts the PROPERTY — no two lines overlap, in the case where every one of them is present —
+rather than any particular position.
+
+## A Run Log That Says The App Is Innocent
+
+The player's log after a "Tonabsturz", with 31 seeks in it:
+
+| | |
+|---|---|
+| `frame_ms_median` / `frames_over_budget_percent` | 7.7 ms / **2 %** |
+| `clock_stalls` / `clock_ratio` | **0** / **1.0000** |
+| `mp3_resyncs` / `mp3_worst_seek_ms` | **0** / **0** |
+| `dropped_buffers` | **9** |
+
+**The picture kept perfect time and the recording was never re-seeked once.** So the two mechanisms this app has for making sound go wrong
+were both idle while the sound went wrong. What did happen is on the INPUT side: nine dropped buffers, against zero in every earlier log, and
+one frame of 146 ms.
+
+**And `hits 0` in that log is not a detection failure — it is a seek.** The strike table is empty and every reached note reads `miss` because
+`seek()` calls `matcher.reset()`, which clears the trace and puts every note back to PENDING; the sweep then marks everything behind the
+playhead as missed. A log taken straight after spooling describes what happened since the last seek and nothing before it. `seeks` is in the
+header for exactly this reason: without it, that log looks like the detector died.
+
+## A Song That Rhymes With Itself Beat The Median
+
+"Bei diesem Song habe ich 3x gesehen, wie das Bild links/rechts springt." Godsmack's "Awake", and the run log named it in one line:
+`mp3_worst_pull_ms 4759` against a `SYNC_SNAP_MS` of 1500 — the picture did not drift, it JUMPED, three times, because the sync map it was
+following was wrong.
+
+**The map was wrong in a way the outlier filter was built to miss.** The nineteen stored points walked from **-10.2 s to +17.9 s** over five
+minutes, in plateaus about 8 s apart — a metal song whose riffs recur, so window after window matched the WRONG repeat. Re-measured here from
+the player's own files: 47 windows, lags stepping from +10.9 s down to -17.9 s.
+
+A straight line fits that staircase at **-12 %** almost perfectly. So the robust line found nothing to call an outlier and kept all of it, and
+`SyncMap` then spread the nonsense across the song at its own clamp — `+11.11 %` appears four times in that log, which is `MAX_RATE` exactly.
+
+- **A median is robust to a MINORITY of wrong readings; it is not robust to a majority.** Whole clusters, each consistent with the next, are a
+  majority. Two things fix it and both are needed: the fitted slope is bounded to `MAX_DRIFT_RATE` (5 %, five times the ~1 % a real mismatch
+  measures), and the OFFSET is chosen by consensus — the line the most windows sit within `OUTLIER_S` of — rather than by the median, which
+  lands between two answers and belongs to neither.
+- **Pairs closer than `MIN_SLOPE_SPAN_S` (30 s) are left out of the slope entirely.** The offset moves in fractions of a second and the noise
+  is comparable, so a pair five seconds apart implies any rate at all.
+- **Measured on the player's own files: 19 points spanning 28 seconds become 5 points spanning 1.2 s**, at a fitted drift of +1.9 %, with
+  11 of 47 windows usable. That song repeats too much for the rest, and saying "11 of 47" is the honest answer.
+- **The panel now says what the points COVER** (`measured 0:10–1:15 of 4:58`). Beyond the outermost point the map extrapolates, and a song
+  whose points all sit in the first minute is a song whose last four are a guess.
+- **`mp3_snaps` is in the run log.** A pull nobody can see is the design; a jump is a fault, and without a count it is only ever a report.
+
+## Three Seconds Wide, And Blind To A Spike Of One
+
+"Like a villain synced falsch." The run log had the whole answer in two lines. Twelve stored points, and the sections between them read
+`-6.83% +11.11% +0.66% -0.15% +10.29% -3.14% +0.45% +2.93% -0.24% +0.53% -0.05%` — one of them clamped at `MAX_RATE` exactly.
+
+Fitted, the song's real drift is **+0.17 %, smooth, and nine of the twelve points sit within 52 ms of it** (MAD 44 ms). The other three are
+spikes:
+
+| at | lag | off the line | times the scatter |
+|---|---|---|---|
+| 28 s | -1767 ms | **-1349 ms** | 31x |
+| 70 s | +215 ms | **+561 ms** | 13x |
+| 118 s | -89 ms | +175 ms | 4x |
+
+Every one of them was kept, because `OUTLIER_S` is **3.0 s — sixty-eight times the scatter this song shows.** Each poisons the two sections
+around it. Dropping the three takes the map's worst error from **1352 ms to 52 ms**.
+
+- **The fixed threshold was fitted against the wrong case, and correctly so.** It exists to reject a window that matched the wrong chorus,
+  which lands 14 to 28 s away — so it has to be seconds wide, and is then blind to everything smaller. A threshold set for the worst thing it
+  must catch cannot also be the threshold for the commonest.
+- **The scatter the song shows is the only thing that says what a disagreement is.** `spike_tolerance` is `3 x MAD` of the residuals, bounded
+  below by 100 ms (where picture and sound stop reading as one event, so a reading nobody could see is never rejected) and above by the old
+  `OUTLIER_S` (so a genuinely scattered song cannot grow its tolerance until a wrong chorus fits inside it). The factor has to keep 52 ms and
+  drop 175 ms, so anything from 1.2 to 4.0 works and 3.0 is the middle of what was measured.
+- **It is one filter improved, not a second one added.** A local rate bound between adjacent stored points would catch the same three spikes
+  and would be two answers to one question — the reason `onset_min_interval_ms` lasted an hour.
+- **All the controls hold**: the zero-drift synthetic control loses nothing (its scatter is 9 ms, so the floor governs and the tolerance never
+  binds), the Godsmack staircase still collapses to one plateau, and a real 1 % drift is still followed to within 0.2 %.
+- **A map measured before this is still wrong**, because the points are stored. `Ctrl+S` re-measures.
+
+## One Stretch For The Speed And The Pitch, Not One Each
+
+Playing a Drop C song on a Drop D guitar shifts the recording, and `build` did that as its own pass before stretching for the practice speed —
+so a slowed-down transposed song went through WSOLA twice. It does not have to: a pitch shift IS a stretch by the pitch ratio read back at that
+ratio, and reading back is uniform, so it leaves every sample's position as a FRACTION of the file exactly where it was and the rate curve
+composes with it unchanged. One stretch by `ratio / tempo_factor`, then one resample by `ratio`.
+
+| four minutes of audio, +2 semitones | before | after |
+|---|---|---|
+| 100 % speed | 7.9 s | 7.8 s |
+| **80 % speed** | **14.1 s** | **11.0 s** |
+| 70 % speed | 16.6 s | 13.6 s |
+
+**At full speed it saves nothing, and that is the honest half.** There was only ever one stretch there; the eight seconds is the pitch shift
+itself, and 56 % of it is the FFT cross-correlation at the heart of WSOLA. Searching a downsampled signal would cut that and would change which
+offsets are chosen — measurable only by ear, on a build nobody here can listen to, and the player's verdict on the current one is "klingt noch
+gut". Not built.
+
+Verified exact rather than assumed: length lands within **1.0000x** of what the speed alone would give at 100, 80 and 70 %, and the pitch
+within **0.1 cents** of what was asked for. The length matters as much as the pitch — an unchanged one means every sync point and every offset
+still describes the file.
+
+## A Key That Walks A List Nobody Can See
+
+"Das Blättern mit R und Sh+R ist merkwürdig. Kannst du mir anzeigen, was als nächstes kommt." Both halves were real, and the second explains
+the first.
+
+A Drop C song reaches six tunings — Drop A, A#, B, C, C#, D — ordered by pitch. `R` stepped through them **and wrapped**, so one press at the
+top jumped five semitones to the bottom: a whole recording rebuilt, seconds of silence, for a tuning nobody asked for.
+
+- **It does not wrap.** `R` means higher and `Shift+R` means lower, all the way, and an end of the list is a sentence — the same rule as the
+  zoom key and the scroll-speed floor.
+- **The HUD names the next one in each direction** (`R -> Drop C#    Shift+R -> Drop B`), with an em dash where the list ends. A key you press
+  to find out where it went is bad enough; this one reloads the song and rebuilds the stretched recording, so finding out costs seconds.
+- **One helper answers both**, so the line cannot advertise a tuning the key refuses — the same property `K` and its HUD line are held to, and
+  the test asserts it over every position in the list rather than asserting the wording.
+
+## Three Ways A Keyboard Can Say Shift, And Only One Was Asked
+
+`Shift+U` opens the tuner from the song list with the search box open, and it did not work on the player's machine: the key arrived carrying a
+capital **"U"** with **no shift bit in `event.mod` at all**, so the guard fell through and the letter went into the search.
+
+Three signals now, and any of them is the request: the event's own modifiers (the normal answer), the live keyboard state
+(`pygame.key.get_mods()`, which catches a stale `event.mod`), and the CHARACTER — a capital U is what was typed, however the layout produced
+it. With caps lock on the two swap over, which is the price and is small: the letter is still typeable with shift held.
+
+`pygame.key.get_mods()` needs the video system and raises without it, so it is wrapped. **A key handler that can raise takes the app down with
+it**, and it is asked on every keystroke in the song list.
+
+## Which Build Is This? Nothing Could Say
+
+Three fixes in a row came back as "does nothing" — `Shift+U` in the search box, `Shift+C` in the song, and the footer that would not wrap. All
+three were in the tree, under test, and green. All three were an older EXE, and each one cost a round trip to establish, because **nothing in the
+app could say which version was running**: "is it fixed" and "did it reach the machine" were the same question with no way to tell them apart.
+
+- **`build.bat` stamps the build** with the short commit and the time, `pickhero.spec` carries the file into the EXE, and `build_info.py` reads
+  it back. Running from a checkout there is no stamp, so the git HEAD is read STRAIGHT OFF THE FILESYSTEM — no subprocess, because this is asked
+  while the window is coming up and a build stamp must never be why the app is slow to start or fails to start.
+- **It is in the run log (`build`) and bottom-right in the song list.** The log is what gets sent; the list is what the player can read without
+  playing anything.
+- **Neither answer is a crash.** No stamp and no git gives "unknown build", which is itself information.
+
+The stamp is generated, so it is gitignored: it describes one machine's build and never belongs in the tree.
+
+## The Footer Was Wider Than The Screen, So Both Ends Were Gone
+
+Twenty-three keyboard shortcuts are **2986 px** of text and the player's window is **1911**. `_blit_footer_lines` shrank the font until the
+widest line fitted -- and when even the smallest still overflowed by a thousand pixels it drew it anyway, centred, which cuts BOTH ends. On the
+player's screenshot the first entry and the last are simply not there, which is why a newly added key looked like a key that had never shipped.
+
+It wraps at the `|` the entries already carry, so a shortcut is never broken across two lines and nothing is lost. A single entry wider than the
+screen is left alone: shortening the text is a decision for whoever wrote it.
+
+## One Helper For Every Way A Keyboard Says Shift
+
+`Shift+U` needed three signals to work on the player's machine -- the event's modifiers, the live keyboard state, and the character -- because
+the key arrived carrying a capital letter with **no shift bit in `event.mod` at all**. That was written up as a fix for one key, and it was not:
+`Shift+C` then fell through to the plain `C` that raises the noise gate, for exactly the same reason, and every other shifted shortcut in the
+playing screen was one report away from the same thing.
+
+`shift_held(event)` is the one implementation now, used by all eleven of them and by the song list. **The class of fault is closed rather than
+the two instances of it** -- which is what "one plan, four readers" means when the readers are keyboard shortcuts.
+
+## The Diary Was Right And The Page Was Yesterday
+
+"Wie lange habe ich heute gespielt? Davor waren es nur unter 3 min." Nothing was lost: the dashboard was rebuilt only when the APP closed, so
+it described the state at the last close. Twelve sittings totalling 10.1 minutes read as three.
+
+Leaving a song is where that question gets asked and is also where the sitting is written (`stop_audio` -> `close_session`), so the page is
+rebuilt there too — 1.5 ms at a hundred sittings, on a frame that is tearing a screen down anyway, and after the write for the same reason the
+one on the way out is. **A number that is right in the file and stale on the screen is indistinguishable from a diary that loses sittings.**
+
+## Sync Points Belong To A RECORDING, Not To A Song
+
+Seventeen points measured by ear or by Ctrl+S are the most expensive thing in a song's settings, and two ways of losing them were open.
+
+- **Picking a different recording kept them.** Another rip has another intro and another encoder padding, so points measured against the old
+  file put the new one out by seconds — while the panel still reads "17 points" and everything looks synced. Choosing a file at a DIFFERENT
+  path now drops the points, the rate and the offset and says so; re-picking the same file after moving it keeps the work, because that is not
+  a different recording.
+- **`merge_stats.py` did not carry them.** A song measured on one machine had to be measured all over again on the other, which is the
+  "a setting that moves house has to be followed into every reader" fault for the second time. `song_mp3_anchors` and `song_mp3_rates` travel
+  now, under the same rule as the rest: an entry the receiving machine already has always wins.
+- **Where they live:** `~/.pickhero/settings.json`, under `song_mp3_anchors`, keyed by the tab file's name without its extension. Written the
+  moment a point is set, so nothing has to be saved by hand — and renaming the tab file starts the song over, which is what that key means.
+
+## Sync Points Only Arrive If The Recording Does
+
+`merge_stats.py` carries a song's sync points to the second machine, and they landed there useless: `song_mp3_paths` stores the ABSOLUTE path the
+file chooser returned, so a settings file written on one computer points at a folder the other does not have. The app then reports the recording
+as moved, and the most expensive setting in it sits beside a backing track that will not play.
+
+- **A stored path that no longer exists falls back to a file of the same NAME in the songs folder.** Same name, same recording -- which is the
+  rule the anchors already follow, since re-picking a file after moving it keeps the work. Nothing is dropped and nothing is written back: each
+  machine keeps the path it was given, which is what lets the merge stay one-way and idempotent.
+- **The name is split on both separators.** A backslash is not a separator on POSIX, so `Path(r"C:\x\take.mp3").name` is the whole string there
+  -- and a settings file that travels between machines is the entire reason a name is being looked up at all.
+- **A recording that is nowhere still reports its stored path**, so the app can name the file it cannot find. A path silently emptied is a
+  backing track that vanished without a word.
+
+## Five Points By Hand Before Every Song Is Not A Feature
+
+Sync points work and the other tools ask for them, but placing five of them by ear before every song is a chore that will not be done twice.
+The measurement that finds them already existed here as a diagnostic — `check_song_sync.py` compares the tab's pitch classes against the
+recording's, window by window — so `audio/autosync.py` is the same measurement with its answer handed to the map instead of printed. **Ctrl+S**
+runs it; `tools/check_song_sync.py --write-sync` does the same from the command line. It is one implementation, imported by both: two copies of
+this would be two answers to one question.
+
+- **The points that come out are all MEASURED.** The curve is thinned by Douglas-Peucker to the fewest windows whose straight lines still
+  reproduce it to `SIMPLIFY_MS` (25 ms), so what is stored is a subset of what was read rather than a model of it. Measured on a synthesised
+  recording with a known drift: 30 points at a 5 ms tolerance and 8 points at 25 ms give **the same worst error**, so the thinning costs
+  nothing and the tolerance is not a knob anyone needs to turn.
+- **The control that must read zero is what found the real bug.** A recording sitting exactly on the tab's grid came back saying **+50 ms with
+  a scatter of only 10 ms** — a shift, not noise, and half the budget of the 100 ms this whole feature exists to get under. An analysis frame
+  covers 8192 samples and was indexed by its FIRST one, so the recording's chroma reported everything half a frame early while the tab's
+  chroma, built straight from note times, had no window at all. The two sides now describe the same stretch of time: recording frames are
+  indexed by their centre, and the tab's chroma is smeared over the same span. The residual is **−25 ms**, stable across wildly different note
+  envelopes, and it is left alone rather than tuned away — tuning it would be fitting to the synthesiser.
+- **The lag resolution was coarser than the target.** The search stepped two analysis frames, which is 93 ms at 44.1 kHz and 186 ms on a
+  stretched copy; measured, that quantisation alone left a **228 ms staircase**. Stepping one frame and finding the peak between samples with a
+  parabola through three scores brings the worst error to **98 ms** and the scatter to ±9 ms.
+- **End to end on that control: 710 ms of drift becomes 130 ms**, and 104 ms once the constant is nudged out with `Shift+N/M`. That is a
+  synthetic control and must not be quoted as accuracy on real music — what it establishes is that the arithmetic recovers a drift it was never
+  told about. The real number has to come from the player's own files, and `check_song_sync.py` prints the residual per window.
+- **Two filters, answering different questions.** A window whose best lag beats its nearest rival by less than `MIN_MARGIN` could not tell one
+  chorus from another; a window sitting further than `OUTLIER_S` from the robust line disagrees with all the others. Neither is a threshold on
+  the correlation itself, which would have to be fitted per song and would then be measuring the song.
+- **All the pitched tracks, not the one being practised.** A recording is the whole band, and matching a single guitar line against it throws
+  away most of the evidence. Percussion is left out: a drum kit has no pitch classes, only noise across all twelve.
+- **It runs on a thread with a percentage on screen**, because a four-minute song is a couple of seconds of arithmetic and seconds in the game
+  loop is a frozen app — the bill this project has now paid at seeks, at the pause, at the instrument change and at the tab view.
+- **"Could not read it" and "needs no correction" are different answers**, so the panel prints how many windows were usable next to how many
+  there were. A feature that stays silent on failure is indistinguishable from one that does not work.
+
+## The Band Did Not Play To A Click, And That Was The Wrong Conclusion
+
+The player measured the picture against the recording bar by bar — and then measured it again at 70 % speed, where **the same bars were the same number of milliseconds out**. That one comparison settles what three sessions of guessing could not: anything the app loses (a stalled frame, a late resync) is proportional to REAL time, so at 70 % it would be 1.43x larger in song time. An offset that is unchanged in song milliseconds is a property of the FILES.
+
+The app's own numbers say the same thing from the other side: `mp3_worst_drift_ms 53`, `mp3_resyncs 0`, `clock_ratio 0.9968` with all 1052 lost ms and all 7 stalls spent at startup. **The recording is played within 53 ms of where the song says it should be, and the picture keeps real time.** What is 1.7 s out is the tab against the music — which no clock in the app touches.
+
+Re-measured on the chroma curve at a 6-second step:
+
+| Abschnitt | lokale Wanderung |
+|---|---|
+| 0-60 s | -10.4 ms/s |
+| 45-105 s | **-5.2** |
+| 90-150 s | -7.0 |
+| 135-195 s | **-17.7** |
+| 180-240 s | -14.0 |
+
+**The rate varies by a factor of three, so no single correction exists.** A 1995 rock band played to no click and the tab is a fixed grid at 132 BPM; the best possible stretch factor (+1.09 %) still leaves **423 ms** standing. That is worth having — it beats 2.7 s — but it is a repair, not a cure, and it must be offered as one.
+
+- **The old verdict called this song "in sync".** `check_song_sync.py` compared the total drift against a guessed **3 seconds** and the song landed at 2.9 — so it printed "Tab und Aufnahme laufen zusammen" while measuring -1.08 %, and sent the whole investigation into the app. The threshold is `AUDIBLE_MS` (100 ms) now, which is where picture and sound stop reading as one event and is near the app's own 90 ms resync trigger. **A threshold nobody fitted is a threshold that will one day answer the opposite of the measurement it is made of.**
+- **And the uniformity test measured itself first.** At `STEP_S = 15` a 60-second bucket held three windows, too few to fit, so the check fell back to a single bucket and reported a rate that triples as **steady**. The step is 6 s now and fewer than three buckets says "cannot tell" rather than "steady". Same lesson as `analyze_ringing.py` and `check_ringing_rescue.py`, for the fourth time.
+- **The printed table is thinned, not the fit.** Every window is fitted; every fourth is shown, plus every outlier, because an outlier is the thing worth seeing.
+
+## Leaving A Song Wrote The Log Twice
+
+The player's upload had two logs one second apart for one run, and the second was **missing every mp3 line** while claiming to describe the same run. `stop_audio` is reached more than once on the way out — the screen is torn down and the state change calls it again — and by the second call the recording had been closed. `_run_log_written` guards the leaving path only: `D` is a request and must always produce a file.
+
+## Every Bar Was Played Exactly Once
+
+The player reported the picture and the backing recording drifting apart — synced at the start, about 25 s apart by 3:30, and **the same at 70 %
+as at 100 %**. That last detail is the one that matters: practice speed stretches the picture and the stretched recording alike, so it cannot
+open a growing gap. Something was missing from the song itself.
+
+Searching the loader for `repeat`, `alternate ending`, `coda`, `segno`, `D.C.` returned **nothing at all**. Every bar was played once. A tab that
+lines up with a recording only because it repeats is then shorter in the app than the music is, and the gap grows by the length of every repeat
+that was skipped.
+
+- **One plan, four readers.** The notes, the measure ranges and both backing-track extractions used to walk the bars themselves. `played_bars`
+  answers "when is this written bar played" once and hands the same answer to all of them — four walks of their own is exactly how the picture
+  and the backing would come to disagree, which is the same drift one level down.
+- **The two formats are off by one from each other.** GP3-5 counts REPEATS (`repeatClose == 1` means go back once, so twice through); GPIF
+  counts PASSES (`count="2"` means twice through). Read as a pass count, GP5's 1 means "play once" and a first/second-time ending never reaches
+  its second bar. `Demo_v5.gp5` lost exactly one bar that way, which is how it was caught — so each format converts in its own reader and
+  `BarRepeat.close_count` is documented as the number of times the section is PLAYED.
+- **Bars are numbered by where they are PLAYED**, not where they are written. A repeated section is two passes on screen, and saying "bar 12"
+  twice would make the weakest-section report name a place nobody can find.
+- **Measured on the reference fixture**, which turns out to contain exactly the structure that was being dropped: `Demo_v5.gp5` opens with `|:`
+  over bars 0-2 and a first/second-time ending. It now reads **771 notes over 52 bars against 729 over 49** — and bar 4, the second ending, was
+  previously never played at all. The old number in the test was the bug written down. `canon.gp5`, which has no repeats, is unchanged to the
+  note.
+- **The GPIF side is verified by injection**: `|:` and `:|` added to bars 4-7 of a real file lengthens it by exactly four bars and 8.7 s, and the
+  hand-built container in `tests/test_repeats.py` pins each convention.
+
+## Playing A Drop C Song On A Drop D Guitar
+
+"Wie schwierig ist es bei einem Lied die Stimmung anzupassen… im Idealfall muss man das Tab nicht anpassen, sondern nur die Tonhöhe des MP3s?"
+The idea is right and the cheap half is cheaper than it looks: **Drop C and Drop D differ by a uniform two semitones, so the FRET NUMBERS DO
+NOT MOVE.** The same shapes on a Drop D guitar are the same music a tone higher. The picture is untouched; what moves is the pitch the app
+expects to HEAR and the pitch of the recording.
+
+- **`Timeline.transposed(n)` shifts the notes and the tuning and nothing else.** Applied in `_load_song`, before the matcher, the MIDI backing
+  and the guide track are built, so one transposed plan feeds all of them rather than each applying the shift for itself — the
+  "four readers of one plan" fault this project has already paid for.
+- **Only tunings of the same SHAPE can stand in for each other.** `uniform_shift` returns None for Drop C against Standard, because a Drop
+  tuning has its sixth string lower relative to the others and no transposition expresses that. Moving a note to a different fret is a
+  different operation and already exists (`tools/retune.py`). `reachable_tunings` is what the key steps through, so a player chooses a TUNING
+  and never a number of semitones; DADGAD reaches only itself, and the key says so rather than looking dead.
+- **`timestretch.pitch_shift` is the stretch we already had, read back at the pitch ratio.** The two length changes cancel exactly, and that
+  matters more than it sounds: **an unchanged length means every sync point, the offset and the whole sync map still describe this file.**
+  Nothing has to be measured again.
+- **The shift is arithmetic and it is exact.** Measured against a sine of known pitch: +2, −2, +1, +5, −5 and +0.5 semitones all land within
+  **0.23 cents**, a five-hundredth of a semitone. End to end on the player's own five-minute recording: built in **7.5 s**, length error
+  **0 ms**, and the strongest pitch class moves 0 → 2 for +2 and 0 → 10 for −2, which is the whole point.
+- **What it costs is not accuracy but the WSOLA artefacts the practice speed already has**, at a far smaller factor — a tone is 1.12 where
+  50 % speed is 2.0. Whether that is acceptable on a full band mix is a question for ears, not for this file.
+- **A shifted copy is a different cache entry**, because a transposed song quietly playing the untransposed copy is the fault the sync rate
+  caused once already. `_mp3_source_fits` compares the transpose explicitly: the time scale cannot see it, since a pitch shift leaves the
+  length exactly alone.
+- **The HUD names both tunings** (`Tuning: Drop D … (written Drop C, +2 — R)`). The fret numbers on screen belong to the WRITTEN song, and
+  without saying so they belong to a song nobody can find.
+
+## Seven Strings On A Six-String App
+
+Metal is written for seven and eight strings and this app plays six. The usual answer is "you need a seven-string"; the honest one is that the
+notes usually fit anyway, because a seven-string in B standard and a six-string in **drop B share their lowest note**. `tools/retune.py`
+rewrites the tab: every note keeps its exact MIDI pitch and only its string and fret change, which is arithmetic rather than arrangement.
+
+Measured on the file that prompted it (I Prevail, "Blank Space", a real seven-string tab): both rhythm guitars, **1179 and 1884 notes, every
+one of them fits**. The lead track loses four notes above the 24th fret and says which.
+
+- **The tool checks its own claim.** It compares the multiset of pitches before and after: anything missing must have been reported as out of
+  reach, and a pitch that appears where it did not before fails the run. A quietly transposed tab is worse than no tab.
+- **A beat is placed as a whole, never note by note.** Two notes of one chord landed on the same string — impossible on a guitar, and
+  undescribable in GP5: the played-strings byte has one bit per string, so one note is written and never read back and every byte after it is
+  garbage. **The file would not open at all**, which is how it was found; reason alone had not.
+- **A TIE has to follow the note it continues.** GP5 reconstructs a tied note's pitch from whatever that STRING was last playing, so a tie
+  left behind when its predecessor moved reads back as a different note — one came out an octave low. The old-to-new string mapping is carried
+  from beat to beat for exactly this.
+- **The notes of a beat are written in string order**, because that is the order the reader walks them in.
+
+## Muting (palm mutes, dead notes)
+
+`NoteEvent.palm_mute` and `NoteEvent.dead` carry what the tab wrote; both come out of pyguitarpro AND out of the GP7 XML path, where they are
+plain flags rather than a curve to reconstruct. They are separate axes — a chug riff mixes them — and neither implies the other.
+
+- **A dead note has no pitch to check, so the strike IS the evidence.** Its written fret says where the fretting hand damps the string, not
+  what will sound; scored against that pitch, every dead note in a tab was a miss however well it was played. `OnsetPitchCollector` now reports
+  a strike that produced no pitch as `unpitched` instead of dropping it, and `_dead_note_credit` accepts any strike — pitched or not — for a
+  written dead note. A muted strum across three strings is one stroke, not three.
+- **A dead note never competes for a pitched strike.** It accepts any pitch, so left in the ordinary candidate list it swallows the strike meant
+  for the real note beside it. It is held back and only catches strikes nothing else explains. It is also kept out of the timing report (its
+  pitch never sounded, so the offset would be invented) and out of chord verification (the verifier would hunt for partials that were never
+  there and convict a neighbour for their absence).
+- **A palm mute does not change the pitch**, so scoring is untouched — the picking hand chokes the note, it does not transpose it. What changes
+  is the drawing: the note is capped at `PALM_MUTE_MAX_HEADS` rather than ringing for its written length, because promising a ring that will not
+  happen is how a chug gets read as a held note.
+- **"PM" is badged once per run, not per note**, the way paper tab writes it and dashes it onward — a disc over every note of a muted riff buries
+  the music under its own labelling. A dead stroke inside the run does not break it (the hand never leaves the strings); a silence longer than
+  `PALM_MUTE_RUN_GAP_MS` does, so the badge comes back when the riff does.
+- **A chug that comes back with no pitch is NOT credited — built, measured and removed in the same week.** The argument for crediting it was
+  good: a palm mute is a note the tab TELLS the player to choke, a choked string sometimes gives YIN nothing to lock onto, and a chug riff runs
+  too fast for the audio window that would otherwise confirm it (trimmed to the gap before the next strike, dropped under `MIN_WINDOW_MS`), so
+  on exactly that passage no evidence can ever arrive. Every palm-muted take at the time was a power CHORD, where pitchless strikes really do
+  run at 16-20 %.
+- **Block 7 said the opposite for a single note.** On 87 correctly played chugs a strike arrives pitchless **3 times — 3.4 %**. On the take
+  played a fret off, **3.5 %**: the same rate. So the leniency would have bought three notes in eighty-seven and paid by turning two wrong ones
+  green, and being pitchless says nothing whatsoever about whether the fret was right. `tools/check_palm_mute.py` still reports the rate, and
+  fails if it ever climbs back to a fifth of strikes — the point where the original premise would hold again.
+- **What that recording did show is that a palm-muted low string is heard an OCTAVE above what was played** — 59 of 61 strikes. It costs
+  nothing, because the matcher grants octave equivalence on purpose, and it is why scoring a chug take against the wrong tuning reads as zero
+  rather than as an octave error.
+
+## Reference Takes Are Only Worth Their Tuning
+
+The block 7 chugs scored **0 of 87** the first time they were read, and nothing was wrong with the audio: the takes were played in drop D and
+the manifest said E2. `record_reference.py` asked only for a UNIFORM tuning offset and told the player in as many words not to use a drop
+tuning — which is not a thing to ask of someone who plays metal. They answered "standard", correctly, because five of their six strings were.
+
+- **Ask for what varies, not for what is convenient to model.** The recorder now asks for the uniform offset AND for a dropped sixth string,
+  and writes both into the manifest. Every tool reads `expected_midi` from there, so the fix reaches all of them at once.
+- **A whole take set can be invalidated by one number** and it does not look like an error — it looks like the detector failing. The tell was
+  that every strike came back exactly 10 semitones off, which is a tuning, not a mistake: real detection errors scatter.
+- The existing session's manifest was corrected by hand rather than re-recorded (the audio is untouched, and the correction says so in a
+  `corrected` field).
+
+## A Tie Is One Note Written Twice
+
+The player's screenshot: their tab holds a fret across two beats with a tie and a `let ring`, and the app drew **two notes side by side**. Both readers had half of it right and neither had the other half.
+
+- **GPIF (GP6/7/8) played the continuation again.** `<Tie destination="true"/>` sits on the `<Note>` itself, not in the Properties block, and nothing read it — so the app asked for a pick the music does not contain, and every one of those was an unavoidable miss.
+- **GP3-5 dropped it** (`note.type.value == 2`, skipped) **without lengthening the note it continues**, so a note held across two beats was drawn for one.
+- **Neither made the note longer**, which is the whole point of a tie. `_extend_tied` finds the last event on that string and stretches it to cover the continuation; nothing is appended, because a tied note is not struck.
+
+Measured on the player's own files: **Bon Jovi 850 → 746 notes** and **Papa Roach 1384 → 1314**. A hundred phantom picks in one song, every one of them scored as a miss, and the percentage they had been reading was built on top of that.
+
+The control matters here as much as the fix: `tests/test_ties.py` builds the same file with the tie taken OFF and asserts it really is two notes of 2000 ms. Without it the class would pass on a loader that simply drops every second note.
+
+**And the note was STILL drawn short, for a reason that had nothing to do with ties.** The player's file settles it: 1018 ties, no `LetRing` property anywhere — the "let ring" in the picture is a text annotation the file does not encode. The tie was merged perfectly (an eighth of 312 ms became 1562 ms, exactly the tied half note) and then the DRAWING threw it away. `_neighbour_gaps` returned `min(gap before, gap after)`, so a note was shortened by something that had already finished: 490 px of sustain cut to 98 px by an eighth note that came BEFORE it. A note can only ever run into the one that FOLLOWS it. Every long note after a quick one on its string was drawn short, in every song, since long before ties were touched — and the test pinned it, with `# backwards, not 800` written next to the assertion.
+
+**A longer drawn note cannot push the picture and the sound apart, and it was worth measuring rather than asserting.** The drawn length is
+read off the tab and touches no clock — not `_playback_ms`, not the audio anchor, not the recording's transport — so the only way it could
+matter is by costing frames, and a stalled frame really is song time discarded (`clock_lost_ms`). Measured on 4000 notes of sixteenths, the
+worst case there is: **1.72 ms a frame with every note plain, 2.34 ms with every note let-ring**, against a 16.7 ms budget. Six tenths of a
+millisecond. What the player was seeing is the tab against the recording, which is the chapter above.
+
+**And the last note on a string rang for ever.** With no neighbour to stop it the cap was `inf`, `int(inf)` raises, and the frame died — so
+every song whose last note on any string is let-ring crashed when it reached it. It rings to the END OF THE SONG, which is a length.
+
+**And "let ring" is a different thing that looks the same on screen.** The player's next screenshot showed the doubling gone and the note still short: a tie is one note written twice, but `let ring` does NOT change the written value — a let-ring eighth is still an eighth — it says the string is never damped, so the note sounds on until something else is played on it. Neither reader read it at all. It is `NoteEvent.let_ring` now, out of pyguitarpro's `effect.letRing` and GPIF's `<Property name="LetRing">`, and it changes the DRAWING only: the note is drawn up to the next note on its string, which is the cap every other note already has. Nothing about the scoring moves, because the pick is at the written moment either way.
+
+## The Sound Went Bad And Only A Restart Fixed It
+
+"Sobald der flatternde Sound (ist auch leiser) bei einem Song da ist, bleibt er auch bei jedem andern Song und auch bei nur Midi ohne mp3. Bei anderen Apps bleibt der Sound normal."
+
+Every clause narrows it. It survives a song change, so it is not the file; it happens with no recording loaded, so it is not the time-stretch; other applications are unaffected, so it is not the sound card; a restart clears it, so it is **state this process holds**.
+
+- **The mixer had no buffer of its own.** It was opened lazily in two places with pygame's defaults — 512 frames, 11.6 ms at 44.1 kHz — on a machine also running the aubio analysis thread, a WSOLA stretch and a 60 Hz game loop. A backing track is not a monitoring path and nobody can hear 46 ms of it, so there was nothing to be won by cutting it that fine, and a starved output is what "flattering" sounds like. `audio/output.py` owns the lifecycle and asks for 2048.
+- **The run log named the input and said nothing about the output.** Device, rate, dropped buffers on one side; on the side the player was actually listening to, not a word. `output_device` now.
+- **`Shift+A` reopens it, which is the experiment as much as the workaround.** If the sound comes back, the fault is the mixer; if it does not, it is the shared Windows device and no key in this app can reach it. Until now the only way to find out cost the whole sitting.
+
+**This is not yet a diagnosis and must not be written up as one.** The buffer is the best-founded suspect and it has not been shown to be the cause — the fault has never been reproduced here, only reported.
+
+## Three Things You Can Hear, Switched Separately
+
+The MIDI backing is what the OTHER instruments play; `Shift+B` is the mirror of it — the written notes of the track being PLAYED, so the part
+you are meant to produce can be heard while you learn it. They are separate toggles because they answer different questions, and somebody
+learning a solo wants the second without the first.
+
+- **Off by default.** Producing that part is the whole point of the app, and hearing it play itself on the first run would teach the wrong
+  thing. The setting is remembered per player, not per song.
+- **Built by running the same extraction the other way round** — the backing excludes the chosen track, the guide excludes every other one. No
+  second code path to keep in step, and it costs no MIDI device: the output is shared.
+- **`_midi_all()` is the only way the transport reaches them.** A seek, a pause, a loop turn, a tempo change has to move both or they drift
+  apart, and a guide a bar out is worse than no guide. Going through one list is what stops the next transport call being added to only one.
+- **A song without one says `—`**, the same as the backing, because a dash is the answer to "why does pressing it do nothing".
+
+## Two Backing Tracks, Switched Separately
+
+The MIDI backing is generated from the same timeline as the notes, so it cannot drift: it is told a position and plays the events at it. A
+recording has its own clock, running in the sound card, and the only control available is "start from here" — so `mp3_playback.py` compares
+where the song is with where the recording got to and corrects only past `RESYNC_MS` (90 ms), no more often than `MIN_RESYNC_GAP_MS`
+(1.5 s). A re-seek is audible; correcting an error nobody can hear costs more than the error.
+
+- **They are separate toggles (`B` and `U`), not one control cycling through both.** The player asked for it that way and the reason is the
+  workflow: lining a recording up against the click means hearing BOTH, then switching one off. A control that goes off → MIDI → recording
+  makes the state the job needs unreachable.
+- **Its own per-song offset (`Shift+N`/`Shift+M`), with no global fallback.** An MP3 decoder emits encoder padding before the music and how
+  much depends on the encoder that made the file, so nothing about one song's value predicts another's, and nothing about the MIDI offset
+  predicts this one.
+- **Its range is minutes, not milliseconds, and it needs three step sizes.** A recording is a different piece of music that happens to
+  contain the same song, and the tab is not always the whole of it: a GP file holding only the solo has to be lined up against four minutes
+  of music before it. `MAX_MP3_OFFSET_MS` is 8 minutes. `Shift+N`/`Shift+M` move 10 ms (what a sync is judged in), `Ctrl` a second (an
+  intro), `Ctrl+Shift` ten seconds (reaching four minutes at a second a press is four minutes of pressing). The MIDI backing keeps its own
+  offset on the plain keys, with `Alt` for a second — and its range is 10 s rather than the 400 ms it had, because 400 ms was chosen from
+  what a synth and a sound card add, which is the wrong thing to choose it from: the tab and the backing do not always start on the same beat.
+- **The offset reads in the unit it is judged in.** Milliseconds while it is a sync, seconds while it is an intro, minutes and seconds once
+  the tab is only the solo — "-192.00 s" is not something anyone can check against a player's time display.
+- **Practice speed is served by a stretched COPY of the file, not by playing it slower.** `pygame.mixer.music` plays at the recorded rate,
+  and resampling to 80 % drops the pitch four semitones with it — so `audio/timestretch.py` makes a longer file at the same pitch (WSOLA:
+  overlapping windows laid down at a new spacing, each slid to where it best continues the last) and `Mp3Player.set_source` is handed that
+  instead. The player is told and reports SONG milliseconds throughout; the file's own time is `song × time_scale`, and `time_scale` is
+  `1/tempo`. Every result is cached under `~/.pickhero/stretched/`, keyed by the file's size and mtime as well as the speed, so picking a
+  different recording can never inherit the last one's stretch.
+- **It keeps time, which is a different question from coming out the right length.** A file can be exactly 25 % longer and still put the
+  beats in the wrong places. Measured with a click track at every speed: the spacing is off by **0.03 ms per second at worst — 5 ms over
+  three minutes**. So when the recording feels out of sync, it is not the tempo; look at `mp3_worst_drift_ms` and `mp3_resyncs` in the run
+  log, which say how far it actually wandered and how often it was pulled back. Individual transients scatter by up to 6 ms at 50 % speed,
+  which is WSOLA sliding each window to where it best continues the last, and is the price of the pitch staying put.
+- **Measured on the player's own guitar, not on a sine wave** (`tools/check_timestretch.py`): a chord, a fast line and a whole play-along
+  take, at every speed from 90 % down to 50 %. The pitch moves by at most **15 cents** — a sixth of a semitone, and the size of the
+  measurement's own precision — while the control column shows what merely playing the file slower would cost: **−182 cents at 90 % and
+  −1200 at 50 %**. The length lands within 1 % everywhere. The check prints the width of its own correlation peak beside every reading,
+  because on a sustained chord that peak is broad and a shift smaller than the width is not a reading at all.
+- **It takes seconds, and the player has to be able to see them.** Measured: about 20 ms per second of stereo audio, so a four-minute song
+  is five seconds here and plausibly three times that on a laptop, with the recording silent throughout. The first version said "one moment"
+  and nothing moved, which is indistinguishable from a feature that does not work — and that is exactly how it came back. It shows the
+  percentage now, and a build nobody wants any more is abandoned rather than finished: stepping the tempo down three times would otherwise
+  build three copies before reaching the one that was asked for.
+- **The recording is looked after while the song is PAUSED too.** `update()` returns early when not playing and the recording's update sat
+  after that return, so a copy that landed during a pause was never swapped in and the progress line stood still until playback resumed.
+  Pausing stops the music, not the work.
+- **The stretch runs on a thread and the recording is silent until it lands.** A whole song is seconds of work, and seconds of work in the
+  game loop is a frozen app — the fault this project already shipped once, when a seek reopened the input device. Playing on at the old speed
+  meanwhile is not the lenient option either: it is a bar out within seconds. So the HUD says "fitting to 80 % speed" and the recording waits.
+  A file SDL can stream but not decode into memory fails here and is named on screen ("convert it to OGG or WAV"), and a failed speed is not
+  retried every frame.
+- **Every failure is named on screen**: a file that has been moved, a decoder that cannot start from the middle of a file. A backing track
+  that silently does not play is indistinguishable from a feature that does not work, and the player would go looking in the wrong place.
+- **`play(start=)` really does seek — measured, not assumed.** A file whose pitch encodes its own timestamp, played from 5, 10 and 15 s
+  with SDL's output captured to disk, comes back at the right pitch every time. So when a jump does not carry, the fault is in this app's
+  path or in that particular file's decoder, and there is no point rewriting the transport. A decoder that cannot seek accepts
+  `play(start=)` without complaint and starts from the top anyway, which is invisible — so a gap that stays open past
+  `MP3_STUCK_DRIFT_MS` for `MP3_STUCK_FOR_MS` is named on screen rather than left to look like a dead key.
+- **The file chooser is the operating system's, and the first one takes seconds.** Opened straight from the key press nothing is drawn in
+  between, so the app just stops — indistinguishable from a dead key. The note goes up first and the dialog opens on the NEXT frame, once it
+  has really been on screen. And every key repeat that arrived while it blocked was still in the queue afterwards, each one reopening it: the
+  player had to cancel the same dialog over and over. Key repeat is 40 ms, so seconds of blocked frame are dozens of them; the keys are
+  dropped when the dialog returns.
+- **A song with no recording said nothing at all**, so the key that assigns one was invisible and `U` looked as though it had been removed.
+  The line now names `Shift+U`. A feature that silently does nothing cannot be told apart from a broken one — the same rule as every named
+  failure above.
+- **A status message must never outlive its situation.** Picking a file set a note that outranks the ordinary HUD line, and nothing cleared
+  it — so the offset the player was adjusting with `Shift+N`/`Shift+M` was never on screen at all, and the key looked dead. Notes are for
+  what the live line cannot say, and they are dropped as soon as it can.
+- **Pause silences it too, and that took a bug to notice.** Every route to the recording reaches `Mp3Player.seek`, and seeking STARTS
+  playback — so nudging the offset on a paused song set the recording playing under a picture standing still, which is the one state the
+  offset cannot be judged in. `_mp3_plays()` includes `self._playing` for that reason. Paused, `Shift+N`/`Shift+M` only store the value;
+  the HUD shows it move regardless, so the key never looks dead.
+
+## Skipping A Stretch With Nothing To Play
+
+"Wie überspringe ich Leerstellen?" Measured first, over every track of the four songs to hand — because what a rest IS decides the constant:
+
+| | inner rests >= 8 s | outro |
+|---|---|---|
+| the five guitar tracks | **1** (Kid Rock lead, 12.9 s) | 0 to 52 s |
+| bass and vocal tracks | 2 to 5, running to 44 and 100 s | 17 to 67 s |
+
+A guitar track's inner rests are either **4-6 s** — two bars, part of the music, and the player counts through them — or **12 s and up**,
+which is a section it does not play, with nothing at all in between. So any threshold from 7 to 12 s picks out the same rests on this
+material: `GAP_MIN_MS` sits on a plateau rather than on a knife edge.
+
+- **`E` lands `GAP_LEAD_IN_MS` (3 s) before the next note**, not on it: there has to be time to read the fret and get the hand there.
+- **The whole transport moves with it.** `seek` already carries the MIDI backing, the recording and the audio clock's anchor, so nothing new
+  was needed — and a picture that jumps while the recording plays on is the sync fault this project has paid for several times.
+- **A rest is measured from the END of the notes before it, not from their onset.** Counting from the onset finds three more rests on this
+  material, every one of them a held note — and skipping over one would skip a note still sounding and still being scored.
+- **The outro is the biggest hole and is deliberately not a jump.** 52 s on one song's lead guitar, 37 s on its rhythm track, and no next
+  note to land in front of. It is ANNOUNCED instead ("Nothing left to play — 52 s of song to run"), because a picture scrolling through
+  nothing looks exactly like a picture that has stopped.
+- **A loop outranks it.** Jumping out of a loop would be undone by the loop itself on the very next frame, which is a key that looks broken.
+- **The HUD says the rest is there and names the key**, only while the player is actually sitting in the hole. Announcing one before it
+  arrives is noise on a line that is read at a glance.
+
+## The Knob Had Two Ends And Named Neither
+
+"Im Anhang ist ein Bild bei dem die Noten noch immer zu dicht sind." The layout is doing what it was built to do; the knob was turned the
+other way and nothing said so. Measured across the factor range on the guitar tracks to hand:
+
+| | 0.4x | 0.8x | 1.0x | 1.5x | 2.5x |
+|---|---|---|---|---|---|
+| Kid Rock lead, note pairs closer than one head | 5 % | 5 % | 5 % | **0 %** | 0 % |
+| | 172 px/s | 220 | 275 | 412 | **683** |
+
+**`-` is what makes the notes dense.** It buys look-ahead by pushing them closer together; `+` spreads them out by showing less of the song.
+The HUD read `Scroll: 5.0 s ahead (0.8x, +/-)` — a number that sounds like a good thing, a factor, and two keys with no direction on either.
+It names both ends now, and the head size, which is the thing being traded.
+
+- **`SPACING_PERCENTILE` was measured and left alone.** Dropping it from 10 to 2 takes the Kid Rock tracks from 5 % and 4 % of pairs
+  touching to 1 %, and costs a quarter to a third of the look-ahead — while changing **nothing at all** on the other three tracks, whose
+  window is pinned elsewhere. That is a real trade with no free side, and the player already holds the knob; moving the default would spend
+  every song's look-ahead on 3-4 points of density on some.
+- **And one step of the knob was dead.** While the trade is live a step moves the window by 7-17 %; at 0.7x -> 0.6x, once the head is on its
+  floor, it buys **1.7 %** — a number that moved and a picture that did not, followed by a refusal at the next press. The guard only refused
+  a step worth under one MILLISECOND. It refuses anything under 5 % now, which is the middle of the gap between the live steps and the dead
+  one. Same fault as "Slowing The Tab Down Did Nothing At All", one press further along.
+
+## The Recording Kept The Tuning It Was Made In
+
+"Wenn ich eine andere Stimmung wähle wird die Tonhöhe wohl nicht richtig angepasst. Es klingt zwar minimal anders, passt aber überhaupt
+nicht zu den Tönen, die ich spiele." Correct, and it was one line. `_ensure_mp3_source` decided whether a copy had to be built from the
+**practice speed alone**:
+
+```python
+if abs(wanted - 1.0) < 1e-3:        # "nothing to build"
+    self._mp3_player.set_source(self._mp3_path(), ...)
+    self._mp3_loaded_source_transpose = self._transpose
+```
+
+At 100 % speed that loads the ORIGINAL recording whatever the tuning — and then records the transpose it had **not** applied, so
+`_mp3_source_fits` agreed and it was never rebuilt. The guitar sounds a tone above a backing at its written pitch, which is not a subtle
+error and is exactly what was reported. The "minimal anders" is the tab, the MIDI backing and the guide track, all of which DID move.
+
+- **The practice speed is not the only thing that makes the recording a different file.** The test is the speed AND the tuning.
+- **And the memo in front of the cache had the same hole.** `_mp3_stretch_matches` compared `(tempo, path)` and not the transpose, so a copy
+  built at +2 was handed straight back for the written tuning and the other way round. `timestretch.cache_name` hashes the semitones and had
+  it right all along; it was the screen's own one-entry memo that did not — a second reader of one answer, disagreeing with the first.
+- **Silent until the right copy lands**, the way a slowed-down song already is. Playing the unshifted file meanwhile is the one thing worse
+  than silence, because it sounds like the feature working.
+- The control is what makes it safe: at the written tuning and full speed, nothing is built and the original plays, exactly as before.
+
+## Twenty-Five Steps A Second, For A Setting With Eleven Positions
+
+"Ich drücke die Taste Bild ab einmal. Es zeigt kurz 95 % und springt dann auf 50 %. Drücke die Taste aber super kurz." Measured, and the
+arithmetic is the whole diagnosis:
+
+| | |
+|---|---|
+| `pygame.key.set_repeat(300, 40)` | a repeat every **40 ms** — 25 a second |
+| practice speed | 50 % to 100 % in 5 % steps = **11 positions** |
+| **holding PgDn to cross the entire range** | **700 ms** |
+| scroll factor (22 positions) | 1.14 s |
+
+One global repeat rate for every key in the app. That is right for an arrow key walking through a song, where the player is scrubbing, and
+wrong for a discrete setting — and on top of it **a frame that stalls drains every repeat that arrived during it in one go**, so a single
+press lands at the far end. The 95 % the player saw is the one frame that rendered between the first event and the burst.
+
+- **Only REPEATS are gated, never the first press.** A key that feels dead is the fault this display has already been fixed for twice.
+- **Coming off the key clears the gate**, so two deliberate presses both count. Exact where a timer alone would be a guess — the same reason
+  `Shift+S` waits for its key to come up.
+- **150 ms a step** walks the speed range in 1.5 s, which reads as a deliberate movement, and is nine times a frame, so a burst drained in
+  one frame moves the setting by one step. The test presses the key ten times inside one frame and requires one step; it fails on the
+  unfixed code, which is the only thing that makes it worth having.
+- The scroll factor gets the same gate. It is the same fault, and two answers to one question is how this project has been bitten before.
+
+## Two Complaints Pulling On One Knob — NOT DIAGNOSED, NOT BUILT
+
+"Bei schnelleren Songs wie I'd die for you oder Love walked in wird das Bild irgendwie unscharf und ich kann Töne kaum erkennen." Written
+down before anything is built, because the first measurement says the obvious fix is the one that makes the OTHER complaint worse.
+
+**The same player, the same week, asked for opposite things from `+`/`-`:**
+
+| | px/s | smear at 60 Hz | the notes |
+|---|---|---|---|
+| `-` (0.8x) | 172 | 2.9 px | **denser** — the complaint before this one |
+| 1.0x | 275 | 4.6 px | |
+| `+` (1.5x) | 412 | 6.9 px | further apart |
+| `+` (2.5x) | 683 | **11.4 px** | furthest apart |
+
+So "the notes are too dense" wants `+` and "the picture is unsharp" wants `-`. **The knob cannot answer both**, and any fix that only moves
+it is trading one report for the other. That is the finding; everything below is a candidate.
+
+**The arithmetic that makes "unsharp" a real thing and not an impression.** A 60 Hz screen HOLDS each frame for 16.7 ms while the eye tracks
+the moving note smoothly, so an object at `v` px/s is smeared across `v / 60` pixels. It is a property of sample-and-hold displays and no
+amount of drawing quality touches it. Measured on the songs to hand at 1.0x:
+
+| | px/s | smear | share of a fret digit |
+|---|---|---|---|
+| Kid Rock rhythm | 128 | 2.1 px | 6 % |
+| Papa Roach | 191 | 3.2 px | 10 % |
+| Kid Rock lead | 275 | 4.6 px | 15 % |
+| **Bon Jovi, "I'd Die For You"** | **432** | **7.2 px** | **23 %** |
+
+The song the player named is the fastest scroller measured here, at normal speed, and it smears nearly a quarter of the digit's width. That
+is consistent with the report and does not prove it: **nothing has been reproduced or measured on the player's machine**, and "Love Walked
+In" is not in `songs/` at all.
+
+**Three candidates, fixed in three different places. None is established.**
+
+- **Persistence blur** (the table above). Only two levers exist: fewer px/s, or more frames a second. It is the one candidate whose size is
+  already known.
+- **Frame pacing.** `App.run` uses `clock.tick(60)` — a SOFTWARE timer — and `set_mode` is called without `vsync=1`. An unsynced 60 against a
+  60 Hz panel beats slowly in and out of phase, which reads as juddering rather than as smooth motion, and is a different complaint wearing
+  the same word. `vsync=1` is one argument; whether it helps has not been tried, and it can fail to be honoured at all.
+- **Pixel quantisation.** A note's x is a float landing on whole pixels, so each frame rounds by up to half a pixel. At 4-7 px of travel a
+  frame that is a tenth of the motion, arriving as jitter on top of the smear.
+
+**And the promising direction is neither of those, which is why this is written down rather than fixed in a hurry:**
+
+- **The lane's vertical space is free.** "A Note Head Is Squeezed Sideways, Not Downwards" measured 53 % of the lane height unused on a dense
+  song. Look-ahead is bought and sold in WIDTH only, so a taller, bolder head costs nothing at all and is the one improvement that does not
+  come out of the other complaint's budget.
+- **`Shift+T` does not scroll.** `_tab_scroll_for` HOLDS the page while the current system is on screen and moves only at a line break, so a
+  page view has no persistence blur by construction. It may simply be the right view for a fast song, and nobody has asked the player to try
+  it for this.
+
+**What the next session needs before building anything:** the two `.gp` files (they are not here), and the player's `frame_ms_median` /
+`frames_over_budget_percent` / `clock_ratio` from a run log of one of them — because a machine dropping frames and a machine smearing them
+look identical on screen and are fixed in different places, which is this project's oldest lesson.
+
+## Slowing The Tab Down Did Nothing At All
+
+"Kleiner machen geht nicht richtig — es haengt meist bei Groesse 1 und ignoriert kleiner machen. Groesser machen geht, aber das macht den Bildlauf schneller."
+
+Exactly right, and measured on three real songs before touching anything:
+
+| Faktor | Papa Roach | Bon Jovi | timing test |
+|---|---|---|---|
+| 0.4 | 191 px/s | 432 px/s | 173 px/s |
+| 0.6 | **191** | **432** | **173** |
+| 0.8 | **191** | **432** | **173** |
+| 1.0 | 191 | 432 | 173 |
+| 2.5 | 477 | 683 | 433 |
+
+Every factor below 1.0 produced the identical picture. `window = max(MIN, min(fit_window, window))` clamped the window back to the size at which every note keeps its full head — so the number on screen walked down to 0.4 while nothing moved, which is the "feature that cannot be seen working" fault in its purest form.
+
+- **The rule it was protecting is real but was read too widely.** Notes must not change size WHILE SCROLLING. The trim happens on a keypress, which is the same moment the automatic already resizes them — and the app deciding to shrink notes is a different thing from the player asking it to.
+- **Two floors, and the wrong one was in the way.** `MIN_FRET_DIGIT_PX` (34 px of type, so 41.6 px for a two-digit head) was fitted in "Eleven Or Twelve" for reading a number crossing the screen at 430 px/s. Applied to a tab the player is deliberately slowing down it asks the wrong question — and it meant **every song containing a two-digit fret could not be slowed at all**, because its head already sat on it. That is most rock songs. A hand-requested slowdown uses the older, harder `MIN_HEAD_PX` (26) instead.
+- **Measured after: Papa Roach 191 → 112 px/s, Bon Jovi 432 → 270, the timing test 173 → 102.** Bon Jovi is the two-digit case that could not move at all before.
+- **A press that changes nothing is put back and says so.** At the floor the key now answers "the notes are already as small as they may get" rather than storing a factor the display is not honouring.
+- **Removing the clamp broke the speed floor and the suite caught it**, in the one case nobody would have played: a song so dense its notes must overlap had its window recomputed straight back down through `MIN_VISIBLE_WINDOW_MS`, to 167 ms. The trade only runs when the player actually asked to slow down.
+
+## Making The Tuner Simpler Meant Taking Things Away
+
+Three things it asked of the player that it did not need to.
+
+- **It asked which tuning, and the app already knew.** The song list reads every file's open strings and shows them on the row; the tuner is
+  opened from that list, with a song under the cursor. So it opens on THAT song's tuning and says where it came from
+  (`from Papa Roach - Leave A Light On`). All sixteen named tunings render to distinct letter strings, so `tuning_for_notes` is a lookup and
+  not a guess — a song in a tuning nobody named, or one not read yet, falls back to Standard exactly as before, and `LEFT`/`RIGHT` still
+  override. Picking by hand drops the song's name from the line, because it would then be describing something no longer true.
+- **It showed six bars, of which five never move.** Finding the one that does is what the little arrow beside them was for — a cue that only
+  exists because the layout hid the answer. One string gets the screen now: its note at 96 px, one needle as wide as the window, and six small
+  pips underneath for which strings are done. A tuner is about the string in your hand.
+- **It reported cents, which is a measurement and not an instruction.** "−34 ¢" asks the player to know that negative means flat and that flat
+  means turning the peg the tightening way. `advice()` says **"Too low — tighten"**, then "Hold it…" inside the band, then "In tune" once it
+  has been held; the number stays underneath in small type for anyone who wants it. It is tested as a property — flat says tighten, sharp says
+  loosen — rather than by its wording.
+
+## A Tuner Must Not Believe The Calibration
+
+The playing screen has always had a chromatic strip — nearest note, cents, a bar. That is the wrong instrument for tuning up: it says "you are playing a G#", not "your D string is 34 cents flat", and it cannot show which strings are already done. `ui/tuner_menu.py` is the other one, opened with `U` from the song list.
+
+**No library is involved, and none is needed.** The pitch is aubio's, which the app has run since the first day, and a tuner is that pitch against a target: `1200 x log2(heard / target)`. The 16 tunings were already in `note_utils.NAMED_TUNINGS`. What a tuner has to get right is not the arithmetic but what it refuses to say.
+
+- **It reads the RAW pitch** (`get_tuner_data(raw=True)`, `detector.last_freq_raw`). `_correct_octave_jump` halves a frequency whose half lands near a CALIBRATED string, and this player's stored calibration has the A string an octave low. Being wrong about the octave while playing costs one note; being wrong about it while tuning makes them detune the guitar to match.
+- **The catch window is derived from the tuning, not fixed.** The test asserting that no reading can be owned by two strings failed on **DADGAD**, whose G and A sit a whole tone apart — a fixed 2-semitone window owned both, and the tuner would have named whichever it rounded to. It is half the closest pair in the chosen tuning now, capped at `CATCH_SEMITONES`. Every named tuning is checked at ±0.99, ±0.5 and 0 semitones from every string.
+- **A pitch no string owns names nothing.** A tuner that guesses sends the player the wrong way, and further out with every turn.
+- **In tune is a state that has to be HELD** (`STEADY_MS`, 400 ms). One frame inside the band is a string passing through the note on its way somewhere else, and going out again takes the tick back.
+- **Rows read low string first**, the order a guitarist tunes in and the reverse of the string NUMBERS, where 1 is the high e.
+
+## A Note Head Is Squeezed Sideways, Not Downwards
+
+A dense song shrinks its note heads to buy look-ahead — see `_recompute_scroll_speed`. What was never noticed is that the squeeze is
+entirely **horizontal**: look-ahead is bought and sold in width, while the lane is as tall as it ever was. Measured on the song the player
+reported, a solo track at 135 BPM whose sixteenths sit 111 ms apart, in a 1277x771 window:
+
+| | |
+|---|---|
+| head after shrinking | 26 px (the `MIN_HEAD_PX` floor) |
+| lane height | 56 px |
+| **vertical space unused** | **30 px, 53 %** |
+| look-ahead at full-size heads | 2.0 s — unreadable |
+
+So the head now carries its own height (`_head_h_px`), taken from the lane rather than from the music: full-size on a roomy song, where it
+equals the width and the note stays round, and full height on a dense one, where it does not. **This costs no look-ahead whatsoever** — the
+window is computed from the width alone, and the test asserts that rather than trusting it.
+
+Two things worth keeping straight, because the first version of the write-up got them backwards:
+
+- **The height makes the NOTE bigger, not the number.** At a 26 px head a two-digit fret is limited by the width, and more height does
+  nothing for it. The digits grew from 14 px to 21 px for a different reason: the old rule sized them at a fixed `radius * 1.1` and left
+  room unused, where `_fret_font` now fits them to the space that is actually there.
+- **Every fret number in a song is sized for the widest label in it.** Sized to its own label instead, a lone "5" towers over the "15"
+  beside it, which reads as emphasis the music never asked for.
+
+## One Curve For Every Note
+
+"Im Moment sind die breiteren Noten weniger abgerundet und mehr eckig." Exactly right, and it followed from the head being squeezed sideways.
+
+The corner radius was `min(head width / 2, head height / 2)` — and since a dense song buys look-ahead by narrowing the head while it keeps the
+lane's full height (see the chapter above), the width is the smaller of the two on every song that matters. So a sustained note got corners
+fitted to a width it does not have, and read as a box beside the round short ones next to it.
+
+- **The curvature is the HEIGHT's business and nothing else's.** One shape for every note now — a rounded rectangle with a corner of half the
+  head height — so a short note is a circle, a held one is a capsule, and the curve where they meet is identical. pygame clamps the radius to
+  half the shorter side by itself, so a head narrower than it is tall stays a capsule instead of growing corners.
+- **The ellipse branch is gone with it.** A short note used to be drawn as an ellipse and a long one as a rect, which is two shapes to keep in
+  agreement for no gain: a square rounded rect IS a circle.
+- Measured on a real board: 44x44 corner 22 and 222x44 corner 22, one radius for both. The test asserts the property — every head on a board
+  carrying both a quick note and a held one comes back with the same corner — and it fails on the old rule for the dense case, which is the one
+  the player was looking at.
+
+## Eleven Or Twelve
+
+"In a fast solo I can barely see whether it says 11 or 12." Measured on the app as it stood, in the same song:
+
+| | |
+|---|---|
+| a ONE-digit fret | **42 px** of type |
+| a TWO-digit fret | **21 px** — half of it |
+| the head it sits in | 33 px wide, 49 px tall |
+
+A number is wider than it is tall, and the head is squeezed **sideways** to buy look-ahead (see the chapter above) — so the digit was limited
+by the one dimension the song was spending. The height was already free and could not help.
+
+- **The head's WIDTH is sized for the widest label the song contains**, the same rule the FONT already followed. `_fret_digits` is therefore
+  computed before the head rather than after it — it was set at the end of `_recompute_scroll_speed` and read at the start, which would have
+  resized every note one frame in, and a note that changes size while scrolling is the one thing this display must not do.
+- **Only the broken case pays.** Measured: a fast two-digit song goes 21 px → **34 px** of type and 4.0 s → 2.5 s of look-ahead; a fast
+  single-digit song and a roomy song are bit-for-bit unchanged. Trading time for size is allowed here; trading away the warning is not, so the
+  floor is still `MIN_VISIBLE_WINDOW_MS`.
+- **The digits are bold.** A thin stroke is the first thing to disappear at speed, which is exactly when the fret number matters most.
+- **An open string is grey, whichever string it is.** The lane already says WHICH string — that is what the six lanes are for — so the colour
+  is free to say something the position cannot, and "nothing to fret" is the most useful thing it can say. It is what makes a chord read at a
+  glance: the open strings drop back and the shape the hand has to make stands out. Grey is neither a string colour nor a feedback colour, so
+  the separation the palette is built on holds.
+- **Fingering cannot be coloured, and the reason is worth writing down.** Guitar Pro DOES carry a left-hand and a right-hand finger per note.
+  Both were `Fingering.open` — "not given" — on **6193 of 6193** notes in the player's own tabs. So the field exists and transcribers leave it
+  empty; inferring it from fret position would be a guess dressed up as data, which is what this project refuses everywhere else.
+
+## Practice Speed Belongs To The Song
+
+`tempo_factor` was one number for the whole app, so the solo being learned at 70 % opened the next song at 70 % too, and the song you had
+finished opened slowed down because something else needed it. `song_tempo_factors` keys it by song; anything not in there starts at full
+speed, and full speed is never written (an entry saying 1.0 says nothing).
+
+- **The plain `tempo_factor` stays**, because tools outside the app read it: `record_reference.py` writes it into a take's manifest, and an
+  analysis that does not know the speed reads a stretched take against the wrong grid — which cost a whole session once.
+- **And keeping it is exactly what then wrote the wrong number.** `practice_tempo()` went on reading the global value, so the first take
+  recorded after this change said 80 % for a song played at 100 %, and `analyze_play_along.py` read that take at **13 %** instead of 91 % —
+  which looks precisely like a detector that has stopped working. It reads `song_tempo_factors[key]` now, and a song with no entry of its own
+  is **1.0**, not the global value: that is what the app opens it at. A setting that moves house has to be followed into every reader, and the
+  writer outside the app is the one nobody looks at.
+- **The analysis no longer believes the manifest either** (`check_tempo`). It measures the speed anyway and overrules a stated one that
+  another speed beats by a quarter — 51 strikes explained against 33, where a correct speed is a sharp peak (46 against 40 at its neighbour).
+  Same rule as everywhere else here: a tool that reports a number without checking the assumption underneath it is measuring itself.
+- **The settings screen shows it as "per song", not as a value.** A global number that no longer decides anything is a lie on a screen whose
+  entire job is saying what is set.
+
+## The Chord View Was A Key And Not A Setting
+
+"Shift+C fehlt auch im Settingsmenü." Right, and that screen exists for exactly this: anything set once and then living on invisibly. The chord
+view was screen state, so it was forgotten at every song and could not be found anywhere — which is indistinguishable from a feature that does
+not exist, and is how the player reasonably concluded it did not.
+
+It is `Config.chord_view` now: a row on the settings screen, marked when it is not standard, and written back when `Shift+C` toggles it in the
+song. The key and the row are the same setting, which is the rule every other pair on that screen already follows.
+
+## A Setting You Cannot See Is A Setting You Cannot Undo
+
+Forty-one keys are handled while a song runs. That is right for the ones the hands reach for with the guitar still on — play, wait mode,
+tempo, loop, `K` — and wrong for the rest: a fret limit, a muted string, a noise gate is set once and then lives on, invisible, changing how
+everything scores. A fret filter left switched on once made whole songs unplayable and nothing on screen said so.
+
+`ui/settings_menu.py` (`O` from the song list) is therefore not a way to CHANGE those settings — the keys already were — it is a way to SEE
+them.
+
+- **Anything not on its standard value is marked**, in the accent colour and with a dot, and the header names them: "2 settings away from
+  standard: Fret limit, Strings played". That line is the whole feature. The test that matters asserts a changed fret limit and a muted
+  string appear in it, and that a fresh config produces nothing — a screen that always claims something is off teaches the player to ignore
+  it.
+- **`R` resets one row, not everything.** The value that needs undoing is usually one somebody changed by accident; losing the audio device
+  and the calibration along with it is a punishment for having noticed.
+- **Every row explains itself in terms of the guitar**, in one line, for the selected row only. A setting whose effect on the score is
+  invisible is left where it is out of fear.
+- **Saved as it is changed**, so there is no OK button to forget. The device and calibration screens are opened from here with ENTER and come
+  back here, not to the song list — `App._return_to` exists for exactly that.
+- **The strings row is six settings in one**, with a cursor of its own (left/right picks, ENTER mutes). `active_strings` is indexed by GP
+  string number minus one, so index 0 is the HIGH e while a guitarist names the low E first; the row is drawn low-first and the test pins the
+  mapping, because an off-by-one here mutes the wrong string and reads as a detection fault.
+
+## Two Keys That Were Right For One Job And Useless For The Other
+
+- **An arrow key moved one BEAT, and nothing else.** That is the right step for placing a loop marker and useless for reaching the chorus of a
+  four-minute song: at 273 ms a beat that is nine hundred presses, and with key repeat at 40 ms it is half a minute of holding the key while
+  the picture scrolls past. So the same ladder the backing-track offset already uses — plain, Shift, Ctrl — with each step chosen from what it
+  is FOR: a beat to place a loop, a **bar** to walk a phrase, **30 s** to reach a section.
+  - **Shift SNAPS to the bar line**, rather than adding a fixed number of beats. The timeline carries real measures, so this stays on the bars
+    through a time-signature change and lands where the tab is drawn rather than near it. A margin either side, because pressing back from just
+    after a bar line has to reach the PREVIOUS bar and not stand still on the one just crossed.
+  - A tab that parsed without measure info falls back to the beat, because a key that silently does nothing is worse than one that does less.
+- **Changing instrument threw the position away.** The tracks of one file share a clock — bar 40 of the rhythm guitar is bar 40 of the lead —
+  so restarting at the first note is not a fresh start, it is losing your place. And somebody comparing two versions of a passage changes track
+  precisely BECAUSE they are at that passage. `_load_song` takes `resume_at_ms`, clamped to the new track's length, since it may be shorter.
+  The screen is rebuilt from scratch on that path, so the position has to be carried over by hand.
+
+## Nine Out Of Ten Red Notes Are Not About The Playing
+
+"Kannst du meine Logs je Song lesen und mir helfen — wie ein Gitarrenlehrer." The run log already holds what a teacher needs; what nobody had
+done is ask what a red note is EVIDENCE of. Every missed note in three complete runs of two real songs, classified by joining it to the strike
+that arrived nearest it:
+
+| why the note failed | Leave A Light On | the same song again | Californication |
+|---|---|---|---|
+| subharmonic — an arpeggio read as one note | 72 % | 71 % | 65 % |
+| a strike arrived carrying no pitch | 17 % | 10 % | 23 % |
+| **a clean reading of a WRONG pitch** | **8 %** | **9 %** | **9 %** |
+| an octave out (green on screen; counted here for completeness) | 2 % | 2 % | 1 % |
+| no strike within the window at all | 0 % | 8 % | 2 % |
+
+**So a report that simply listed the weakest bars would spend most of its advice on passages that were played correctly**, which is the worst
+thing a teacher can do and is exactly what the first version of this did. `tools/coach.py` therefore reports only what it can stand behind:
+
+- **A strike that never arrived** is the one unambiguous fault, and **a clean reading of a different pitch** names the interval it went wrong
+  by. Those two are the playing.
+- **Timing is honest even where the pitch is not**: a subharmonic strike proves something was struck at that moment, whatever the detector
+  made of it. So the timing per bar is measured over every strike, not only over the readable ones.
+- **Everything else is counted and named as unreadable**, and a passage whose failures are all unreadable says so in as many words rather than
+  being ranked among the weak ones. Absence of evidence is the commonest thing in this signal path.
+- **The trust check runs first and outranks everything.** A wrong input device makes every other number in a log meaningless — this project
+  has spent whole sessions on playing that was never in the signal path — so `trustworthy()` reports the room microphone, the gate that ate
+  the audio, a peak below where the pitch rots, and dropped buffers, before a single bar is named.
+
+**And the log had to become self-contained first.** The note table was `note_ms string midi verdict`: milliseconds locate a note for a machine
+and for nobody else, and everything else needed the tab file beside it. It now carries the **bar**, the **fret**, what the tab asked for
+(`tech`: bend, slide, hammer, dead, palm mute, let ring) and how many strings were written at that moment — so "practise bars 36 to 45, frets
+0 to 5, there is a slide in there" comes out of the log alone, and a log can be handed to anybody without the song.
+
+## Two Kinds Of History, And They Answer Different Questions
+
+`progress.py` keeps the BEST a song has ever been played — one record per song, overwritten as it improves. That answers "am I getting better
+at this piece" and cannot answer "how much did I play this month", because it forgets everything except the peak. `practice_log.py` is the
+other half: one line of JSON per session, appended, never rewritten, read by `tools/practice_report.py` for day, month, year and song totals.
+
+- **The app does not draw it.** A diary rendered inside the app competes with the notes for screen space, and the format is deliberately one
+  anything can read — the question behind it was "so I can build a dashboard".
+- **Time is real seconds with the song running.** Not song time, which at 70 % practice speed is shorter than the time actually spent, and not
+  wall-clock time, which counts the coffee taken with the app paused.
+- **A struck note is a strike the microphone heard**, right or wrong. Zero when audio is off, with the minutes still counted — the playing
+  happened either way. Both counters live on the SCREEN, not in the matcher: the matcher is reset by a seek, a loop and a tempo change, and a
+  diary that forgets an hour because somebody pressed PgDn is worse than none.
+- **A session with no score says so** rather than claiming 0 %. A sitting spent looping four bars has no accuracy, and a zero is a lie a
+  dashboard would happily average in.
+- **Written once, when the sitting ends** — leaving the song and closing the window both reach it, because either can be the end and neither
+  happens reliably. Under `MIN_SESSION_SECONDS` nothing is written: opening a song to look at it is not practice.
+- **The dashboard is generated, not live** (`pickhero/dashboard.py` → one HTML file). It follows the layout of the player's OWN Yousician
+  dashboard, because that is the one they read without thinking — but with the charts drawn as plain SVG rather than pulled from a CDN: an
+  offline-first practice app whose dashboard needs the internet to draw a bar chart is a contradiction. Everything is added up in Python and
+  the browser only draws, so the arithmetic is testable and the drawing is checked by looking at it.
+- **It rebuilds itself when the app closes, and it had to move into the package to do it.** `pickhero.spec` bundles `pickhero/` and nothing
+  else, so a builder in `tools/` is simply absent on the machine running the EXE — which is the machine whose dashboard most needs to keep
+  itself current. `tools/make_dashboard.py` is now the command line around it, so a fix reaches both at once. On the way OUT rather than on
+  the way in, and AFTER `close_session()`: that call is what writes the sitting just finished, so a page built at startup is permanently one
+  session stale and never shows the practising somebody just did. Measured: 1.5 ms at 100 sittings, 38 ms at 5000, 224 ms at 20000 — all of
+  it after the last frame. A failure prints and is swallowed; an exception on the way out is a crash on exit, which looks like data loss.
+- **The week view sums in the browser, so it is tested in one.** Every day of the current week with all three figures and the week's own
+  total, arrows one week back and forward. It deliberately ignores the year chips and the metric switch above it: a week showing one number
+  cannot answer "what did I actually do", and a week emptied by a chip being off looks broken rather than filtered. Backwards stops at the
+  first week ever practised and forwards at this one, because a nav that walks into empty weeks tells the player nothing. Days are handled in
+  UTC throughout — the log writes local calendar days and they are compared as strings, so a timezone must never be allowed to shift one.
+- **Two machines, one player: `tools/merge_stats.py` brings the other one's history over.** The constraint that shaped it is that running it
+  twice must change nothing the second time — nobody remembers whether they already merged, and a doubled history cannot be told apart from
+  having practised twice as much. Sittings merge by (`started`, `song`), which two machines cannot both invent and the same file cannot bring
+  twice. `progress.json` is a high score, not a statistic: the better record wins WHOLE (mixing one run's hits with another's accuracy
+  describes a run that never happened) and `attempts` takes the larger rather than the sum, because a sum is exactly what cannot be done
+  twice — the honest count of sittings is in the practice log.
+- **What a sync must NOT carry is the interesting half.** `merge_stats.py` brings the per-song settings across — practice speed, backing
+  track, both offsets, favourites — and deliberately leaves the audio device index, the calibration and the latency offset alone. Those
+  describe an interface and a sound card, not a player; copying the whole `settings.json` is the obvious move and would break the other
+  machine's input while looking like a settings problem. An entry the receiving machine already has always wins: it was set there, on that
+  instrument, and a sync that silently overwrites what you just adjusted is worse than no sync.
+- **A song name lands inside a `<script>` tag**, and a song called `</script>` closes it. The embedded JSON escapes `<` and `>`; the test that
+  found that is the reason it is written down here.
+
+## Profiled Again, And This Time It WAS The Notes
+
+Asked to make the app faster, and the answer is only worth having with a profiler in front of it. A frame of the player's own song
+(1314 notes, 1280x720), broken into its steps:
+
+| | per frame | share |
+|---|---|---|
+| `_draw_notes` | **1.03 ms** | 39 % |
+| `_draw_lanes` (board, strings, bar lines) | 0.46 | 20 % |
+| `surface.fill` | 0.37 | 16 % |
+| `_draw_hit_zone` | 0.12 | 5 % |
+| `_draw_hud` | 0.11 | 5 % |
+| **whole frame** | **2.27 ms** | of a 16.7 ms budget |
+
+**Inside `_draw_notes` it is the ROUNDING.** A frame issues 48 rounded-rect calls — 24 notes, a fill and a border each — and **46 of the 48
+are the same size**, because one head size is chosen for the whole song. Stubbing the calls out puts the floor at 0.39 ms, so 0.64 ms of that
+1.03 is SDL drawing arcs. Measured directly: 24 heads drawn as rounded rects is **0.519 ms**, the same 24 blitted from a cached surface is
+**0.056 ms**.
+
+So `_head_surface` draws each head once and blits it after that. **`_draw_notes` 1.03 → 0.44 ms, the whole frame 2.27 → 1.88 ms (-17 %).**
+The cache holds **14 entries** on a real board — six string colours plain and dimmed, plus the open-string grey — and stops growing, which the
+test asserts over 600 frames rather than trusting. The feedback colours are discrete, not a fade, so an animation cannot thrash it; it is
+cleared with the font cache, because a Surface outlives `pygame.quit()` no better than a Font does. The picture is **pixel-identical**: 0
+pixels differ in colour and 0 in alpha against drawing it in place.
+
+**Three things were measured and NOT built, which is half the value of profiling:**
+
+- **Baking the background into a surface is a LOSS.** A full-screen blit is **0.63 ms** against **0.23 ms** for a fill. The obvious
+  optimisation is the wrong way round.
+- **Baking the board strip saves 0.17 ms and costs the layering.** The strings are drawn OVER the bar lines the way they lie on a guitar, and
+  the bar lines move; a baked strip would have to go under them and the strings would end up beneath the wires.
+- **Everything else is already healthy**, so nobody looks there again: loading a GP6 container 25 ms, `NoteMatcher` 0.7 ms, `PlayingScreen`
+  0.3 ms, and the audio callback **0.24 ms of its 11.6 ms hop — 2 %**.
+
+**And one measurement of mine was worthless, which is the recurring lesson.** Timing `_neighbour_gaps` over a whole song showed it growing to
+2.3 ms at 5600 notes — except `_draw_notes` calls it with the VISIBLE notes, never all of them. I had measured a loop the app does not run.
+A number is only worth what the call that produced it is.
+
+## The Notes Were Never What Cost The Frame
+
+The app ran "slow and stuttering" on a thin 14" laptop, and the obvious suspect on a scrolling display is the scrolling. It was not. Profiled over
+60 frames of the playing screen:
+
+| | share of one frame |
+|---|---|
+| **rasterising text** (62 surfaces a frame) | **79 %** |
+| of which the footer alone | 66 % |
+| drawing every note | 8 % |
+| looking fonts up (uncached `SysFont`) | 6 % |
+
+**The footer is the list of keyboard shortcuts. It never changes at all**, and almost none of the rest does either — the title, the tempo, the
+tuning, the hit window. Only the clock moves, once a second. So `_CachedFont` keeps the surface and blits it again: **15.2 ms a frame → 1.5 ms**,
+and a dense song (4200 notes of sixteenths) draws in 2.7 ms where the budget is 16.7.
+
+- **Wrap the font, not the call sites.** The ~180 `font.render(...)` calls in `ui/` are untouched and anything added later is cached without
+  knowing. `__getattr__` delegates `size()`, `get_height()` and the rest.
+- **A font does not survive `pygame.quit()`** — it is a dangling pointer and rendering with it segfaults, which is verified rather than assumed
+  (the test suite found it, because several tests run an init/quit cycle). Hence `clear_font_cache()`, called by `App.run` on init and by an
+  autouse fixture between tests. A cache tied to a session has to be dropped with it.
+- **The cache is cleared wholesale at `MAX_ENTRIES`**, not evicted one at a time. The only text that really varies is the clock, a re-render
+  costs a fraction of a millisecond, and an LRU here would be bookkeeping to save nothing.
+- **The run log now says how long a frame took** (`frame_ms_median`, `frame_ms_worst_tenth`, `frames_over_budget_percent`), measured BEFORE
+  `clock.tick(60)` pads the frame out — `clock.get_fps()` reports the padded rate and reads a healthy 60 right up to the moment the machine can
+  no longer keep up, which is the one thing it is being asked. A median under budget with a fat tail is something arriving in bursts; a median
+  over it is the drawing. They are fixed in different places, which is the same reason strikes are named next to notes.
+
+## Pausing Was Reopening The Device, And Seeking Was Redecoding The File
+
+The player reported the picture freezing for up to three seconds on every space bar with a backing recording, the sound stuttering on the way
+back, and the song then "jumping until it is in sync again". Three separate faults, and the first is a lesson this project had already written
+down for the arrow keys and never applied to the pause.
+
+- **Pausing closed the input device and resuming opened a new one.** That is the identical fault as "Seeking Must Not Reopen The Input
+  Device" — a real device open on Windows, seconds of frozen app — except the space bar did it twice, once each way. It also threw the matcher
+  away, so a run log lost every strike from before the pause. `_resume_audio()` re-anchors a stream that is still open and only opens one when
+  there genuinely is none.
+- **Pausing STOPPED the recording, so resuming was a `play(start=)`.** That decodes the file up to the point it starts from, which four
+  minutes in is the seconds the player was watching. `Mix_PauseMusic` costs nothing, and `get_pos()` stands still while it is held — measured,
+  because a clock that kept running would put the recording exactly the length of the pause out on resume. So a paused SONG suspends the
+  recording; muting it, changing the file or jumping elsewhere still stops it. `_update_mp3` runs every frame while paused too, so it has to
+  make the same distinction or it cancels the hold on the very next frame.
+- **A held arrow key was 25 decodes a second.** Key repeat is 40 ms and every repeat seeked the recording. The FIRST seek of a burst is still
+  immediate — a loop turn is a seek too, and delaying it would start the recording late every time round — and the rest are collapsed into one
+  once they stop arriving (`MP3_SEEK_SETTLE_S`), with the recording held silent meanwhile.
+- **And a stalled frame moved the song by the whole stall.** `_playback_ms` advanced by real elapsed time with no cap, so three seconds of
+  blocked frame scrolled three seconds of music past uncredited and landed the picture somewhere the player never saw — the "it stands still
+  and then jumps". Capped at `MAX_FRAME_STALL_S`; losing the time is the cheaper of the two, and the recording is pulled back into line by the
+  ordinary sync a frame later.
+- **Leaving the device open means draining what it hears.** Both capture queues are unbounded and a strike window holds 341 ms of audio, so a
+  long pause with the guitar in hand would fill memory with sound belonging to no moment in the song. The paused branch of `update()` throws
+  it away every frame.
+- **The clock now starts AFTER the slow work of resuming, not before.** Set first, whatever the device and the decoder take is charged to the
+  song and the picture jumps forward by it on the very next frame.
+
+## Changing Instrument Took Longer Than Opening The Song
+
+Which is the tell, because the two go through the same `_load_song`. Whatever is slower has to be something the FIRST open does not have — and
+what it does not have is an old screen.
+
+- **The screen being replaced was never torn down.** It went on holding the input stream and the MIDI output port, so the new one opened a
+  second of each; on Windows that is a real device open, the cost this project has now paid three times (seeks, the pause, this). It also lost
+  the sitting, because `close_session` lives in `stop_audio` and nothing on this path called it — an hour of practice quietly gone for having
+  switched track.
+- **The file was unpacked twice per open and twice again per change.** `_track_options` read the track list for the labels and
+  `_playable_track_indices` read it again to ask which are guitars. For a GP6 container that is the BCFZ decompression, twice. It is read once
+  now and kept, keyed by the file: a song's tracks cannot change while it sits there being played. Measured: 2 reads per open → 1, and per
+  instrument change → 0.
+
+## The Same File, Parsed Three Times For One Keypress
+
+"Der Spurwechsel dauert noch immer sehr lange." The screen teardown and the double track-list read were fixed a week ago and it was still slow,
+because the expensive thing was never those. `_load_song` reads the file for the NOTES, then again for the MIDI backing, then again for the guide
+track — the same bytes, the same parse, three times, and a track change does all three afresh.
+
+Measured on the player's own files, the cost is entirely in the XML parse and none of it in the unzipping:
+
+| | GPIF | unzip | parse | whole track change |
+|---|---|---|---|---|
+| 4 Non Blondes | 3.9 MB | 5.0 ms | **150.8 ms** | 712 → **184 ms** |
+| Kid Rock | 2.9 MB | 4.0 ms | **142.4 ms** | 494 → **138 ms** |
+| Papa Roach | 0.4 MB | 0.6 ms | 10.1 ms | 60 → **24 ms** |
+
+- **`_gpif_root` keeps the parsed document**, keyed by size and modification time — the same rule the song index uses, so a file that has not
+  changed is not read again and one that HAS is read afresh rather than believed.
+- **Nothing in the loader mutates the tree** (every `append` in that module is to a Python list), which is what makes one parse shareable and
+  is asserted rather than assumed.
+- **Two entries.** Nothing here works on more than one song at a time, and a stale tree would be far worse than a slow one.
+- What is left is the three note extractions themselves, which are real work per track: 35 ms each on the biggest file.
+
+## A Dropout While Measuring Is Not A Dropout While Playing
+
+"Beim Syncen zeigt es ab und zu an, dass über 130 audio dropouts waren." `Ctrl+S` is seconds of FFT over the whole recording on a worker
+thread, and on a laptop that is enough to starve the audio callback. But **the measurement does not use the microphone**, and the player is not
+meant to be playing during it — so those dropouts cost nothing, while the same number during a run loses notes at random.
+
+Counted together, a harmless number and a serious one look identical, which is the fault this project keeps paying for. `dropped_while_busy` is
+counted apart and the run log says so: `dropped_buffers 130 (130 of them while measuring — those cost nothing)`.
+
+**This is instrumentation, not a fix, and must not be written up as one.** That the sync thread is what starves the callback is the
+best-founded suspect and has not been shown: it cannot be reproduced here, since this machine has no input device. The next log answers it.
+
+## What Is In A Song, Without Opening It
+
+The song list says how many instruments a file holds and how each is tuned. Both answers need the file unpacked — and for a GP6 container,
+decompressed first — which is far too slow to do for a whole folder while the player waits for a list to appear. So `tabs/song_index.py` reads
+it once and remembers.
+
+- **Kept on disk**, keyed by the file's size and modification time. A file that has not changed is never opened again; one that HAS changed is
+  read afresh rather than believed — the same rule as every other cache here.
+- **Read on a thread, newest file first**, so the list is on screen from the first frame and fills itself in. A song copied in a minute ago is
+  the one being looked for. While it runs the header says `reading songs… 12/240`, because rows that fill themselves in need explaining.
+- **A song not yet read shows nothing, and is filtered OUT rather than in.** With the filter on, a row with no answer yet would read as an
+  answer of "yes" and the count beside it would be wrong.
+- **Only GUITAR tracks are counted.** A drum track's "tuning" is not a tuning, a bass has four strings and a piano none, so counting any of
+  them makes the number answer a different question. A file holding no guitar says **"no guitar track"** in as many words, and one that would
+  not parse says "could not be read" — three states that must never look alike, because a blank row already means "not read yet". The track
+  picker INSIDE a song still falls back to offering everything, so such a file can still be opened; the list is answering a different question.
+- **`ENTRY_VERSION` is bumped when what an entry MEANS changes**, not when the code does. It went to 2 here: entries written while non-guitar
+  tracks were counted hold a number nobody asked for, and are re-read rather than believed.
+- **The same tuning six times is said once.** Six guitar tracks in standard tuning is one answer, not six; past two distinct tunings the rest
+  are counted (`+2`) rather than listed.
+- **`TAB` steps through the tunings the folder actually contains** and back to all of them — built fresh on every press, so a song indexed
+  since the last one can join, and never offering a tuning that would empty the list. Not a letter, because the search box takes those; and the
+  same key that steps through a song's tracks once one is open, which is the same idea one level up.
+- **Letters, not names.** `tuning_name` knows "Drop D", but an unnamed tuning has to fall back to the letters anyway, so the letters are the
+  answer here and the name is left to the tuning HUD. They read low string first — "E A D G B E" — which is the order a player tunes in.
+- **The row is laid out from the right edge inwards** and the song name is cut to what is left. A long title would otherwise run under the
+  score, and the thing it collides with is the thing being compared.
+
+## What Grew With The Length Of The Song
+
+After the text cache the frame was fine and the app still stuttered "now and then while playing" — and worse the longer the song had been
+running, which is the whole clue. Two loops started at the beginning of the song every time they ran, and both are asked once per STRIKE, so
+the cost arrived in bursts exactly when the hands were busiest. Measured on 4200 notes of sixteenths:
+
+| | at 5 s | at 60 s | at 150 s |
+|---|---|---|---|
+| `get_active_notes_at_time` (up to 5 per strike) | 13 µs | 144 µs | **374 µs** |
+| after | 2.1 µs | 2.5 µs | **2.4 µs** |
+| `_mark_missed_notes` (1 per strike) | — | — | **5.6 ms** |
+| after | — | — | **0.023 ms** |
+
+- **A note that is sounding cannot have started before the longest note in the song.** That bound turns "which notes are sounding" from a scan
+  of everything so far into a slice, and it is exact rather than a guess — `_longest_ms` is computed once at construction.
+- **The missed-note sweep only looks at what has gone past since the last look.** Nothing before the mark can still be PENDING: that loop is
+  what resolves them, and a note only becomes PENDING again on `reset()` — which puts the mark back to zero. A song position that moves
+  BACKWARDS without a reset also resets it, rather than trusting a mark that describes a different moment.
+- **`Timeline.duration_ms` was a property that scanned every note**, called twice a frame. Cached at construction with the rest.
+- **The MIDI seek copied every event up to the seek point.** `get_program_changes_before` did `self._events[:end]` and scanned it, to find
+  the handful of instrument assignments — 0.87 ms three minutes into a full arrangement, per player, on every seek, and a held arrow key is 25
+  of them a second. The program changes are picked out once at construction instead.
+- **What was profiled and found healthy**, so nobody looks there twice: the audio callback takes **3 % of its 11.6 ms hop** (aubio's own
+  `process` is nearly all of it); MIDI's per-frame `update` is 3 µs; the MP3's per-frame path is O(1) arithmetic — its cost is entirely in the
+  seeks below. A whole frame of a dense song at 2.5 minutes, update and render together, is **3.2 ms of 16.7**.
+- **The MP3's re-seek backs off when it is not working.** Each one decodes the file up to that point, so a correction repeated every 1.5 s is
+  a stutter bought with nothing — and a bigger offset makes each attempt more expensive, which is what the player noticed. If the drift after
+  a correction is no better than before it, the gap doubles up to `MAX_RESYNC_GAP_MS`; holding sync puts it straight back. `mp3_worst_seek_ms`
+  in the run log says what a seek actually costs, because without it the stall cannot be told from the drift it was meant to cure.
+
+## The Board The Notes Sit On
+
+Compared side by side with the reference the player reads without thinking, the gap was not the notes — it was that ours had nowhere to sit.
+Six lines in an empty band give the eye nothing to rest on, so the only way to know where you are is to READ the number, which is the thing
+that is hard to read in the first place.
+
+- **The bar lines are drawn across the board**, before the strings so the strings lie over them the way they do on a guitar. The bar, not the
+  beat: every beat is a picket fence behind the notes, and the bar is the unit a player counts in anyway.
+- **A bar line whispers.** It was drawn as a lit nickel-silver wire and that was too loud — the eye went to it instead of to the notes, which
+  is the opposite of what a landmark is for. `BAR_LINE_COLOR` is barely above the board and slightly COOLER than it, so it reads as a line ON
+  the wood rather than as an object of its own. A landmark is noticed when looked for and not otherwise.
+- **And they are thinned out rather than drawn at any spacing.** A fast song puts bars a few pixels apart. Past `MIN_BAR_LINE_GAP_PX` every
+  second bar is drawn, then every fourth — halving, so the lines stay on real bar boundaries, where a fixed pixel spacing would drift off the
+  beat and stop meaning anything.
+- **The three lowest strings are brass and visibly thicker** (`STRING_THICKNESS` 1-6, `WOUND_TINT`), each drawn as a dark core with a lighter
+  highlight so it reads as round rather than as a thick line. That is the cue that tells the low half of the board apart without reading
+  anything — which is the entire point of drawing a fretboard instead of six rows.
+- **The hit line stands proud of the board**, top and bottom (`HIT_LINE_OVERHANG_PX`). Flush with the edge it is one more vertical among the
+  fret wires; running past it, it reads as the thing the board scrolls THROUGH — and the overhang stays visible where a long note covers the
+  line itself.
+- **The board is an object lying on a background, and only reads as one if the two differ.** They were ten points apart, near-black on
+  near-black, so the board dissolved into the screen and the notes floated. Dark warm wood on a cool grey now: the same relationship the
+  reference uses (dark fretboard, bright surround) at the brightness a dark theme is chosen for.
+- **The string palette was re-sampled from the reference itself**, and the check is what makes it safe: its RED sits at (248, 98, 98), within
+  a few points of `feedback_miss`. A string that looks like a missed note is exactly the collision this project already fixed once, so that
+  hue is not in the set and two colours of the same family stand in for it. Neighbouring lanes never share a hue, because the lane above is
+  the one a note can be confused with — asserted, not eyeballed.
+
+## A Chord Is A Shape, And Six Lanes Cannot Show One
+
+"Schaffen wir alternativ eine ähnliche View zu dieser bei Akkorden?" — the reference app keeps two chord diagrams in the corner: the grip being
+played and the one coming next. Six fret numbers spread down six lanes say which notes to play and nothing whatsoever about the shape the hand
+has to make, which is why every songbook, every chord app and Yousician draw a grid.
+
+**What the files carry was measured before anything was drawn**, across the player's own three songs:
+
+| | Whats up | Kid Rock | Leave A Light On |
+|---|---|---|---|
+| moments with two strings or more | 100 of 280 | 12 of 444 | 251 of 533 |
+| **of those, nameable** | **100 %** | 92 % | 96 % |
+| **distinct grips in the whole song** | **3** | 7 | 13 |
+
+- **The shape is always there.** Every note has a string and a fret, so the grid comes out of the tab itself — a reading of what is written,
+  which is the line `chords.py` already walks.
+- **A song's whole vocabulary is three to thirteen grips**, so it is built once per song (`changes_in`) and never in a frame. Measured on the
+  board: 0.25 ms of a 16.7 ms budget.
+- **Which FINGER is not available and is therefore not drawn.** Two of the three songs carry no fingering at all; the third gives a finger for
+  **41 of 120 positions** and `finger="None"` for the rest. A diagram that colours the fingers on one song and greys them on the next teaches
+  nothing, and colouring a guess would be the invention this project refuses everywhere else.
+- **A GP file MAY carry the transcriber's own diagrams** (`DiagramCollection`, with muted and barred strings) and one of the three does, with
+  15 items against the 13 shapes computed from the notes. Not read: a picture that is better on one song in three is worse than one that is the
+  same everywhere.
+- **The card shows the grip being PLAYED, not the nearest one.** A chord is held until the next one starts, so a card that flipped at the
+  halfway point would take the shape away exactly while the hand is still on it.
+- **Only the CHANGES are kept.** 241 chord moments in one song are 86 grip changes: showing the same grip again at every strum is eight bars of
+  noise and buries the moment that actually needs preparing — the same rule the chord NAMES on the board already follow.
+- **Silent on a song that has none.** Kid Rock writes 12 chords in 444 moments; a panel that is always there and usually empty is a panel
+  nobody looks at.
+- **The diagram lies the way the BOARD does**: strings across, low E at the bottom, frets left to right from the nut. A songbook prints the grid
+  upright with the low string on the left, and this app draws a tab the other way everywhere else -- mixing the two orientations means rotating
+  the picture in your head between one glance and the next. The name stays at the top, where a card is read from. `string_rows()` is the one
+  implementation of where a string lands, and the test asserts the ORDER matches the lanes rather than any particular pixel.
+- **The two cards share the top left corner with the HUD text, and the text is what moves.** Drawn over each other neither can be read: the
+  player's screenshot has the song title, the track, the tuning and the sync line straight through the diagrams. `_hud_left_x()` starts the left
+  column past the cards while they are up, and at 12 px when they are not, so nothing moves for a player who never turns this on.
+- **Both cards are the SAME size, and bigger than the first version.** The second was smaller to say "this one is next" -- the label already says
+  that, and being smaller made the grip you have to PREPARE the harder of the two to read. At 210x184 they still clear the board, which matters
+  because each chord block writes its name just above itself and a card hanging into the lanes would cover it.
+- **`Shift+C` is tested before the plain `C`** that raises the noise gate. An `elif` chain is read in order, so a shifted key placed after its
+  unshifted twin is never reached — which is exactly how the first version of this shipped inert.
+
+**And the blocks go UNDER the note heads, not instead of them.** The reference app draws a chord as one coloured slab and nothing else, which it
+can afford because it does not report per-string feedback; this app spent a whole chapter learning to say WHICH string was wrong, and a slab
+would throw that away. So the block is a tint that spans the strings of the grip with the name at its leading edge, and the heads keep their own
+colours on top of it. Strictly more than six separate heads, never less.
+
+- **The block shows the WORST verdict of its strings.** A chord with one string wrong is not a chord that went well, and the block cannot show
+  six answers; the detail is on the heads.
+- **Its name sits at the LEADING edge**, because that is the moment the hand has to be ready — the same reason a note's leading edge is its time.
+- **One switch for both halves.** Cards and blocks are one idea, and two keys for two halves of an answer is how a panel ends up with settings
+  nobody can find. **Off by default**: it is an extension to the normal view, not the view.
+- **The blocks are cached surfaces**, for the same reason the note heads are: an SRCALPHA surface per block per frame cost **2.0 ms of a 16.7 ms
+  budget** on a real song. Cached it is **0.94 ms** and the cache holds six entries, because a song chooses one head size and the blocks come in
+  very few sizes with it.
+
+## The Chord Name Is Not In The Tab Either
+
+Guitar Pro has a field for it, and it is empty: **5601 beats in the player's own tab, not one chord name** — the same story as the fingering.
+So `tabs/chords.py` reads it out of the notes, which is a reading of what is written rather than an invention, and that is the line it has to
+stay on the right side of. A name that is wrong now and then teaches the player to distrust the line, and then it is worth nothing even when
+it is right.
+
+- **It abstains, and abstaining is the commonest answer.** A run of single notes has no chord. Two notes are a chord only when they are a
+  fifth (a fourth counts — that is the same fifth inverted); calling a third "C" would be a claim about a note nobody played.
+- **Three or more must match a quality EXACTLY** on pitch classes. The one exception is a seventh without its fifth, because guitarists drop
+  it constantly and the shape is unambiguous. Dropping a note from a TRIAD leaves something that is not a triad, and naming it anyway is the
+  guess this refuses to make.
+- **Named over its bass** when the bass is not the root (`Em/B`), and where two readings fit, the one whose root is in the bass wins —
+  C-E-G-A is `C6`, the same notes over A are `Am7`. Both are what a player would call it.
+- **Drawn at the CHANGE, not on every beat.** A name repeated over eight bars of the same chord is eight bars of noise; the moment the hand
+  has to move is the thing worth seeing. Built once per song, because this display has been bitten twice by work that looked cheap until it
+  ran once a frame.
+
+## A Note Is Not Over Because The Clock Passed It
+
+The player reported a note going DARK for a moment and then turning green, and being distracted by it. It was not a glitch — it was the app
+drawing a state it had no business showing.
+
+`get_note_color` ended with `dimmed(base_color) if is_past else base_color`, and `is_past` was `note.timestamp_ms < playback_ms`. So a note
+was dimmed the instant its written time crossed the hit line. The verdict cannot arrive that soon: the strike is still inside the hit window
+(200 ms) and the late window (370 ms) beyond it, and a chord verdict trails its strike by ~380 ms by design. **The dark phase was the whole
+width of the window, drawn as "already missed".**
+
+- **The matcher decides, not the clock.** While it still has the note PENDING the note keeps its full colour; once it is resolved the feedback
+  effect takes over and paints hit, close or miss. One definition inside `_draw_notes`, so the technique marks and badges follow the same rule
+  rather than each deciding for itself.
+- **With audio OFF the clock is still the answer**, because nothing is coming to decide it and there is nothing to wait for.
+- The test asserts the PROPERTY rather than a colour: full colour at 50, 100 and 150 ms past the note, then green — with nothing dimmed in
+  between.
+
+## Nothing Here Grows With The Song, And That Is Asserted
+
+Three loops that began at the start of the song have now been found in this codebase, each one arriving as "it stutters now and then". The
+fretboard and the chord names add two more per-frame loops over per-song lists, so the property is measured rather than assumed:
+
+| song | chord changes | bars | one frame at 60 s |
+|---|---|---|---|
+| 1.5 min | 200 | 52 | 8.84 ms |
+| 6 min | 800 | 202 | 8.94 ms |
+| **24 min** | **3200** | **802** | **8.93 ms** |
+
+Sixteen times the song costs **1 %**, so the loops stay: a bisect for a hundred-element list would be bookkeeping to save nothing. Seeking is
+0.002 ms and an eight-minute MP3 offset changes the frame not at all. `tests/test_scaling.py` holds all of it, including that
+`_build_chord_names` runs **once per song and never in a frame**.
 
 ## Colour
 
@@ -148,7 +2525,9 @@ pickhero/
 ├── __main__.py          # python -m pickhero entry point
 ├── main.py
 ├── config.py
+├── dashboard.py         # the practice dashboard, written when the app closes
 ├── matcher.py           # note matching engine (hit/close/miss)
+├── practice_log.py      # one line per session: minutes and notes struck
 ├── progress.py          # per-song progress tracking
 ├── audio/
 │   ├── __init__.py
@@ -156,9 +2535,11 @@ pickhero/
 │   ├── detector.py
 │   ├── chord_verify.py  # per-string chord checking (score-informed)
 │   ├── midi_playback.py
+│   ├── mp3_playback.py  # a recording as a backing track, kept in sync
 │   └── note_utils.py
 ├── tabs/
 │   ├── __init__.py
+│   ├── gpx.py           # Guitar Pro 6 containers (BCFZ/BCFS) → GPIF XML
 │   ├── loader.py
 │   ├── timeline.py
 │   └── downloader.py
@@ -170,6 +2551,7 @@ pickhero/
     ├── scrolling.py
     ├── feedback.py
     ├── menu.py
+    ├── settings_menu.py    # everything set once, and what it is set to
     ├── device_menu.py
     └── download_menu.py
 ```

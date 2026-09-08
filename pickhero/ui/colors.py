@@ -60,9 +60,15 @@ class Theme:
 
 
 DARK_THEME = Theme(
-    bg=(20, 20, 30),
-    lane_bg_even=(30, 30, 42),
-    lane_bg_odd=(25, 25, 36),
+    # The board is an OBJECT lying on a background, and it only reads as one
+    # if the two differ. They were ten points apart -- near-black on
+    # near-black -- so the board dissolved into the screen and the notes
+    # floated. The board is dark warm wood now and the surround a cool grey,
+    # which is the same relationship the reference uses (dark fretboard,
+    # bright surround) at the brightness a dark theme is chosen for.
+    bg=(38, 42, 58),
+    lane_bg_even=(26, 23, 22),
+    lane_bg_odd=(23, 20, 19),
     lane_line=(60, 60, 80),
     hit_zone=(255, 255, 255),
     note_text=(255, 255, 255),
@@ -91,9 +97,12 @@ DARK_THEME = Theme(
 )
 
 LIGHT_THEME = Theme(
-    bg=(235, 235, 240),
-    lane_bg_even=(225, 225, 232),
-    lane_bg_odd=(218, 218, 228),
+    # Same relationship as the dark theme, the other way up: the board is an
+    # object and only reads as one if it differs from what it lies on. Ten
+    # points apart, it dissolved here too.
+    bg=(242, 243, 248),
+    lane_bg_even=(206, 199, 194),
+    lane_bg_odd=(199, 192, 187),
     lane_line=(180, 180, 195),
     hit_zone=(40, 40, 50),
     note_text=(255, 255, 255),
@@ -164,14 +173,34 @@ def cycle_theme() -> str:
 # rather than pure red, B leans amber. The feedback colours in turn are far
 # brighter and lighter than any string, so the two read as different kinds of
 # colour even where the hue is nearest.
+# Sampled from the reference the player reads without thinking, then checked
+# against the rule this file exists for. Four of these are that palette's own
+# values; its RED is deliberately NOT here, because at (248, 98, 98) it is
+# within a few points of `feedback_miss` -- a string that looks like a missed
+# note is exactly the collision the separation below is about. The two
+# replacements sit in the same family: high saturation, high value, and out of
+# the green and red bands the feedback colours own.
+#
+# Ordered so that NEIGHBOURING lanes never share a hue family: the lane above
+# is the one a note can be confused with.
 STRING_COLORS: dict[int, tuple[int, int, int]] = {
-    1: (215, 65, 100),   # crimson
-    2: (215, 170, 40),   # amber
-    3: (50, 120, 220),   # blue
-    4: (225, 120, 35),   # orange
-    5: (35, 175, 165),   # teal
-    6: (150, 70, 210),   # purple
+    1: (200, 32, 255),   # magenta
+    2: (247, 169, 6),    # amber
+    3: (0, 175, 254),    # cyan
+    4: (124, 104, 250),  # violet
+    5: (0, 195, 175),    # teal
+    6: (62, 106, 224),   # blue
 }
+
+# An open string is grey, whichever string it is. The lane already says WHICH
+# string -- that is what the six lanes are for -- so the colour is free to say
+# something the position cannot, and "nothing to fret" is the most useful
+# thing it can say. It is also what makes a chord read at a glance: the open
+# strings drop back and the shape the hand has to make stands out.
+#
+# It is not a feedback colour and not a string colour, so it cannot be
+# confused with either -- the separation the rest of this file is about.
+OPEN_STRING_COLOR: tuple[int, int, int] = (150, 155, 165)
 
 
 def dimmed(color: tuple[int, int, int], factor: float = 0.4) -> tuple[int, int, int]:

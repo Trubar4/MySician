@@ -30,7 +30,7 @@ chord gets no verdict at all.
 Thresholds were fitted on reference_recordings/20260814_160019 (clean DI,
 Focusrite, 48 kHz): 7/7 deliberate one-fret errors caught, 0 false alarms
 over 33 confidently judged strings, and 0 false alarms at every window length
-down to 280 ms. See tools/analyze_reference.py and tools/sweep_chord_window.py.
+down to 190 ms. See tools/analyze_reference.py and tools/sweep_chord_window.py.
 
 Pure numpy: no aubio, no pygame, so it stays testable without audio hardware.
 """
@@ -40,6 +40,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from collections.abc import Sequence
 
 from pickhero.audio.note_utils import midi_to_freq
 
@@ -52,12 +53,22 @@ WINDOW_MS = 341.0
 SKIP_MS = 40.0
 
 # Shortest window still worth judging, from tools/sweep_chord_window.py over
-# the reference takes: no false alarm at 280 ms or above, the first ones at
-# 270 and below. Under this floor a chord gets NO verdict rather than a guess
-# -- the same presumption of innocence that protects a masked string protects
-# a rushed one. It means chords struck less than ~335 ms apart (skip + window
-# + guard) simply are not judged, which is the honest answer at that speed.
-MIN_WINDOW_MS = 280.0
+# the reference takes: no false alarm anywhere from 190 ms up, the first one at
+# 180 ms (a palm-muted power chord, which by then is mostly decay). 200 ms
+# keeps two steps of that margin. Under this floor a chord gets NO verdict
+# rather than a guess -- the same presumption of innocence that protects a
+# masked string protects a rushed one. It means chords struck less than
+# ~255 ms apart (skip + window + guard) are not judged, which is eighth notes
+# past about 118 BPM.
+#
+# This was 280 ms, which was fitted when the analysis floor was a fixed 150 Hz
+# and short windows really did lie. MIN_HZ_SECONDS replaced that with a floor
+# that RISES as the window shortens, which is what made shorter windows honest
+# -- but nobody lowered this constant to collect the winnings, and the sweep
+# could not report it either: it gated on this value and printed "below floor"
+# with nothing judged, so the evidence that 280 was stale never appeared. The
+# sweep now runs below the floor for exactly that reason.
+MIN_WINDOW_MS = 200.0
 # Pulled back from the next strike so its attack transient stays out of the
 # window. One hop at 48 kHz is ~11 ms; 15 ms covers the detector's grid.
 NEXT_STRIKE_GUARD_MS = 15.0
@@ -83,6 +94,25 @@ MIN_HZ_SECONDS = 61.0
 # Decision thresholds, all in dB below the frame's strongest peak.
 PRESENT_DB = -32.0    # genuine detections landed at -3..-30, noise at -36..-39
 MARGIN_DB = 8.0       # at 5 dB a correctly played low E was mis-called once
+# ...and what ACQUITTING one takes. A separate number because it answers a
+# separate question: `verify` has to CHOOSE which note a string played and
+# must not be talked into the wrong one, while `confirms` only asks whether
+# the written note is there and can never convict. Reusing the conviction
+# threshold for the acquittal was a borrowed constant, and it refused ten of
+# the fifteen rescues measured on the player's arpeggio -- every one of them
+# with the written note winning outright, at -1.4 to -18 dB, beaten on the
+# margin alone by a rival one or two semitones away.
+#
+# Fitted, not guessed, and the two populations separate cleanly. Over the
+# arpeggio take, the 54 rescues where the written note wins have a worst
+# margin of 2.2 dB (10th percentile 6.2, median 12.6). Over the DAMPED
+# control takes -- where a confirmation is by definition a note being
+# invented, since nothing was left ringing -- exactly one candidate wins, at
+# 1.2 dB. So the window is 1.2 to 2.2, and the value sits at the top of it:
+# the two mistakes are not equal. Refusing a real rescue costs one note of
+# credit; accepting a false one turns a wrong note green, which is the thing
+# the player has already said the score does too much of.
+CONFIRM_MARGIN_DB = 2.0
 INTRUDER_DB = -25.0   # stricter bar for flagging a masked string as wrong
 
 # How far either side of the expected note to test hypotheses.
@@ -158,9 +188,11 @@ class ChordVerifier:
         margin_db: float = MARGIN_DB,
         intruder_db: float = INTRUDER_DB,
         span: int = SPAN_SEMITONES,
+        confirm_margin_db: float = CONFIRM_MARGIN_DB,
     ):
         self.present_db = present_db
         self.margin_db = margin_db
+        self.confirm_margin_db = confirm_margin_db
         self.intruder_db = intruder_db
         self.span = span
         # Partial frequencies are fixed per MIDI note; cache them.
@@ -259,9 +291,61 @@ class ChordVerifier:
             verdicts[target] = self._decide(target, scores, allow_intruder)
         return verdicts
 
+    def confirms(
+        self, audio: np.ndarray, sample_rate: int, midi_note: int,
+        sounding: Sequence[int] = (),
+    ) -> bool:
+        """Is this ONE written note actually present in the audio?
+
+        A different question from `verify`, and the reason it needs its own
+        method. `verify` asks which of several expected notes each string
+        played, and can convict; this only ever ACQUITS. It exists for the
+        strike that arrives carrying no pitch at all, where there is nothing
+        wrong to correct and nothing to credit either -- measured on a line
+        played across the strings without damping, where a fast run loses 24
+        points of usable strikes to exactly that.
+
+        No intruder tier: with one expected note there is no chord for it to
+        be masked by, so "something else is louder" says only that another
+        string is still ringing, which is the premise rather than evidence.
+        Only a direct confirmation counts.
+
+        `sounding` is what the TAB says is still ringing on the other strings.
+        Without it every rival hypothesis a semitone or two away may claim any
+        partial in its bands, including the partials of the neighbours -- and
+        in an arpeggio the neighbours are loud, so the margin between the
+        written note and its rivals collapses even where the written note is
+        plainly the strongest thing there. Measured on the player's own take:
+        of 16 refusals, 14 had the written note winning at -0.7 to -10 dB and
+        failing on the margin alone. A partial identifies a note only if no
+        other sounding string produces it, which is the rule `verify` already
+        applies to the tones of a chord.
+        """
+        if len(audio) < min_window_samples(sample_rate):
+            return False
+        window = np.asarray(audio, dtype=np.float64)
+        window = window * np.hanning(len(window))
+        mags = np.abs(np.fft.rfft(window, n=len(window) * 2))
+        freqs = np.fft.rfftfreq(len(window) * 2, 1.0 / sample_rate)
+        peak = float(mags.max()) + 1e-12
+        min_hz = min_hz_for(len(audio), sample_rate)
+        scores: dict[int, float] = {}
+        others = [m for m in dict.fromkeys(sounding) if m != midi_note]
+        for cand in range(midi_note - self.span, midi_note + self.span + 1):
+            score = self._score(freqs, mags, peak, cand,
+                                [m for m in others if m != cand],
+                                sample_rate, min_hz)
+            if score is not None:
+                scores[cand] = score
+        verdict = self._decide(midi_note, scores, allow_intruder=False,
+                               margin_db=self.confirm_margin_db)
+        return verdict.correct
+
     def _decide(
         self, target: int, scores: dict[int, float], allow_intruder: bool = True,
+        margin_db: float | None = None,
     ) -> StringVerdict:
+        needed = self.margin_db if margin_db is None else margin_db
         if not scores:
             return StringVerdict(target, None, -120.0, 0.0, "")
         ranked = sorted(scores.items(), key=lambda kv: -kv[1])
@@ -273,10 +357,10 @@ class ChordVerifier:
             # Expected note is masked by an octave/fifth already sounding: it
             # can never be confirmed, but an intruder still shows up loudly.
             if (allow_intruder and best_midi != target
-                    and best_db > self.intruder_db and margin > self.margin_db):
+                    and best_db > self.intruder_db and margin > needed):
                 return StringVerdict(target, best_midi, best_db, margin, "intruder")
             return StringVerdict(target, None, best_db, margin, "")
 
-        if best_db <= self.present_db or margin <= self.margin_db:
+        if best_db <= self.present_db or margin <= needed:
             return StringVerdict(target, None, best_db, margin, "")
         return StringVerdict(target, best_midi, best_db, margin, "direct")

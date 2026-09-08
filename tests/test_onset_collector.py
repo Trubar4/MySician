@@ -64,10 +64,21 @@ def test_emits_on_timeout_with_single_confident_frame():
     assert notes[0].timestamp_ms == 0.0
 
 
-def test_silent_strike_emits_nothing():
+def test_pitchless_strike_is_reported_as_unpitched():
+    """A strike with no pitch in it is still a strike, and says so.
+
+    It passed the noise gate, so something was played; only the pitch is
+    missing. Dropping it is what made dead notes impossible to hit, because
+    the one honest piece of evidence for a dead note never left the audio
+    thread. Whether the tab wanted one here is the matcher's business.
+    """
     c = OnsetPitchCollector()
     frames = [(0.0, 0.0, True)] + [(0.0, 0.1, False)] * (COLLECT + 2)
-    assert _feed_frames(c, frames) == []
+    notes = _feed_frames(c, frames)
+    assert len(notes) == 1
+    assert notes[0].note.unpitched is True
+    assert notes[0].note.is_onset is True
+    assert notes[0].timestamp_ms == 0.0
 
 
 def test_rapid_restrike_closes_previous_collection():
@@ -131,7 +142,14 @@ def test_normal_pitch_not_flagged_as_subharmonic():
 
 
 def test_too_deep_frequency_rejected():
-    """A frequency needing more than 2 octave folds is noise, not a chord."""
+    """A frequency needing more than 2 octave folds is noise, not a chord.
+
+    The strike survives as unpitched -- something was struck -- but carries no
+    note, so it can never be credited against a written pitch.
+    """
     c = OnsetPitchCollector()
     frames = [(0.0, 0.0, True)] + [(12.0, 0.9, False)] * (COLLECT + 1)
-    assert _feed_frames(c, frames) == []
+    notes = _feed_frames(c, frames)
+    assert len(notes) == 1
+    assert notes[0].note.unpitched is True
+    assert notes[0].note.midi_note == 0

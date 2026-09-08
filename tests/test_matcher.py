@@ -3,7 +3,7 @@
 import pytest
 
 from pickhero.audio.detector import DetectedNote
-from pickhero.audio.input import TimestampedNote
+from pickhero.audio.input import StrikeWindow, TimestampedNote
 from pickhero.matcher import MatchType, MatchResult, NoteMatcher
 from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
 
@@ -662,6 +662,276 @@ class TestLegatoCredit:
         assert matcher.get_note_state(notes[1]) == MatchType.HIT
 
 
+class TestDeadNotes:
+    """A dead note is a click, so the strike is the whole of the evidence.
+
+    Its written fret says where the fretting hand damps the string, not which
+    pitch comes out. Scored against that pitch, every dead note in a tab is a
+    miss no matter how well it was played -- and a heavily muted riff is most
+    of a metal tab.
+    """
+
+    def _unpitched(self, timestamp_ms: float) -> TimestampedNote:
+        return TimestampedNote(
+            note=DetectedNote(midi_note=0, frequency=0.0, confidence=0.0,
+                              name="", is_onset=True, unpitched=True),
+            timestamp_ms=timestamp_ms,
+        )
+
+    def _dead(self, timestamp_ms: float, string: int = 6,
+              midi_note: int = 40) -> NoteEvent:
+        return NoteEvent(timestamp_ms=timestamp_ms, duration_ms=200.0,
+                         midi_note=midi_note, string=string, fret=0, dead=True)
+
+    def test_a_pitchless_strike_plays_a_dead_note(self):
+        note = self._dead(1000.0)
+        matcher = _make_matcher([note])
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert matcher.get_note_state(note) == MatchType.HIT
+
+    def test_a_pitched_strike_plays_one_too(self):
+        """Damping a string still lets some pitch through, and which pitch it
+        is says nothing about whether the mute was right."""
+        note = self._dead(1000.0)
+        matcher = _make_matcher([note])
+        matcher.process_detected_notes([_detected(52, 1000.0)], 1000.0)
+        assert matcher.get_note_state(note) == MatchType.HIT
+
+    def test_a_dead_note_nobody_struck_is_still_missed(self):
+        note = self._dead(1000.0)
+        matcher = _make_matcher([note])
+        matcher.process_detected_notes([], 3000.0)
+        assert matcher.get_note_state(note) == MatchType.MISS
+
+    def test_a_muted_strum_is_one_stroke(self):
+        """A dead note on three strings at once has one click, not three."""
+        notes = [self._dead(1000.0, string=s, midi_note=m)
+                 for s, m in ((6, 40), (5, 45), (4, 50))]
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+
+    def test_a_dead_note_does_not_swallow_its_neighbour_s_strike(self):
+        """The written note beside it must still get the strike it needs.
+
+        A dead note accepts any pitch, so letting it compete on equal terms
+        would have it eat the strike meant for the real note next to it and
+        leave that one to time out as a miss.
+        """
+        real = _note_event(1000.0, midi_note=64, string=1, fret=12)
+        dead = self._dead(1000.0)
+        matcher = _make_matcher([real, dead])
+        matcher.process_detected_notes([_detected(64, 1000.0)], 1000.0)
+        assert matcher.get_note_state(real) == MatchType.HIT
+
+    def test_a_dead_note_is_never_measured_for_timing(self):
+        """Its written pitch never sounds, so an offset measured against it
+        would be a made-up number in the timing report."""
+        matcher = _make_matcher([self._dead(1000.0, midi_note=64, string=1)])
+        matcher.process_detected_notes([_detected(64, 1080.0)], 1080.0)
+        assert matcher.timing_samples == []
+
+    def test_an_unpitched_strike_credits_nothing_when_no_dead_note_is_written(self):
+        """Rustle, a hand knock, a choked accident: none of them is a note."""
+        note = _note_event(1000.0, midi_note=64)
+        matcher = _make_matcher([note])
+        results = matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert results == []
+        assert matcher.get_note_state(note) == MatchType.PENDING
+
+    def test_a_dead_note_is_kept_out_of_chord_verification(self):
+        """The verifier is told which pitches to expect, and a damped string
+        sounds none of the one written for it."""
+        notes = [
+            _note_event(1000.0, midi_note=40, string=6, fret=0),
+            _note_event(1000.0, midi_note=47, string=5, fret=2),
+            self._dead(1000.0, string=4, midi_note=52),
+        ]
+        matcher = _make_matcher(notes)
+        matcher.chord_verifier = object()   # only its presence matters here
+        matcher.process_detected_notes(
+            [TimestampedNote(
+                note=DetectedNote(midi_note=40, frequency=82.4, confidence=0.9,
+                                  name="E2", is_onset=True),
+                timestamp_ms=1000.0, sample_pos=4096)],
+            1000.0,
+        )
+        expected = matcher._pending_verifications[4096]
+        assert notes[2] not in expected
+        assert len(expected) == 2
+
+
+class TestUnpitchedChordCredit:
+    """A strummed chord regularly produces no pitch at all, and is still played.
+
+    Monophonic YIN finds no single period in a six-string strum: on the
+    reference recordings 38-55 % of strikes on chords of four strings and up
+    carry no note, and 16-20 % on a two-string power chord. Scored on pitch
+    alone, those strums go red however well they were fretted.
+    """
+
+    def _unpitched(self, timestamp_ms: float,
+                   sample_pos: int | None = None) -> TimestampedNote:
+        return TimestampedNote(
+            note=DetectedNote(midi_note=0, frequency=0.0, confidence=0.0,
+                              name="", is_onset=True, unpitched=True),
+            timestamp_ms=timestamp_ms, sample_pos=sample_pos,
+        )
+
+    def _chord(self, size: int, timestamp_ms: float = 1000.0) -> list[NoteEvent]:
+        strings = [(6, 40), (5, 47), (4, 52), (3, 56), (2, 59), (1, 64)]
+        return [
+            NoteEvent(timestamp_ms=timestamp_ms, duration_ms=400.0,
+                      midi_note=midi, string=s, fret=2)
+            for s, midi in strings[:size]
+        ]
+
+    def test_a_three_string_chord_is_credited(self):
+        notes = self._chord(3)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+
+    def test_a_six_string_chord_is_credited(self):
+        notes = self._chord(6)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+
+    def test_a_power_chord_is_credited_too(self):
+        """Two strings was the line for one cycle, on the argument that a
+        pitchless strike is rare there. The rate was right and the conclusion
+        was wrong: 16-20 % of every power chord in a metal song is not
+        nothing, and the reference takes show a wrong finger is still caught
+        (correct palm-muted E5 goes 16/20 -> 20/20 credited, and the wrong one
+        has MORE strings convicted, not fewer)."""
+        notes = self._chord(2)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+
+    def test_a_single_note_is_not(self):
+        notes = self._chord(1)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert matcher.get_note_state(notes[0]) == MatchType.PENDING
+
+    def test_nothing_is_credited_where_no_chord_is_written(self):
+        """Silence, a knock, a muffled accident: none of them is a chord."""
+        matcher = _make_matcher(self._chord(3, timestamp_ms=9000.0))
+        results = matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert results == []
+
+    def test_the_strum_still_goes_to_the_chord_verifier(self):
+        """Crediting the strum must not stop the fingers being checked --
+        that is the whole reason it is safe to credit it."""
+        notes = self._chord(4)
+        matcher = _make_matcher(notes)
+        matcher.chord_verifier = object()   # only its presence matters here
+        matcher.process_detected_notes(
+            [self._unpitched(1000.0, sample_pos=8192)], 1000.0)
+        assert set(matcher._pending_verifications[8192]) == set(notes)
+
+    def test_a_verdict_can_still_take_a_string_back(self):
+        """The credit is a starting position, not a promise."""
+        notes = self._chord(3)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        matcher._rerecord_match(notes[1], MatchType.MISS)
+        assert matcher.get_note_state(notes[1]) == MatchType.MISS
+        assert matcher.get_statistics()["hits"] == 2
+
+    def test_dead_notes_are_not_counted_toward_the_chord(self):
+        """A dead note has its own rule and sounds no pitch, so it must not
+        push a one-string shape over the line."""
+        notes = self._chord(1) + [
+            NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=52,
+                      string=4, fret=0, dead=True)
+        ]
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._unpitched(1000.0)], 1000.0)
+        assert matcher.get_note_state(notes[1]) == MatchType.HIT      # the dead one
+        assert matcher.get_note_state(notes[0]) == MatchType.PENDING
+
+
+class TestOnlyHonestNotesAreTimed:
+    """A note may only say when it was played if it really was.
+
+    The report answers "how far from the beat do you pick", so a note whose
+    written pitch does not sound at its written moment, or which is never
+    picked at all, can only invent the number it contributes. It did real
+    damage: a run over a technique test scattered by +-75 ms, K applied an
+    offset built from it, and that offset sat in the config for days quietly
+    swallowing a third of the real latency.
+    """
+
+    def _timed(self, **kw) -> bool:
+        note = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=64,
+                         string=1, fret=5, **kw)
+        following = NoteEvent(timestamp_ms=1400.0, duration_ms=400.0,
+                              midi_note=67, string=1, fret=8)
+        matcher = _make_matcher([note, following])
+        return matcher._times_its_own_strike(note)
+
+    def _target_timed(self, **lead_kw) -> bool:
+        lead = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=64,
+                         string=1, fret=5, **lead_kw)
+        target = NoteEvent(timestamp_ms=1400.0, duration_ms=400.0,
+                           midi_note=67, string=1, fret=8)
+        matcher = _make_matcher([lead, target])
+        return matcher._times_its_own_strike(target)
+
+    def test_a_plain_note_is_timed(self):
+        assert self._timed()
+
+    def test_a_bent_note_is_not(self):
+        """It leaves the written pitch on purpose, and the collector reports
+        the settled pitch -- the one it moved TO."""
+        assert not self._timed(bend=((0.0, 0.0), (1.0, 2.0)))
+
+    def test_a_sliding_note_is_not(self):
+        assert not self._timed(slide_to_next=True)
+
+    def test_a_note_slid_into_or_out_of_is_not(self):
+        assert not self._timed(slide_in=1)
+        assert not self._timed(slide_out=-1)
+
+    def test_a_dead_note_is_not(self):
+        assert not self._timed(dead=True)
+
+    def test_a_hammer_SOURCE_is_timed(self):
+        """It is picked normally, at its written pitch, on the beat. Only the
+        target is exempt -- excluding both would throw away half a legato
+        passage for nothing."""
+        assert self._timed(hammer_to_next=True)
+
+    def test_a_hammered_TARGET_is_not(self):
+        assert not self._target_timed(hammer_to_next=True)
+
+    def test_a_slide_target_is_not(self):
+        assert not self._target_timed(slide_to_next=True)
+
+    def test_a_palm_muted_note_is_still_timed(self):
+        """The picking hand shortens the note; it does not move the pitch or
+        the moment it was struck."""
+        assert self._timed(palm_mute=True)
+
+    def test_a_technique_note_contributes_no_sample(self):
+        """The rule where it actually bites: through the real code path."""
+        bent = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=64,
+                         string=1, fret=5, bend=((0.0, 0.0), (1.0, 2.0)))
+        matcher = _make_matcher([bent])
+        matcher.process_detected_notes([_detected(64, 1050.0)], 1050.0)
+        assert matcher.timing_samples == []
+
+    def test_a_plain_note_still_contributes_one(self):
+        plain = _note_event(1000.0, midi_note=64)
+        matcher = _make_matcher([plain])
+        matcher.process_detected_notes([_detected(64, 1050.0)], 1050.0)
+        assert len(matcher.timing_samples) == 1
+        assert matcher.timing_samples[0].delta_ms == pytest.approx(50.0)
+
+
 class TestTimingReport:
     """The report exists to say WHICH timing problem this is.
 
@@ -878,3 +1148,436 @@ class TestTimingSampleYield:
         assert matcher.timing_samples == []
         assert matcher.timing_ambiguous == 0
         assert matcher.timing_report() is None
+
+
+class TestStrikeTrace:
+    """One line per strike, so a bad run can be read instead of guessed at.
+
+    The same recording scored 35 % in the app and 97 % through the same
+    detector and matcher offline, and no number on screen could say which of
+    the steps in between lost the notes. These lines are what was missing.
+    """
+
+    def test_a_hit_is_recorded_with_the_note_it_was_credited_to(self):
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        matcher.process_detected_notes([_detected(64, 1010.0)], 1010.0)
+        trace = matcher.strike_trace
+        assert len(trace) == 1
+        assert trace[0].outcome == "hit"
+        assert trace[0].note_ms == 1000.0
+        assert trace[0].semitones == 0
+
+    def test_a_strike_nothing_explains_is_recorded_too(self):
+        """The interesting case: a strike that happened and scored nothing.
+        Without a line for it, such a run looks like silence."""
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        matcher.process_detected_notes([_detected(50, 1010.0)], 1010.0)
+        assert [t.outcome for t in matcher.strike_trace] == ["unmatched"]
+
+    def test_it_keeps_the_raw_stamp_next_to_the_adjusted_one(self):
+        """A run whose offset is wrong looks exactly like one whose detection
+        is bad, unless both numbers are kept."""
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)],
+                                audio_offset_ms=-60.0)
+        matcher.process_detected_notes([_detected(64, 1050.0)], 1050.0)
+        trace = matcher.strike_trace[0]
+        assert trace.strike_ms == 1050.0
+        assert trace.adjusted_ms == pytest.approx(990.0)
+
+    def test_a_close_match_says_how_far_off_it_was(self):
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        matcher.process_detected_notes([_detected(65, 1000.0)], 1000.0)
+        assert matcher.strike_trace[0].outcome == "close"
+        assert matcher.strike_trace[0].semitones == 1
+
+    def test_reset_clears_it(self):
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        matcher.process_detected_notes([_detected(64, 1000.0)], 1000.0)
+        matcher.reset()
+        assert matcher.strike_trace == []
+
+    def test_a_sustained_frame_is_not_a_strike(self):
+        matcher = _make_matcher([_note_event(1000.0, midi_note=64)])
+        matcher.process_detected_notes(
+            [_detected(64, 1000.0, is_onset=False)], 1000.0)
+        assert matcher.strike_trace == []
+
+
+class TestRescuingAPitchlessSingleNote:
+    """A line played across the strings without damping is polyphony, and
+    monophonic YIN reports no pitch for it at all -- not a wrong one.
+
+    Measured on the player's own take (block 5): nothing comes back WRONG,
+    but the fast ringing run loses 24 points of usable strikes to strikes
+    carrying no pitch. So the written note is looked for in the audio, which
+    acquits on positive evidence the way the chord verifier convicts on it.
+    """
+
+    class _Verifier:
+        """Stands in for ChordVerifier, answering only what it is told to."""
+
+        def __init__(self, confirm: bool):
+            self._confirm = confirm
+            self.asked = []
+            self.told = []
+
+        def confirms(self, audio, sample_rate, midi_note, sounding=()):
+            self.asked.append(midi_note)
+            self.told = list(sounding)
+            return self._confirm
+
+        def verify(self, audio, sample_rate, expected_midi):
+            return {}
+
+    def _window(self, sample_pos: int):
+        import numpy as np
+        return StrikeWindow(timestamp_ms=1000.0, sample_pos=sample_pos,
+                            audio=np.zeros(4096, dtype=np.float32),
+                            sample_rate=48000)
+
+    def _unpitched(self, timestamp_ms: float, sample_pos: int):
+        return TimestampedNote(
+            note=DetectedNote(midi_note=0, frequency=0.0, confidence=0.0,
+                              name="", is_onset=True, unpitched=True),
+            timestamp_ms=timestamp_ms, sample_pos=sample_pos,
+        )
+
+    def _played(self, confirm: bool, note=None):
+        note = note or _note_event(1000.0, midi_note=55, string=3)
+        matcher = _make_matcher([note])
+        verifier = self._Verifier(confirm)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._unpitched(1000.0, sample_pos=8192)], 1000.0)
+        return matcher, verifier, note
+
+    def test_a_confirmed_note_is_credited(self):
+        matcher, _, note = self._played(confirm=True)
+        matcher.process_strike_windows([self._window(8192)])
+        assert matcher.get_note_state(note) == MatchType.HIT
+
+    def test_an_unconfirmed_note_is_left_alone(self):
+        """Absence of evidence is not evidence -- the same presumption the
+        chord verifier runs on, pointing the other way."""
+        matcher, _, note = self._played(confirm=False)
+        matcher.process_strike_windows([self._window(8192)])
+        assert matcher.get_note_state(note) == MatchType.PENDING
+
+    def test_the_written_pitch_is_what_gets_looked_for(self):
+        matcher, verifier, _ = self._played(confirm=True)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == [55]
+
+    def test_a_note_already_missed_can_still_be_rescued(self):
+        """The window trails its strike by design, so the verdict arrives
+        after the note timed out. Refusing it for being late would throw the
+        evidence away for arriving exactly when it was always going to."""
+        matcher, _, note = self._played(confirm=True)
+        matcher.process_detected_notes([], 9000.0)      # times the note out
+        assert matcher.get_note_state(note) == MatchType.MISS
+        matcher.process_strike_windows([self._window(8192)])
+        assert matcher.get_note_state(note) == MatchType.HIT
+        assert matcher.get_statistics()["misses"] == 0
+
+    def test_a_chord_is_not_rescued_it_is_credited_outright(self):
+        """Two strings already have their own rule, and it needs no audio."""
+        notes = [_note_event(1000.0, midi_note=40, string=6),
+                 _note_event(1000.0, midi_note=47, string=5)]
+        matcher = _make_matcher(notes)
+        verifier = self._Verifier(confirm=False)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._unpitched(1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+        assert verifier.asked == []
+
+    def test_a_dead_note_is_not_rescued(self):
+        """It has no pitch to look for, and its own rule already took it."""
+        note = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0, midi_note=52,
+                         string=4, fret=0, dead=True)
+        matcher = _make_matcher([note])
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._unpitched(1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == []
+
+    def test_nothing_happens_without_a_verifier(self):
+        note = _note_event(1000.0, midi_note=55, string=3)
+        matcher = _make_matcher([note])
+        matcher.process_detected_notes(
+            [self._unpitched(1000.0, sample_pos=8192)], 1000.0)
+        assert matcher._pending_rescues == {}
+
+    def _subharmonic(self, midi: int, timestamp_ms: float, sample_pos: int):
+        """A strike whose pitch the detector folded up from below the guitar's
+        range, because several ringing strings share that period."""
+        return TimestampedNote(
+            note=DetectedNote(midi_note=midi, frequency=98.0, confidence=0.95,
+                              name="G2", is_onset=True, subharmonic=True),
+            timestamp_ms=timestamp_ms, sample_pos=sample_pos,
+        )
+
+    def test_a_subharmonic_that_fits_nothing_written_is_put_to_the_audio(self):
+        """On an arpeggio the tab writes single notes meant to ring into each
+        other, and what comes back is the common period of the whole sounding
+        shape -- G2 under a ringing B2/D3/B3. That value names the chord in
+        the room, not the note just struck, so it is worth exactly as much
+        about that note as no pitch at all."""
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == [59]
+        assert matcher.get_note_state(note) == MatchType.HIT
+
+    def test_and_is_not_credited_when_the_audio_does_not_show_it(self):
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        matcher.chord_verifier = self._Verifier(confirm=False)
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert matcher.get_note_state(note) == MatchType.PENDING
+
+    def test_a_subharmonic_on_a_written_CHORD_credits_the_strum(self):
+        """Both halves of "it goes where a pitchless strike goes".
+
+        For a cycle it went to one: held for the audio, which refuses a chord
+        by design. Measured on the player's own take of the chorus, 92 strikes
+        came back subharmonic and only 28 were held -- the other 64 sat on a
+        written chord and were dropped outright. A subharmonic exists ONLY
+        because several strings are sounding together, which is the very
+        thing being credited.
+        """
+        notes = [_note_event(1000.0, midi_note=43, string=6),
+                 _note_event(1000.0, midi_note=50, string=4),
+                 _note_event(1000.0, midi_note=55, string=3)]
+        matcher = _make_matcher(notes)
+        verifier = self._Verifier(confirm=False)
+        matcher.chord_verifier = verifier
+        # A pitch no written note explains -- the common period of the shape.
+        matcher.process_detected_notes(
+            [self._subharmonic(31, 1000.0, sample_pos=8192)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+        # Credited outright: a chord needs no audio, which is why the rescue
+        # refuses one in the first place.
+        assert verifier.asked == []
+        assert matcher._pending_rescues == {}
+
+    def test_but_a_single_written_note_is_still_only_held(self):
+        """The chord credit is for a CHORD. One note and an unexplained
+        pitch is exactly the case the audio has to settle."""
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        verifier = self._Verifier(confirm=False)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(31, 1000.0, sample_pos=8192)], 1000.0)
+        assert matcher.get_note_state(note) == MatchType.PENDING
+        assert matcher._pending_rescues
+
+    def test_a_subharmonic_that_DOES_fit_keeps_its_own_rule(self):
+        """It proves the strum outright and needs no audio: a monophonic
+        detector can never report a second chord tone to reach a majority."""
+        notes = [_note_event(1000.0, midi_note=43, string=6),
+                 _note_event(1000.0, midi_note=50, string=4)]
+        matcher = _make_matcher(notes)
+        verifier = self._Verifier(confirm=False)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        assert all(matcher.get_note_state(n) == MatchType.HIT for n in notes)
+        assert verifier.asked == []
+
+    def test_an_ordinary_wrong_pitch_is_still_just_wrong(self):
+        """A clean reading of one string that does not match is evidence, and
+        the presumption of innocence does not extend to ignoring it."""
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        wrong = TimestampedNote(
+            note=DetectedNote(midi_note=43, frequency=98.0, confidence=0.95,
+                              name="G2", is_onset=True, subharmonic=False),
+            timestamp_ms=1000.0, sample_pos=8192)
+        matcher.process_detected_notes([wrong], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == []
+        assert matcher.get_note_state(note) == MatchType.PENDING
+
+    def test_the_rule_can_be_switched_off_for_the_control_run(self):
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        matcher.subharmonic_rescue = False
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == []
+
+    def test_the_nearest_written_note_is_the_one_asked_about(self):
+        """An arpeggio has two or three written notes in flight at any moment
+        -- they are meant to ring into each other. Requiring exactly one was
+        right for a line across the strings and silently wrong here: measured
+        on the player's own take, the rule reached this point 25 times and
+        held nothing. A strike belongs to one note and the tab says which."""
+        early = _note_event(700.0, midi_note=50, string=4)
+        struck = _note_event(1000.0, midi_note=59, string=3)
+        later = _note_event(1300.0, midi_note=47, string=5)
+        matcher = _make_matcher([early, struck, later], timing_window_ms=400.0)
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == [59]
+
+    def test_a_chord_in_flight_is_still_not_rescued(self):
+        """Two strings written at one instant have their own rule, which
+        needs no audio -- even with an earlier note still ringing."""
+        early = _note_event(700.0, midi_note=50, string=4)
+        chord = [_note_event(1000.0, midi_note=43, string=6),
+                 _note_event(1000.0, midi_note=47, string=5)]
+        matcher = _make_matcher([early] + chord, timing_window_ms=400.0)
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher._hold_for_rescue(1000.0, sample_pos=8192)
+        assert matcher._pending_rescues == {}
+
+    def test_holding_a_note_does_not_take_it_from_a_later_strike(self):
+        """A strike that matches it outright still wins: _apply_rescue only
+        credits a note still not HIT or CLOSE when the window lands."""
+        note = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([note])
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_detected_notes([TimestampedNote(
+            note=DetectedNote(midi_note=59, frequency=247.0, confidence=0.95,
+                              name="B3", is_onset=True),
+            timestamp_ms=1050.0, sample_pos=9000)], 1050.0)
+        assert matcher.get_note_state(note) == MatchType.HIT
+        matcher.process_strike_windows([self._window(8192)])
+        assert matcher.rescued_notes == 0        # not counted twice
+
+    def test_the_verifier_is_told_what_else_is_ringing(self):
+        """A partial identifies a note only if no other sounding string
+        produces it. Without that, every rival hypothesis a semitone away
+        feeds on the neighbours' partials -- measured on the player's own
+        arpeggio, 14 of 16 refusals had the written note winning at -0.7 to
+        -10 dB and failing on the margin alone."""
+        ringing = NoteEvent(timestamp_ms=700.0, duration_ms=900.0,
+                            midi_note=45, string=5, fret=0)
+        struck = NoteEvent(timestamp_ms=1000.0, duration_ms=400.0,
+                           midi_note=59, string=3, fret=4)
+        matcher = _make_matcher([ringing, struck], timing_window_ms=120.0)
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert verifier.asked == [59]
+        assert 45 in verifier.told
+
+    def test_but_never_the_note_being_asked_about(self):
+        """Its own partials are the evidence; excluding them would ask the
+        verifier to confirm a note from everything except itself."""
+        struck = _note_event(1000.0, midi_note=59, string=3)
+        matcher = _make_matcher([struck])
+        verifier = self._Verifier(confirm=True)
+        matcher.chord_verifier = verifier
+        matcher.process_detected_notes(
+            [self._subharmonic(43, 1000.0, sample_pos=8192)], 1000.0)
+        matcher.process_strike_windows([self._window(8192)])
+        assert 59 not in verifier.told
+
+    def test_a_rescue_is_written_into_the_run_log(self):
+        matcher, _, _ = self._played(confirm=True)
+        matcher.process_strike_windows([self._window(8192)])
+        assert any(t.outcome == "rescued" for t in matcher.strike_trace)
+        assert matcher.rescued_notes == 1
+
+    def test_reset_forgets_held_strikes(self):
+        matcher, _, _ = self._played(confirm=True)
+        matcher.reset()
+        assert matcher._pending_rescues == {}
+        assert matcher.rescued_notes == 0
+
+
+class TestWhatTheScoreRestsOn:
+    """A six-string chord is credited from ONE strike.
+
+    The strum is heard; the fretting of the other five is not. The chord
+    verifier is what polices that, and it can only convict a string whose
+    partials are not masked by a lower one -- in an open chord, most of them.
+    So a percentage that mixes the two cannot answer "was I really that
+    good", which is exactly what the player asked when a run came back at
+    81 % and felt far kinder than the playing had been.
+    """
+
+    def _chord(self, n):
+        return [_note_event(1000.0, midi_note=m, string=s)
+                for m, s in [(40, 6), (47, 5), (52, 4), (56, 3), (59, 2),
+                             (64, 1)][:n]]
+
+    def _strum(self, midi, subharmonic=True, unpitched=False):
+        note = DetectedNote(midi_note=midi, frequency=82.0, confidence=0.95,
+                            name="E2", is_onset=True, unpitched=unpitched)
+        note.subharmonic = subharmonic
+        return TimestampedNote(note=note, timestamp_ms=1000.0, sample_pos=0)
+
+    def test_one_strike_credits_six_notes_and_says_so(self):
+        notes = self._chord(6)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._strum(40)], 1000.0)
+        assert matcher.hits == 6
+        assert matcher.notes_proved == 1
+        assert matcher.notes_by_strum == 5
+
+    def test_a_single_note_is_proved_by_its_own_pitch(self):
+        note = _note_event(1000.0, midi_note=55, string=3)
+        matcher = _make_matcher([note])
+        matcher.process_detected_notes(
+            [self._strum(55, subharmonic=False)], 1000.0)
+        assert (matcher.notes_proved, matcher.notes_by_strum) == (1, 0)
+
+    def test_an_unpitched_strum_proves_nothing_about_any_string(self):
+        notes = self._chord(4)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes(
+            [self._strum(0, subharmonic=False, unpitched=True)], 1000.0)
+        assert matcher.hits == 4
+        assert (matcher.notes_proved, matcher.notes_by_strum) == (0, 4)
+
+    def test_the_two_always_add_up_to_what_is_green(self):
+        notes = self._chord(6)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._strum(40)], 1000.0)
+        matcher.process_detected_notes([], 9000.0)
+        stats = matcher.get_statistics()
+        assert (matcher.notes_proved + matcher.notes_by_strum
+                == stats["hits"] + stats["close"])
+
+    def test_a_verdict_taken_back_is_taken_off_the_count_too(self):
+        """The verifier convicts a string after the fact; the tally that says
+        what the score rests on has to follow it."""
+        notes = self._chord(4)
+        matcher = _make_matcher(notes)
+        matcher.process_detected_notes([self._strum(40)], 1000.0)
+        before = matcher.notes_proved + matcher.notes_by_strum
+        matcher._rerecord_match(notes[2], MatchType.MISS)
+        assert matcher.notes_proved + matcher.notes_by_strum == before - 1
+
+    def test_a_reset_clears_it(self):
+        matcher = _make_matcher(self._chord(6))
+        matcher.process_detected_notes([self._strum(40)], 1000.0)
+        matcher.reset()
+        assert (matcher.notes_proved, matcher.notes_by_strum) == (0, 0)

@@ -23,6 +23,21 @@ block_cipher = None
 datas = []
 datas += collect_data_files("sounddevice")
 datas += collect_data_files("certifi")
+# verovio ships ~20 MB of engraving data -- the music fonts and the schemas.
+# Without them the toolkit imports and then renders nothing, which is the
+# failure mode this project has learnt to check for rather than assume: a
+# feature that only works in the development tree is a feature the player
+# does not have.
+datas += collect_data_files("verovio")
+# The build stamp, written by build.bat just before this runs. Without it in
+# the bundle the EXE cannot say which version it is, and "is it fixed" and
+# "did it reach the machine" become the same question.
+if os.path.exists(os.path.join("pickhero", "_build_stamp.txt")):
+    datas += [(os.path.join("pickhero", "_build_stamp.txt"), "pickhero")]
+# resvg rasterises the engraving. SDL's own SVG loader accepts verovio's
+# output and draws 20 pixels of it, which is why this is here at all -- and
+# it is resvg rather than cairosvg because cairosvg needs a cairo the Windows
+# build has not got. It is one self-contained extension with no data files.
 
 # ── Native binaries / C extensions ──────────────────────────────────────────
 # aubio  — C pitch/onset detection library
@@ -32,6 +47,12 @@ binaries = []
 binaries += collect_dynamic_libs("aubio")
 binaries += collect_dynamic_libs("pygame")
 binaries += collect_dynamic_libs("numpy")
+# verovio is a 17 MB abi3 extension beside a thin Python wrapper, and every
+# import of it in this app is inside a function -- which is how it came to be
+# missing from the EXE while the build and its own check both passed. Both
+# halves are named explicitly rather than left to the import graph.
+binaries += collect_dynamic_libs("verovio")
+binaries += collect_dynamic_libs("resvg_py")
 
 # ── VC++ Runtime ────────────────────────────────────────────────────────────
 # Bundle the Visual C++ runtime so the exe works on machines without it.
@@ -59,6 +80,12 @@ a = Analysis(
         "guitarpro",
         # SSL certs for urllib HTTPS requests (Songsterr downloader)
         "certifi",
+        # Engraving. Imported lazily everywhere it is used, so nothing in the
+        # static import graph reaches it.
+        "verovio",
+        "resvg_py",
+        "pickhero.ui.tab_view",
+        "pickhero.tabs.musicxml",
     ],
     hookspath=[],
     hooksconfig={},

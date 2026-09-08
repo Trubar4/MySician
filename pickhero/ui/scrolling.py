@@ -6,19 +6,39 @@ to a playback clock. Optionally captures audio and shows hit/miss feedback.
 
 from __future__ import annotations
 
+import bisect
+import functools
+import math
+import statistics
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 import pygame
 
 from pickhero.audio.midi_playback import BackingTrack, MidiPlayer
+from pickhero.audio.mp3_playback import Mp3Player, pick_audio_file
+from pickhero.audio import timestretch
 from pickhero import config as config_module
-from pickhero.config import MAX_LATENCY_OFFSET_MS, Config
-from pickhero.matcher import STRING_MIN_SAMPLES, NoteMatcher
+from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
+                             MAX_MP3_RATE, MIN_GATE_DB, MIN_MP3_RATE, Config)
+from pickhero.matcher import (FINE_MS, STRING_MIN_SAMPLES, MatchType,
+                              NoteMatcher)
+from pickhero.audio import midi_playback
+from pickhero.audio import output
+from pickhero.audio.syncmap import SyncMap
+from pickhero import practice_log
 from pickhero.progress import ProgressTracker
+from pickhero.tabs.chords import name_chord
 from pickhero.tabs.timeline import NoteEvent, Timeline
-from pickhero.audio.note_utils import freq_to_cents_deviation, midi_to_name
+from pickhero.audio.note_utils import (
+    freq_to_cents_deviation, is_standard_tuning, midi_to_name, tuning_name,
+    tuning_notes,
+)
 from pickhero.ui.colors import (
+    OPEN_STRING_COLOR,
     STRING_COLORS,
     cycle_theme,
     dimmed,
@@ -41,7 +61,31 @@ MAX_LANE_HEIGHT_FRACTION = 0.072
 
 # Wound strings are visibly thicker than plain ones; drawing them at one
 # weight loses the strongest cue for which lane is which. Index 0 = high e.
-STRING_THICKNESS = (1, 1, 2, 2, 3, 4)
+STRING_THICKNESS = (1, 2, 3, 4, 5, 6)
+
+# The three lowest are wound and read as brass rather than steel. It is the
+# cue that lets the low half of the board be told apart without reading
+# anything, which is the whole point of drawing a fretboard instead of rows.
+WOUND_STRINGS = 3
+WOUND_TINT = (196, 158, 92)
+PLAIN_TINT = (208, 212, 220)
+
+# Bar line. Barely above the board and slightly COOLER than it, which is what
+# makes it read as a line on the wood rather than as an object of its own.
+# It was drawn as a lit nickel-silver wire and that was too loud: the eye went
+# to it instead of to the notes, which is the opposite of what a landmark is
+# for. A landmark is noticed when looked for and not otherwise.
+BAR_LINE_COLOR = (52, 54, 66)
+
+# No two bar lines closer together than this. A fast song puts bars a few
+# pixels apart and the board turns into a picket fence behind the notes, so
+# past this every second bar is drawn, then every fourth.
+MIN_BAR_LINE_GAP_PX = 90
+
+# How far the hit line stands proud of the board, top and bottom. Flush with
+# the edge it is one more vertical among the fret wires; past it, it is the
+# thing the board scrolls through.
+HIT_LINE_OVERHANG_PX = 14
 
 # Gap left between a sustain and the next note, as a fraction of note height.
 # A capsule is drawn from the head's left edge to one radius before the next
@@ -90,6 +134,24 @@ LEGATO_ARC_HEADS = 0.34
 LEGATO_BASE_FRACTION = 0.3
 LEGATO_ARC_STEPS = 12
 
+# -- Muting ----------------------------------------------------------------
+# A palm-muted note is choked short of whatever length the tab wrote for it,
+# so drawing its full sustain promises a ring that will not happen. Capped at
+# this many heads instead: long enough to tell a chug from a dead note, short
+# enough that a muted riff reads as the stubs it sounds like.
+PALM_MUTE_MAX_HEADS = 1.3
+# How strongly a chord block tints the board under its notes. A tint and not
+# a fill: the notes are the thing being read, and a solid slab under them
+# would fight them for attention.
+CHORD_BLOCK_ALPHA = 54
+# Between the two grip cards.
+CHORD_CARD_GAP = 10
+# A palm-muted run is marked once, at its start, the way paper tab writes
+# "P.M." and dashes it onward -- a disc over every note of a muted riff hides
+# the music behind its own labelling. A silence longer than this starts a new
+# run, so the badge comes back when the riff does.
+PALM_MUTE_RUN_GAP_MS = 1200.0
+
 # Left margin for notes that already passed the hit zone (ms)
 LEFT_MARGIN_MS = 2000
 # Right margin for notes not yet visible (ms)
@@ -108,6 +170,29 @@ BASE_VISIBLE_WINDOW_MS = 8000.0
 # Bounds on the derived window. The lower one keeps a minimum of lookahead;
 # the upper one stops a sparse song from crawling.
 MIN_VISIBLE_WINDOW_MS = 1500.0
+# Look-ahead a player needs to read a fret number and get a finger there. Below
+# this the display shrinks its notes to buy more time rather than scrolling
+# faster; a dense tab otherwise arrives at several hundred pixels a second.
+READABLE_WINDOW_MS = 4000.0
+# The smallest fret digit worth calling readable, in pixels of type.
+#
+# This is the number the whole size question is really about. Measured on the
+# app as it stood: a ONE-digit fret was drawn at 42 px and a TWO-digit one at
+# 27 px -- 64 % of it -- because the head was 33 px wide and 49 px tall, and
+# a number is wider than it is tall. "11 or 12?" in a fast solo is that 27 px.
+#
+# So the head's WIDTH is now sized for the widest label the song contains,
+# not for a single digit. It costs look-ahead, and that is the honest trade:
+# a number you cannot read is not worth the second of warning it bought.
+MIN_FRET_DIGIT_PX = 34.0
+
+# Smallest note head to shrink to, for a song whose frets are all one digit.
+MIN_HEAD_PX = 26.0
+
+# Turning a wanted digit size into the head width that produces it, given
+# _fret_font's own arithmetic (width / digits / 0.55 * 0.9).
+def _head_px_for_digits(digit_px: float, digits: int) -> float:
+    return digit_px * 0.55 * max(1, digits) / 0.9
 
 # The window is set from a low percentile of the note spacing rather than its
 # minimum. Real tabs contain the odd near-simultaneous pair — grace notes,
@@ -118,33 +203,425 @@ SPACING_PERCENTILE = 10.0
 # How far the manual speed control may go, and its step.
 SCROLL_FACTOR_RANGE = (0.4, 2.5)
 SCROLL_FACTOR_STEP = 0.1
+# A press has to buy something a player can SEE. Measured over the guitar
+# tracks of the four songs to hand, stepping the factor by 0.1 moves the
+# window by 7-17 % while the trade is live -- and by 1.7 % at 0.7x -> 0.6x,
+# where the head has already reached its floor and there is nothing left to
+# spend. That step stored a new number, redrew nothing anybody could see, and
+# was followed by a refusal at the next press, which is the "key that looks
+# broken" this display has already been fixed for once. Anything from 2 to 7 %
+# separates the live steps from the dead one.
+SCROLL_FACTOR_MIN_GAIN = 0.05
+
+# A DISCRETE SETTING IS NOT A SCRUB. `pygame.key.set_repeat(300, 40)` is one
+# global setting for every key in the app, and 40 ms is 25 steps a second --
+# which is right for an arrow key walking through a song and far too fast for
+# a setting with eleven positions. Measured: the practice speed runs 50 % to
+# 100 % in 5 % steps, so 700 ms of holding crosses the ENTIRE range, and the
+# scroll factor's 22 positions take 1.14 s. On top of that, a frame that
+# stalls drains every repeat that arrived during it in one go, so one press
+# can land at the far end of the range -- which is exactly what the player
+# reported: a short press showing 95 % for a moment and then 50 %.
+#
+# 150 ms a step walks the whole speed range in 1.5 s, which reads as a
+# deliberate movement, and it is nine times a frame, so a burst drained in one
+# frame applies once. The first press of a key is never delayed -- a key that
+# feels dead is the fault this display has already been fixed for twice -- so
+# only REPEATS are gated, and coming off the key clears the gate outright.
+STEP_KEY_REPEAT_S = 0.15
+
+# A rest is worth a key only when it is longer than the music writes rests for.
+# Measured over every track of the four songs to hand: a guitar track's inner
+# rests are either 4-6 s -- two bars, part of the music, and the player counts
+# through them -- or 12 s and up, which is a section they do not play, with
+# nothing at all in between. Bass and vocal tracks run to 44 and 100 s. So
+# anything from 7 to 12 s picks out exactly the same rests on this material:
+# the constant sits on a plateau rather than on a knife edge.
+GAP_MIN_MS = 8000.0
+# Landing ON the next note leaves no time to get the hand there. Three seconds
+# is a bar and a half at 100 BPM -- long enough to read the fret and place the
+# fingers, short enough not to be a second rest.
+GAP_LEAD_IN_MS = 3000.0
 
 # Hit-window presets cycled by G. Strikes scatter by more than the default
 # window even on a metronomic exercise, so how strict this should be is a
 # choice about how the app should feel, not a constant.
 TIMING_WINDOW_PRESETS = (100.0, 150.0, 200.0, 250.0)
 
-# How far the backing track can be shifted against the notes, and its step.
-MAX_BACKING_OFFSET_MS = 400.0
+# How far the MIDI backing can be shifted against the notes, and its steps.
+# Ten seconds is far more than a synth and a sound card need -- that is tens of
+# milliseconds -- but the player asked for it, and the reason holds: the tab
+# and the backing do not always start on the same beat, and a range chosen
+# from what the hardware needs is a range chosen from the wrong thing.
+MAX_BACKING_OFFSET_MS = 10_000.0
 BACKING_OFFSET_STEP_MS = 10.0
+# Ten seconds at 10 ms a press is a thousand presses, so the wide range needs
+# a wide step to go with it.
+BACKING_OFFSET_COARSE_MS = 1000.0
+
+# The recording gets its own, far wider range. The MIDI backing is generated
+# from the same timeline as the notes, so it only ever needs the tens of
+# milliseconds a synth and a sound card add. A recording is a different piece
+# of music that happens to contain the same song: it can have a count-in, an
+# intro, a spoken word, or several seconds of studio silence before the first
+# beat, and none of that is knowable in advance. Half a second was not enough
+# to reach the first note of a real track.
+# Eight minutes, because a tab is not always the whole song: a GP file holding
+# only the solo has to be lined up against a recording that plays four minutes
+# of music before it. Thirty seconds reached the first beat of a track and
+# nothing further in.
+MAX_MP3_OFFSET_MS = 480_000.0
+# Three steps, because no single one serves all three jobs: 10 ms is what a
+# sync is judged in, a second is what an intro is worth, and reaching four
+# minutes at a second a press is four minutes of pressing.
+MP3_OFFSET_STEP_MS = 10.0
+MP3_OFFSET_COARSE_MS = 1000.0
+MP3_OFFSET_JUMP_MS = 10_000.0
+
+# When to stop believing the recording is following the song. A decoder that
+# cannot seek into a file accepts play(start=...) without complaint and starts
+# from the top anyway, so the only evidence is the gap that will not close --
+# and "the backing ignores the arrow keys" is otherwise indistinguishable from
+# "you were paused", which is a whole round trip to find out.
+MP3_STUCK_DRIFT_MS = 250.0
+# Long enough that the sync has had at least one correction attempt at it.
+MP3_STUCK_FOR_MS = 3000.0
+
+# Input level advice. A level at or below this has not been measured yet --
+# the meter reads -120 dB before any audio arrives.
+SIGNAL_UNKNOWN_DB = -119.0
+# An RMS this high over a 512-sample hop means the peaks are already against
+# the ceiling, and a clipped waveform has no period for YIN to find.
+CLIPPING_DB = -8.0
+# How loud the loudest hop has to be for the detector to keep its grip.
+# Measured, not guessed: the player's own play-along take was attenuated in
+# steps and read back through the real detector, which gives the level at
+# which pitch accuracy starts to rot. In the same units the HUD shows (RMS
+# over one 512-sample hop):
+#
+#   loudest hop   -20   -32   -38   -44   -50   -56 dB
+#   heard right    96    96    91    83    52     9 %
+#
+# So the knee sits around -38 and the collapse below -44. Note what fails
+# first: strikes keep arriving, they just carry the WRONG PITCH -- which is
+# why "few strikes" is the wrong thing to look for, and why the completion
+# screen counts strikes heard next to notes landed.
+QUIET_PEAK_DB = -40.0
+# How far the loudest playing must clear the gate before the gate itself is
+# the thing eating the notes. A strike decays fast, so most of a note sits
+# well below its own peak.
+QUIET_MARGIN_DB = 12.0
+# How far the quietest moment must stay UNDER the gate before background hum
+# starts firing onsets of its own.
+NOISE_MARGIN_DB = 6.0
+
+
+def gate_band(peak: float, floor: float) -> tuple[float, float]:
+    """The window a noise gate may sit in, as (lowest, highest).
+
+    Above the room by NOISE_MARGIN_DB so hum does not fire onsets of its own,
+    and below the playing by QUIET_MARGIN_DB so a decaying note survives --
+    capped by `MAX_GATE_DB`, which is the level at which the DETECTOR gives
+    up and therefore the point past which gating wins nothing.
+
+    The band can be EMPTY (lowest > highest) and that is a real state, not an
+    error: a hot, compressed signal has less than NOISE_MARGIN_DB +
+    QUIET_MARGIN_DB of range to put a gate in. It has to be a state the
+    advice can express, because for one cycle it was not -- the two pieces of
+    advice named keys that undo each other, and with no gate able to satisfy
+    both, the panel asked for X, then C, then X for ever. Which is what the
+    player saw, and they pressed C until the gate reached the old ceiling and
+    the clean half of the song stopped being heard.
+    """
+    return floor + NOISE_MARGIN_DB, min(peak - QUIET_MARGIN_DB, MAX_GATE_DB)
+
+
+def suggested_gate_db(peak: float, floor: float) -> float:
+    """A gate inside the band, on the 5 dB grid the X and C keys move in.
+
+    As LOW in the band as still clears the room: the two failures are not
+    each other's equals. A gate under the room costs spurious onsets, which
+    the confidence filter and the matcher's candidate search already throw
+    away; a gate over the playing costs the strikes themselves, and a strike
+    that never arrives cannot be recovered by anything downstream.
+    """
+    lowest, highest = gate_band(peak, floor)
+    target = math.ceil(lowest / 5.0) * 5.0
+    if target > highest:
+        target = math.floor(highest / 5.0) * 5.0
+    return max(MIN_GATE_DB, min(MAX_GATE_DB, target))
+# Per frame, so one loud accident does not fix the advice in place for the
+# rest of the song.
+LEVEL_DECAY_DB = 0.05
+
+# The room is what the microphone hears while the song is NOT running, which
+# is the only moment it can be read: a low percentile of a take that is being
+# PLAYED is not the room. Measured across one session's reference takes, the
+# 2nd percentile ranged from -35 dB on a dense passage with no gaps to -94 dB
+# on a sparse one, against a recorded room of -73 -- so a percentile says how
+# busy the playing was, not how quiet the room is.
+#
+# A median over the most recent readings, so a session that changes (a fan, a
+# different guitar) is followed and one frame of the guitar being put down is
+# not. At 60 frames a second the minimum is about a second and a half.
+ROOM_WINDOW = 300
+ROOM_SAMPLES = 90
 
 # Auto-sync confidence. Scatter does not invalidate the median — a player is
 # simply not a metronome — it only means more strikes are needed before the
 # median is trustworthy. Refuse outright only when the scatter is so wide that
 # no systematic offset is visible in it at all.
 AUTO_SYNC_MIN_SAMPLES = 8
-AUTO_SYNC_WIDE_SPREAD_MS = 40.0
-AUTO_SYNC_WIDE_MIN_SAMPLES = 24
-AUTO_SYNC_HOPELESS_SPREAD_MS = 150.0
+# The spread thresholds that used to live here are gone on purpose. They were
+# a second opinion on the samples the timing report already judges, and a
+# second opinion is only ever a chance for the two to disagree. Both K and the
+# HUD line now ask the report.
 
 
-def _get_font(name: str, size: int) -> pygame.font.Font:
-    """Try to load a system font with fallbacks."""
+# 60 FPS is a 16.7 ms budget for everything a frame does.
+FRAME_BUDGET_MS = 1000.0 / 60.0
+
+# The longest a single frame may move the song. Fifteen frames' worth: beyond
+# that nothing was drawn and nothing was heard, so charging the song for it
+# only teleports the picture.
+MAX_FRAME_STALL_S = 0.25
+
+# When a recording is playing, IT is the clock and the picture is pulled to
+# it. Two numbers decide how that pull feels.
+#
+# Past this the two describe different moments -- a seek, a loop turn, a
+# recording that has just started -- and the picture jumps rather than
+# creeping there over half a minute.
+SYNC_SNAP_MS = 1500.0
+# Otherwise the picture may be corrected by at most this fraction of the time
+# that really passed, so it is never seen to jump. The mismatch being chased
+# is about 1 %, so five times that is plenty of authority, and pygame's
+# get_pos() moves in buffer-sized steps -- the slew limit is what smooths
+# those into a scroll nobody can see move.
+SYNC_PULL_FRACTION = 0.05
+
+# How far apart the two sync points must be. The offset is dialled in 10 ms
+# steps, so one keypress over a short span is a large speed error: over 30 s
+# it is 0.03 %, against the ~1 % the correction is for; over 5 s it would be
+# 0.2 %. The start and the end of the song are what this wants.
+MIN_SYNC_SPAN_MS = 30_000.0
+
+# How a note's verdict is shown on an engraved page. PENDING is absent on
+# purpose: a dot under every note not yet reached would bury the music under
+# its own labelling, the same reason a palm mute is badged once per run.
+_TAB_VERDICT_COLOURS = {
+    MatchType.HIT: "feedback_hit",
+    MatchType.CLOSE: "feedback_close",
+    MatchType.MISS: "feedback_miss",
+}
+
+# How long seeks have to stop arriving before the recording follows them.
+# A held arrow key repeats every 40 ms and every repeat used to be a
+# play(start=), which decodes the file up to that point -- 25 of them a
+# second on the frame's own thread. The FIRST seek of a burst is still
+# immediate, so a single press and a loop turn are as sharp as they were;
+# only a run of them is collapsed into one.
+MP3_SEEK_SETTLE_S = 0.15
+
+# What Ctrl + arrow moves. Half a minute is a section of a song -- a verse, a
+# chorus -- which is the unit somebody skipping through one actually thinks in.
+SEEK_SECTION_MS = 30_000.0
+# Pressing back from just after a bar line must reach the PREVIOUS bar, not
+# stand still on the one just crossed.
+BAR_SNAP_MARGIN_MS = 30.0
+
+
+class _CachedFont:
+    """A font that keeps the text surfaces it has already drawn.
+
+    Measured on the playing screen: one frame rasterises **62 text surfaces**
+    and that was **79 % of the whole frame** -- against 8 % for drawing the
+    notes. The footer alone was 66 %, and the footer is the list of keyboard
+    shortcuts, which never changes at all. Almost none of the rest changes
+    either: the song title, the tempo, the tuning, the hit window. Only the
+    clock does, once a second.
+
+    So the surface is kept and blitted again. Wrapping the font rather than
+    every call site means the ~180 `font.render(...)` calls in this file are
+    untouched, and anything added later gets the cache without knowing.
+
+    The cache is cleared wholesale when it grows past `MAX_ENTRIES` rather
+    than evicted one at a time: the only text that really varies is the clock,
+    a re-render costs a fraction of a millisecond, and an LRU here would be
+    bookkeeping to save nothing.
+    """
+
+    MAX_ENTRIES = 256
+
+    __slots__ = ("_font", "_cache")
+
+    def __init__(self, font: pygame.font.Font) -> None:
+        self._font = font
+        self._cache: dict = {}
+
+    def render(self, text, antialias=True, color=(255, 255, 255),
+               background=None):
+        if background is not None:
+            # Rare, and a second key dimension for nothing.
+            return self._font.render(text, antialias, color, background)
+        key = (text, bool(antialias), tuple(color))
+        surface = self._cache.get(key)
+        if surface is None:
+            if len(self._cache) >= self.MAX_ENTRIES:
+                self._cache.clear()
+            surface = self._font.render(text, antialias, color)
+            self._cache[key] = surface
+        return surface
+
+    def __getattr__(self, name):
+        # size(), get_height(), get_linesize() and the rest, unchanged.
+        return getattr(self._font, name)
+
+
+@functools.lru_cache(maxsize=96)
+def _get_font(name: str, size: int, bold: bool = False) -> "_CachedFont":
+    """Try to load a system font with fallbacks.
+
+    Cached because SysFont is a font-file lookup every call, and the playing
+    screen asks for the same handful of fonts on every frame -- and because
+    the cache of drawn text lives on the object it returns, so handing back a
+    fresh one each time would throw that away.
+    """
     for family in (name, "Courier New", "monospace"):
-        font = pygame.font.SysFont(family, size)
+        font = pygame.font.SysFont(family, size, bold=bold)
         if font:
-            return font
-    return pygame.font.Font(None, size)
+            return _CachedFont(font)
+    return _CachedFont(pygame.font.Font(None, size))
+
+
+# Note heads, drawn once and blitted after that. A frame of a real song makes
+# 48 rounded-rect calls -- 24 notes, fill and border -- and measured on the
+# player's own song 46 of the 48 are the SAME size, because one head size is
+# chosen for the whole song. Rounding is what costs: 24 heads drawn as rounded
+# rects is 0.519 ms and the same 24 blitted is 0.056 ms.
+#
+# Cleared wholesale at the cap, the way the font cache is: the only thing that
+# really varies is a colour mid-animation, redrawing one head is a fraction of
+# a millisecond, and an LRU here would be bookkeeping to save nothing.
+_HEAD_CACHE: dict = {}
+_HEAD_CACHE_MAX = 256
+
+
+_BLOCK_CACHE: dict = {}
+_BLOCK_CACHE_MAX = 64
+
+
+def _chord_block_surface(width: int, height: int, colour) -> pygame.Surface:
+    """One chord block, tinted and outlined, ready to blit.
+
+    Cached for the same reason the note heads are: an SRCALPHA surface per
+    block per frame cost 2.0 ms of a 16.7 ms budget on a real song, which is
+    an eighth of the frame spent allocating pictures that repeat. A song
+    chooses one head size, so the blocks come in very few sizes too.
+    """
+    key = (width, height, tuple(colour))
+    got = _BLOCK_CACHE.get(key)
+    if got is not None:
+        return got
+    if len(_BLOCK_CACHE) >= _BLOCK_CACHE_MAX:
+        _BLOCK_CACHE.clear()
+    block = pygame.Surface((width, height), pygame.SRCALPHA)
+    pygame.draw.rect(block, (*colour, CHORD_BLOCK_ALPHA),
+                     block.get_rect(), border_radius=8)
+    pygame.draw.rect(block, colour, block.get_rect(), 2, border_radius=8)
+    _BLOCK_CACHE[key] = block
+    return block
+
+
+def _head_surface(width: int, height: int, colour, border) -> pygame.Surface:
+    """One note head, ready to blit. Same shape for every note.
+
+    Transparent outside the rounded corners, so the board and the fret wires
+    show through them exactly as they did when this was drawn in place.
+    """
+    key = (width, height, tuple(colour), tuple(border))
+    got = _HEAD_CACHE.get(key)
+    if got is not None:
+        return got
+    if len(_HEAD_CACHE) >= _HEAD_CACHE_MAX:
+        _HEAD_CACHE.clear()
+    head = pygame.Surface((width, height), pygame.SRCALPHA)
+    try:
+        head = head.convert_alpha()
+    except pygame.error:
+        pass                            # no display yet; the surface still works
+    rect = pygame.Rect(0, 0, width, height)
+    corner = height // 2
+    pygame.draw.rect(head, colour, rect, border_radius=corner)
+    pygame.draw.rect(head, border, rect, width=2, border_radius=corner)
+    _HEAD_CACHE[key] = head
+    return head
+
+
+def clear_font_cache() -> None:
+    """Drop every cached font and every surface drawn with one.
+
+    Both belong to ONE pygame session. A Font kept across `pygame.quit()` is a
+    dangling pointer and rendering with it segfaults -- verified, not assumed,
+    and it is why this function exists rather than being left to chance. The
+    app calls it when it starts a session; the test suite calls it between
+    tests, several of which run an init/quit cycle of their own.
+
+    The note heads go with them: a Surface outlives `pygame.quit()` no better
+    than a Font does, and they are drawn with the theme's colours, which a
+    theme change moves.
+    """
+    _get_font.cache_clear()
+    _HEAD_CACHE.clear()
+    _BLOCK_CACHE.clear()
+
+
+def shift_held(event) -> bool:
+    """Was SHIFT down for this key press -- however the keyboard says so.
+
+    Three signals, because one was not enough on the player's machine: a key
+    arrived carrying a capital letter with no shift bit in `event.mod` at
+    all, and the shortcut fell through to its unshifted twin. The event's own
+    modifiers are the normal answer, the live keyboard state catches a stale
+    one, and the CHARACTER catches the rest -- a capital letter is what was
+    typed, whatever the layout did to say it.
+
+    `pygame.key.get_mods()` needs the video system and raises without it, so
+    it is guarded: a key handler that can raise takes the app down with it.
+    """
+    if getattr(event, "mod", 0) & pygame.KMOD_SHIFT:
+        return True
+    try:
+        if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+            return True
+    except pygame.error:
+        pass
+    letter = getattr(event, "unicode", "") or ""
+    return len(letter) == 1 and letter.isalpha() and letter.isupper()
+
+
+def _wrap_on_bars(line: str, font, width: int) -> list[str]:
+    """Break one footer line into as many as it takes to fit `width`.
+
+    At the "|" the entries already carry, so a shortcut is never split down
+    the middle. A single entry wider than the screen is left alone -- there
+    is nothing to be done about it here, and shortening the text is a
+    decision for whoever wrote it.
+    """
+    if font.size(line)[0] <= width:
+        return [line]
+    out: list[str] = []
+    current = ""
+    for part in line.split("|"):
+        candidate = part if not current else f"{current}|{part}"
+        if current and font.size(candidate)[0] > width:
+            out.append(current.strip())
+            current = part
+        else:
+            current = candidate
+    if current.strip():
+        out.append(current.strip())
+    return out or [line]
 
 
 def format_time(ms: float) -> str:
@@ -153,6 +630,90 @@ def format_time(ms: float) -> str:
     minutes = total_seconds // 60
     seconds = total_seconds % 60
     return f"{minutes}:{seconds:02d}"
+
+
+def _engraver_state() -> str:
+    """Whether verovio is present AND able to engrave, in one line.
+
+    Asked on a THREAD, because that is where the app engraves and verovio's
+    resource path is thread-local: a check run on the main thread reports
+    `ready` for a build whose pages all come back blank.
+    """
+    answer: list[str] = []
+    thread = threading.Thread(target=lambda: answer.append(_engraver_check()),
+                              daemon=True)
+    thread.start()
+    thread.join(60)
+    return answer[0] if answer else "present but it never answered"
+
+
+def _ink_pixels(surface: pygame.Surface) -> int:
+    """How many pixels on this page are actually dark.
+
+    A page that "loaded" is not a page that was drawn -- SDL's SVG loader
+    managed 20 pixels of 1.2 million, and every check this project had
+    passed on it.
+    """
+    import numpy as np
+    from pygame import surfarray
+    return int((surfarray.array3d(surface).mean(axis=2) < 100).sum())
+
+
+def _engraver_check() -> str:
+    """The check itself. Never call this on the main thread -- see above."""
+    from pickhero.ui.tab_view import rasterise
+    try:
+        import verovio
+    except Exception as exc:
+        return f"absent ({type(exc).__name__})"
+    try:
+        verovio.setDefaultResourcePath(
+            str(Path(verovio.__file__).parent / "data"))
+        toolkit = verovio.toolkit()
+        ok = toolkit.loadData(
+            '<?xml version="1.0"?><score-partwise version="3.1">'
+            '<part-list><score-part id="P1"><part-name>G</part-name>'
+            '</score-part></part-list><part id="P1"><measure number="1">'
+            "<attributes><divisions>1</divisions><time><beats>4</beats>"
+            "<beat-type>4</beat-type></time></attributes>"
+            "<note><rest/><duration>4</duration><type>whole</type></note>"
+            "</measure></part></score-partwise>")
+    except Exception as exc:
+        return f"present but broken ({type(exc).__name__})"
+    if not ok:
+        return "present but its data files are missing"
+    # The rasteriser is the other half and it is a separate package: the page
+    # is engraved by verovio and drawn by resvg, and either can be absent.
+    # Counted through the app's own path -- resvg to PNG, pygame to a
+    # surface -- so this answers the question the tab view actually asks.
+    try:
+        surface = rasterise(toolkit.renderToSVG(1), 200)
+        ink = _ink_pixels(surface)
+    except Exception as exc:
+        return f"no rasteriser ({type(exc).__name__})"
+    return "ready" if ink else "the rasteriser drew nothing"
+
+
+def _clock_text(ms: float) -> str:
+    """A song position as a player reads it off a transport."""
+    total = max(0, int(ms // 1000))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _offset_text(ms: float) -> str:
+    """A backing offset in the unit it is actually judged in.
+
+    Milliseconds while it is a sync, seconds while it is an intro, and minutes
+    and seconds once the tab is only the solo of a longer recording -- where
+    "-192.00 s" is a number nobody can check against a player's time display.
+    """
+    sign = "-" if ms < 0 else "+"
+    size = abs(ms)
+    if size < 1000:
+        return f"{sign}{int(size)} ms"
+    if size < 60_000:
+        return f"{sign}{size / 1000:.2f} s"
+    return f"{sign}{int(size // 60_000)}:{size % 60_000 / 1000:04.1f} min"
 
 
 @dataclass
@@ -172,20 +733,63 @@ class _Layout:
     lane_top: float = float(LANE_TOP_MARGIN)
 
 
+def _technique_flags(note) -> str:
+    """What the tab asks for at this note, in one field.
+
+    One letter each, so a whole song's techniques fit in a column: b bend,
+    s slide, h hammer-on or pull-off, d dead note, p palm mute, l let ring.
+    A dash where the tab asks for nothing, because an empty cell in a
+    tab-separated table is a column that has gone missing.
+    """
+    flags = ""
+    if note.bend:
+        flags += "b"
+    if note.slide_to_next or note.slide_in or note.slide_out:
+        flags += "s"
+    if note.hammer_to_next:
+        flags += "h"
+    if note.dead:
+        flags += "d"
+    if note.palm_mute:
+        flags += "p"
+    if getattr(note, "let_ring", False):
+        flags += "l"
+    return flags or "-"
+
+
 class PlayingScreen:
     """Scrolling tab display with playback clock and optional audio matching."""
 
     def __init__(self, timeline: Timeline, visible_beats: int = 4,
                  hit_zone_fraction: float = 0.20, config: Config | None = None,
                  backing_track: BackingTrack | None = None,
+                 guide_track: BackingTrack | None = None,
                  progress_tracker: ProgressTracker | None = None,
-                 song_key: str = ""):
+                 song_key: str = "", song_path: str = "",
+                 transpose: int = 0):
         self._timeline = timeline
         self._visible_beats = visible_beats
         self._hit_zone_fraction = hit_zone_fraction
         self._config = config or Config()
 
-        self._tempo_factor = max(0.5, min(1.0, self._config.tempo_factor))
+        # Practice speed belongs to the song, not to the app. A song never
+        # slowed down opens at full speed, whatever the last one needed.
+        # The parameter, not self._song_key: that is not assigned until fifty
+        # lines further down, and reading it here quietly gave every song the
+        # speed of no song at all.
+        getter = getattr(self._config, "tempo_factor_for", None)
+        self._tempo_factor = (getter(song_key) if getter
+                              else max(0.5, min(1.0, self._config.tempo_factor)))
+
+        # Where the audio clock and the song clock were last agreed to be the
+        # same moment. A strike is stamped in recorded time, which runs at
+        # real speed; the song runs at a fraction of it. Multiplying one by
+        # the other is only correct from a common origin, so changing the
+        # practice speed has to move that origin -- otherwise every strike
+        # after the change is mis-stamped by (elapsed x change), which grows
+        # for the rest of the song and cannot be corrected by K.
+        self._audio_anchor_ms: float = 0.0       # audio clock at the anchor
+        self._audio_anchor_song_ms: float = 0.0  # song clock at the anchor
 
         self._playback_ms: float = 0.0
         self._playing = False
@@ -198,6 +802,12 @@ class PlayingScreen:
         self._scroll_speed_signature: tuple | None = None
         # One head size for the whole song, set with the scroll speed
         self._head_px: float | None = None
+        self._head_h_px: float | None = None
+        self._fret_digits: int = 2
+        # Where the "PM" badges go. Computed from the whole song, not from the
+        # notes currently on screen: a run crossing the edge of the view would
+        # otherwise be re-labelled every time its first note scrolled off.
+        self._palm_mute_starts = self._palm_mute_run_starts(self._timeline.notes)
 
         # Count-in state
         count_in_beats = max(0, self._config.count_in_beats)
@@ -212,22 +822,160 @@ class PlayingScreen:
         self._noise_gate_db: float = self._config.audio.noise_gate_db
 
         # Loop state
+        # A ring of recent frame times, for the run log. Bounded: a long
+        # session must not turn a diagnostic into a memory leak.
+        # (when, name) for every chord change. Built once per song.
+        self._chord_names: list[tuple[float, str]] = []
+        self._frame_ms: list[float] = []
+        # A seek collapsed because more were still arriving, and when the
+        # last one did. See _seek_mp3.
+        # The file chooser blocks for seconds, so it is opened one frame
+        # AFTER the key, once the note saying so has been drawn.
+        self._mp3_dialog_due = False
+        self._mp3_dialog_armed = False
+        self._mp3_pending_seek_ms: float | None = None
+        self._mp3_last_seek_at = float("-inf")
         self._loop_start_ms: float | None = None
         self._loop_end_ms: float | None = None
         self._loop_enabled: bool = False
 
         # Progress tracking
         self._progress_tracker = progress_tracker
+        # The practice diary: real seconds with the song running, and every
+        # strike the microphone heard. Both survive a seek, a loop and a
+        # tempo change, which the matcher's own counters do not -- it is reset
+        # by all three.
+        self._session_started = practice_log.now_iso()
+        self._session_seconds = 0.0
+        self._session_strikes = 0
+        self._session_written = False
         self._song_key = song_key
+        # Where the tab came from. Only the auto-sync wants it,
+        # and only because a recording is the whole band.
+        self._song_path = song_path
+        # How far this song is being PLAYED from how it is written. The
+        # timeline handed in has already been shifted, so this is only kept
+        # to work back to the written tuning and to say so on screen.
+        self._transpose = int(transpose)
         self._song_completed = False
         self._is_new_best = False
         self._recommendations: list[str] = []
 
         # MIDI backing track
         self._midi_player: MidiPlayer | None = None
+        # The written part of the track being PLAYED, as a guide to hear.
+        # A separate player rather than a second toggle on the same one,
+        # because the two answer different questions -- "what does the band
+        # play" and "what am I supposed to play" -- and a player learning a
+        # solo wants the second without the first. The MIDI output is shared,
+        # so this costs no extra device.
+        self._guide_player: MidiPlayer | None = None
+        self._guide_muted = True
         self._backing_muted = not self._config.backing_track_enabled
+        # Off unless asked for: the whole point of the app is that the player
+        # produces this part, and starting with it playing would teach the
+        # wrong thing on the first run.
+        self._guide_muted = not getattr(self._config, "guide_track_enabled", False)
+        # A recording playing alongside the MIDI backing, not instead of it.
+        # Hearing both at once is how the recording gets lined up against the
+        # click, which is the only way its encoder padding can be found.
+        self._mp3_player: Mp3Player | None = None
+        self._mp3_muted = not getattr(self._config, "mp3_backing_enabled", True)
+        self._mp3_note: str = ""
+        # When the recording first fell behind, or None while it is keeping up.
+        self._mp3_stuck_since_ms: float | None = None
+        # Practice speed below full needs a stretched copy of the recording,
+        # which takes seconds to make. It is built on a thread and swapped in
+        # when it is ready: the app must not freeze on a tempo key.
+        self._mp3_stretch_thread: threading.Thread | None = None
+        self._mp3_stretch_wanted: float | None = None
+        # (speed, the recording it was made from, the stretched file). The
+        # recording is part of the key because picking a new file mid-session
+        # must not inherit the last one's stretch.
+        self._mp3_stretch_done: tuple[float, str, str, float] | None = None
+        self._mp3_stretch_failed: tuple[float, str, str, float] | None = None
+        # How far the build has got, 0 to 1. A whole song is five to twenty
+        # seconds of work and the player hears nothing for all of it -- "one
+        # moment" with nothing moving is indistinguishable from broken.
+        self._mp3_stretch_progress = 0.0
+        # The build the loaded source was made for, so a rate change is seen
+        # even though it leaves time_scale untouched.
+        self._mp3_loaded_build: float | None = None
+        # Which transpose the loaded copy was built for. The scale cannot
+        # answer it -- a pitch shift leaves the length exactly alone, which
+        # is the whole point of it.
+        self._mp3_loaded_source_transpose: int = 0
+        # The first of the two places the player lines the recording up at,
+        # as (song ms, offset ms). Not remembered across songs: it describes
+        # one act of syncing, not a setting.
+        self._sync_anchor: tuple[float, float] | None = None
+        self._sync_key_held: bool = False
+        # What the last sync did, kept on screen rather than announced once:
+        # the player is navigating a four-minute song between the two points
+        # and an expiring note is gone long before the second one is set.
+        self._sync_lines: list[str] = []
+        # How far the picture ever had to be pulled to stay with the
+        # recording, and whether the recording ever led at all. A percentage
+        # cannot be debugged and neither can a sync: these two say whether
+        # the map was doing anything and how much was left over.
+        self._worst_sync_pull_ms: float = 0.0
+        self._mp3_led: bool = False
+        # How much the player spooled. Not reset by a loop or a song end:
+        # the question is what this sitting did.
+        self._seeks: int = 0
+        # How often the picture had to JUMP to stay with the recording. A
+        # pull nobody can see is the design; a jump is a fault, and without a
+        # count it is only ever a report.
+        self._mp3_snaps: int = 0
+        # Finding the sync points by listening. On a thread: a four-minute
+        # song is a couple of seconds of arithmetic, and seconds in the game
+        # loop is a frozen app -- a bill this project has paid three times.
+        self._auto_sync_thread: threading.Thread | None = None
+        self._auto_sync_progress: tuple[float, str] = (0.0, "")
+        self._auto_sync_result: tuple | None = None
+        # The engraved page view. Asked for on one frame and started on the
+        # next, so the "engraving..." line is really on screen before the
+        # work begins -- and the work itself runs on a thread, because
+        # rasterising a whole song is seconds and seconds in the game loop
+        # is a frozen app.
+        self._tab_mode: bool = False
+        # The chord extension: the two grip cards AND the blocks that say
+        # which notes are one chord. ONE switch, because it is one idea --
+        # "show me the chords" -- and two keys for two halves of an answer
+        # is how a panel ends up with settings nobody can find. Off by
+        # default: it is an extension to the normal view, not the view.
+        self._chord_mode: bool = bool(getattr(config, "chord_view", False))
+        self._chord_shapes: list = []
+        # (rest starts, next note) for every stretch of the song with
+        # nothing to play on THIS track. Built once per song, because it
+        # is a walk over every note and this display has been bitten
+        # twice by work that looked cheap until it ran once a frame.
+        self._rests: list[tuple[float, float]] = []
+        self._tab_engraving = None
+        self._tab_due: bool = False
+        self._tab_error: str = ""
+        self._tab_zoom: int = 2
+        self._tab_thread: threading.Thread | None = None
+        self._tab_progress: float = 0.0
+        # (engraving or "error", the zoom it was built for). Handed from the
+        # thread to the main loop, which is the only place a pygame surface
+        # may be converted for the display.
+        self._tab_ready: tuple = (None, -1)
+        # Where the page is scrolled to. Held between frames on purpose: the
+        # page moves when the music leaves the screen, not continuously.
+        self._tab_scroll: int = 0
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
+        if guide_track is not None and len(guide_track) > 0:
+            self._init_guide_player(guide_track)
+        self._load_mp3_for_song()
+        # A song opened with sync points already measured has to SHOW them.
+        # They were stored and used all along -- the panel simply started
+        # empty every time, so the player had no way to tell a synced song
+        # from one nobody had touched. That is the "a feature that cannot be
+        # seen working" fault, applied to the most expensive setting there is.
+        if self._mp3_anchors():
+            self._describe_sync()
 
         # Difficulty filter
         self._max_fret: int = self._config.max_fret
@@ -236,6 +984,18 @@ class PlayingScreen:
         # Signal level meter
         self._signal_db: float = -120.0
         self._signal_db_smooth: float = -120.0
+        # Loudest and quietest level heard recently, so the HUD can say what
+        # to do about the input rather than only what it is.
+        self._signal_peak_db: float = SIGNAL_UNKNOWN_DB
+        self._signal_floor_db: float = 0.0
+        # What the room sounds like, and the loudest thing this run has heard.
+        # The peak above decays on purpose; this one does not, because a gate
+        # is judged against the whole run rather than the last two seconds.
+        self._room_samples: deque[float] = deque(maxlen=ROOM_WINDOW)
+        self._loudest_db: float = SIGNAL_UNKNOWN_DB
+        self._auto_gate: bool = bool(getattr(self._config.audio, "auto_gate", True))
+        # Every level seen while the song ran, for the run log.
+        self._level_samples: list[float] = []
 
         # Tuner display
         self._tuner_freq: float = 0.0
@@ -254,6 +1014,34 @@ class PlayingScreen:
         self._show_help: bool = False
         self._show_timing: bool = False
         self._timing_export_note: str = ""
+        self._run_log_note: str = ""
+        # What just happened, for the few seconds it is still news. The run
+        # log's own note was drawn ONLY on the completion screen, so pressing
+        # D in the middle of a song wrote the file and said nothing at all --
+        # which is what the player reported as "D does nothing". A feature
+        # that cannot be seen working is indistinguishable from one that does
+        # not work, and this project has now shipped that fault four times.
+        self._status_note: str = ""
+        self._status_note_until: float = 0.0
+        # Which stepping key is being held, and when it last acted.
+        self._step_key: int | None = None
+        self._step_key_at: float = 0.0
+        # What the picture's clock did against real time -- see the advance
+        # in update(). Not reset by a seek or a loop: the question is what
+        # the machine did over the whole sitting.
+        self._clock_real_ms: float = 0.0
+        self._clock_song_ms: float = 0.0
+        self._clock_stalls: int = 0
+        # Leaving a song reaches stop_audio more than once -- the app tears
+        # the screen down and the state change calls it again -- and the
+        # second call came after the recording was closed, so it wrote a
+        # SECOND log missing every mp3 line. Two files a second apart, one
+        # of them worse, is the run log arguing with itself.
+        self._run_log_written: bool = False
+        # Whether K has already been applied in this run. A residual after a
+        # sync means something different to the player than an unmeasured one:
+        # the first says "press K", the second says "press it again".
+        self._sync_applied: bool = False
 
         # Track picker: [(index, label)], filled in by the app on load
         self._track_options: list[tuple[int, str]] = []
@@ -300,31 +1088,115 @@ class PlayingScreen:
             self._recommendations = []
         self._playing = not self._playing
         if self._playing:
-            self._last_tick = time.perf_counter()
-            # Only start audio capture when past count-in
+            # Only start audio capture when past count-in. If the stream is
+            # already open -- which after a pause it now is -- re-anchoring is
+            # the whole of what resuming needs, and it does not touch the
+            # hardware. See _resume_audio.
             if self._audio_enabled and self._playback_ms >= 0:
-                self._start_audio()
-            if self._midi_player is not None:
-                if self._playback_ms >= 0:
-                    self._midi_player.seek(self._backing_ms(self._playback_ms))
+                self._resume_audio()
+            elif self._audio_enabled:
+                # The count-in is starting. Open the input now so the room is
+                # heard before the first note -- the automatic gate has no
+                # other window, and this is the longest clean one a run gets.
+                self._start_capture_only()
+            if self._playback_ms >= 0:
+                for player in self._midi_all():
+                    player.seek(self._backing_ms(self._playback_ms))
+            if self._mp3_player is not None and self._playback_ms >= 0:
+                if self._mp3_plays() and self._mp3_pending_seek_ms is None:
+                    if self._mp3_player.suspended:
+                        self._mp3_player.set_suspended(False)
+                    else:
+                        self._seek_mp3(self._mp3_ms(self._playback_ms))
+            # LAST, not first: opening a device or starting a recording can
+            # take a moment, and the clock must start when the song does. Set
+            # before them, that moment is charged to the song and the picture
+            # jumps forward by it on the very next frame.
+            self._last_tick = time.perf_counter()
         else:
             self._last_tick = None
-            self._stop_audio()
-            if self._midi_player is not None:
-                self._midi_player.pause()
+            # The input device stays OPEN. Closing it here and opening it
+            # again on resume is a real device open on Windows -- the same
+            # thing that made every arrow key freeze the app for seconds, and
+            # the space bar was still doing it twice per pause. Strikes that
+            # arrive while the song stands still are dropped on resume.
+            for player in self._midi_all():
+                player.pause()
+            if self._mp3_player is not None:
+                self._mp3_player.set_suspended(True)
+
+    def _seek_target_ms(self, event: pygame.event.Event, direction: int) -> float:
+        """Where one arrow key press lands, by modifier.
+
+        A beat is the right step for placing a loop marker and useless for
+        reaching the chorus of a four-minute song: at 273 ms a beat that is
+        nine hundred presses, and with key repeat at 40 ms it is half a minute
+        of holding the key while the picture scrolls past. So the same ladder
+        the backing-track offset already uses -- plain, Shift, Ctrl -- with
+        each step chosen from what it is FOR: a beat to place a loop, a BAR to
+        walk a phrase, half a minute to reach a section.
+
+        Shift snaps to the bar line rather than adding a fixed number of
+        beats, so it stays on the bars through a time-signature change and
+        lands where the tab is drawn rather than near it.
+        """
+        now = self._playback_ms
+        if event.mod & pygame.KMOD_CTRL:
+            return now + direction * SEEK_SECTION_MS
+        if shift_held(event):
+            starts = [m.start_ms for m in self._timeline.measures]
+            if starts:
+                # A margin, so pressing back from just after a bar line goes
+                # to the PREVIOUS bar instead of standing still.
+                if direction > 0:
+                    later = [t for t in starts if t > now + BAR_SNAP_MARGIN_MS]
+                    if later:
+                        return later[0]
+                else:
+                    earlier = [t for t in starts if t < now - BAR_SNAP_MARGIN_MS]
+                    if earlier:
+                        return earlier[-1]
+                    return 0.0
+        return now + direction * self._ms_per_beat
+
+    def position_ms(self) -> float:
+        """Where the song is, in song milliseconds.
+
+        Negative during the count-in, which callers that carry the position
+        across a reload have to clamp rather than reproduce.
+        """
+        return self._playback_ms
 
     def seek(self, ms: float) -> None:
         """Seek to an absolute position in ms, clamped to [0, duration]."""
+        # Counted, because the player has now identified seeking as what the
+        # stutter follows -- and a run log that cannot say how much spooling
+        # a run contained cannot correlate anything with it.
+        self._seeks += 1
         self._playback_ms = max(0.0, min(ms, self._timeline.duration_ms))
+        # Reaching the last bar put the completion screen up and nothing took
+        # it down again, so an arrow key moved the song under a picture that
+        # went on showing the score -- the player had to leave and start over
+        # to hear the last bars a second time, which is exactly when a
+        # recording is being synced. Moving off the end is leaving the
+        # completion screen; the run it scored has already been written.
+        if self._song_completed and self._playback_ms < self._timeline.duration_ms:
+            self._song_completed = False
         if self._matcher:
             self._matcher.reset()
         self._feedback.reset()
-        if self._midi_player is not None:
-            self._midi_player.seek(self._backing_ms(self._playback_ms))
-        # Restart audio with new offset if active
+        for player in self._midi_all():
+            player.seek(self._backing_ms(self._playback_ms))
+        if self._mp3_player is not None:
+            self._seek_mp3(self._mp3_ms(self._playback_ms)
+                           if self._mp3_plays() else -1.0)
+        # The audio clock has to be told the song moved -- but NOT by closing
+        # and reopening the input device, which is what this used to do. On
+        # Windows that is a real device open, and doing it on every arrow key
+        # and every loop turn froze the app for seconds at a time. Re-anchoring
+        # is the same correction without touching the hardware.
         if self._audio_enabled and self._playing:
-            self._stop_audio()
-            self._start_audio()
+            self._reanchor_audio_clock()
 
     def is_playing(self) -> bool:
         return self._playing
@@ -334,14 +1206,54 @@ class PlayingScreen:
         factor = max(0.5, min(1.0, factor))
         factor = round(factor * 20) / 20  # round to nearest 0.05
         self._tempo_factor = factor
+        # Both: the per-song value is what this song opens at next time, and
+        # the plain one is what tools outside the app read to find out what
+        # speed a take was played at.
         self._config.tempo_factor = factor
+        setter = getattr(self._config, "set_tempo_factor_for", None)
+        if setter is not None:
+            setter(self._song_key, factor)
+        self._config.save()
+        # The song clock now runs at a different fraction of the audio clock,
+        # so the point where the two were last equal has to be moved to now.
+        self._reanchor_audio_clock()
+        # The recording needs a copy stretched for the new speed. It stays
+        # silent until that copy is there rather than playing on at a speed
+        # the song has left.
+        self._update_mp3()
         if self._matcher:
             self._matcher.reset()
         self._feedback.reset()
 
+    def _reanchor_audio_clock(self) -> None:
+        """Agree audio time and song time on the present moment.
+
+        Strikes already waiting in the queue were stamped before the change
+        and would be read with the new factor, so they are dropped: a handful
+        of strikes at the moment the speed is touched, against every strike
+        afterwards landing where it was played.
+        """
+        if self._audio_capture is None or self._matcher is None:
+            return
+        self._audio_capture.get_notes()
+        self._audio_capture.get_strike_windows()
+        self._audio_anchor_ms = self._audio_capture.elapsed_ms()
+        self._audio_anchor_song_ms = self._playback_ms
+        self._matcher.audio_offset_ms = (
+            self._audio_anchor_song_ms
+            - self._audio_anchor_ms * self._tempo_factor
+            + self._sync_offset_song_ms()
+        )
+
     def set_noise_gate_db(self, db: float) -> None:
-        """Set noise gate threshold, clamped to [-80, -20] and rounded to int."""
-        db = max(-80, min(-20, round(db)))
+        """Set the noise gate, clamped to the useful range and rounded.
+
+        The clamp lives here and nowhere else, so every route to the gate --
+        the X and C keys, the settings screen, a saved file -- lands in the
+        same range. The ceiling used to be -20 dB, which is 30 dB inside the
+        band where the gate deletes the quiet half of a song; see MAX_GATE_DB.
+        """
+        db = max(MIN_GATE_DB, min(MAX_GATE_DB, round(db)))
         self._noise_gate_db = db
         self._config.audio.noise_gate_db = db
         if self._audio_capture is not None:
@@ -350,11 +1262,31 @@ class PlayingScreen:
 
     def update(self) -> None:
         """Advance playback clock by real elapsed time."""
+        if self._mp3_dialog_armed:
+            # The note has been on screen for a frame; now we may block.
+            self._mp3_dialog_due = False
+            self._mp3_dialog_armed = False
+            self._open_mp3_dialog()
+
+        if self._tab_due:
+            # Drawn last frame, so the "engraving..." note is really on
+            # screen. Before the paused branch below, because a paused song
+            # is exactly when the page view gets opened.
+            self._build_tab_engraving()
+        if self._auto_sync_result is not None:
+            self._take_auto_sync()
+        if self._tab_ready[0] is not None:
+            # The thread is done. Taking it here rather than there is not
+            # tidiness: a surface must be convert()ed on the thread that
+            # owns the display, or every blit re-converts it.
+            self._take_tab_engraving()
+
         # Update signal level meter and tuner even when paused (so user can verify signal)
         if self._audio_capture is not None:
             raw_db = self._audio_capture.get_signal_db()
             self._signal_db = raw_db
             self._signal_db_smooth = self._signal_db_smooth * 0.7 + raw_db * 0.3
+            self._track_levels(raw_db)
             freq, conf = self._audio_capture.get_tuner_data()
             self._tuner_freq = freq
             self._tuner_confidence = conf
@@ -390,13 +1322,49 @@ class PlayingScreen:
                     self._tuner_note_stable_frames = 0
 
         if not self._playing:
+            # The input device stays open through a pause now, so whatever it
+            # hears has to be thrown away here. Both queues are unbounded and
+            # a strike window holds 341 ms of audio: a long pause with the
+            # guitar in hand would otherwise fill memory with sound belonging
+            # to no moment in the song.
+            if self._audio_capture is not None:
+                self._audio_capture.get_notes()
+                self._audio_capture.get_strike_windows()
+            # Still worth a look: a stretched copy that lands while the song
+            # is paused has to be swapped in, and the line that says how far
+            # along it is has to keep moving. Pausing does not stop the work,
+            # and _update_mp3 keeps the recording itself silent.
+            self._update_mp3()
             return
 
         now = time.perf_counter()
         prev_ms = self._playback_ms
         if self._last_tick is not None:
-            elapsed_ms = (now - self._last_tick) * 1000.0 * self._tempo_factor
-            self._playback_ms += elapsed_ms
+            # A frame that took longer than this is a machine that stalled --
+            # a decoder, a device open, the operating system. Advancing the
+            # song by the whole of it scrolls a bar of music past uncredited
+            # and lands the picture somewhere the player never saw, which is
+            # the "it stands still and then jumps" they reported. Losing the
+            # time is the cheaper of the two: the recording is pulled back
+            # into line by the ordinary sync a frame later.
+            raw_elapsed = now - self._last_tick
+            real_elapsed = min(raw_elapsed, MAX_FRAME_STALL_S)
+            # The picture's own clock, measured against the wall it is
+            # supposed to be keeping. A player reporting the notes falling
+            # behind the sound is reporting exactly this ratio, and without it
+            # the app cannot be told apart from the recording running away.
+            # Uncapped on one side, what was actually spent on the other, so
+            # the difference is the time the cap discarded.
+            self._clock_real_ms += raw_elapsed * 1000.0
+            self._clock_song_ms += real_elapsed * 1000.0
+            if raw_elapsed > MAX_FRAME_STALL_S:
+                self._clock_stalls += 1
+            self._playback_ms += real_elapsed * 1000.0 * self._tempo_factor
+            # REAL seconds, not song time: at 70 % speed the song is shorter
+            # than the time you spent on it, and it is the time you spent that
+            # a practice diary is about.
+            self._session_seconds += real_elapsed
+            self._follow_recording(real_elapsed)
         self._last_tick = now
 
         # Wait mode: freeze if there are pending notes the player hasn't hit yet
@@ -406,12 +1374,12 @@ class PlayingScreen:
                 self._playback_ms = prev_ms
                 self._last_tick = now
                 self._wait_mode_frozen = True
-                if self._midi_player is not None and not self._backing_muted:
-                    self._midi_player.pause()
+                for player in self._midi_all():
+                    player.pause()
             elif self._wait_mode_frozen:
                 self._wait_mode_frozen = False
-                if self._midi_player is not None and not self._backing_muted:
-                    self._midi_player.seek(self._backing_ms(self._playback_ms))
+                for player in self._midi_all():
+                    player.seek(self._backing_ms(self._playback_ms))
 
         # Count-in: play metronome clicks and start audio/midi when crossing 0
         if prev_ms < 0:
@@ -426,8 +1394,8 @@ class PlayingScreen:
             if self._playback_ms >= 0:
                 if self._audio_enabled:
                     self._start_audio()
-                if self._midi_player is not None:
-                    self._midi_player.seek(0)
+                for player in self._midi_all():
+                    player.seek(0)
 
         # Process audio matching (only during actual song, not count-in)
         if (self._playback_ms >= 0
@@ -444,8 +1412,12 @@ class PlayingScreen:
                 pinned_ts = self._playback_ms - self._matcher.audio_offset_ms
                 for d in detected:
                     d.timestamp_ms = pinned_ts
-            # Pinned timestamps carry no latency information
+            # Pinned timestamps carry no latency information -- nor any
+            # information about how long a bend was held, since every reading
+            # would claim the same millisecond.
             self._matcher.record_timing_samples = not self._wait_mode_frozen
+            self._matcher.record_contour = not self._wait_mode_frozen
+            self._session_strikes += sum(1 for d in detected if d.note.is_onset)
             results = self._matcher.process_detected_notes(detected, self._playback_ms)
             # Per-string chord verdicts arrive ~380 ms after their strike, once
             # enough audio exists to tell a semitone apart. They can only
@@ -457,34 +1429,39 @@ class PlayingScreen:
             self._feedback.cleanup(self._playback_ms)
 
         # Advance MIDI backing track (only during actual song)
-        if self._playback_ms >= 0 and self._midi_player is not None:
-            self._midi_player.update(self._backing_ms(self._playback_ms))
+        if self._playback_ms >= 0:
+            for player in self._midi_all():
+                player.update(self._backing_ms(self._playback_ms))
+        self._update_mp3()
 
         # Loop check — jump back to start marker when reaching end marker
         # (no count-in on loop)
         if (self._loop_enabled and self._loop_end_ms is not None
                 and self._loop_start_ms is not None
                 and self._playback_ms >= self._loop_end_ms):
-            if self._midi_player is not None:
-                self._midi_player.pause()
+            for player in self._midi_all():
+                player.pause()
             self._playback_ms = self._loop_start_ms
             self._last_tick = time.perf_counter()
             if self._matcher:
                 self._matcher.reset()
             self._feedback.reset()
-            if self._midi_player is not None:
-                self._midi_player.seek(self._backing_ms(self._loop_start_ms))
+            for player in self._midi_all():
+                player.seek(self._backing_ms(self._loop_start_ms))
+            if self._mp3_player is not None and self._mp3_plays():
+                self._mp3_player.seek(self._mp3_ms(self._loop_start_ms))
             if self._audio_enabled and self._playing:
-                self._stop_audio()
-                self._start_audio()
+                self._reanchor_audio_clock()
             return
 
         if self._playback_ms >= self._timeline.duration_ms:
             self._playback_ms = self._timeline.duration_ms
             self._playing = False
             self._last_tick = None
-            if self._midi_player is not None:
-                self._midi_player.pause()
+            for player in self._midi_all():
+                player.pause()
+            if self._mp3_player is not None:
+                self._mp3_player.pause()
             self._stop_audio()
 
             if not self._song_completed:
@@ -504,6 +1481,9 @@ class PlayingScreen:
                         )
                         self._weakest_sections = weakest
                         self._song_completed = True
+                    # Written whether or not anything scored: a run that
+                    # scored nothing is the one most worth reading.
+                    self._export_run_log()
                 elif not self._audio_enabled:
                     # Auto-scroll (passive) completion
                     self._weakest_sections = []
@@ -515,6 +1495,23 @@ class PlayingScreen:
         Returns 'menu' to go back, ('select_track', index) when a track was
         picked, else None.
         """
+        if event.type == pygame.KEYUP:
+            # Key repeat is 300 ms then 40 ms, and a KEYDOWN from a repeat is
+            # indistinguishable from a real press. For most keys that is what
+            # repeat is FOR; for Shift+S it is a disaster, because the two
+            # presses mean different things -- the player's second point was
+            # taken, the rate was set, and the repeat 40 ms later opened a new
+            # point 1 on top of it. Which is exactly what they saw. Requiring
+            # the key to come up is exact where a timeout would be a guess.
+            if event.key == pygame.K_s:
+                self._sync_key_held = False
+            # Coming off a stepping key makes the next press instant again,
+            # so two deliberate presses in quick succession both count. Exact
+            # where the timer alone would be a guess -- the same reason the
+            # sync key above waits for the key to come up.
+            if event.key == self._step_key:
+                self._step_key = None
+            return None
         if event.type != pygame.KEYDOWN:
             return None
 
@@ -529,33 +1526,75 @@ class PlayingScreen:
             self.stop_audio()
             return "menu"
         elif event.key == pygame.K_LEFT:
-            self.seek(self._playback_ms - self._ms_per_beat)
+            self.seek(self._seek_target_ms(event, -1))
         elif event.key == pygame.K_RIGHT:
-            self.seek(self._playback_ms + self._ms_per_beat)
+            self.seek(self._seek_target_ms(event, +1))
         elif event.key == pygame.K_HOME:
             self.seek(0)
         elif event.key == pygame.K_a:
-            self._toggle_audio()
+            if shift_held(event):
+                self._reopen_output()
+            else:
+                self._toggle_audio()
         elif event.key == pygame.K_PAGEDOWN:
-            self.set_tempo_factor(self._tempo_factor - 0.05)
+            if self._step_key_ready(event.key):
+                self.set_tempo_factor(self._tempo_factor - 0.05)
         elif event.key == pygame.K_PAGEUP:
-            self.set_tempo_factor(self._tempo_factor + 0.05)
+            if self._step_key_ready(event.key):
+                self.set_tempo_factor(self._tempo_factor + 0.05)
         elif event.key == pygame.K_i:
             self._set_loop_start(self._playback_ms)
         elif event.key == pygame.K_o:
             self._set_loop_end(self._playback_ms)
         elif event.key == pygame.K_p:
             self._toggle_loop()
+        elif event.key == pygame.K_r:
+            return self._next_tuning(-1 if shift_held(event)
+                                     else +1)
+        elif (event.key == pygame.K_s and event.mod & pygame.KMOD_CTRL
+                and not shift_held(event)):
+            self._start_auto_sync()
+        elif event.key == pygame.K_s and shift_held(event):
+            if self._sync_key_held:
+                return None                    # a repeat, not a second press
+            self._sync_key_held = True
+            if event.mod & pygame.KMOD_CTRL:
+                self._clear_sync_rate()
+            else:
+                self._set_sync_point()
         elif event.key == pygame.K_b:
-            self._toggle_backing()
+            if shift_held(event):
+                self._toggle_guide_track()
+            else:
+                self._toggle_backing()
         elif event.key == pygame.K_x:
+            self._take_gate_by_hand()
             self.set_noise_gate_db(self._noise_gate_db - 5)
+        elif event.key == pygame.K_c and shift_held(event):
+            # Tested BEFORE the plain C below, which raises the noise gate:
+            # an `elif` chain is read in order, so a shifted key placed after
+            # its unshifted twin is never reached at all.
+            self._chord_mode = not self._chord_mode
+            if hasattr(self._config, "chord_view"):
+                self._config.chord_view = self._chord_mode
+                self._config.save()
+            self._say("Chord view on — grips and blocks"
+                      if self._chord_mode else "Chord view off")
         elif event.key == pygame.K_c:
+            # C is the key that walked this player's gate to the old ceiling,
+            # five decibels at a time, on advice the app kept repeating --
+            # see gate_band. set_noise_gate_db is what bounds it.
+            self._take_gate_by_hand()
             self.set_noise_gate_db(self._noise_gate_db + 5)
         elif event.key == pygame.K_t:
-            self._cycle_theme()
+            if shift_held(event):
+                self._toggle_tab_mode()
+            else:
+                self._cycle_theme()
         elif event.key == pygame.K_f:
             self._cycle_fret_limit()
+        elif event.key == pygame.K_d:
+            self._export_run_log()
         elif event.key == pygame.K_F1:
             self._toggle_string(1)
         elif event.key == pygame.K_F2:
@@ -568,6 +1607,8 @@ class PlayingScreen:
             self._toggle_string(5)
         elif event.key == pygame.K_F6:
             self._toggle_string(6)
+        elif event.key == pygame.K_e:
+            self._skip_rest()
         elif event.key == pygame.K_v:
             self._toggle_chord_mode()
         elif event.key == pygame.K_j:
@@ -576,27 +1617,40 @@ class PlayingScreen:
             self._cycle_timing_window()
         elif event.key == pygame.K_TAB:
             self._open_track_menu()
-        elif event.key == pygame.K_n:
-            self._adjust_backing_offset(-BACKING_OFFSET_STEP_MS)
-        elif event.key == pygame.K_m:
-            self._adjust_backing_offset(BACKING_OFFSET_STEP_MS)
+        elif event.key in (pygame.K_n, pygame.K_m):
+            self._nudge_backing(1 if event.key == pygame.K_m else -1, event.mod)
+        elif event.key == pygame.K_u:
+            if shift_held(event):
+                self._choose_mp3_backing()
+            else:
+                self._toggle_mp3_backing()
         elif event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
-            self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
+            # Same key, the meaning of the view it is pressed in: on a page
+            # there is no scroll speed to set and zoom is what it wants.
+            if self._step_key_ready(event.key):
+                if self._tab_mode:
+                    self._zoom_tab(+1)
+                else:
+                    self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
         elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-            self._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
+            if self._step_key_ready(event.key):
+                if self._tab_mode:
+                    self._zoom_tab(-1)
+                else:
+                    self._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
         elif event.key == pygame.K_l:
             self._loop_weakest_section()
         elif event.key == pygame.K_h:
             self._show_help = not self._show_help
         elif event.key == pygame.K_y:
-            if event.mod & pygame.KMOD_SHIFT:
+            if shift_held(event):
                 self._export_timing_samples()
             else:
                 self._show_timing = not self._show_timing
         elif event.key == pygame.K_w:
             self._toggle_wait_mode()
         elif event.key == pygame.K_k:
-            if event.mod & pygame.KMOD_SHIFT:
+            if shift_held(event):
                 self._reset_latency_offset()
             else:
                 self._auto_sync_timing()
@@ -621,10 +1675,29 @@ class PlayingScreen:
         self._last_layout = layout
 
         surface.fill(t.bg)
+        if self._tab_mode:
+            # The same song, the same clock, the same keys -- only drawn as
+            # a page instead of a scrolling board. A second SCREEN would be
+            # a second copy of the transport, the offsets and the loop, and
+            # this project has already paid for four readers of one plan.
+            self._draw_tab_page(surface, layout)
+            # _draw_hud already puts the score up when the song is over.
+            # Calling the overlay here as well drew it unconditionally --
+            # it takes no decision of its own -- so the page view showed
+            # nothing but the end of the song, every time.
+            self._draw_hud(surface, layout)
+            if self._show_help:
+                self._draw_help_overlay(surface, layout)
+            return
         self._draw_lanes(surface, layout)
         self._draw_loop_region(surface, layout)
         self._draw_hit_zone(surface, layout)
+        # UNDER the notes: the block says "these belong together and this is
+        # what it is called", the heads keep saying which string went right.
+        self._draw_chord_blocks(surface, layout)
         self._draw_notes(surface, layout)
+        self._draw_chord_names(surface, layout)
+        self._draw_chord_cards(surface, layout)
         self._draw_hud(surface, layout)
 
         if self._show_timing:
@@ -635,6 +1708,257 @@ class PlayingScreen:
             self._draw_track_menu(surface)
 
     # -- Pure math helpers (testable without display) --
+
+    def _toggle_tab_mode(self) -> None:
+        """Scrolling board <-> engraved page."""
+        self._tab_mode = not self._tab_mode
+        if self._tab_mode and self._tab_engraving is None and not self._tab_error:
+            # Not built here: the note below has to reach the screen first.
+            self._tab_due = True
+            self._say("Engraving the tab…")
+
+    def _build_tab_engraving(self) -> None:
+        """The one slow thing, on a thread.
+
+        Three pages of a real song is 3.1 s -- the ENGRAVING is fast (0.2 s)
+        and the rasterising is not, because SDL cannot draw verovio's output
+        and resvg has to. Three seconds in the game loop is a frozen app,
+        which this project has already shipped twice.
+        """
+        self._tab_due = False
+        if self._tab_thread is not None and self._tab_thread.is_alive():
+            return
+        zoom = self._tab_zoom
+        width = self._last_layout.screen_w if self._last_layout else 1280
+
+        def report(fraction: float) -> bool:
+            self._tab_progress = fraction
+            # Stepping the zoom twice should not build the pages of the one
+            # nobody wants any more.
+            return self._tab_zoom == zoom
+
+        def work() -> None:
+            from pickhero.ui.tab_view import Cancelled, TabEngraving
+            try:
+                built = TabEngraving(self._timeline, zoom, width, report)
+            except Cancelled:
+                return                        # the zoom moved on; not a fault
+            except Exception as exc:
+                # Named rather than swallowed: without the engraver or its
+                # rasteriser this is the only place the player finds out.
+                self._tab_error = f"{type(exc).__name__}: {exc}"
+                self._tab_ready = ("error", zoom)
+                return
+            self._tab_ready = (built, zoom)
+
+        self._tab_progress = 0.0
+        self._tab_thread = threading.Thread(target=work, daemon=True)
+        self._tab_thread.start()
+
+    def _take_tab_engraving(self) -> None:
+        """Swap in a finished engraving, on the main thread.
+
+        The pages are scaled and CONVERTED here rather than on the thread:
+        convert() needs the display, and a surface converted anywhere else is
+        one the display converts again on every blit.
+        """
+        ready, zoom = self._tab_ready
+        self._tab_ready = (None, -1)
+        if zoom != self._tab_zoom:
+            return                            # built for a zoom nobody wants
+        if ready == "error":
+            self._tab_engraving = None
+            self._say(f"The tab view needs the engraver — {self._tab_error}")
+            return
+        self._tab_engraving = ready
+        if self._last_layout is not None:
+            from pickhero.ui.tab_view import fit
+            for page in ready.pages:
+                fit(page, self._last_layout.screen_w)
+        placed, written = ready.found()
+        if placed < written:
+            self._say(f"Engraved {placed} of {written} notes")
+
+    def _zoom_tab(self, step: int) -> None:
+        from pickhero.ui.tab_view import ZOOM_STEPS
+        wanted = max(0, min(len(ZOOM_STEPS) - 1, self._tab_zoom + step))
+        if wanted == self._tab_zoom:
+            self._say("Already at the "
+                      f"{'closest' if step > 0 else 'widest'} zoom")
+            return
+        self._tab_zoom = wanted
+        self._tab_engraving = None
+        self._tab_due = True
+        self._say(f"Zoom {wanted + 1} of {len(ZOOM_STEPS)} — engraving…")
+
+    def written_tuning(self) -> dict[int, int]:
+        """The tuning the tab was WRITTEN in, whatever it is played in."""
+        return {s: v - self._transpose
+                for s, v in self._timeline.metadata.tuning.items()}
+
+    def tuning_choices(self) -> list[tuple[str, int]]:
+        """The tunings this song can be played in without moving a fret."""
+        from pickhero.audio.note_utils import reachable_tunings
+        return reachable_tunings(self.written_tuning())
+
+    def _tuning_order(self) -> tuple[list[tuple[str, int]], int]:
+        """The tunings this song steps through, lowest first, and where we
+        are in them. One helper, so the line that ADVERTISES the key and the
+        key itself can never name different tunings."""
+        order = sorted(self.tuning_choices(), key=lambda pair: pair[1])
+        here = next((i for i, (_, shift) in enumerate(order)
+                     if shift == self._transpose), None)
+        if here is None:
+            here = next((i for i, (_, shift) in enumerate(order)
+                         if shift == 0), 0)
+        return order, here
+
+    def tuning_step_label(self) -> str:
+        """What R and Shift+R will do next, named rather than discovered.
+
+        A key that walks a list nobody can see is a key you press to find out
+        where it went -- and this one reloads the song and rebuilds the
+        stretched recording, so finding out costs seconds. An end of the list
+        says so instead of naming a tuning.
+        """
+        order, here = self._tuning_order()
+        if len(order) < 2:
+            return ""
+        up = order[here + 1][0] if here + 1 < len(order) else "—"
+        down = order[here - 1][0] if here > 0 else "—"
+        return f"R \u2192 {up}    Shift+R \u2192 {down}"
+
+    def _next_tuning(self, step: int):
+        """Play the same shapes on a differently tuned guitar (R).
+
+        A player thinks in tunings, not in semitones, so this steps through
+        the tunings the song can actually be played in -- the ones a uniform
+        shift away, which are the ones where every fret number still holds.
+        A tuning of a different SHAPE cannot be reached this way at all, and
+        for such a song there is nothing to step through.
+
+        It does NOT wrap. Ordered by pitch, the two ends are five semitones
+        apart, so wrapping turns one press at the top of the list into a jump
+        to the bottom of it -- a whole recording rebuilt for a tuning nobody
+        asked for. R means higher and Shift+R means lower, all the way, and
+        the end of the list is a sentence rather than a surprise.
+        """
+        order, here = self._tuning_order()
+        if len(order) < 2:
+            self._say("This tuning cannot be swapped without moving the frets")
+            return None
+        wanted = here + step
+        if not 0 <= wanted < len(order):
+            self._say(f"Already the {'highest' if step > 0 else 'lowest'} "
+                      f"tuning this song can be played in ({order[here][0]})")
+            return None
+        name, shift = order[wanted]
+        if shift == self._transpose:
+            return None
+        self._say(f"Playing in {name}"
+                  + (f" — the recording moves {shift:+d} semitones with you"
+                     if shift else " — as written"))
+        return ("transpose", shift)
+
+    def _tab_scroll_for(self, band_top: float, band_bottom: float,
+                        page_h: float, view_h: float) -> int:
+        """Where to scroll the page so the current system is readable.
+
+        It STAYS PUT while the system it is showing is fully on screen, and
+        moves only when the playhead has left it. A rule that centres the
+        playhead every frame scrolls continuously, and a reader cannot follow
+        a page that is always moving -- which is the other half of what the
+        player reported.
+        """
+        if page_h <= view_h:
+            self._tab_scroll = 0
+            return 0
+        limit = page_h - view_h
+        here = max(0.0, min(limit, float(self._tab_scroll)))
+        margin = min(24.0, view_h * 0.05)
+        if here + margin <= band_top and band_bottom <= here + view_h - margin:
+            self._tab_scroll = int(here)
+            return int(here)
+        # Out of view: put the system a quarter of the way down, so what
+        # comes next is what most of the screen is showing.
+        wanted = band_top - view_h * 0.25
+        self._tab_scroll = int(max(0.0, min(limit, wanted)))
+        return self._tab_scroll
+
+    def _draw_tab_page(self, surface: pygame.Surface, layout: _Layout) -> None:
+        """The engraved page, the playhead, and how each note went."""
+        from pickhero.ui.tab_view import fit
+        t = get_theme()
+        font = _get_font("arial", 18)
+        w, h = surface.get_size()
+        if self._tab_engraving is None:
+            # The percentage is not decoration: this is seconds of work with
+            # nothing on screen, which is indistinguishable from a dead key.
+            message = (self._tab_error and
+                       f"The tab view needs the engraver — {self._tab_error}"
+                       or f"Engraving the tab… {self._tab_progress * 100:.0f} %")
+            text = font.render(message, True, t.hud_text)
+            surface.blit(text, (w // 2 - text.get_width() // 2, h // 2))
+            return
+
+        engraving = self._tab_engraving
+        spot = engraving.at_ms(self._playback_ms)
+        page = engraving.pages[spot[0] if spot else 0]
+        # The page is as wide as the window allows, and scrolls vertically so
+        # the playhead stays in view rather than the player hunting for it.
+        top_margin, bottom_margin = 56, 104
+        view_h = max(1, h - top_margin - bottom_margin)
+        fitted = fit(page, w)
+        page_h = fitted.get_height()
+        # The SYSTEM the playhead is in, never the note's own height. A note's
+        # y on a tab staff is the string it is written on, so scrolling to it
+        # moved the page up and down by the string spacing on every note of
+        # an arpeggio -- a centimetre, once a second, which is what the
+        # player reported.
+        band_top = (spot[2] if spot else 0.0) * page_h
+        band_bottom = (spot[3] if spot else 0.0) * page_h
+        offset = self._tab_scroll_for(band_top, band_bottom, page_h, view_h)
+        surface.blit(fitted, (0, top_margin), (0, offset, w, view_h))
+
+        if spot is not None:
+            x = int(spot[1] * fitted.get_width())
+            # Across the whole system, the way every notation app draws it.
+            # A short tick at the note's own height would jump between the
+            # strings even with the scrolling held still.
+            reach = max(9.0, (band_bottom - band_top) * 0.6)
+            y0 = int(band_top - reach) - offset + top_margin
+            y1 = int(band_bottom + reach) - offset + top_margin
+            if y1 > top_margin and y0 < top_margin + view_h:
+                pygame.draw.line(surface, t.hit_zone,
+                                 (x, max(top_margin, y0)),
+                                 (x, min(top_margin + view_h, y1)), 2)
+
+        # How each note went, as a dot under its fret number. The page is a
+        # picture and cannot be re-coloured, so the verdict is drawn ON it.
+        if self._matcher is not None and page.placed:
+            # Only the notes on screen. A page holds most of a song, and
+            # walking all of them every frame cost 12.4 ms against a 16.7 ms
+            # budget -- the loop-over-the-whole-song fault, for the fifth
+            # time. page.placed is sorted by y, so this is two bisects.
+            first = bisect.bisect_left(page.placed, (offset / page_h,))
+            last = bisect.bisect_right(
+                page.placed, ((offset + view_h) / page_h, 2.0, 1 << 30))
+            notes = self._timeline.notes
+            for y, x, position in page.placed[first:last]:
+                colour = _TAB_VERDICT_COLOURS.get(
+                    self._matcher.get_note_state(notes[position]))
+                if colour is None:
+                    continue
+                pygame.draw.circle(
+                    surface, getattr(t, colour),
+                    (int(x * fitted.get_width()),
+                     int(y * page_h) - offset + top_margin + 13), 4)
+
+        label = font.render(
+            f"Page {page.number} of {len(engraving.pages)}   |   "
+            f"Zoom {self._tab_zoom + 1}   |   +/- zoom   |   "
+            f"Shift+T: back to the scrolling tab", True, t.hud_text)
+        surface.blit(label, (w // 2 - label.get_width() // 2, 18))
 
     def _layout(self, surface: pygame.Surface) -> _Layout:
         """Compute layout from current surface dimensions."""
@@ -671,13 +1995,27 @@ class PlayingScreen:
         """Calculate note rectangle width, enforcing minimum."""
         return max(duration_ms * pixels_per_ms, MIN_NOTE_WIDTH_PX)
 
-    def _fret_font(self, radius: float) -> pygame.font.Font:
-        """Font sized to a note head, cached: building one per note per frame
-        is far too slow, and heads now vary in size within a single frame."""
-        size = max(9, int(radius * 1.1))
+    def _fret_font(self, radius: float, half_h: float | None = None,
+                   digits: int = 2) -> pygame.font.Font:
+        """Font sized to the room the head actually has, cached.
+
+        Both dimensions, not just the radius. A head squeezed narrow by a
+        dense song is still full height, and a number sized on the width
+        alone throws that height away -- on a real 135 BPM song that is the
+        difference between a 14 px digit and a 20 px one, in a note that was
+        already hard to read.
+
+        Cached because building a font per note per frame is far too slow.
+        """
+        by_width = radius * 2 * 0.9 / max(1, digits) / 0.55
+        by_height = (half_h * 2 * 0.86) if half_h else radius * 1.1
+        size = max(9, int(min(by_width, by_height)))
         font = self._fret_fonts.get(size)
         if font is None:
-            font = _get_font("consolas", size)
+            # Bold. The digit sits on a saturated colour with a dark outline
+            # around it, and a thin stroke is the first thing to disappear at
+            # speed -- which is exactly when the fret number matters most.
+            font = _get_font("consolas", size, True)
             self._fret_fonts[size] = font
         return font
 
@@ -712,6 +2050,28 @@ class PlayingScreen:
         idx = min(len(gaps) - 1, int(len(gaps) * percentile / 100.0))
         return gaps[idx]
 
+    def _min_head_px(self, layout: _Layout, by_hand: bool = False) -> float:
+        """How narrow a head may get before the fret number stops reading.
+
+        A two-digit fret needs roughly twice the width of a one-digit one to
+        show the same size of type, and the head was squeezed to a single
+        digit's worth for every song. Never wider than the lane: past that the
+        head would be wider than tall for no gain, and the height is free.
+
+        `by_hand` is the floor for a slowdown the PLAYER asked for, and it is
+        the older, harder one. `MIN_FRET_DIGIT_PX` was fitted for reading a
+        number that is crossing the screen at 430 px/s -- the whole point of
+        the "eleven or twelve" measurement -- and applying it to a tab the
+        player is deliberately slowing down asks the wrong question. Measured:
+        with the fast floor, every song containing a two-digit fret could not
+        be slowed AT ALL, because its head was already sitting on it. That is
+        most rock songs, and it is what the player was hitting.
+        """
+        if by_hand:
+            return min(MIN_HEAD_PX, layout.note_h)
+        wanted = _head_px_for_digits(MIN_FRET_DIGIT_PX, self._fret_digits)
+        return min(max(MIN_HEAD_PX, wanted), layout.note_h)
+
     def _recompute_scroll_speed(self, layout: _Layout | None = None) -> None:
         """Pick this song's one scroll speed and one note size.
 
@@ -722,36 +2082,416 @@ class PlayingScreen:
         Speed comes first. A tab can only be read so fast no matter how dense
         the music is, so once the tightest passage would push past that limit
         the notes shrink toward the smallest head that still shows a two-digit
-        fret, instead of the tab scrolling faster and faster.
+        fret, instead of the tab scrolling faster and faster. That paragraph
+        described the intent for a while before the code did it: heads stayed
+        full size and dense songs simply scrolled quicker, down to 1.5 s of
+        warning.
         """
         layout = layout or self._last_layout
         if layout is None or layout.usable_width <= 0:
             return
 
+        # FIRST, because the head width is sized for it below. Every fret
+        # number in the song is sized for the widest one in it, so they are
+        # all the same size: sizing each to its own label makes a lone "5"
+        # tower over the "15" beside it, which reads as emphasis the music
+        # never asked for.
+        frets = [len(str(n.fret)) for n in self._timeline.notes
+                 if self._note_passes_filter(n)]
+        self._fret_digits = max(frets) if frets else 2
+
         head = layout.note_h
         spacing = self._spacing_percentile(SPACING_PERCENTILE)
 
-        # Notes are always full size. The window follows from that: however
-        # much time fits on screen once every note has its room is how much
-        # gets shown. A dense song therefore shows less of itself at once
-        # rather than drawing itself smaller.
+        # The window follows from the note size: however much time fits on
+        # screen once every note has its room is how much gets shown.
         window = BASE_VISIBLE_WINDOW_MS
         if spacing and spacing > 0:
-            window = spacing * layout.usable_width / (head * (1.0 + SUSTAIN_GAP_FRACTION))
+            per_head = head * (1.0 + SUSTAIN_GAP_FRACTION)
+            window = spacing * layout.usable_width / per_head
 
-        # Largest window in which every note still gets its full size. Slowing
-        # past it would fit more time on screen at the cost of note size, and
-        # notes changing size is the one thing this display must not do -- so
-        # the trim stops there instead. Speeding up is always allowed: it only
-        # ever gives the notes more room.
+            # Full-size notes on a dense song buy so little look-ahead that
+            # the fret numbers arrive unreadable -- canon.gp5 came out at
+            # 1.5 s of warning and 683 px/s, which is a note crossing the
+            # screen faster than it can be read, never mind fingered. Trading
+            # head size for time is the only currency available, and it is a
+            # trade the display is allowed to make: what it must never do is
+            # resize notes WHILE scrolling, and this is decided once per song.
+            # The floor is the smallest head a two-digit fret still fits in.
+            if window < READABLE_WINDOW_MS:
+                needed = (spacing * layout.usable_width
+                          / (READABLE_WINDOW_MS * (1.0 + SUSTAIN_GAP_FRACTION)))
+                head = max(self._min_head_px(layout), min(head, needed))
+                window = (spacing * layout.usable_width
+                          / (head * (1.0 + SUSTAIN_GAP_FRACTION)))
+
+        # Largest window in which every note still gets its full size.
         fit_window = window
         window = max(MIN_VISIBLE_WINDOW_MS, min(BASE_VISIBLE_WINDOW_MS, window))
         window = window / self._scroll_factor()
-        window = max(MIN_VISIBLE_WINDOW_MS, min(fit_window, window))
+        window = max(MIN_VISIBLE_WINDOW_MS, window)
+
+        # Slowing the tab down costs note size, and for a while this refused
+        # to spend it: the window was clamped back to `fit_window`, so every
+        # factor below 1.0 did NOTHING. Measured on three real songs, 0.4,
+        # 0.6, 0.8 and 1.0 gave the identical window and the identical
+        # pixels per second, with the head sitting at 44 px against a 26 px
+        # floor -- room to spend that was simply never spent. Which is what
+        # the player reported: "it sticks at 1 and ignores smaller".
+        #
+        # The rule it was protecting is real but narrower than it was read:
+        # notes must not change size WHILE SCROLLING. This is decided once,
+        # on a keypress, which is the same moment the automatic already
+        # resizes them. And the app deciding to shrink notes is a different
+        # thing from the player asking for it.
+        # Only for a slowdown the player ASKED for. Without the factor test
+        # this also fires when MIN_VISIBLE_WINDOW_MS lifts the window above
+        # what the notes can fill -- a song so dense its notes must overlap --
+        # and then recomputed the window straight back down through the floor,
+        # to 167 ms. The suite caught it; the floor is not decoration.
+        if (self._scroll_factor() < 1.0 and window > fit_window
+                and spacing and spacing > 0):
+            head = (spacing * layout.usable_width
+                    / (window * (1.0 + SUSTAIN_GAP_FRACTION)))
+            floor = self._min_head_px(layout, by_hand=True)
+            if head < floor:
+                # The end of the trade: past here a two-digit fret stops
+                # reading, and an unreadable slow tab is worth nothing.
+                head = floor
+                window = (spacing * layout.usable_width
+                          / (head * (1.0 + SUSTAIN_GAP_FRACTION)))
+            window = max(MIN_VISIBLE_WINDOW_MS, window)
 
         self._visible_window_ms = window
         self._head_px = head
+        # The head is squeezed HORIZONTALLY, by how close the notes sit in
+        # time. Nothing squeezes it vertically -- the lane is as tall as it
+        # ever was -- so a shrunken head leaves half its lane empty for
+        # nothing. Measured on a real song at 135 BPM with sixteenths: the
+        # head is at its 26 px floor inside a 56 px lane, 53 % of the height
+        # unused. Keeping the full height costs no look-ahead at all, because
+        # look-ahead is bought and sold in width.
+        self._head_h_px = max(head, layout.note_h)
+        self._chord_names = self._build_chord_names()
+        from pickhero.tabs.chord_shapes import changes_in
+        self._chord_shapes = changes_in(self._timeline)
+        self._rests = self._build_rests()
         self._scroll_speed_signature = self._filter_signature()
+
+    def _build_rests(self) -> list[tuple[float, float]]:
+        """(when the rest starts, when the next note is) for every long rest.
+
+        Measured by the END of the notes before it, not by their onset. A note
+        held for eight seconds is nothing to PLAY, so counting from the onset
+        would find more rests -- and skipping over one would skip a note that
+        is still sounding and still being scored, which costs the player the
+        note. Measured on the four songs to hand, that is the only difference
+        the two definitions make: three rests, every one of them a held note.
+
+        The outro is deliberately NOT in here. It is the biggest hole in the
+        material -- 52 s on one song's lead guitar, 37 s on its rhythm track --
+        and there is no next note to skip to, so it is announced (see
+        `_rest_hud_text`) and never offered as a jump.
+        """
+        notes = sorted(self._timeline.notes, key=lambda n: n.timestamp_ms)
+        rests: list[tuple[float, float]] = []
+        sounding_to = 0.0
+        for note in notes:
+            if note.timestamp_ms - sounding_to >= GAP_MIN_MS:
+                rests.append((sounding_to, note.timestamp_ms))
+            sounding_to = max(sounding_to, note.end_ms)
+        return rests
+
+    def _last_note_end_ms(self) -> float:
+        """When the last written note stops sounding, 0.0 for an empty track."""
+        return max((n.end_ms for n in self._timeline.notes), default=0.0)
+
+    def _rest_at(self, ms: float) -> tuple[float, float] | None:
+        """The long rest the given moment sits inside, if any."""
+        for start, until in self._rests:
+            if start <= ms < until:
+                return (start, until)
+        return None
+
+    def _next_rest_after(self, ms: float) -> tuple[float, float] | None:
+        """The first long rest whose landing point is still ahead of `ms`.
+
+        A rest already within the lead-in is not worth jumping into: the jump
+        would be backwards, or a fraction of a second forwards, and either is
+        worse than doing nothing.
+        """
+        for start, until in self._rests:
+            if until - GAP_LEAD_IN_MS > ms + 1.0:
+                return (start, until)
+        return None
+
+    def _skip_rest(self) -> None:
+        """Jump to shortly before the next note, over a long rest.
+
+        The whole transport moves with it -- `seek` carries the MIDI backing,
+        the recording and the audio clock's anchor -- because a picture that
+        jumps while the recording plays on is the sync fault this project has
+        already paid for several times over.
+        """
+        if not self._rests:
+            if self._playback_ms >= self._last_note_end_ms() > 0:
+                self._say("Nothing left to play on this track")
+            else:
+                self._say("No long rest in this track")
+            return
+        rest = self._next_rest_after(self._playback_ms)
+        if rest is None:
+            if self._playback_ms >= self._last_note_end_ms() > 0:
+                self._say("Nothing left to play on this track")
+            else:
+                self._say("No rest ahead to skip")
+            return
+        start, until = rest
+        target = until - GAP_LEAD_IN_MS
+        # A loop is a decision about where the song is allowed to be, and it
+        # outranks this: jumping out of one would be undone by the loop itself
+        # on the very next frame, which is a key that looks broken.
+        if (self._loop_enabled and self._loop_end_ms is not None
+                and target > self._loop_end_ms):
+            self._say("Loop is on — the next rest is outside it (I/O)")
+            return
+        skipped = target - max(self._playback_ms, start)
+        self.seek(target)
+        if skipped >= 1000.0:
+            self._say(f"Skipped {skipped / 1000.0:.0f} s of rest")
+        else:
+            self._say("Jumped to the next note")
+
+    def _rest_hud_text(self) -> str | None:
+        """What to say while the player has nothing to play, or None.
+
+        Only while they are actually sitting in the hole. Announcing a rest
+        before it arrives is noise on a line that is read at a glance, and the
+        moment it is worth reading is the moment nothing is happening.
+        """
+        if self._playback_ms < 0 or not self._timeline.notes:
+            return None
+        rest = self._rest_at(self._playback_ms)
+        if rest is not None:
+            left = (rest[1] - self._playback_ms) / 1000.0
+            if left <= GAP_LEAD_IN_MS / 1000.0:
+                return None
+            return f"Rest: {left:.0f} s to the next note — E skips ahead"
+        last_end = self._last_note_end_ms()
+        if last_end > 0 and self._playback_ms >= last_end:
+            left = (self._timeline.duration_ms - self._playback_ms) / 1000.0
+            if left < 1.0:
+                return None
+            return f"Nothing left to play — {left:.0f} s of song to run"
+        return None
+
+    def _build_chord_names(self) -> list[tuple[float, str]]:
+        """(when, name) for every chord CHANGE in the song.
+
+        At the change, not on every beat: a name repeated over eight bars of
+        the same chord is eight bars of noise, and the thing worth seeing is
+        the moment the hand has to move.
+
+        Built once per song. Naming a chord is cheap but it is not free, and
+        this display has been bitten twice by work that looked cheap until it
+        ran once a frame.
+        """
+        by_time: dict[float, list[int]] = {}
+        for note in self._timeline.notes:
+            if self._note_passes_filter(note) and not note.dead:
+                by_time.setdefault(note.timestamp_ms, []).append(note.midi_note)
+        out: list[tuple[float, str]] = []
+        last = None
+        for when in sorted(by_time):
+            name = name_chord(by_time[when])
+            if name is None or name == last:
+                continue
+            out.append((when, name))
+            last = name
+        return out
+
+    def _chord_blocks_in_view(self, layout: _Layout):
+        """(x, width, top, bottom, shape, notes) for each chord on screen.
+
+        Grouped from the VISIBLE notes only, which is a couple of dozen, so
+        this stays a per-frame cost that does not grow with the song -- the
+        loop this project has had to move out of a frame three times.
+        """
+        view_start = self._playback_ms - LEFT_MARGIN_MS
+        view_end = (self._playback_ms + self._visible_window_ms
+                    + RIGHT_MARGIN_MS)
+        notes = [n for n in self._timeline.get_notes_in_range(
+            view_start, view_end) if self._note_passes_filter(n)]
+        at: dict[int, list] = {}
+        for note in notes:
+            at.setdefault(int(round(note.timestamp_ms)), []).append(note)
+
+        from pickhero.tabs.chord_shapes import shape_of
+
+        out = []
+        for when in sorted(at):
+            group = at[when]
+            if len(group) < 2:
+                continue
+            shape = shape_of(group)
+            if shape is None:
+                continue
+            x = self.note_x(float(when), self._playback_ms,
+                            layout.hit_zone_x, layout.pixels_per_ms)
+            head = self._head_px if self._head_px is not None else layout.note_h
+            width = max(2 * (head / 2), min(
+                self.sustain_width(max(n.duration_ms for n in group),
+                                   layout.pixels_per_ms),
+                head * 4))
+            if x + width < 0 or x > layout.screen_w:
+                continue
+            strings = [n.string for n in group]
+            top = layout.lane_top + (min(strings) - 1) * layout.lane_height
+            bottom = layout.lane_top + max(strings) * layout.lane_height
+            out.append((x, width, top, bottom, shape, group))
+        return out
+
+    def _chord_block_colour(self, notes) -> tuple[int, int, int]:
+        """What a whole chord's worth of verdicts looks like as one colour.
+
+        The block cannot show six answers, so it shows the WORST of them --
+        a chord with one string wrong is not a chord that went well. The
+        per-string detail is not lost: the heads are drawn on top of this and
+        keep their own colours, which is the whole reason the block goes
+        underneath rather than instead.
+        """
+        t = get_theme()
+        if not self._audio_enabled or self._matcher is None:
+            return t.lane_line
+        states = [self._matcher.get_note_state(n) for n in notes]
+        if any(s is MatchType.PENDING for s in states):
+            return t.lane_line
+        if any(s is MatchType.MISS for s in states):
+            return t.feedback_miss
+        if any(s is MatchType.CLOSE for s in states):
+            return t.feedback_close
+        return t.feedback_hit
+
+    def _draw_chord_blocks(self, surface: pygame.Surface,
+                           layout: _Layout) -> None:
+        """Draw each chord as ONE object with its name on it (Shift+C).
+
+        Six fret numbers spread down six lanes are not a shape. A block that
+        spans the strings says "this is one grip" before a single number has
+        been read, which is what the reference app's big coloured slabs do.
+
+        It is a tint, not a fill: the notes are the thing being read and a
+        solid slab under them would fight them for attention. The name sits
+        at the block's LEADING edge, because that is the moment the hand has
+        to be ready -- the same reason a note's leading edge is its time.
+        """
+        if not self._chord_mode:
+            return
+        blocks = self._chord_blocks_in_view(layout)
+        if not blocks:
+            return
+        t = get_theme()
+        font = _get_font("arial", 22)
+        for x, width, top, bottom, shape, notes in blocks:
+            colour = self._chord_block_colour(notes)
+            rect = pygame.Rect(int(x), int(top), max(1, int(width)),
+                               max(1, int(bottom - top)))
+            surface.blit(_chord_block_surface(rect.width, rect.height, colour),
+                         rect.topleft)
+            label = font.render(shape.name, True, t.note_text)
+            shadow = font.render(shape.name, True, (0, 0, 0))
+            # A white name over an amber string is invisible, which is the
+            # same reason every technique line here carries a shadow.
+            lx, ly = rect.left + 6, rect.top - label.get_height() - 2
+            if ly < layout.lane_top:
+                ly = rect.top + 4
+            surface.blit(shadow, (lx + 1, ly + 1))
+            surface.blit(label, (lx, ly))
+
+    def _chord_now_and_next(self):
+        """The grip being played and the one after it.
+
+        The grip being PLAYED, not the nearest one: a chord is held until the
+        next one starts, so the card must stay up for as long as the hand is
+        on it. Bisect rather than a scan -- this runs sixty times a second
+        over a list that grows with the song, which is exactly the loop this
+        project has had to move out of a frame three times already.
+        """
+        shapes = self._chord_shapes
+        if not shapes:
+            return None, None
+        i = bisect.bisect_right([w for w, _ in shapes], self._playback_ms) - 1
+        now = shapes[i][1] if i >= 0 else None
+        nxt = shapes[i + 1][1] if i + 1 < len(shapes) else None
+        # Before the first chord there is nothing being played, so the first
+        # one is what is COMING -- which is the more useful of the two while
+        # the count-in runs.
+        if now is None:
+            return None, shapes[0][1]
+        return now, nxt
+
+    def _hud_left_x(self) -> int:
+        """Where the top-left text column starts.
+
+        Past the chord cards when they are up: they occupy the same corner,
+        and the text is the half that can move. Drawn over each other neither
+        can be read, which is what the player's screenshot showed.
+        """
+        if not self._chord_mode or not self._chord_shapes:
+            return 12
+        from pickhero.ui.chord_view import card_size
+        return 12 + 2 * (card_size()[0] + CHORD_CARD_GAP) + 8
+
+    def _draw_chord_cards(self, surface: pygame.Surface,
+                          layout: _Layout) -> None:
+        """The grip now and the grip next, top left (Shift+C).
+
+        Silent on a song with no chords in it -- a panel that is always there
+        and usually empty is a panel nobody looks at.
+        """
+        if not self._chord_mode or not self._chord_shapes:
+            return
+        from pickhero.ui.chord_view import card_size, draw_diagram
+
+        now, nxt = self._chord_now_and_next()
+        if now is None and nxt is None:
+            return
+        # Both the SAME size. The second card was smaller to say "this one
+        # is next", and the label already says that -- what the smaller one
+        # actually did was make the grip you have to prepare the harder of
+        # the two to read.
+        w, h = card_size()
+        x, y = 12, 6
+        if now is not None:
+            draw_diagram(surface, pygame.Rect(x, y, w, h), now, label="now")
+        x += w + CHORD_CARD_GAP
+        if nxt is not None:
+            draw_diagram(surface, pygame.Rect(x, y, w, h), nxt, label="next",
+                         dim=True)
+
+    def _draw_chord_names(self, surface: pygame.Surface,
+                          layout: _Layout) -> None:
+        """The chord name above the board, where the chord changes."""
+        if not self._chord_names:
+            return
+        t = get_theme()
+        font = _get_font("arial", int(layout.lane_height * 0.62), True)
+        view_start = self._playback_ms - LEFT_MARGIN_MS
+        view_end = self._playback_ms + self._visible_window_ms + RIGHT_MARGIN_MS
+        y = int(layout.lane_top) - HIT_LINE_OVERHANG_PX - font.get_height() - 4
+        for when, name in self._chord_names:
+            if when < view_start or when > view_end:
+                continue
+            x = int(self.note_x(when, self._playback_ms,
+                                layout.hit_zone_x, layout.pixels_per_ms))
+            if x < -80 or x > layout.screen_w:
+                continue
+            # Outlined, like every other white mark on this screen: it sits
+            # over whatever the background happens to be at that moment.
+            shadow = font.render(name, True, (0, 0, 0))
+            for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+                surface.blit(shadow, (x + dx, y + dy))
+            surface.blit(font.render(name, True, t.hud_text), (x, y))
 
     def _backing_ms(self, playback_ms: float) -> float:
         """Playback position as the backing track should hear it.
@@ -768,6 +2508,25 @@ class PlayingScreen:
             return getattr(self._config, "backing_offset_ms", 0.0)
         return getter(self._song_key)
 
+    def _nudge_backing(self, direction: int, mods: int) -> None:
+        """N and M, with the modifier deciding which backing and how far.
+
+        Both backings live on one pair of keys because the hands are on the
+        guitar and a second pair would not be found. The order matters:
+        Ctrl+Shift has to be tested before Ctrl, or the wider step can never
+        be reached.
+        """
+        if mods & pygame.KMOD_CTRL and mods & pygame.KMOD_SHIFT:
+            self._adjust_mp3_offset(direction * MP3_OFFSET_JUMP_MS)
+        elif mods & pygame.KMOD_CTRL:
+            self._adjust_mp3_offset(direction * MP3_OFFSET_COARSE_MS)
+        elif mods & pygame.KMOD_SHIFT:
+            self._adjust_mp3_offset(direction * MP3_OFFSET_STEP_MS)
+        elif mods & pygame.KMOD_ALT:
+            self._adjust_backing_offset(direction * BACKING_OFFSET_COARSE_MS)
+        else:
+            self._adjust_backing_offset(direction * BACKING_OFFSET_STEP_MS)
+
     def _adjust_backing_offset(self, delta_ms: float) -> None:
         """Shift the backing against the notes (N earlier, M later).
 
@@ -783,8 +2542,8 @@ class PlayingScreen:
         else:
             self._config.backing_offset_ms = new
         self._config.save()
-        if self._midi_player is not None:
-            self._midi_player.seek(self._backing_ms(self._playback_ms))
+        for player in self._midi_all():
+            player.seek(self._backing_ms(self._playback_ms))
 
     def set_track_options(self, options: list[tuple[int, str]],
                           current: int | None) -> None:
@@ -856,12 +2615,36 @@ class PlayingScreen:
         return max(lo, min(hi, getattr(self._config, "scroll_speed_factor", 1.0)))
 
     def _adjust_scroll_factor(self, delta: float) -> None:
-        """Speed the tab up or down by hand (+ / -), and remember it."""
+        """Speed the tab up or down by hand (+ / -), and remember it.
+
+        A press that changes nothing is put back rather than stored. The
+        factor used to walk all the way to 0.4 while the picture stood still,
+        so the number on screen described a setting the display was not
+        honouring -- and the key looked broken because it was.
+        """
         lo, hi = SCROLL_FACTOR_RANGE
         current = self._scroll_factor()
-        self._config.scroll_speed_factor = max(lo, min(hi, round(current + delta, 2)))
-        self._config.save()
+        wanted = max(lo, min(hi, round(current + delta, 2)))
+        before_window = self._visible_window_ms
+        if wanted == current:
+            self._say(f"Already at the {'slowest' if delta < 0 else 'fastest'}"
+                      f" setting ({current:.1f}x)")
+            return
+        self._config.scroll_speed_factor = wanted
         self._recompute_scroll_speed()
+        gained = abs(self._visible_window_ms - before_window)
+        if gained < max(1.0, before_window * SCROLL_FACTOR_MIN_GAIN):
+            self._config.scroll_speed_factor = current
+            self._recompute_scroll_speed()
+            if delta < 0:
+                self._say("The notes are already as small as they may get — "
+                          "this song cannot scroll slower and stay readable")
+            else:
+                self._say("The notes are already as big as the lane allows")
+            return
+        self._config.save()
+        self._say(f"Tab speed {wanted:.1f}x — {self._head_px:.0f} px notes, "
+                  f"{self._visible_window_ms / 1000:.1f} s ahead")
 
     def _filter_signature(self) -> tuple:
         """What the scroll speed depends on, so it is only redone when needed."""
@@ -869,10 +2652,16 @@ class PlayingScreen:
 
     @staticmethod
     def _neighbour_gaps(notes: list[NoteEvent]) -> dict[tuple[float, int], float]:
-        """Time to the nearest neighbouring note on the same string, in ms.
+        """Time to the NEXT note on the same string, in ms.
 
-        Notes only collide within their own lane, so this is what limits how
-        much room a note may take. Missing key means nothing else is near.
+        This is what limits how long a note may be drawn: notes only collide
+        within their own lane, and a note can only ever run into the one that
+        follows it. It used to take the smaller of the gaps before and after,
+        which is a note being shortened by something that had already
+        finished -- and it is why a note held across two beats was still drawn
+        for one. Measured on the player's own tab: a tied note of 1562 ms,
+        490 px of sustain, cut to 98 px by an eighth note that came BEFORE it.
+        Every long note following a quick one on its string was drawn short.
         """
         by_string: dict[int, list[float]] = {}
         for note in notes:
@@ -881,12 +2670,8 @@ class PlayingScreen:
         gaps: dict[tuple[float, int], float] = {}
         for string, stamps in by_string.items():
             unique = sorted(set(stamps))
-            for i, ts in enumerate(unique):
-                before = ts - unique[i - 1] if i > 0 else None
-                after = unique[i + 1] - ts if i + 1 < len(unique) else None
-                candidates = [g for g in (before, after) if g is not None]
-                if candidates:
-                    gaps[(ts, string)] = min(candidates)
+            for first, following in zip(unique, unique[1:]):
+                gaps[(first, string)] = following - first
         return gaps
 
     @staticmethod
@@ -903,6 +2688,49 @@ class PlayingScreen:
                 if following.timestamp_ms > note.timestamp_ms:
                     out[(note.timestamp_ms, string)] = following
         return out
+
+    @staticmethod
+    def _palm_mute_run_starts(notes) -> set[tuple[float, int]]:
+        """Keys of the notes that OPEN a palm-muted run.
+
+        One badge per run, not per note: a muted metal riff flags every note
+        it contains, and a disc over each of them buries the music under its
+        own labelling. Paper tab writes "P.M." once and dashes it onward for
+        exactly that reason -- here the choked note bodies carry the run on
+        from the badge.
+
+        Marked on the lowest string of the stroke that starts the run. Palm
+        muting is the picking hand resting on the strings, so it applies to
+        the whole stroke rather than to one string of it, and one badge says
+        that where three stacked ones only crowd the lanes.
+        """
+        by_string: dict[int, list] = {}
+        for note in notes:
+            by_string.setdefault(note.string, []).append(note)
+
+        opening: dict[float, int] = {}
+        for group in by_string.values():
+            group.sort(key=lambda n: n.timestamp_ms)
+            last_muted_ms: float | None = None
+            for note in group:
+                if note.dead:
+                    # A dead stroke in the middle of a chug riff does not lift
+                    # the picking hand off the strings, so it does not end the
+                    # run -- treating it as a break re-badged every second note
+                    # of the commonest metal rhythm there is.
+                    continue
+                if not note.palm_mute:
+                    last_muted_ms = None
+                    continue
+                if (last_muted_ms is None
+                        or note.timestamp_ms - last_muted_ms > PALM_MUTE_RUN_GAP_MS):
+                    # Lowest string = highest number, and a chord's strings
+                    # share one timestamp.
+                    opening[note.timestamp_ms] = max(
+                        opening.get(note.timestamp_ms, 0), note.string
+                    )
+                last_muted_ms = note.timestamp_ms
+        return {(ts, string) for ts, string in opening.items()}
 
     @staticmethod
     def bend_label(semitones: float) -> str:
@@ -982,9 +2810,15 @@ class PlayingScreen:
         pygame.draw.lines(surface, line, False, pts, width)
 
     @staticmethod
-    def _badge_y(cy: float, head: float) -> float:
-        """Badge centre: clear of the note's top edge, not on the fret number."""
-        return cy - head / 2 - head * BADGE_RADIUS_HEADS * BADGE_LIFT_HEADS
+    def _badge_y(cy: float, head: float, half_h: float | None = None) -> float:
+        """Badge centre: clear of the note's top edge, not on the fret number.
+
+        The top edge is the head's HEIGHT, which on a dense song is larger
+        than its width -- measuring from the width would park the badge
+        inside the note.
+        """
+        top = half_h if half_h is not None else head / 2
+        return cy - top - head * BADGE_RADIUS_HEADS * BADGE_LIFT_HEADS
 
     def _draw_badge(
         self, surface: pygame.Surface, label: str, cx: float, cy: float,
@@ -1152,15 +2986,27 @@ class PlayingScreen:
             surface, t.lane_bg_even,
             (0, int(layout.lane_top), layout.screen_w, int(board_h)),
         )
-        # The strings themselves, down the middle of each lane, thicker toward
-        # the low E so the lanes are told apart at a glance
-        string_color = lightened(t.lane_line, 0.35)
+        # Fret wires FIRST, so the strings lie over them the way they do on a
+        # guitar. They are the landmarks the eye was missing: without them the
+        # notes float in an empty band and the only way to know where you are
+        # is to read the number, which is the thing that is hard to read.
+        self._draw_frets(surface, layout, board_h)
+
+        # The strings themselves, down the middle of each lane. Thicker AND
+        # warmer toward the low E: one weight and one colour throws away the
+        # strongest cue for which lane is which.
         for i in range(6):
             y = int(layout.lane_top + (i + 0.5) * layout.lane_height)
-            pygame.draw.line(
-                surface, string_color, (0, y), (layout.screen_w, y),
-                STRING_THICKNESS[i],
-            )
+            tint = WOUND_TINT if i >= 6 - WOUND_STRINGS else PLAIN_TINT
+            width = STRING_THICKNESS[i]
+            # A wound string is drawn as a dark core with a lighter highlight
+            # on top, which is what makes it read as round rather than as a
+            # thick line.
+            pygame.draw.line(surface, dimmed(tint, 0.45), (0, y),
+                             (layout.screen_w, y), width)
+            pygame.draw.line(surface, tint, (0, y - max(0, width // 3)),
+                             (layout.screen_w, y - max(0, width // 3)),
+                             max(1, width // 2))
         # Edges of the board, deliberately DARKER than the strings. Drawn in
         # the string colour they read as a seventh and a zeroth string.
         edge_color = dimmed(t.lane_line, 0.45)
@@ -1169,6 +3015,52 @@ class PlayingScreen:
                 surface, edge_color,
                 (0, int(edge_y)), (layout.screen_w, int(edge_y)), 2,
             )
+
+    def _draw_frets(self, surface: pygame.Surface, layout: _Layout,
+                    board_h: float) -> None:
+        """The bar lines, drawn as fret wires across the board.
+
+        A real fretboard's wires do not move; these do, because the board is
+        what scrolls. What they give is the same thing: somewhere for the eye
+        to rest between notes, and a sense of where in the bar you are without
+        reading anything.
+
+        The BAR is what gets a wire. Every beat would be a picket fence behind
+        the notes, and the bar is the unit a player counts in anyway.
+        """
+        measures = self._timeline.measures
+        if not measures:
+            return
+        t = get_theme()
+        view_start = self._playback_ms - LEFT_MARGIN_MS
+        view_end = self._playback_ms + self._visible_window_ms + RIGHT_MARGIN_MS
+        # On a light board the same near-invisible line really is invisible,
+        # so there it is darkened instead of lightened.
+        wire = (BAR_LINE_COLOR if sum(t.lane_bg_even) < 300
+                else dimmed(t.lane_line, 0.75))
+        top, bottom = int(layout.lane_top), int(layout.lane_top + board_h)
+
+        # Thin them out rather than drawing a picket fence. Every second bar,
+        # then every fourth: halving keeps the lines on real bar boundaries,
+        # where a fixed pixel spacing would drift off the beat and stop
+        # meaning anything.
+        step = 1
+        if len(measures) > 1:
+            spacing = ((measures[1].start_ms - measures[0].start_ms)
+                       * layout.pixels_per_ms)
+            while spacing > 0 and spacing * step < MIN_BAR_LINE_GAP_PX:
+                step *= 2
+
+        for index, measure in enumerate(measures):
+            if index % step:
+                continue
+            if measure.start_ms < view_start or measure.start_ms > view_end:
+                continue
+            x = int(self.note_x(measure.start_ms, self._playback_ms,
+                                layout.hit_zone_x, layout.pixels_per_ms))
+            if x < -4 or x > layout.screen_w + 4:
+                continue
+            pygame.draw.line(surface, wire, (x, top), (x, bottom), 1)
 
     def _draw_hit_zone(self, surface: pygame.Surface, layout: _Layout) -> None:
         """The line a note's LEADING edge has to reach, plus the slack around it.
@@ -1189,7 +3081,13 @@ class PlayingScreen:
             band.fill((*t.hit_zone, 28))
             surface.blit(band, (x - int(slack_px), top))
 
-        pygame.draw.line(surface, t.hit_zone, (x, top), (x, bottom), 3)
+        # It stands PROUD of the board, top and bottom. Ending flush with the
+        # edge, the line is one more vertical among the fret wires; running
+        # past it, it reads as the thing the board scrolls through -- and the
+        # overhang is visible even where a long note covers the line itself.
+        pygame.draw.line(surface, t.hit_zone,
+                         (x, top - HIT_LINE_OVERHANG_PX),
+                         (x, bottom + HIT_LINE_OVERHANG_PX), 3)
 
     def _draw_notes(self, surface: pygame.Surface, layout: _Layout) -> None:
         t = get_theme()
@@ -1221,6 +3119,11 @@ class PlayingScreen:
             # scroll, which is the thing this display must never do.
             head = self._head_px if self._head_px is not None else layout.note_h
             radius = head / 2
+            # Half-height, which is the lane's business rather than the
+            # music's. Equal to the radius on a song roomy enough to keep
+            # full-size heads, so those stay round.
+            half_h = (self._head_h_px if self._head_h_px is not None
+                      else layout.note_h) / 2
             visual_gap = head * (SLIDE_GAP_FRACTION if note.slide_to_next
                                  else SUSTAIN_GAP_FRACTION)
 
@@ -1230,7 +3133,32 @@ class PlayingScreen:
             gap_px = (gap_ms * layout.pixels_per_ms
                       if gap_ms is not None else float("inf"))
             body = self.sustain_width(note.duration_ms, layout.pixels_per_ms)
+            if note.let_ring:
+                # "let ring" does not lengthen the written value -- a
+                # let-ring eighth is still an eighth -- it says the string is
+                # never damped, so the note sounds until something else is
+                # played on it. That is exactly the neighbour gap, which is
+                # already the cap for every other note.
+                #
+                # And if nothing ever is, it rings to the END OF THE SONG,
+                # which is a length. The gap is None for the last note on a
+                # string, and taking that as the cap made the body infinite:
+                # every song whose last note on any string is let-ring
+                # crashed the frame on `int(inf)`.
+                body = gap_px if gap_ms is not None else max(
+                    0.0, (self._timeline.duration_ms - note.timestamp_ms)
+                    * layout.pixels_per_ms)
             capsule_w = min(body, gap_px) - visual_gap
+
+            # Muted notes do not ring for the length the tab wrote. A dead
+            # note is a click with no sustain at all, and a palm-muted one is
+            # choked; drawing either at full length promises a ring that never
+            # comes, and reading a chug as a held note is how a muted riff
+            # ends up played wrong.
+            if note.dead:
+                capsule_w = min(capsule_w, 2 * radius)
+            elif note.palm_mute:
+                capsule_w = min(capsule_w, head * PALM_MUTE_MAX_HEADS)
 
             # Skip notes fully off-screen
             if x + max(capsule_w, 2 * radius) < 0 or x > layout.screen_w:
@@ -1240,8 +3168,26 @@ class PlayingScreen:
             cy = layout.lane_top + (note.string - 0.5) * layout.lane_height
 
             # Color: feedback color if matched, dimmed if past the hit zone
-            base_color = STRING_COLORS.get(note.string, (180, 180, 180))
-            past_hit_zone = note.timestamp_ms < self._playback_ms
+            # Grey for an open string: the lane already says which string it
+            # is, so the colour can say the thing the position cannot.
+            base_color = (OPEN_STRING_COLOR if note.fret == 0 and not note.dead
+                          else STRING_COLORS.get(note.string, (180, 180, 180)))
+            # A note is not OVER because the clock passed it. It is over when
+            # the matcher has finished with it -- and the matcher cannot have
+            # finished that soon: the strike is still inside the hit window
+            # and the late window beyond it, and a chord verdict trails its
+            # strike by ~380 ms by design. Dimming on the clock drew the whole
+            # width of the window as "already missed", which is the dark flash
+            # before the green the player reported as distracting. It was not
+            # a glitch; it was the app showing a state it had no business
+            # showing.
+            if self._audio_enabled and self._matcher is not None:
+                past_hit_zone = (self._matcher.get_note_state(note)
+                                 is not MatchType.PENDING)
+            else:
+                # Nothing is coming to decide it, so the clock is the only
+                # answer there is.
+                past_hit_zone = note.timestamp_ms < self._playback_ms
             if self._audio_enabled:
                 color = self._feedback.get_note_color(
                     note, base_color, self._playback_ms, past_hit_zone,
@@ -1249,22 +3195,25 @@ class PlayingScreen:
             else:
                 color = dimmed(base_color) if past_hit_zone else base_color
 
-            # A short note is a circle sitting on its string; a sustained one
-            # stretches into a capsule. Either way the note's LEADING EDGE is
-            # at its own time, so the moment to play is when the start of the
-            # shape reaches the hit line -- not its middle, which put the cue
-            # half a note late.
-            if capsule_w > 2 * radius:
-                rect = pygame.Rect(
-                    int(x), int(cy - radius), int(capsule_w), int(2 * radius),
-                )
-                pygame.draw.rect(surface, color, rect, border_radius=int(radius))
-                pygame.draw.rect(surface, t.note_border, rect, width=2,
-                                 border_radius=int(radius))
-            else:
-                centre = (int(x + radius), int(cy))
-                pygame.draw.circle(surface, color, centre, int(radius))
-                pygame.draw.circle(surface, t.note_border, centre, int(radius), 2)
+            # One shape for every note: a rounded rectangle, as round as its
+            # HEIGHT allows. A short note is then a circle and a sustained
+            # one a capsule, and the curvature is identical -- which is the
+            # point. The note's LEADING EDGE is at its own time, so the
+            # moment to play is when the start of the shape reaches the hit
+            # line, not its middle, which put the cue half a note late.
+            #
+            # The corner used to be `min(radius, half_h)` -- half the head's
+            # WIDTH. Since the head is squeezed sideways to buy look-ahead
+            # while keeping the lane's height, that made every wide note less
+            # rounded than the short ones beside it, and a long note read as
+            # a box. The curvature is the height's business and nothing
+            # else's; pygame clamps it to half the shorter side by itself, so
+            # a head narrower than it is tall stays a capsule rather than
+            # growing corners.
+            draw_w = max(1, int(max(capsule_w, 2 * radius)))
+            draw_h = max(1, int(2 * half_h))
+            surface.blit(_head_surface(draw_w, draw_h, color, t.note_border),
+                         (int(x), int(cy - half_h)))
 
             # Technique marks go OVER the head. They live inside the note now
             # rather than arcing out of the lane, so drawing them underneath
@@ -1289,10 +3238,26 @@ class PlayingScreen:
                 self._draw_bend(surface, note, x, cy, head, capsule_w,
                                 base_color, past_hit_zone)
 
+            # "PM" over the note that opens a muted run, unless that note is
+            # already wearing a technique badge -- two discs in one place read
+            # as neither, and which pitch the note does is the more urgent of
+            # the two.
+            has_technique_badge = bool(
+                note.bend or note.slide_to_next or note.slide_in or note.slide_out
+            )
+            if ((note.timestamp_ms, note.string) in self._palm_mute_starts
+                    and not has_technique_badge):
+                self._draw_badge(surface, "PM", x + head,
+                                 self._badge_y(cy, head, half_h), head,
+                                 base_color, past_hit_zone)
+
             # Fret number centred in the head, sized to the head it sits in —
-            # a fixed size spills out of the shrunken heads of a fast run
-            fret_font = self._fret_font(radius)
-            fret_label = str(note.fret)
+            # a fixed size spills out of the shrunken heads of a fast run.
+            # A dead note shows the X the tab shows: its fret says where the
+            # hand goes, not which note comes out, and printing the digit
+            # invites the player to actually fret it.
+            fret_font = self._fret_font(radius, half_h, self._fret_digits)
+            fret_label = "X" if note.dead else str(note.fret)
             fret_text = fret_font.render(fret_label, True, t.note_text)
             if fret_text.get_width() <= 2 * radius:
                 tx = int(x + radius) - fret_text.get_width() // 2
@@ -1304,6 +3269,7 @@ class PlayingScreen:
 
     # Sizes the footer will try, largest first. A shortcut nobody can read
     # because the line ran off the window is a shortcut nobody has.
+    FRAME_SAMPLES = 3600          # a minute of frames at 60 Hz
     FOOTER_FONT_SIZES = (14, 13, 12, 11, 10)
 
     def _footer_lines(self) -> tuple[str, str]:
@@ -1333,42 +3299,95 @@ class PlayingScreen:
             backing_state = "—"
         else:
             backing_state = "off" if self._backing_muted else "ON"
+        if self._guide_player is None:
+            guide_state = "—"
+        else:
+            guide_state = "off" if self._guide_muted else "ON"
         if not self._wait_mode:
             wait_state = "off" if self._audio_enabled else "—"
         else:
             wait_state = "WAIT" if self._wait_mode_frozen else "ON"
 
         transport = (
-            f"{state}  |  SPACE: play/pause  |  LEFT/RIGHT: seek  "
+            f"{state}  |  SPACE: play/pause  "
+            f"|  LEFT/RIGHT: beat (Shift: bar, Ctrl: 30s)  "
             f"|  HOME: restart  |  PgDn/PgUp: tempo  |  A: audio {audio_state}  "
-            f"|  B: backing {backing_state}  |  W: wait {wait_state}  "
+            f"|  B: backing {backing_state}  |  Shift+B: my part {guide_state}  "
+            f"|  W: wait {wait_state}  "
             f"|  I/O: loop {loop_state}  |  P: toggle  |  ESC: menu"
         )
         tools = (
-            "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
+            "+/-: note spacing  |  G: hit window  |  K: sync (Shift+K: reset)  "
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
-            "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
+            "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
+            "|  R: play in another tuning (Shift+R: back)  "
+            "|  Shift+C: chord view  "
+            "|  Ctrl+S: sync to the recording automatically  "
+            "|  Shift+S: sync point here (Ctrl+Shift+S: clear)  "
+            "|  Shift+A: reopen audio output (if the sound goes bad)  "
+            "|  Shift+T: tab page view  "
+            "|  E: skip a rest  |  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
-            "|  Y: timing report  |  H: help"
+            "|  Y: timing report  |  D: run log  |  H: help"
         )
         return transport, tools
+
+    @staticmethod
+    def _fit_line(font, text: str, width: int, colour) -> pygame.Surface:
+        """Render a line, shrinking the middle away until it fits.
+
+        Seventeen sync points do not fit across a window, and a line drawn
+        wider than the screen is centred so BOTH ends are cut -- the first
+        point and the last, which are the two that matter most.
+        """
+        surface = font.render(text, True, colour)
+        if surface.get_width() <= width or len(text) < 8:
+            return surface
+        keep = len(text)
+        while keep > 8:
+            keep -= max(1, keep // 20)
+            half = keep // 2
+            shortened = text[:half] + " … " + text[-(keep - half):]
+            surface = font.render(shortened, True, colour)
+            if surface.get_width() <= width:
+                break
+        return surface
 
     def _blit_footer_lines(
         self, surface: pygame.Surface, layout: _Layout,
         lines: tuple[str, ...], color: tuple[int, int, int],
-    ) -> None:
-        """Centre the footer lines, shrinking until the widest one fits."""
+    ) -> int:
+        """Centre the footer lines, shrinking and WRAPPING until they fit.
+
+        Shrinking alone was not enough: twenty-three keyboard shortcuts are
+        2986 px of text and the player's window is 1911, so the smallest font
+        still overflowed by a thousand pixels -- and a line drawn wider than
+        the screen is centred, which cuts BOTH ends. Measured on the player's
+        own screenshot: the first entry and the last were simply not there,
+        and a shortcut nobody can see is a shortcut nobody presses.
+
+        Wrapped at the separators the entries already have, so a key is never
+        broken across two lines.
+
+        Returns the y the block STARTS at, because whatever is stacked above
+        it has to know where it ends -- the sync panel used to be placed at a
+        fixed height and ran straight into these lines.
+        """
         w = layout.screen_w
         for size in self.FOOTER_FONT_SIZES:
             font = _get_font("arial", size)
-            rendered = [font.render(line, True, color) for line in lines]
+            wrapped = [part for line in lines
+                       for part in _wrap_on_bars(line, font, w - 16)]
+            rendered = [font.render(part, True, color) for part in wrapped]
             if max(s.get_width() for s in rendered) <= w - 16:
                 break
         line_h = rendered[0].get_height() + 2
-        y = layout.screen_h - 4 - line_h * len(rendered)
+        top = layout.screen_h - 4 - line_h * len(rendered)
+        y = top
         for surf in rendered:
             surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
             y += line_h
+        return top
 
     def _draw_hud(self, surface: pygame.Surface, layout: _Layout) -> None:
         t = get_theme()
@@ -1403,7 +3422,7 @@ class PlayingScreen:
         if meta.artist:
             title = f"{meta.artist} — {title}"
         title_surf = title_font.render(title, True, t.hud_text)
-        surface.blit(title_surf, (12, 12))
+        surface.blit(title_surf, (self._hud_left_x(), 12))
 
         # Top-center: BPM with tempo percentage (and streak below it)
         pct = int(self._tempo_factor * 100)
@@ -1423,65 +3442,154 @@ class PlayingScreen:
         if self._audio_enabled:
             self._feedback.draw_streak(surface, title_font, w // 2, loop_y)
 
-        # Top-right: time
+        # Top-right column. Every line is stacked on the measured height of
+        # the one above it. Fixed pixel offsets put the noise gate on top of
+        # the hit count, because the block above draws two lines and the
+        # spacing had been counted for one.
         current = format_time(self._playback_ms)
         total = format_time(self._timeline.duration_ms)
         time_text = f"{current} / {total}"
         time_surf = time_font.render(time_text, True, t.hud_text)
         surface.blit(time_surf, (w - time_surf.get_width() - 12, 12))
+        right_y = 12 + time_surf.get_height() + 2
 
-        # Top-right second line: accuracy stats
-        stats_bottom_y = 36
         if self._audio_enabled and self._matcher is not None:
             stats = self._matcher.get_statistics()
             if stats["total"] > 0:
-                self._feedback.draw_stats(surface, stats, hint_font, w - 12, 36)
-                stats_bottom_y = 54
+                right_y = self._feedback.draw_stats(
+                    surface, stats, hint_font, w - 12, right_y)
 
-        # Top-right: noise gate + signal meter + tuner (below stats, when audio capture exists)
+        line_h = hint_font.get_height() + 4
         if self._audio_enabled:
-            gate_text = f"Gate: {int(self._noise_gate_db)} dB"
-            gate_surf = hint_font.render(gate_text, True, t.hud_accent)
-            surface.blit(gate_surf, (w - gate_surf.get_width() - 12, stats_bottom_y))
+            gate_surf = hint_font.render(
+                f"Gate: {int(self._noise_gate_db)} dB"
+                + (" (auto)" if self._auto_gate else " (X/C)"),
+                True, t.hud_accent)
+            surface.blit(gate_surf, (w - gate_surf.get_width() - 12, right_y))
+            right_y += line_h
             if self._audio_capture is not None:
-                self._draw_signal_meter(surface, hint_font, w, stats_bottom_y + 18)
-                self._draw_tuner(surface, hint_font, w, stats_bottom_y + 36)
+                self._draw_signal_meter(surface, hint_font, w, right_y)
+                right_y += line_h
+                self._draw_tuner(surface, hint_font, w, right_y)
+                right_y += line_h
         elif self._audio_capture is not None:
             # Audio off but capture exists — still show meter and tuner
-            self._draw_signal_meter(surface, hint_font, w, stats_bottom_y)
-            self._draw_tuner(surface, hint_font, w, stats_bottom_y + 18)
+            self._draw_signal_meter(surface, hint_font, w, right_y)
+            right_y += line_h
+            self._draw_tuner(surface, hint_font, w, right_y)
+            right_y += line_h
 
-        # Bottom-center: play state + controls
-        self._blit_footer_lines(surface, layout, self._footer_lines(), t.hud_text)
+        # What to do about the level, when there is something to do. Silent
+        # otherwise: a permanent "everything is fine" is a line nobody reads,
+        # and the one time it changes nobody notices either.
+        if self._audio_capture is not None:
+            advice = self._level_advice()
+            if advice:
+                advice_surf = hint_font.render(advice, True, t.feedback_close)
+                surface.blit(advice_surf,
+                             (w - advice_surf.get_width() - 12, right_y))
+
+        # Bottom-centre: play state + controls. Drawn FIRST, because it is
+        # what everything else at the bottom has to stack on top of -- the
+        # sync panel used to start at a fixed height and grow DOWNWARD into
+        # these lines, which is exactly what the player saw overlapping.
+        footer_top = self._blit_footer_lines(
+            surface, layout, self._footer_lines(), t.hud_text)
+
+        # Where the recording sync has got to. NOT a note that expires: the
+        # player spends a minute seeking from the first point to the second,
+        # and a message that is gone by then leaves them guessing which press
+        # the next Shift+S will be -- which is what they reported.
+        #
+        # A progress line while the listening runs. Seconds of work with
+        # nothing moving is indistinguishable from a dead key, which is a
+        # fault this project has now shipped four times.
+        lines = ([self._auto_sync_line()] if self._auto_sync_line()
+                 else self._sync_lines)
+        note_y = footer_top - 6 - 18 * len(lines)
+        for line in lines:
+            line_surf = self._fit_line(hint_font, line, w - 16, t.hud_accent)
+            surface.blit(line_surf,
+                         (w // 2 - line_surf.get_width() // 2, note_y))
+            note_y += 18
+        note_y = footer_top - 6 - 18 * len(lines) - 18
+
+        # What just happened, over the footer, while it is still news.
+        note = self._status_note_text()
+        if note:
+            note_surf = hint_font.render(note, True, t.hud_accent)
+            surface.blit(note_surf,
+                         (w // 2 - note_surf.get_width() // 2, note_y))
+        if self._mp3_dialog_due:
+            # Drawn this frame, so the next update may block on the chooser.
+            self._mp3_dialog_armed = True
 
         # Top-left second line: track name + filter info
+        #
+        # The whole left column starts wherever the chord cards end, because
+        # both want the top left corner and the text is the one that can
+        # move. Drawn over each other they are both unreadable, which is what
+        # the player's screenshot showed.
+        left = self._hud_left_x()
         info_y = 38
         if meta.track_name:
             track_surf = hint_font.render(
                 f"Track: {meta.track_name}", True, t.hud_text
             )
-            surface.blit(track_surf, (12, info_y))
+            surface.blit(track_surf, (left, info_y))
             info_y += 16
 
         # Difficulty filter HUD
         filter_text = self._filter_hud_text()
         if filter_text:
             filter_surf = hint_font.render(filter_text, True, t.hud_accent)
-            surface.blit(filter_surf, (12, info_y))
+            surface.blit(filter_surf, (left, info_y))
             info_y += 16
 
         # Chord mode HUD
         if self._chord_partial_credit != self._config._default_chord_partial_credit:
             chord_text = "Chords: strict" if self._chord_partial_credit else "Chords: easy"
             chord_surf = hint_font.render(chord_text, True, t.hud_accent)
-            surface.blit(chord_surf, (12, info_y))
+            surface.blit(chord_surf, (left, info_y))
             info_y += 16
+
+        # Tuning HUD — always shown, because a tab in Drop C played on a
+        # standard-tuned guitar is wrong on every single note, and nothing
+        # else on screen says so: the notes scroll by looking perfectly
+        # ordinary while every one of them scores red. Highlighted when it
+        # differs from standard, since that is the case that needs an action
+        # from the player (and, after retuning, a fresh calibration).
+        tuning = meta.tuning
+        standard = is_standard_tuning(tuning)
+        notes = tuning_notes(tuning)
+        if notes:
+            name = tuning_name(tuning)
+            label = f"Tuning: {name or 'custom'} — {' '.join(notes)}"
+            if self._transpose:
+                # What the tab says and what you are playing are two
+                # different tunings now, and the line has to name both --
+                # otherwise the fret numbers on screen belong to a song
+                # nobody can find.
+                written = tuning_name(self.written_tuning())
+                label += (f"   (written {written or 'custom'}, "
+                          f"{self._transpose:+d} — R)")
+            elif not standard:
+                label += "   ← retune"
+            tune_surf = hint_font.render(
+                label, True, t.hud_text if standard else t.feedback_close)
+            surface.blit(tune_surf, (left, info_y))
+            info_y += 16
+            step_label = self.tuning_step_label()
+            if step_label:
+                step_surf = hint_font.render(step_label, True, t.hud_text)
+                surface.blit(step_surf, (left, info_y))
+                info_y += 16
 
         # Hit-window HUD — always shown, since it decides what counts as a hit
         window_surf = hint_font.render(
             f"Hit window: +/-{int(self._config.timing_window_ms)} ms (G)",
             True, t.hud_text)
-        surface.blit(window_surf, (12, info_y))
+        surface.blit(window_surf, (left, info_y))
         info_y += 16
 
         # Backing offset HUD — only when shifted, but then always visible,
@@ -1491,7 +3599,17 @@ class PlayingScreen:
         if abs(backing_off) > 0.5:
             back_surf = hint_font.render(
                 f"Backing: {int(backing_off):+d} ms (N/M)", True, t.hud_accent)
-            surface.blit(back_surf, (12, info_y))
+            surface.blit(back_surf, (left, info_y))
+            info_y += 16
+
+        # Recorded backing HUD. Its own line, because it is a second thing
+        # that can be off: a recording lined up against the click is what the
+        # player is listening for while both are sounding, and a silent one
+        # has to say WHY it is silent or it reads as broken.
+        mp3_text = self._mp3_hud_text()
+        if mp3_text:
+            mp3_surf = hint_font.render(mp3_text, True, t.hud_accent)
+            surface.blit(mp3_surf, (left, info_y))
             info_y += 16
 
         # Scroll speed HUD — shows the seconds of song on screen, not just the
@@ -1499,17 +3617,48 @@ class PlayingScreen:
         # shrink, and a factor that changes nothing visible is a puzzle
         ahead = self._visible_window_ms / 1000.0
         trimmed = abs(self._scroll_factor() - 1.0) > 0.01
+        # Which way each key goes, because the two things this knob trades are
+        # opposites and nothing said so: - buys look-ahead by pushing the notes
+        # closer together, + spreads them out again by showing less of the
+        # song. A player who wants the notes further apart and presses - gets
+        # the opposite of what they asked for, and there is no way to find
+        # that out except by pressing.
         speed_surf = hint_font.render(
-            f"Scroll: {ahead:.1f} s ahead ({self._scroll_factor():.1f}x, +/-)",
+            f"Scroll: {ahead:.1f} s ahead, notes {self._head_px:.0f} px "
+            f"({self._scroll_factor():.1f}x — +: further apart, "
+            f"-: more look-ahead)",
             True, t.hud_accent if trimmed else t.hud_text)
-        surface.blit(speed_surf, (12, info_y))
+        surface.blit(speed_surf, (left, info_y))
         info_y += 16
+
+        # Sitting in a hole with nothing to play looks exactly like a picture
+        # that has stopped, and the key that jumps over it is one nobody finds
+        # by pressing things. Silent whenever there IS something to play, so
+        # it costs no screen space on a track without rests.
+        rest_text = self._rest_hud_text()
+        if rest_text:
+            rest_surf = hint_font.render(rest_text, True, t.hud_accent)
+            surface.blit(rest_surf, (left, info_y))
+            info_y += 16
+
+        # Dropped audio HUD — silent while there is nothing to report, loud
+        # when there is. A machine that loses buffers loses notes at random,
+        # which looks exactly like bad detection or bad playing and is neither;
+        # without a number on screen there is no way to tell the three apart.
+        if (self._audio_enabled and self._audio_capture is not None
+                and getattr(self._audio_capture, "dropped_buffers", 0)):
+            drops = self._audio_capture.dropped_buffers
+            drop_surf = hint_font.render(
+                f"Audio dropouts: {drops}  — close other programs",
+                True, t.feedback_miss)
+            surface.blit(drop_surf, (left, info_y))
+            info_y += 16
 
         # Per-string chord check HUD — only when switched off, so the default
         # costs no screen space but a disabled check is never a silent surprise
         if not getattr(self._config, "chord_verify", True):
             verify_surf = hint_font.render("Strings: off (J)", True, t.hud_accent)
-            surface.blit(verify_surf, (12, info_y))
+            surface.blit(verify_surf, (left, info_y))
             info_y += 16
 
         # Latency sync HUD — show measured timing error once enough strikes
@@ -1524,27 +3673,204 @@ class PlayingScreen:
                 # the strikes disagree with each other and no offset can help
                 spread = self._matcher.timing_spread_ms()
                 spread_text = f"  ±{int(spread):d} ms" if spread is not None else ""
-                verdict = ""
-                if spread is not None:
-                    samples = len(self._matcher.timing_errors_ms)
-                    if spread > AUTO_SYNC_HOPELESS_SPREAD_MS:
-                        verdict = "— too scattered to sync"
-                    elif (spread > AUTO_SYNC_WIDE_SPREAD_MS
-                            and samples < AUTO_SYNC_WIDE_MIN_SAMPLES):
-                        verdict = f"— play on ({samples}/{AUTO_SYNC_WIDE_MIN_SAMPLES}) then K"
-                    else:
-                        verdict = "— K to auto-sync"
+                verdict = self._sync_advice()
                 sync_text = (f"Sync: {int(offset):+d} ms  |  strikes {int(abs(err)):d} ms "
                              f"{direction}{spread_text} {verdict}")
                 sync_color = t.hud_accent if abs(err) > 20 else t.hud_text
-            elif offset != 0:
-                sync_text = f"Sync: {int(offset):+d} ms"
-                sync_color = t.hud_text
             else:
-                sync_text = None
+                # Shown even at zero with nothing measured yet. It used to
+                # vanish in exactly that state, which is the state Shift+K
+                # produces -- so the one key whose whole job is to put the
+                # offset back to zero looked like it had done nothing at all.
+                sync_text = f"Sync: {int(offset):+d} ms  {self._sync_advice()}"
+                sync_color = t.hud_text
             if sync_text:
                 sync_surf = hint_font.render(sync_text, True, sync_color)
-                surface.blit(sync_surf, (12, info_y))
+                surface.blit(sync_surf, (left, info_y))
+
+    def _playing_median_db(self) -> float | None:
+        """The level while the guitar is sounding, or None with too little.
+
+        The same reading the run log prints: the median of the hops within
+        30 dB of the loudest, which is what separates the playing from the
+        gaps between notes. Compared against the ROOM, it says whether the
+        input can hear the instrument at all.
+        """
+        if len(self._level_samples) < ROOM_SAMPLES:
+            return None
+        loudest = max(self._level_samples)
+        playing = [db for db in self._level_samples if db > loudest - 30.0]
+        return statistics.median(playing) if playing else None
+
+    def _level_advice(self) -> str:
+        """What to do about the input level, or "" when nothing needs doing.
+
+        "Gate: -65 dB" is a number, not an instruction. A player whose signal
+        is too weak sees notes come back as the wrong note and has no way to
+        know it is the level rather than their playing -- and the level is
+        measurable, so it should not be guesswork.
+
+        Judged on what has been HEARD over the last few seconds, not on the
+        instant level: a guitar note decays, and a single quiet frame between
+        strikes says nothing about the input.
+        """
+        # A song that is not running has nothing to measure. Saying anything
+        # from a peak that has been decaying since the last note is worse than
+        # saying nothing -- it sends the player after a fault that is not
+        # there, which is exactly what it did on the completion screen.
+        if not self._playing:
+            return ""
+        peak = self._signal_peak_db
+        floor = self._signal_floor_db
+        gate = self._noise_gate_db
+        if peak <= SIGNAL_UNKNOWN_DB:
+            return ""
+        if peak >= CLIPPING_DB:
+            return "Too loud — turn the interface down (it distorts the pitch)"
+        if peak < QUIET_PEAK_DB:
+            # The detector's own limit, not the gate's. Below this the strikes
+            # keep coming and their pitch goes wrong, which reads as bad
+            # playing and is not.
+            return ("Input too quiet for reliable pitch — turn the interface "
+                    "up (notes will come back as the wrong note)")
+        # A room louder than any gate may exclude is not a level problem and
+        # no key on this screen can fix it -- it is the wrong input. Measured
+        # on the run that produced this rule: the internal microphone array of
+        # a laptop, picked up as Windows' default recording device, read a
+        # room of -37.3 dB against a playing median of -37.2 -- a tenth of a
+        # decibel apart, the input sounding the same whether the guitar was
+        # played or not, and 24 of its 25 strikes carrying no pitch at all.
+        # The two rules above were both silent: the peak was -9.2 dB, neither
+        # clipping nor quiet.
+        #
+        # The quantity is the DISTANCE between the room and the playing, and
+        # the first version of this rule used the gate ceiling as a proxy for
+        # it -- which convicted the player's Focusrite on the very next run:
+        # room -50.4 dB against a playing median of -29.6, a healthy 21 dB
+        # apart, told to check the device. A room merely above the gate
+        # ceiling is a loud room, and a loud room with a real instrument in
+        # front of the microphone is not this fault.
+        #
+        # Measured: the laptop microphone array read -37.3 room against -37.2
+        # playing -- 0.1 dB. The Focusrite reads 20.8 dB. QUIET_MARGIN_DB is
+        # the same 12 dB the gate band already uses for "clear of the room",
+        # and it separates the two by eight decibels either way.
+        room = self.room_db()
+        playing = self._playing_median_db()
+        if (room is not None and playing is not None
+                and playing - room < QUIET_MARGIN_DB):
+            return ("Input is hearing the room, not the guitar — wrong "
+                    "device? Pick your interface with D in the song list")
+        if self._auto_gate:
+            # The gate is not the player's job any more. What is left here is
+            # the interface's gain, which no gate can fix and only a hand on
+            # the knob can -- the two cases above.
+            return ""
+        # One direction at a time, and only ever toward the band. X fires
+        # while the gate is above it and C only while a real band exists to
+        # raise the gate INTO, so following the advice always terminates --
+        # the property the test asserts, because the wording is not the thing
+        # that was broken.
+        lowest, highest = gate_band(peak, floor)
+        target = suggested_gate_db(peak, floor)
+        if gate > highest:
+            return (f"Gate {gate:.0f} dB is eating your notes — "
+                    f"press X down to {target:.0f} dB")
+        if lowest <= highest and gate < lowest:
+            return (f"Background noise reaches the gate — "
+                    f"press C up to {target:.0f} dB")
+        return ""
+
+    def _track_levels(self, db: float) -> None:
+        """Keep the loudest and quietest recent level, for _level_advice.
+
+        Decays back toward the present so a single loud accident does not
+        silence the advice for the rest of the song. Only while the song is
+        running: silence between takes is not a reading.
+        """
+        if db <= SIGNAL_UNKNOWN_DB:
+            return
+        if not self._playing or self._playback_ms < 0:
+            # Not a reading of the playing -- a reading of the room, which is
+            # what the gate has to clear and what nothing else can measure.
+            # The count-in counts as room: the song is not running and the
+            # player is not meant to be playing yet, which makes it the
+            # longest clean window a run ever offers.
+            self._room_samples.append(db)
+            return
+        self._signal_peak_db = max(db, self._signal_peak_db - LEVEL_DECAY_DB)
+        self._signal_floor_db = min(db, self._signal_floor_db + LEVEL_DECAY_DB)
+        self._loudest_db = max(self._loudest_db, db)
+        self._auto_gate_while_playing()
+        # Kept for the run log, which is where a level problem is proved
+        # rather than suspected. Bounded so a long session cannot grow it
+        # without limit.
+        if len(self._level_samples) < 40_000:
+            self._level_samples.append(db)
+
+    def room_db(self) -> float | None:
+        """What the room measures, or None while too little has been heard."""
+        if len(self._room_samples) < ROOM_SAMPLES:
+            return None
+        return statistics.median(self._room_samples)
+
+    def _take_gate_by_hand(self) -> None:
+        """Touching X or C switches the automatic off, and says so.
+
+        Otherwise the next song would silently undo the adjustment that was
+        just made by hand, and a setting that will not stay set is worse than
+        one that was never offered. It goes back on from the settings screen.
+        """
+        if not self._auto_gate:
+            return
+        self._auto_gate = False
+        self._config.audio.auto_gate = False
+        self._config.save()
+        self._say("Gate von Hand — Automatik aus (O zum Zurueckschalten)")
+
+    def _auto_gate_from_room(self) -> None:
+        """Set the gate from the room, when a song starts.
+
+        Derived every time rather than accumulated: a gate that only ever
+        walks in one direction ends up wherever the last session left it, and
+        the value that suits this interface at this gain is not something the
+        player can judge by ear. Nothing is lost by putting it low -- swept
+        over four real play-along takes, every gate from -80 dB up to the
+        knee reads exactly the same number of notes, and a fully processed hop
+        costs 2 % of its 11.6 ms, so there is no work to be saved either.
+        """
+        if not self._auto_gate:
+            return
+        room = self.room_db()
+        if room is None:
+            return
+        wanted = min(room + NOISE_MARGIN_DB, MAX_GATE_DB)
+        if round(wanted) != round(self._noise_gate_db):
+            self.set_noise_gate_db(wanted)
+
+    def _auto_gate_while_playing(self) -> None:
+        """Lower a gate that is sitting inside the playing. Never raise one.
+
+        The safety net for a room measured while the player happened to be
+        noodling, or a gain turned down mid-session. It is one-sided because
+        the two mistakes are not equals: a gate under the room costs spurious
+        onsets, which the confidence filter and the candidate search already
+        throw away, while a gate over the playing costs the strikes
+        themselves, and a strike that never arrives cannot be recovered by
+        anything downstream.
+
+        `_loudest_db` only rises, so the level it demands only rises with it:
+        once satisfied this can never fire again, and it cannot oscillate the
+        way the ADVICE it replaces did.
+        """
+        if not self._auto_gate or self._loudest_db < QUIET_PEAK_DB:
+            # Too quiet to judge a gate against -- that is the interface's
+            # gain, which _level_advice names and no gate can fix.
+            return
+        highest = min(self._loudest_db - QUIET_MARGIN_DB, MAX_GATE_DB)
+        if self._noise_gate_db > highest:
+            self.set_noise_gate_db(highest)
+            self._say(f"Gate automatisch auf {self._noise_gate_db:.0f} dB gesenkt")
 
     def _draw_signal_meter(self, surface: pygame.Surface, font: pygame.font.Font,
                            screen_w: int, y: int) -> None:
@@ -1665,7 +3991,13 @@ class PlayingScreen:
                          (center_x, bar_y - 2), (center_x, bar_y + bar_h + 2), 1)
 
     def _draw_completion_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:
-        """Draw the song completion results overlay."""
+        """Draw the song completion results overlay.
+
+        Unconditional on purpose -- every caller decides whether the song is
+        over. Forgetting that check is what made the page view show nothing
+        but the score, so the callers are the thing to look at when this
+        appears somewhere it should not.
+        """
         t = get_theme()
         w, h = layout.screen_w, layout.screen_h
 
@@ -1678,11 +4010,18 @@ class PlayingScreen:
         stat_font = _get_font("consolas", 28)
         hint_font = _get_font("arial", 18)
 
-        center_y = h // 2 - 80
+        # Every line is STACKED on the measured height of the one above it,
+        # never placed at an offset of its own. Fixed offsets are how "New
+        # Best!" at +132 in the big font came to be drawn through the weakest
+        # section at +140 in the small one -- the two were laid out on the
+        # assumption that the other was absent. Same rule as the footer and
+        # the sync panel: the block grows, it does not collide.
+        lines: list[tuple[pygame.Surface, int]] = []
 
-        # "Song Complete!" header
-        header_surf = header_font.render("Song Complete!", True, t.hud_accent)
-        surface.blit(header_surf, (w // 2 - header_surf.get_width() // 2, center_y))
+        def say(surface_line, gap: int = 4) -> None:
+            lines.append((surface_line, gap))
+
+        say(header_font.render("Song Complete!", True, t.hud_accent), 14)
 
         if self._audio_enabled and self._matcher is not None:
             # Accuracy stats
@@ -1691,15 +4030,25 @@ class PlayingScreen:
                 f"Accuracy: {stats['accuracy_percent']:.1f}%  "
                 f"({stats['hits']}/{stats['total']})"
             )
-            acc_surf = stat_font.render(accuracy_text, True, t.hud_text)
-            surface.blit(acc_surf, (w // 2 - acc_surf.get_width() // 2, center_y + 60))
+            say(stat_font.render(accuracy_text, True, t.hud_text), 10)
 
-            # "New Best!" indicator
+            # How many strikes were HEARD at all, next to how many scored.
+            # Without it a low percentage says only that something is wrong;
+            # with it, it says which thing. Far fewer strikes than notes is
+            # the microphone path; as many strikes as notes and a low score
+            # is the matching, and they are fixed in different places.
+            say(hint_font.render(self._heard_line(), True, t.hud_text))
+
+            # And what the SCORE rests on. One strike credits a whole chord,
+            # so a number that mixes "heard" with "credited to the strum"
+            # cannot answer "was I really that good".
+            credit = self._credit_line()
+            if credit:
+                say(hint_font.render(credit, True, t.hud_text))
+
             if self._is_new_best:
-                best_surf = stat_font.render("New Best!", True, (255, 220, 50))
-                surface.blit(best_surf, (w // 2 - best_surf.get_width() // 2, center_y + 100))
+                say(stat_font.render("New Best!", True, (255, 220, 50)), 10)
 
-            # Weakest sections
             weak = getattr(self, "_weakest_sections", [])
             if weak:
                 section = weak[0]
@@ -1707,26 +4056,71 @@ class PlayingScreen:
                     f"Weakest: bars {section[0]+1}-{section[1]+1} "
                     f"({section[2]:.0f}%) -- press L to loop"
                 )
-                weak_surf = hint_font.render(weak_text, True, t.feedback_close)
-                surface.blit(weak_surf, (w // 2 - weak_surf.get_width() // 2, center_y + 140))
+                say(hint_font.render(weak_text, True, t.feedback_close), 10)
 
-            # Practice recommendations
-            rec_y = center_y + 170
             for rec in self._recommendations:
-                rec_surf = hint_font.render(rec, True, t.hud_accent)
-                surface.blit(rec_surf, (w // 2 - rec_surf.get_width() // 2, rec_y))
-                rec_y += 24
+                say(hint_font.render(rec, True, t.hud_accent), 6)
 
-            # Controls hint
-            hint_y = max(center_y + 180, rec_y + 10)
-            hint_text = "SPACE to replay  |  L to loop weak section  |  ESC to menu"
-            hint_surf = hint_font.render(hint_text, True, t.hud_text)
-            surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, hint_y))
+            say(hint_font.render(
+                "SPACE to replay  |  L to loop weak section  |  ESC to menu",
+                True, t.hud_text), 8)
+
+            # Where the run log went. A file written silently is a file
+            # nobody sends, and this one is the whole point of writing it.
+            if self._run_log_note:
+                say(hint_font.render(self._run_log_note, True, t.hud_text))
         else:
-            # Auto-scroll completion — no stats
-            hint_text = "SPACE to replay  |  ESC to menu"
-            hint_surf = hint_font.render(hint_text, True, t.hud_text)
-            surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, center_y + 70))
+            say(hint_font.render("SPACE to replay  |  ESC to menu",
+                                 True, t.hud_text), 14)
+
+        # Centred on the screen as a BLOCK, so a run with recommendations and
+        # one without are both readable rather than one of them hanging off
+        # the bottom edge.
+        total = sum(line.get_height() + gap for line, gap in lines)
+        y = max(12, (h - total) // 2)
+        for line, gap in lines:
+            surface.blit(line, (w // 2 - line.get_width() // 2, y))
+            y += line.get_height() + gap
+
+    def _heard_line(self) -> str:
+        """What the ear did, said apart from what the scoring did."""
+        if self._matcher is None:
+            return ""
+        trace = self._matcher.strike_trace
+        strikes = [t for t in trace if t.outcome != "string_taken_back"]
+        credited = sum(1 for t in strikes
+                       if t.outcome in ("hit", "close", "dead", "chord"))
+        taken_back = self._matcher.chord_strings_corrected
+        line = (f"{len(strikes)} strikes heard, {credited} of them landed on "
+                f"a written note")
+        if taken_back:
+            line += f"; {taken_back} strings taken back by the string check"
+        return line
+
+    def _credit_line(self) -> str:
+        """What the score rests on, said apart from the score itself.
+
+        A six-string chord is credited from ONE strike: the strum is heard,
+        the fretting of the other five is not. The chord verifier is what
+        polices that, and it can only convict a string whose partials are not
+        masked by a lower one -- which in an open chord is most of them. So a
+        percentage that mixes the two cannot answer "was I really that good",
+        and a player who feels the score is too kind is reading something
+        real. This says how much of it was actually heard.
+        """
+        if self._matcher is None:
+            return ""
+        proved = self._matcher.notes_proved
+        strum = self._matcher.notes_by_strum
+        if proved + strum == 0:
+            return ""
+        line = f"{proved} of them were heard as themselves"
+        if strum:
+            line += f", {strum} credited to a strum that was heard"
+        rescued = self._matcher.rescued_notes
+        if rescued:
+            line += f" ({rescued} confirmed from the audio)"
+        return line
 
     # -- Timing report (Y) --
 
@@ -1951,6 +4345,379 @@ class PlayingScreen:
             return
         self._timing_export_note = f"Saved {len(self._matcher.timing_samples)} measurements to {path}"
 
+    def record_frame_ms(self, ms: float) -> None:
+        """One frame's work, for the run log.
+
+        "Slow and stuttering" is a feeling, and a feeling cannot say whether
+        the display is behind, the machine is throttling, or the audio thread
+        is stalling -- the same problem the score had before the log named
+        strikes and notes separately. So the frames are counted here and the
+        header reports the median and the worst tenth.
+
+        Only while the song is running: a frame spent on the settings screen
+        or a paused picture says nothing about whether the app can keep up.
+        """
+        if not self._playing:
+            return
+        self._frame_ms.append(ms)
+        if len(self._frame_ms) > self.FRAME_SAMPLES:
+            del self._frame_ms[:len(self._frame_ms) - self.FRAME_SAMPLES]
+
+    def _frame_line(self, fh) -> None:
+        """Median and worst-tenth frame, and how many frames were late.
+
+        60 FPS is a 16.7 ms budget. A median well under it with a fat tail is
+        something arriving in bursts; a median over it is the drawing itself,
+        and those are fixed in different places.
+        """
+        frames = sorted(self._frame_ms)
+        if not frames:
+            fh.write("frame_ms\t(nothing measured)\n")
+            return
+        late = sum(1 for ms in frames if ms > FRAME_BUDGET_MS)
+        fh.write(f"frame_ms_median\t{frames[len(frames) // 2]:.1f}\n")
+        fh.write(f"frame_ms_worst_tenth\t{frames[int(len(frames) * 0.9)]:.1f}\n")
+        fh.write(f"frame_ms_worst\t{frames[-1]:.1f}\n")
+        fh.write(f"frames_over_budget_percent\t{100 * late / len(frames):.0f}\n")
+        fh.write(f"frames_measured\t{len(frames)}\n")
+
+    def _step_key_ready(self, key: int) -> bool:
+        """Whether a stepping key may act now, or is a repeat arriving too fast.
+
+        The first press of a key always acts. While it stays down, repeats are
+        honoured at most every `STEP_KEY_REPEAT_S`, so holding it walks the
+        setting at a readable pace instead of crossing the whole range in
+        two thirds of a second -- and a burst of repeats drained after a
+        stalled frame moves it by one step, not by ten.
+        """
+        now = time.monotonic()
+        if key != self._step_key or now - self._step_key_at >= STEP_KEY_REPEAT_S:
+            self._step_key = key
+            self._step_key_at = now
+            return True
+        return False
+
+    STATUS_NOTE_SECONDS = 8.0
+
+    def _say(self, text: str) -> None:
+        """Put one line on screen for a few seconds.
+
+        For what the live HUD cannot say by itself -- a file that was just
+        written, a gate that just moved. It expires rather than being cleared
+        by hand, because a status message that outlives its situation is the
+        other half of the same fault.
+        """
+        self._status_note = text
+        self._status_note_until = time.monotonic() + self.STATUS_NOTE_SECONDS
+
+    def _status_note_text(self) -> str:
+        """The note, while it is still news."""
+        if self._status_note and time.monotonic() < self._status_note_until:
+            return self._status_note
+        return ""
+
+    def _export_run_log(self) -> None:
+        """Write everything the audio path did this run, as one text file.
+
+        A percentage cannot be debugged. The same take that scored 35 % in
+        the app scored 97 % when the identical detector and matcher were run
+        over the recording offline, and nothing on screen could say which of
+        the two dozen steps in between lost the notes -- whether they were
+        never heard, heard as something else, heard at the wrong moment, or
+        heard and then taken back by the string check. This file says which,
+        strike by strike, so the next question is asked of evidence.
+        """
+        if self._matcher is None:
+            self._run_log_note = "Nothing to write — audio was off (A)."
+            self._say(self._run_log_note)
+            return
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        song = "".join(c if c.isalnum() else "_" for c in (self._song_key or "song"))[:40]
+        # Read through the module, not a name bound at import: the test suite
+        # redirects the config directory.
+        directory = config_module.CONFIG_DIR
+        path = directory / f"run_{song}_{stamp}.txt"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                self._write_run_log(fh)
+        except OSError as exc:
+            self._run_log_note = f"Could not write the file: {exc}"
+            self._say(self._run_log_note)
+            return
+        done = self._song_completed or self._playback_ms >= self._timeline.duration_ms
+        where = "" if done else f" — up to {self._playback_ms / 1000:.0f} s"
+        self._run_log_written = True
+        self._run_log_note = f"Run written to {path}{where}"
+        self._say(self._run_log_note)
+
+    def _write_run_log(self, fh) -> None:
+        """The body of the run log. Split out so a test can read it back."""
+        matcher = self._matcher
+        stats = matcher.get_statistics()
+        capture = self._audio_capture
+        ac = self._config.audio
+        fh.write("# MySician run log\n")
+        # WHICH BUILD wrote this. Three fixes in a row came back as "does
+        # nothing" while their code was in the tree and under test, and each
+        # was an older EXE -- without this line "is it fixed" and "did it
+        # reach the machine" are the same question with no way to tell them
+        # apart.
+        from pickhero.build_info import build_stamp
+        fh.write(f"build\t{build_stamp()}\n")
+        fh.write(f"song\t{self._song_key}\n")
+        fh.write(f"notes_written\t{len(self._timeline.notes)}\n")
+        # How far the run actually got. D can be pressed at any moment, and a
+        # log stopped a third of the way in has two thirds of its notes still
+        # PENDING -- which reads as a catastrophic score to anybody who
+        # divides hits by notes_written. A number is only readable next to
+        # what it is a number of.
+        pending = sum(1 for note in self._timeline.notes
+                      if matcher.get_note_state(note) is MatchType.PENDING)
+        fh.write(f"notes_reached\t{len(self._timeline.notes) - pending}\n")
+        fh.write(f"notes_not_reached\t{pending}\n")
+        fh.write(f"reached_ms\t{self._playback_ms:.0f}\n")
+        fh.write(f"song_ms\t{self._timeline.duration_ms:.0f}\n")
+        fh.write(f"played_to_the_end\t{bool(self._song_completed)}\n")
+        if self._loop_enabled and self._loop_start_ms is not None:
+            fh.write(f"loop\t{self._loop_start_ms:.0f}-"
+                     f"{'' if self._loop_end_ms is None else f'{self._loop_end_ms:.0f}'}"
+                     f" ms (the same bars were played over and over)\n")
+        fh.write(f"tempo_percent\t{int(self._tempo_factor * 100)}\n")
+        fh.write(f"hit_window_ms\t{self._config.timing_window_ms:.0f}\n")
+        fh.write(f"sync_offset_ms\t{self._config.audio_latency_offset_ms:.0f}\n")
+        fh.write(f"audio_offset_ms\t{matcher.audio_offset_ms:.1f}\n")
+        fh.write(f"late_window_ms\t{matcher.late_window_ms:.0f}\n")
+        fh.write(f"audio_anchor_ms\t{self._audio_anchor_ms:.1f}\n")
+        fh.write(f"audio_anchor_song_ms\t{self._audio_anchor_song_ms:.1f}\n")
+        fh.write(f"sample_rate\t{getattr(capture, '_sample_rate', ac.sample_rate)}\n")
+        describe = getattr(capture, "describe_device", None)
+        fh.write(f"input_device\t{describe() if describe else '(unknown)'}\n")
+        dropped = getattr(capture, "dropped_buffers", 0)
+        busy = getattr(capture, "dropped_while_busy", 0)
+        # Said apart, because they mean opposite things. A dropout while a
+        # background measurement is running costs nothing -- it does not use
+        # the microphone and the player is not meant to be playing -- and the
+        # same number during a run loses notes at random.
+        fh.write(f"dropped_buffers\t{dropped}"
+                 + (f"\t({busy} of them while measuring — those cost nothing)"
+                    if busy else "") + "\n")
+        # The OUTPUT, which this log never mentioned. A run where the sound
+        # went wrong and a run where it did not are otherwise identical here.
+        fh.write(f"output_device\t{output.describe()}\n")
+        # The OTHER thing in this process that makes sound. A hum that
+        # survives Shift+A is not the mixer, and a log naming only the mixer
+        # cannot say that.
+        fh.write(f"midi_output\t{midi_playback.output_name()}\n")
+        # A stutter that clears when the song is PAUSED is a backlog, and
+        # pausing is the one thing that drains these every frame without
+        # doing anything else. If Shift+A does nothing while it stutters,
+        # the main loop is not reading keys either -- which is a stalled
+        # frame, not a bad mixer. These two numbers tell the two apart.
+        fh.write(f"worst_note_backlog\t"
+                 f"{getattr(capture, 'worst_note_backlog', 0)}\n")
+        fh.write(f"worst_window_backlog\t"
+                 f"{getattr(capture, 'worst_window_backlog', 0)}\n")
+        # Whether the engraver is really in this build. It imports perfectly
+        # happily without its 20 MB of data files and then renders an empty
+        # page, and the EXE is the only place that question is settled -- so
+        # the answer travels in the log rather than being assumed.
+        fh.write(f"engraver\t{_engraver_state()}\n")
+        fh.write(f"noise_gate_db\t{ac.noise_gate_db:.0f}"
+                 f"\t{'auto' if self._auto_gate else 'von Hand'}\n")
+        # The input level, in the same units the HUD shows (RMS of one hop).
+        # A weak input does not lose strikes, it corrupts their PITCH -- which
+        # looks exactly like bad playing from the score alone. Measured on the
+        # player's own take: the loudest hop above -38 dB reads 91-96 %, at
+        # -44 dB it is 83 %, at -50 dB 52 %. So these three numbers settle in
+        # one reading what would otherwise be a round trip of guessing.
+        levels = sorted(self._level_samples)
+        if levels:
+            loudest = levels[-1]
+            playing = [db for db in levels if db > loudest - 30.0]
+            median = playing[len(playing) // 2] if playing else loudest
+            under = sum(1 for db in levels if db < ac.noise_gate_db)
+            fh.write(f"level_loudest_db\t{loudest:.1f}\n")
+            fh.write(f"level_median_playing_db\t{median:.1f}\n")
+            fh.write(f"level_under_gate_percent\t{100 * under / len(levels):.0f}\n")
+            # The room is measured while the song is NOT running, never as a
+            # low percentile of the playing: across one session's reference
+            # takes that percentile ran from -35 dB on a dense passage to
+            # -94 dB on a sparse one against a recorded room of -73, so it
+            # reports how busy the playing was. Without it there is no honest
+            # gate to suggest, and none is printed.
+            room = self.room_db()
+            if room is None:
+                fh.write("level_room_db\t(nicht gemessen)\n")
+            else:
+                low, high = gate_band(loudest, room)
+                fh.write(f"level_room_db\t{room:.1f}\n")
+                # A percentage of discarded audio is only readable next to
+                # the value that would not have discarded it -- the same rule
+                # as "up to 40 s" beside a half-finished run.
+                fh.write(f"gate_suggested_db"
+                         f"\t{suggested_gate_db(loudest, room):.0f}"
+                         f"\t(band {low:.0f} to {high:.0f}"
+                         f"{', empty' if low > high else ''})\n")
+                # The verdict, not two numbers eight lines apart. A room that
+                # no permitted gate can clear is the wrong INPUT, and the run
+                # that produced this rule read a room of -37.3 against a
+                # playing median of -37.2 -- the input sounding the same
+                # whether the guitar was played or not.
+                if median - room < QUIET_MARGIN_DB:
+                    fh.write(f"input_hears_the_room\tyes"
+                             f"\t(room {room:.1f} dB vs playing "
+                             f"{median:.1f} dB — check the device)\n")
+        else:
+            fh.write("level_loudest_db\t(nothing measured)\n")
+        fh.write(f"confidence_threshold\t{ac.confidence_threshold}\n")
+        fh.write(f"onset_threshold\t{ac.onset_threshold}\n")
+        fh.write(f"calibrated\t{bool(getattr(self._config, 'calibration', None))}\n")
+        fh.write(f"chord_verify\t{getattr(self._config, 'chord_verify', True)}\n")
+        fh.write(f"bend_check\t{getattr(self._config, 'bend_check', True)}\n")
+        fh.write(f"chord_partial_credit\t{self._chord_partial_credit}\n")
+        fh.write(f"max_fret\t{self._config.max_fret}\n")
+        fh.write(f"active_strings\t{self._config.active_strings}\n")
+        fh.write(f"wait_mode\t{self._wait_mode}\n")
+        fh.write(f"hits\t{stats['hits']}\n")
+        fh.write(f"close\t{stats['close']}\n")
+        fh.write(f"misses\t{stats['misses']}\n")
+        # What the score rests on. A six-string chord is credited from one
+        # strike, so hits alone cannot say how much was actually heard.
+        # Where the score comes from, split by how many strings the tab
+        # writes at that instant. A chord is credited from one strike, so a
+        # single number cannot say whether 80 % was played or strummed: on
+        # the run that raised the question, single notes read 20 % and
+        # four-string chords 94 %.
+        from collections import Counter
+        per_onset = Counter(n.timestamp_ms for n in self._timeline.notes)
+        sizes: dict[int, list[int]] = {}
+        for note in self._timeline.notes:
+            state = matcher.get_note_state(note)
+            if state is MatchType.PENDING:
+                continue
+            row = sizes.setdefault(per_onset[note.timestamp_ms], [0, 0])
+            row[1] += 1
+            if state in (MatchType.HIT, MatchType.CLOSE):
+                row[0] += 1
+        for size in sorted(sizes):
+            green, total = sizes[size]
+            fh.write(f"chord_of_{size}\t{green}/{total}"
+                     f"\t{100 * green / total:.0f}%\n")
+        fh.write(f"notes_heard_as_themselves\t{matcher.notes_proved}\n")
+        fh.write(f"notes_credited_to_a_strum\t{matcher.notes_by_strum}\n")
+        fh.write(f"strings_taken_back\t{matcher.chord_strings_corrected}\n")
+        fh.write(f"chord_windows_judged\t{matcher.chord_verifications}\n")
+        fh.write(f"rescued_notes\t{matcher.rescued_notes}\n")
+        # Where the rescues that did NOT happen were lost. Held but never
+        # asked means the audio window never arrived (a strike too close to
+        # the next one); asked but refused means the verifier could not find
+        # the written note in the sound. Those are fixed in different places,
+        # and a single "rescued 12" cannot tell them apart -- reconstructing
+        # it by hand from the strike table is what the last report cost.
+        held, asked = matcher.rescue_held, matcher.rescue_asked
+        fh.write(f"rescue_held\t{held}\n")
+        fh.write(f"rescue_no_window\t{max(0, held - asked)}\n")
+        fh.write(f"rescue_asked\t{asked}\n")
+        fh.write(f"rescue_already_credited\t{matcher.rescue_already_credited}\n")
+        fh.write(f"rescue_refused\t{matcher.rescue_refused}\n")
+        fh.write(f"bends_judged\t{matcher.bends_judged}\n")
+        fh.write(f"bends_short\t{matcher.bends_short}\n")
+        # The recording's own sync, so "it feels out" becomes a number. The
+        # stretch itself keeps time to 2 ms a minute (tools/check_timestretch),
+        # so anything felt here is drift or latency, not the tempo.
+        player = self._mp3_player
+        if player is not None:
+            fh.write(f"mp3_worst_drift_ms\t{player.worst_drift_ms:.0f}\n")
+            fh.write(f"mp3_resyncs\t{player.resyncs}\n")
+            fh.write(f"mp3_worst_seek_ms\t"
+                     f"{getattr(player, 'worst_seek_ms', 0.0):.0f}\n")
+            fh.write(f"mp3_time_scale\t{player.time_scale:.3f}\n")
+        anchors = self._mp3_anchors()
+        sync = self._sync_map()
+        fh.write(f"mp3_sync_points\t{len(anchors)}\t"
+                 + " ".join(f"{at / 1000:.0f}s:{off:+.0f}ms"
+                            for at, off in anchors) + "\n")
+        # One rate per gap between points. Two numbers pulling in OPPOSITE
+        # directions is the whole reason this is a list: no single rate, and
+        # no stretched copy of the recording, can express it.
+        fh.write(f"mp3_sync_sections\t{len(sync.rates())}\t"
+                 + " ".join(f"{(1 / rate - 1) * 100:+.2f}%"
+                            for rate in sync.rates()) + "\n")
+        # How far the picture had to be pulled to stay with the recording,
+        # and how much of that the map was already doing. A large pull with
+        # few points says where the next point belongs.
+        # WHERE the points are, next to how many there are. Beyond the
+        # outermost one the map extrapolates, and a song whose points stop
+        # two thirds of the way through is a song whose last minute is a
+        # guess -- which is exactly what "synced at the start, apart at the
+        # end" looks like from the inside. Measured on the song that
+        # prompted it: 5 of 41 windows readable, all of them before 2:48 of
+        # a 4:03 song, and a fitted drift of 3 % where a real one is about 1.
+        if anchors:
+            covered = 100.0 * (anchors[-1][0] - anchors[0][0]) / max(
+                1.0, self._timeline.duration_ms)
+            fh.write(f"mp3_sync_covers\t{anchors[0][0] / 1000:.0f}"
+                     f"-{anchors[-1][0] / 1000:.0f}s of "
+                     f"{self._timeline.duration_ms / 1000:.0f}s"
+                     f"\t{covered:.0f}%\n")
+        fh.write(f"mp3_worst_pull_ms\t{self._worst_sync_pull_ms:.0f}\n")
+        fh.write(f"mp3_snaps\t{self._mp3_snaps}\n")
+        fh.write(f"mp3_leads\t{'yes' if self._mp3_led else 'no'}\n")
+        fh.write(f"seeks\t{self._seeks}\n")
+        self._frame_line(fh)
+        if self._clock_real_ms > 0:
+            ratio = self._clock_song_ms / self._clock_real_ms
+            fh.write(f"clock_real_s\t{self._clock_real_ms / 1000:.1f}\n")
+            fh.write(f"clock_song_s\t{self._clock_song_ms / 1000:.1f}\n")
+            fh.write(f"clock_ratio\t{ratio:.4f}\n")
+            fh.write(f"clock_lost_ms\t"
+                     f"{self._clock_real_ms - self._clock_song_ms:.0f}\n")
+            fh.write(f"clock_stalls\t{self._clock_stalls}\n")
+        fh.write(f"timing_samples\t{len(matcher.timing_samples)}\n")
+        fh.write(f"timing_ambiguous\t{matcher.timing_ambiguous}\n")
+
+        fh.write("\n# every strike the audio thread produced\n")
+        fh.write("strike_ms\tadjusted_ms\tplayback_ms\tmidi\tconf"
+                 "\tunpitched\tsubharm\toutcome\tnote_ms\tsemitones\n")
+        for t in matcher.strike_trace:
+            fh.write(
+                f"{t.strike_ms:.1f}\t{t.adjusted_ms:.1f}\t{t.playback_ms:.1f}"
+                f"\t{t.midi_note}\t{t.confidence:.2f}\t{int(t.unpitched)}"
+                f"\t{int(t.subharmonic)}\t{t.outcome}"
+                f"\t{'' if t.note_ms is None else f'{t.note_ms:.1f}'}"
+                f"\t{'' if t.semitones is None else t.semitones}\n")
+
+        # Every written note and what became of it -- with the BAR it is in,
+        # the fret and what the tab asked for there. Milliseconds locate a
+        # note for a machine and for nobody else: "practise bar 36 to 45" is
+        # something a player can act on and "practise at 78341 ms" is not.
+        # The fret and the technique are here for the same reason -- a run of
+        # bends and a stretch across four frets fail for different causes and
+        # are practised differently -- and because they make the log readable
+        # WITHOUT the tab file beside it, which is what lets a log be handed
+        # to anybody who does not have the song.
+        starts = [m.start_ms for m in self._timeline.measures]
+        written_at: dict[int, int] = {}
+        for note in self._timeline.notes:
+            key = int(round(note.timestamp_ms))
+            written_at[key] = written_at.get(key, 0) + 1
+        fh.write("\n# every written note and how it ended up\n")
+        fh.write("note_ms\tbar\tstring\tfret\tmidi\ttech\tchord\tverdict\n")
+        for note in sorted(self._timeline.notes,
+                           key=lambda n: (n.timestamp_ms, -n.string)):
+            # A tab that parsed without measure info has no bars to name,
+            # and a "0" there would read as one. Same rule as the technique
+            # column: a dash says the answer is missing, a number says it is
+            # this one.
+            bar = (bisect.bisect_right(starts, note.timestamp_ms + 1e-6)
+                   if starts else "-")
+            fh.write(f"{note.timestamp_ms:.1f}\t{bar}\t{note.string}"
+                     f"\t{note.fret}\t{note.midi_note}"
+                     f"\t{_technique_flags(note)}"
+                     f"\t{written_at.get(int(round(note.timestamp_ms)), 1)}"
+                     f"\t{matcher.get_note_state(note).value}\n")
+
     def _draw_help_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:
         """Explain the track, the note colours, the techniques and the keys.
 
@@ -2039,6 +4806,12 @@ class PlayingScreen:
             "H    HAMMER-ON. Strike the first note, then hammer the",
             "     finger down for the second without striking again.",
             "P    PULL-OFF. The same in reverse, lifting the finger.",
+            "PM   PALM MUTE starts here and runs on until the notes",
+            "     stop being drawn as short stubs. Rest the picking",
+            "     hand on the strings; the pitch stays the written one.",
+            "X    DEAD NOTE. Damp the string with the fretting hand and",
+            "     strike it: a click, no pitch. Counts as played as long",
+            "     as you strike it in time — there is no pitch to check.",
             "",
             "H, P and SL notes are not struck, so they score with the",
             "note they came from. Bends are scored leniently: the pitch",
@@ -2057,15 +4830,28 @@ class PlayingScreen:
             "B: backing track     T: theme     I/O: loop markers",
             "P: toggle loop     L: loop the weakest part",
             "F: fret limit     F1-F6: mute a string     V: chord mode",
+            "E: skip a long rest (jumps to 3 s before the next note)",
             "W: wait mode (holds until you play the right note)",
             "J: per-string chord check (finds the wrong-fret string)",
             "K: auto-sync timing     ,/.: nudge sync by 10 ms",
             "Shift+K: reset sync to 0, if it has run away",
             "Y: timing report — which timing problem you actually have",
             "Shift+Y: save the raw measurements as a CSV file",
-            "+/-: scroll faster / slower     G: hit window",
-            "N/M: backing track earlier / later",
+            "D: save a full run log (what every strike did)",
+            "U: recorded backing on/off, Shift+U picks the file",
+            "Shift+N / Shift+M: shift the recording by 10 ms",
+            "Ctrl+N / Ctrl+M: by a second   Ctrl+Shift: by ten seconds",
+            "  (reaches 8 minutes, for a tab that is only the solo)",
+            "Shift+S: line the recording up HERE and add a sync point.",
+            "  Two points give one speed, three give two sections, and a",
+            "  band that played without a click needs the sections.",
+            "  Ctrl+Shift+S clears them all.",
+            "+/-: spread the notes out / fit more of the song on",
+            "G: hit window",
+            "N/M: MIDI backing earlier / later   Alt+N/M: by a second",
             "TAB: choose track     H: this help     ESC: song list",
+            "On the song list, O opens the settings screen — everything that",
+            "is set once, with anything away from standard marked.",
         ], font=hint_font, step=17)
 
         close_surf = hint_font.render("Press H to close", True, t.hud_accent)
@@ -2146,6 +4932,24 @@ class PlayingScreen:
 
     # -- Latency sync --
 
+    def _sync_offset_song_ms(self) -> float:
+        """The latency compensation, in SONG milliseconds.
+
+        `audio_latency_offset_ms` is a delay of the real world -- the sound
+        card's buffer plus aubio's analysis window, both a fixed number of
+        SAMPLES and both entirely indifferent to the practice speed. A strike
+        is stamped in recorded time and then scaled into song time, so the
+        compensation has to be scaled with it.
+
+        It was not, and slow practice paid for it. Measured on a 70 % run with
+        a -220 ms offset: every strike landed 114 ms before its note, 66 of
+        which is this -- a third of the 200 ms hit window, spent before the
+        player has played anything. At 50 % it would be 110 ms, over half.
+        Slowing a song down is what you do when a passage is too hard, and it
+        was quietly making the scoring harder.
+        """
+        return self._config.audio_latency_offset_ms * self._tempo_factor
+
     def _late_window_ms(self) -> float:
         """Grace period for late-arriving strike notes.
 
@@ -2153,7 +4957,7 @@ class PlayingScreen:
         latency delays the strike's real-world arrival by the same amount
         on top, so misses must be marked correspondingly later.
         """
-        return 150.0 + max(0.0, -self._config.audio_latency_offset_ms)
+        return 150.0 + max(0.0, -self._sync_offset_song_ms())
 
     def _make_chord_verifier(self):
         """Per-string chord verifier, or None when the setting is off."""
@@ -2181,33 +4985,74 @@ class PlayingScreen:
         self._config.audio_latency_offset_ms = clamped
         self._config.save()
         if self._matcher is not None:
-            self._matcher.audio_offset_ms += delta_ms
+            # The stored value is real time; the matcher works in song time.
+            self._matcher.audio_offset_ms += delta_ms * self._tempo_factor
             self._matcher.late_window_ms = self._late_window_ms()
             # Old measurements no longer reflect the new offset
             self._matcher.reset_timing_samples()
 
+    def _sync_advice(self) -> str:
+        """What the HUD says about K, decided the way K itself decides.
+
+        Both read the same report and act on the same verdict, so the line can
+        never offer a key that then does nothing -- which is what it did while
+        the HUD kept its own spread thresholds and K had moved on to the
+        report's. A player who presses an advertised key and sees no change
+        learns to distrust the whole panel, not just that line.
+        """
+        if self._matcher is None:
+            return ""
+        report = self._matcher.timing_report(AUTO_SYNC_MIN_SAMPLES)
+        if report is None:
+            return "— play on, still measuring"
+        if report["verdict"] == "scatter":
+            return "— too scattered to sync"
+        if report["verdict"] == "per_string":
+            return "— strings differ, no one offset fixes it"
+        if report["verdict"] == "fine":
+            return "— synced" if self._sync_applied else "— nothing to sync"
+        # latency or mixed: K can take the constant part off.
+        if not self._sync_applied:
+            return "— K to auto-sync"
+        # One press removes the median it could see at the time. Whatever is
+        # left shows up in the samples taken since, and saying so is the
+        # difference between a tool that converges and one the player abandons
+        # halfway, thinking it did all it could.
+        return f"— {int(abs(report['median_ms'])):d} ms still left, K again"
+
     def _auto_sync_timing(self) -> None:
         """Cancel out the measured input latency (K key).
 
-        Uses the median timing error of the strikes matched so far in this
-        run; needs a handful of scored notes before it can do anything.
-        Refuses when the strikes disagree too much among themselves — there
-        is no single offset that fixes scattered timing, and applying one
-        anyway is how the offset used to walk away from any sane value.
+        Applies exactly what the timing report calls latency, and refuses
+        everything else. The report already decides whether a median is an
+        effect or a coincidence, and whether one offset could fix it at all,
+        so deciding it a second time here by a looser rule can only produce
+        the two answers disagreeing -- which is what happened: a measurement
+        the report called scattered (a spread of +-75 ms, taken over notes
+        carrying bends and slides) still passed this check because it had
+        enough samples, and set an offset out of noise that then sat in the
+        config for days, silently swallowing a third of the real latency.
+
+        Whatever remains after a press is measurable in the samples that
+        follow, because _adjust_latency_offset clears the old ones -- so K
+        pressed again converges rather than double-counting.
         """
         if self._matcher is None:
             return
-        err = self._matcher.median_timing_error_ms(AUTO_SYNC_MIN_SAMPLES)
-        if err is None:
+        report = self._matcher.timing_report(AUTO_SYNC_MIN_SAMPLES)
+        if report is None:
             return
-        spread = self._matcher.timing_spread_ms()
-        samples = len(self._matcher.timing_errors_ms)
-        if spread is not None:
-            if spread > AUTO_SYNC_HOPELESS_SPREAD_MS:
-                return
-            if spread > AUTO_SYNC_WIDE_SPREAD_MS and samples < AUTO_SYNC_WIDE_MIN_SAMPLES:
-                return
-        self._adjust_latency_offset(-err)
+        # "mixed" is latency with loose playing on top: the offset still
+        # removes the constant part, which is exactly what K is for. The rest
+        # -- scatter, a per-string split, or a median inside its own noise --
+        # is not something one offset can fix, and applying one anyway is a
+        # guess dressed up as a measurement.
+        if report["verdict"] not in ("latency", "mixed"):
+            return
+        # The report's median is song milliseconds; the offset is stored in
+        # real ones, so that a speed change does not invalidate it.
+        self._adjust_latency_offset(-report["median_ms"] / self._tempo_factor)
+        self._sync_applied = True
 
     def _reset_latency_offset(self) -> None:
         """Put latency compensation back to zero (Shift+K).
@@ -2216,6 +5061,7 @@ class PlayingScreen:
         every fresh measurement is taken against the wrong note.
         """
         self._adjust_latency_offset(-self._config.audio_latency_offset_ms)
+        self._sync_applied = False
 
     # -- Loop weakest section --
 
@@ -2354,22 +5200,72 @@ class PlayingScreen:
         else:
             self._stop_audio()
 
+    def _resume_audio(self) -> None:
+        """Carry on capturing after a pause, without reopening anything.
+
+        A pause used to stop the stream and a resume used to open a new one,
+        which on Windows is a real device open and cost seconds every time the
+        space bar was pressed -- exactly the fault "Seeking Must Not Reopen
+        The Input Device" fixed for the arrow keys and never for the pause.
+
+        It also threw the matcher away, so a run log lost every strike before
+        the pause. Re-anchoring keeps both: the clock agrees with the song
+        again and the strikes stamped while the picture stood still are
+        dropped, because they belong to no moment in the song.
+        """
+        self._auto_gate_from_room()
+        if self._audio_capture is None or self._matcher is None:
+            self._start_audio()
+            return
+        if not getattr(self._audio_capture, "is_running", lambda: False)():
+            self._start_audio()
+            return
+        self._reanchor_audio_clock()
+
     def _start_audio(self) -> None:
         """Start audio capture and create matcher."""
         try:
             from pickhero.audio.input import AudioCapture
             if self._audio_capture is None:
                 self._audio_capture = AudioCapture(self._config)
-            self._audio_capture.start()
+            # start() builds a NEW stream and a new ring every time. Called on
+            # a capture already running -- which is what happens when the
+            # signal meter was switched on before the count-in -- the old
+            # stream is never closed and goes on writing into the same ring,
+            # so the sample counter advances at twice real time and every
+            # strike after that is stamped further into the future.
+            if getattr(self._audio_capture, "is_running", lambda: False)():
+                # The stream has been open since the count-in began, which is
+                # the whole point: the room can only be measured while the
+                # song is not running, and before this it was opened here --
+                # after the count-in -- so there was never anything to
+                # measure and the automatic gate had nothing to go on.
+                # Reusing it also saves a device open, which on Windows is
+                # the freeze this project has now paid for three times.
+                self._audio_capture.get_notes()
+                self._audio_capture.get_strike_windows()
+                self._audio_anchor_ms = self._audio_capture.elapsed_ms()
+            else:
+                self._audio_capture.stop()
+                self._audio_capture.start()
+                # A fresh stream restarts the sample counter, so the two
+                # clocks agree here by construction.
+                self._audio_anchor_ms = 0.0
+            # The count-in has just been listened to; that is the room.
+            self._auto_gate_from_room()
+            self._audio_anchor_song_ms = self._playback_ms
             self._matcher = NoteMatcher(
                 self._timeline,
                 timing_window_ms=self._config.timing_window_ms,
-                audio_offset_ms=self._playback_ms + self._config.audio_latency_offset_ms,
+                audio_offset_ms=(self._audio_anchor_song_ms
+                                 - self._audio_anchor_ms * self._tempo_factor
+                                 + self._sync_offset_song_ms()),
                 chord_threshold_ms=self._config.chord_threshold_ms,
                 note_filter=self._note_passes_filter if self._is_filter_active() else None,
                 chord_partial_credit=self._chord_partial_credit,
                 late_window_ms=self._late_window_ms(),
                 chord_verifier=self._make_chord_verifier(),
+                bend_check=getattr(self._config, "bend_check", True),
             )
             self._feedback.reset()
         except Exception as e:
@@ -2377,11 +5273,22 @@ class PlayingScreen:
             self._audio_enabled = False
 
     def _start_capture_only(self) -> None:
-        """Start audio capture for signal monitoring (no matcher)."""
+        """Open the input without a matcher, to listen to the room.
+
+        This is what makes the automatic gate possible: the room is what the
+        microphone hears while the song is NOT running, and until the stream
+        is open there is nothing to hear. Also what the signal meter needs.
+        """
         try:
             from pickhero.audio.input import AudioCapture
             if self._audio_capture is None:
                 self._audio_capture = AudioCapture(self._config)
+            if getattr(self._audio_capture, "is_running", lambda: False)():
+                return
+            # start() builds a new stream and a new ring every time; called on
+            # one already running, the old stream keeps writing into the same
+            # ring and the sample counter advances at twice real time.
+            self._audio_capture.stop()
             self._audio_capture.start()
         except Exception as e:
             print(f"Audio capture start failed: {e}")
@@ -2392,15 +5299,876 @@ class PlayingScreen:
         if self._audio_capture is not None:
             self._audio_capture.stop()
 
+    def close_session(self) -> bool:
+        """Write this sitting to the practice diary. Once, whenever it ends.
+
+        Called when the player leaves the song and when the app shuts down --
+        both, because either can be the end of a session and neither happens
+        reliably. Idempotent for the same reason: leaving after finishing a
+        song reaches this twice.
+        """
+        if self._session_written or not self._song_key:
+            return False
+        self._session_written = True
+        stats = (self._matcher.get_statistics()
+                 if (self._matcher is not None and self._song_completed) else None)
+        session = practice_log.Session(
+            started=self._session_started,
+            song=self._song_key,
+            seconds=round(self._session_seconds, 1),
+            strikes=self._session_strikes,
+            tempo_percent=int(round(self._tempo_factor * 100)),
+            notes_hit=stats["hits"] if stats else None,
+            notes_written=stats["total"] if stats else None,
+            accuracy=(round(stats["accuracy_percent"], 1)
+                      if stats and stats.get("total") else None),
+        )
+        try:
+            return practice_log.append(session)
+        except OSError:
+            # A diary that cannot be written must not take the app down with
+            # it; the playing is what matters and it has already happened.
+            return False
+
     def stop_audio(self) -> None:
         """Public method to stop audio (called on state transitions)."""
+        # Leaving the song is the end of the run, and until now it wrote
+        # nothing: only reaching the last bar did. A four-minute song is
+        # almost never played to its end while something is being diagnosed,
+        # so the one run worth reading was the one that produced no file. It
+        # says how far it got -- that is what notes_reached is for.
+        if (self._matcher is not None and not self._song_completed
+                and not self._run_log_written):
+            self._export_run_log()
+        self.close_session()
         self._stop_audio()
         self._audio_enabled = False
-        if self._midi_player is not None:
-            self._midi_player.close()
-            self._midi_player = None
+        for player in self._midi_all():
+            player.close()
+        self._midi_player = None
+        self._guide_player = None
+        if self._mp3_player is not None:
+            self._mp3_player.close()
+            self._mp3_player = None
 
     # -- MIDI backing track --
+
+    # -- Recorded backing track (MP3) --
+
+    def _load_mp3_for_song(self) -> None:
+        """Open the recording this song was given, if it still exists."""
+        self._mp3_player = None
+        path = self._mp3_path()
+        if not path:
+            return
+        player = Mp3Player(path)
+        if player.open():
+            self._mp3_player = player
+            # The file as it was made: build tempo 1.0. Without this the
+            # source never counts as fitting, and the app rebuilds a copy of
+            # a song that needed none.
+            self._mp3_loaded_build = 1.0
+            self._mp3_note = ""
+        else:
+            # Named rather than swallowed: a file that has been moved or
+            # renamed otherwise looks exactly like a feature that does not
+            # work, and the player would go looking in the wrong place.
+            self._mp3_note = player.error or "Could not open the backing track"
+
+    def _mp3_path(self) -> str:
+        getter = getattr(self._config, "mp3_path_for", None)
+        return getter(self._song_key) if getter else ""
+
+    def _mp3_offset(self) -> float:
+        getter = getattr(self._config, "mp3_offset_for", None)
+        return getter(self._song_key) if getter else 0.0
+
+    def _mp3_leads(self) -> bool:
+        """Whether the recording is the clock and the picture follows it.
+
+        It is, whenever it is really sounding. A recording has its own clock
+        in the sound card and cannot be bent without a seek; the picture can
+        be pulled by a fraction of a millisecond a frame and nobody sees it.
+        So the correction goes on the cheap side -- which is also the only
+        way a warped tab can be followed at all, since the alternative is
+        seeking the audio every few seconds for the whole song.
+        """
+        player = self._mp3_player
+        return bool(
+            player is not None and player.ready and player.playing
+            and not player.suspended and not self._mp3_muted
+            and self._mp3_pending_seek_ms is None
+            and self._playing and self._playback_ms >= 0)
+
+    def _follow_recording(self, real_elapsed_s: float) -> None:
+        """Pull the song clock towards where the recording actually is."""
+        if not self._mp3_leads():
+            return
+        wanted = self._sync_map().song_at(self._mp3_player.position_ms())
+        error = wanted - self._playback_ms
+        if abs(error) < 1.0:
+            return
+        if abs(error) > SYNC_SNAP_MS:
+            # Not drift: something moved. Creeping there would scroll half a
+            # minute of music the player never asked for.
+            #
+            # Counted, because a snap is the picture JUMPING and the player
+            # sees it. In normal playback it should never happen: past a
+            # second and a half the map and the recording are describing
+            # different moments, which is a map that was measured wrong.
+            # On the song that found this, three snaps of up to 4.8 s.
+            self._mp3_snaps += 1
+            step = error
+        else:
+            room = real_elapsed_s * 1000.0 * SYNC_PULL_FRACTION
+            step = max(-room, min(room, error))
+        self._worst_sync_pull_ms = max(self._worst_sync_pull_ms, abs(error))
+        self._mp3_led = True
+        self._playback_ms = max(0.0, self._playback_ms + step)
+        # The audio clock is anchored to song time, so moving song time moves
+        # the anchor with it. Re-anchoring properly would throw away every
+        # strike still queued, which is not something a frame may do.
+        self._audio_anchor_song_ms += step
+        if self._matcher is not None:
+            self._matcher.audio_offset_ms += step
+
+    def _sync_map(self) -> SyncMap:
+        """Where this tab and this recording agree, and the lines between.
+
+        Built fresh from the stored points every time it is asked for: they
+        change while the player is placing them, and a map cached behind that
+        is the kind of thing that answers yesterday's question.
+        """
+        return SyncMap(self._mp3_anchors(), self._mp3_offset())
+
+    def _mp3_ms(self, playback_ms: float) -> float:
+        """Song position as the recording should hear it.
+
+        A positive offset makes the recording sound LATER, so it is
+        subtracted -- the same convention as the MIDI backing. With sync
+        points set, the offset is what the map says HERE rather than one
+        number for the whole song.
+        """
+        return self._sync_map().recording_at(playback_ms)
+
+    def _mp3_plays(self) -> bool:
+        """Whether the recording may sound at all right now.
+
+        **Including whether the song is running at all.** Every caller here
+        reaches `Mp3Player.seek`, and seeking STARTS playback -- so without
+        this, nudging the offset on a paused song set the recording playing
+        against a picture standing still, which is exactly the state the
+        offset is meant to be judged in. Pausing has to mean silence for both
+        backings or neither.
+
+        And whether the file loaded is the one this practice speed needs. Below
+        full speed that is a stretched copy, which takes seconds to build --
+        until it is there the recording stays silent rather than playing on at
+        the wrong speed, which would put it a bar out within seconds.
+        """
+        return (self._mp3_player is not None
+                and self._mp3_player.ready
+                and not self._mp3_muted
+                and self._playing
+                and self._mp3_source_fits())
+
+    def _seek_mp3(self, target_ms: float) -> None:
+        """Move the recording, collapsing a burst of seeks into one.
+
+        Seeking really means `play(start=)`, which decodes the file up to that
+        point. One is fine; twenty-five a second -- which is what a held arrow
+        key produces -- is a stuttering picture and a stuttering sound, on the
+        frame's own thread.
+
+        The first seek of a burst still happens at once, so a single press and
+        a loop turn are unchanged. Inside the window the recording is held
+        silent instead, because playing on from where it was is worse than
+        nothing while the song is being scrubbed.
+        """
+        if self._mp3_player is None:
+            return
+        now = time.perf_counter()
+        if now - self._mp3_last_seek_at >= MP3_SEEK_SETTLE_S:
+            self._mp3_last_seek_at = now
+            self._mp3_pending_seek_ms = None
+            self._mp3_player.seek(target_ms)
+            return
+        self._mp3_pending_seek_ms = target_ms
+        self._mp3_player.set_suspended(True)
+
+    def _apply_pending_mp3_seek(self) -> bool:
+        """Carry out a seek that was collapsed, once they have stopped."""
+        if self._mp3_pending_seek_ms is None:
+            return False
+        now = time.perf_counter()
+        if now - self._mp3_last_seek_at < MP3_SEEK_SETTLE_S:
+            return True                    # still moving; stay silent
+        target = self._mp3_pending_seek_ms
+        self._mp3_pending_seek_ms = None
+        self._mp3_last_seek_at = now
+        self._mp3_player.seek(target)
+        return False
+
+    def _mp3_paused_only(self) -> bool:
+        """True when the song standing still is the ONLY reason for silence."""
+        return (not self._playing
+                and self._mp3_player is not None
+                and self._mp3_player.ready
+                and not self._mp3_muted
+                and self._mp3_source_fits())
+
+    def _mp3_scale(self) -> float:
+        """File milliseconds per song millisecond at the current speed.
+
+        Set by the practice speed ALONE, and the speed correction below does
+        not belong in it: the file plays at real time, so this is what makes
+        one real second advance the song by `tempo` seconds. A correction put
+        here would change how fast the song scrolls, which is the one thing
+        it must not do. It goes into the length of the BUILT copy instead.
+        """
+        return 1.0 / self._tempo_factor if self._tempo_factor > 0 else 1.0
+
+    def _mp3_anchors(self) -> list[tuple[float, float]]:
+        """The places the player lined this recording up, sorted."""
+        getter = getattr(self._config, "mp3_anchors_for", None)
+        return getter(self._song_key) if getter else []
+
+    def _mp3_plan(self) -> tuple[tuple[float, float], ...]:
+        """((fraction through the song, how fast the recording runs), ...).
+
+        One entry per gap between anchors. Two anchors give one entry, which
+        is the straight line the first version could express; three give two,
+        which is the least that can follow a band. The rate between two
+        anchors is `1 - (offset change) / (time between them)` -- the same
+        arithmetic as before, applied per segment.
+        """
+        anchors = self._mp3_anchors()
+        length = self._timeline.duration_ms or 1.0
+        plan: list[tuple[float, float]] = []
+        for (s1, o1), (s2, o2) in zip(anchors, anchors[1:]):
+            if s2 - s1 < MIN_SYNC_SPAN_MS:
+                continue
+            rate = 1.0 - (o2 - o1) / (s2 - s1)
+            if not (MIN_MP3_RATE <= rate <= MAX_MP3_RATE):
+                continue
+            plan.append((max(0.0, min(1.0, s1 / length)), rate))
+        return tuple(plan)
+
+    def _mp3_rate(self) -> float:
+        """The FIRST segment's rate, which is all a single number can say.
+
+        For the HUD and the run log only -- "how far off is this recording"
+        wants one number. NOTHING is built from it any more: see below.
+        """
+        plan = self._mp3_plan()
+        return plan[0][1] if plan else 1.0
+
+    def _mp3_build_tempo(self) -> float:
+        """What `timestretch.build` has to be asked for.
+
+        The PRACTICE SPEED and nothing else. The sync correction used to be
+        multiplied in here, and that was the wrong lever twice over: it
+        rebuilt the whole file for a percent (seconds of work, silence until
+        it landed, a cache entry per attempt), and it could only ever apply
+        ONE rate to a recording whose rate varies by a factor of three across
+        a song. The correction is a warp of the tab now -- free, instant, and
+        as detailed as the number of sync points -- so putting it in the file
+        as well would apply it twice. See audio/syncmap.py.
+        """
+        return self._tempo_factor
+
+    def _mp3_source_fits(self) -> bool:
+        """Whether the loaded file plays this song at this speed AND rate.
+
+        The scale alone cannot answer it: a rate correction changes the file
+        while leaving the scale exactly where it was, so a check on the scale
+        would report a fit and the correction would never be built.
+        """
+        if self._mp3_player is None:
+            return False
+        if abs(self._mp3_player.time_scale - self._mp3_scale()) >= 1e-6:
+            return False
+        if self._mp3_loaded_source_transpose != self._transpose:
+            return False
+        if self._mp3_loaded_build is None:
+            # A source this screen did not load itself. All that is known is
+            # what the player reports, which is the scale -- and since the
+            # only thing that decides the file now is the practice speed,
+            # that is the whole answer.
+            return True
+        return abs(self._mp3_loaded_build - self._mp3_build_tempo()) < 1e-6
+
+    def _ensure_mp3_source(self) -> None:
+        """Load the file this speed needs, building it if it does not exist.
+
+        At full speed that is the recording itself. Below it, a copy stretched
+        by `audio/timestretch.py` -- longer, same pitch, so a solo can be
+        practised slowly against the real thing instead of against a click.
+        The build takes seconds on a whole song, so it runs on a thread and is
+        swapped in when it lands; the recording is silent until then and the
+        HUD says why. Every result is cached, so the same song at the same
+        speed is instant ever after.
+        """
+        if self._mp3_player is None or self._mp3_muted or self._mp3_source_fits():
+            return
+        wanted = self._mp3_build_tempo()
+        # The same threshold `stretch` itself gives up at: below it the build
+        # returns the audio unchanged, so spending five seconds on a copy of
+        # the original would be work bought with nothing.
+        #
+        # AND the tuning, which this decided without for a while. The practice
+        # speed is not the only thing that makes the recording a different
+        # file: a song played in another tuning sounds a tone higher, so the
+        # backing has to be shifted with it. At 100 % speed the test passed on
+        # the speed alone, the original was loaded whatever the tuning, and
+        # `_mp3_loaded_source_transpose` was then set to a shift that had NOT
+        # been applied -- so the fit check agreed and it was never rebuilt.
+        # The player heard the recording at its written pitch against a guitar
+        # playing a tone above it, which is precisely what they reported.
+        if abs(wanted - 1.0) < 1e-3 and not self._transpose:
+            self._mp3_player.set_source(self._mp3_path(), self._mp3_scale())
+            self._mp3_loaded_build = wanted
+            self._mp3_loaded_source_transpose = self._transpose
+            return
+        if self._mp3_stretch_matches(self._mp3_stretch_done, wanted):
+            self._mp3_player.set_source(self._mp3_stretch_done[2],
+                                        self._mp3_scale())
+            self._mp3_loaded_build = wanted
+            self._mp3_loaded_source_transpose = self._transpose
+            return
+        if self._mp3_stretch_matches(self._mp3_stretch_failed, wanted):
+            return                             # already said so on screen
+        if self._mp3_stretch_wanted is not None:
+            return                             # a build is already running
+        self._start_mp3_stretch(wanted)
+
+    def _mp3_stretch_matches(self, entry, tempo: float) -> bool:
+        """Whether a build belongs to this recording, this speed AND this tuning.
+
+        The tuning is the third of the three and was missing: a copy built at
+        +2 was handed straight back for the written tuning, and the other way
+        round, because the memo was keyed by speed and file only. The cache on
+        disk had it right all along (`timestretch.cache_name` hashes the
+        semitones); it was this one-entry memo in front of it that did not.
+        """
+        if not entry or entry[0] != tempo or entry[1] != self._mp3_path():
+            return False
+        return (entry[3] if len(entry) > 3 else 0) == self._transpose
+
+    def _start_mp3_stretch(self, tempo: float) -> None:
+        """Build the stretched copy off the game loop."""
+        path = self._mp3_path()
+        if not path:
+            return
+        self._mp3_stretch_wanted = tempo
+        self._mp3_stretch_progress = 0.0
+        # The recording moves with the player: a tab in Drop C played on a
+        # Drop D guitar sounds a tone higher, so the backing has to. Pitch
+        # shifting preserves the LENGTH exactly, so every sync point, the
+        # offset and the whole map still describe this file.
+        semitones = self._transpose
+        # No sync plan any more: the practice speed is the only thing that
+        # decides the file. The recording is left exactly as it was made and
+        # the TAB is warped onto it. See _mp3_build_tempo.
+        cache_dir = config_module.CONFIG_DIR / "stretched"
+
+        def report(fraction: float) -> bool:
+            self._mp3_stretch_progress = fraction
+            # Stepping the tempo down three times should not build three
+            # copies before reaching the one that was asked for.
+            return abs(self._mp3_build_tempo() - tempo) < 1e-6
+
+        def work() -> None:
+            try:
+                built = timestretch.build(Path(path), tempo, cache_dir,
+                                          report, semitones=semitones)
+                self._mp3_stretch_done = (tempo, path, str(built),
+                                          semitones)
+            except timestretch.Cancelled:
+                pass                          # the speed moved on; not a fault
+            except Exception as exc:
+                # Not every format SDL can stream can also be decoded into
+                # memory. Named rather than swallowed: "convert it" is a thing
+                # the player can act on, silence is not.
+                self._mp3_stretch_failed = (
+                    tempo, path,
+                    f"cannot be slowed down ({type(exc).__name__}) — "
+                    f"convert it to OGG or WAV", semitones)
+            finally:
+                self._mp3_stretch_wanted = None
+
+        self._mp3_stretch_thread = threading.Thread(target=work, daemon=True)
+        self._mp3_stretch_thread.start()
+
+    def _update_mp3(self) -> None:
+        """Keep the recording where the song is, or silent if it may not play."""
+        if self._mp3_player is None:
+            return
+        self._ensure_mp3_source()
+        if self._apply_pending_mp3_seek():
+            return                         # a seek is still being scrubbed
+        if not self._mp3_plays():
+            # WHY it may not sound decides what happens to it. A paused song
+            # is held where it is; anything else -- muted, a different file
+            # wanted, not ready -- really stops. Stopping for a pause is what
+            # made the space bar cost a re-decode each way, and this runs
+            # every frame, so it would undo the hold on the very next one.
+            if self._mp3_paused_only():
+                self._mp3_player.set_suspended(True)
+            else:
+                self._mp3_player.pause()
+            self._mp3_stuck_since_ms = None
+            return
+        if self._mp3_player.suspended:
+            self._mp3_player.set_suspended(False)
+        target = self._mp3_ms(self._playback_ms)
+        # When the recording leads, nothing here may seek it -- the picture is
+        # what gets pulled. See _follow_recording.
+        self._mp3_player.update(target, correct=not self._mp3_leads())
+        self._track_mp3_drift(target)
+
+    def _track_mp3_drift(self, target_ms: float) -> None:
+        """Notice a recording that has stopped following the song."""
+        if abs(self._mp3_player.drift_ms(target_ms)) <= MP3_STUCK_DRIFT_MS:
+            self._mp3_stuck_since_ms = None
+        elif self._mp3_stuck_since_ms is None:
+            self._mp3_stuck_since_ms = self._playback_ms
+
+    def _mp3_is_stuck(self) -> bool:
+        """True once the gap has stayed open long enough to mean something."""
+        if self._mp3_stuck_since_ms is None:
+            return False
+        return self._playback_ms - self._mp3_stuck_since_ms > MP3_STUCK_FOR_MS
+
+    def _toggle_mp3_backing(self) -> None:
+        """Turn the recorded backing on or off (key: U). Independent of B."""
+        self._mp3_muted = not self._mp3_muted
+        self._config.mp3_backing_enabled = not self._mp3_muted
+        self._config.save()
+        if self._mp3_player is not None:
+            self._mp3_player.set_muted(self._mp3_muted)
+        if not self._mp3_muted and not self._mp3_path():
+            self._mp3_note = "No backing track chosen yet — Shift+U to pick one"
+
+    def _choose_mp3_backing(self) -> None:
+        """Ask for the file chooser -- next frame, not this one.
+
+        The dialog is the operating system's, and on Windows the first one
+        takes seconds to appear. Opened straight from the key press, nothing
+        is drawn in between: the app simply stops, which is indistinguishable
+        from a dead key. So the note goes up first and the dialog opens once
+        it has actually been on screen.
+        """
+        if not self._song_key:
+            self._mp3_note = "No song loaded"
+            return
+        self._mp3_note = "Opening the file chooser..."
+        self._mp3_dialog_due = True
+        self._mp3_dialog_armed = False
+
+    def _open_mp3_dialog(self) -> None:
+        """Actually show the chooser. Blocks until the player answers."""
+        current = self._mp3_path()
+        start_dir = str(Path(current).parent) if current else self._config.songs_dir
+        try:
+            chosen = pick_audio_file(start_dir)
+        finally:
+            self._mp3_note = ""
+            # Every key repeat that arrived while the dialog held the app is
+            # still in the queue, and each one would open it again. That is
+            # exactly what happened: the chooser came back over and over and
+            # had to be cancelled each time. Key repeat is 40 ms, so seconds
+            # of a blocked frame are dozens of them.
+            try:
+                pygame.event.clear(pygame.KEYDOWN)
+                pygame.event.clear(pygame.KEYUP)
+            except Exception:
+                pass
+        if not chosen:
+            # Cancelled, or no tkinter on this machine. The two look the same
+            # from here and neither is an error worth shouting about.
+            return
+        # Sync points and the offset belong to (song, RECORDING), not to the
+        # song alone: another rip has another intro and another encoder
+        # padding, so points measured against the old file put the new one
+        # out by seconds while looking like a synced song. Dropped only when
+        # the path really changes -- re-picking the same file after moving it
+        # must not throw the player's work away.
+        replaced = bool(self._mp3_path()) and chosen != self._mp3_path()
+        setter = getattr(self._config, "set_mp3_path_for", None)
+        if setter is not None:
+            setter(self._song_key, chosen)
+            self._config.save()
+        if replaced:
+            self._forget_sync_for_new_recording()
+        self._load_mp3_for_song()
+        if self._mp3_player is not None:
+            self._mp3_muted = False
+            self._config.mp3_backing_enabled = True
+            self._config.save()
+            # No message on success. The ordinary line already names the file
+            # AND the offset, and a note set here would sit on top of it for
+            # the rest of the session -- which is exactly what hid the offset
+            # from the one key that exists to change it.
+            self._mp3_note = ""
+
+    def _clear_mp3_note(self) -> None:
+        """Drop a status message once it has been overtaken by events.
+
+        A note outranks the ordinary line, so one left lying around silently
+        replaces the live reading with old news.
+        """
+        self._mp3_note = ""
+
+    def _reopen_output(self) -> None:
+        """Close and reopen the audio output, keeping the song where it is.
+
+        The player reported the sound turning flattering and quiet mid-
+        session -- staying that way for every song afterwards, with the MIDI
+        backing and no recording at all, while other applications were fine,
+        until the app was restarted. That is a piece of state this process
+        holds, and until now the only way to drop it was to lose the sitting.
+
+        It is also the experiment that says WHERE -- and for a whole cycle it
+        could not be, because it reached only the MIXER. There are TWO things
+        in this process that make sound: the mixer, which plays the recording,
+        and the MIDI synth, which plays the backing. A hum that survives
+        leaving the song and dies only when the app is closed is what a synth
+        still holding something sounds like, and no amount of reopening the
+        mixer can touch it. So this now silences both, and SAYS which ones it
+        reached: "reopened, MIDI synth silenced" against "reopened, no MIDI
+        output" is the difference between two diagnoses.
+        """
+
+        # Before the mixer, because it is the half that has never been tried.
+        # Not through the players: one that was dropped without being closed
+        # still has its notes sounding, and reaching the PORT is the point.
+        for player in self._midi_all():
+            player.pause()
+        had_midi = midi_playback.panic()
+        if not output.reopen():
+            self._say("Audio output could not be reopened"
+                      + (" — MIDI synth silenced" if had_midi else ""))
+            return
+        # The mixer forgot the file along with everything else.
+        self._mp3_loaded_build = None
+        if self._mp3_player is not None:
+            self._mp3_player.close()
+            self._load_mp3_for_song()
+            self._ensure_mp3_source()
+            if self._mp3_plays():
+                self._mp3_player.seek(self._mp3_ms(self._playback_ms))
+        for player in self._midi_all():
+            player.seek(self._backing_ms(self._playback_ms))
+        self._say(f"Audio output reopened — {output.describe()}"
+                  + ("; MIDI synth silenced" if had_midi
+                     else "; no MIDI output to silence"))
+
+    def _forget_sync_for_new_recording(self) -> None:
+        """A different file needs its own sync, and says so.
+
+        Keeping the old points would be worse than having none: they were
+        measured against another recording and would put this one out by
+        seconds while the panel still read "17 points".
+        """
+        had = len(self._mp3_anchors())
+        for name, value in (("set_mp3_anchors_for", []),
+                            ("set_mp3_rate_for", 1.0),
+                            ("set_mp3_offset_for", 0.0)):
+            setter = getattr(self._config, name, None)
+            if setter is not None:
+                setter(self._song_key, value)
+        self._config.save()
+        self._sync_lines = []
+        self._mp3_loaded_build = None
+        self._say("A different recording — its sync starts fresh"
+                  + (f" ({had} points dropped)" if had else "")
+                  + ". Ctrl+S measures it.")
+
+    def _start_auto_sync(self) -> None:
+        """Find this recording's sync points by listening to it (Ctrl+S).
+
+        Setting five points by hand is what the other tools ask for and it
+        works; doing it before every song does not. The measurement that
+        finds them is the one `tools/check_song_sync.py` already made -- the
+        tab's pitch classes against the recording's, window by window --
+        with its answer handed to the map instead of printed.
+        """
+        if self._auto_sync_thread is not None and self._auto_sync_thread.is_alive():
+            self._say("Already listening to the recording…")
+            return
+        path = self._mp3_path()
+        if not path:
+            self._say("No backing track — Shift+U to pick one")
+            return
+        # The FILE where there is one, so every track of the band is
+        # matched against the recording rather than the one guitar being
+        # practised. A recording is the whole arrangement, and one track of
+        # it is most of the evidence thrown away.
+        source = Path(self._song_path) if self._song_path else self._timeline
+
+        def report(fraction: float, what: str) -> bool:
+            self._auto_sync_progress = (fraction, what)
+            return self._auto_sync_thread is not None
+
+        def work() -> None:
+            from pickhero.audio import autosync
+            try:
+                points, rows = autosync.find_points(source, path, report)
+                self._auto_sync_result = ("ok", points, len(rows),
+                                          len(autosync.usable_rows(rows)))
+            except Exception as exc:
+                # Named rather than swallowed: "the file cannot be decoded"
+                # is a thing the player can act on; silence is not.
+                self._auto_sync_result = (
+                    "error", f"{type(exc).__name__}: {exc}", 0, 0)
+
+        self._auto_sync_progress = (0.0, "reading the recording")
+        self._sync_lines = ["SYNC   listening to the recording…"]
+        # Seconds of FFT on a worker thread is enough to starve the audio
+        # callback on a laptop, and the player reports dropouts here. Marking
+        # the capture does not prevent them -- only the machine can do that --
+        # but it makes the run log able to say that these particular ones were
+        # harmless, which "130 dropped buffers" on its own cannot.
+        if self._audio_capture is not None:
+            self._audio_capture.busy = True
+        self._auto_sync_thread = threading.Thread(target=work, daemon=True)
+        self._auto_sync_thread.start()
+
+    def _take_auto_sync(self) -> None:
+        """Store what the listening found, on the main thread."""
+        result, self._auto_sync_result = self._auto_sync_result, None
+        self._auto_sync_thread = None
+        if self._audio_capture is not None:
+            self._audio_capture.busy = False
+        if result is None:
+            return
+        state = result[0]
+        if state == "error":
+            self._sync_lines = [f"SYNC   could not read the recording — "
+                                f"{result[1]}"]
+            return
+        _, points, windows, usable = result
+        if len(points) < 2:
+            # A result, not a failure: a recording this could not read is a
+            # different thing from one that needs no correction, and the
+            # window count is what tells them apart.
+            self._sync_lines = [
+                f"SYNC   the recording could not be read against this tab "
+                f"({usable} of {windows} windows usable)",
+                "SYNC   Shift+N/M to line it up by hand, Shift+S to set a "
+                "point"]
+            return
+        setter = getattr(self._config, "set_mp3_anchors_for", None)
+        if setter is None:
+            return
+        setter(self._song_key, points)
+        rate_setter = getattr(self._config, "set_mp3_rate_for", None)
+        if rate_setter is not None:
+            rate_setter(self._song_key, 1.0)
+        self._config.save()
+        self._describe_sync()
+        self._sync_lines.append(
+            f"SYNC   found by listening — {usable} of {windows} windows "
+            f"usable. Shift+S adds one by hand, Ctrl+Shift+S clears")
+
+    def _auto_sync_line(self) -> str:
+        """What the panel says while the listening is running."""
+        if self._auto_sync_thread is None:
+            return ""
+        fraction, what = self._auto_sync_progress
+        return f"SYNC   {what}… {fraction * 100:.0f} %"
+
+    def _set_sync_point(self) -> None:
+        """Remember that the recording is right HERE, and rebuild from all
+        of them.
+
+        The offset can only say where the recording starts, and for a while
+        this took exactly two points -- which is a straight line. The player's
+        own measurements say that is not enough: their offset runs -260 ms at
+        the start, -1330 ms at 2:57 and back to -260 ms at 4:18, so the best
+        straight line corrects by nothing at all and leaves 1.07 s standing in
+        the middle. A band that played without a click does not follow a line,
+        and every point they set is one more piece of it that can be followed.
+
+        It is a repair and not a cure, and it has to be offered as one: the
+        correction is a step at each point, not a curve, because the anchors
+        are the only places the truth is known.
+        """
+        if self._mp3_player is None:
+            self._say("No backing track — Shift+U to pick one")
+            return
+        here = (self._playback_ms, self._mp3_offset())
+        points = [p for p in self._mp3_anchors()
+                  if abs(p[0] - here[0]) >= MIN_SYNC_SPAN_MS]
+        dropped = len(self._mp3_anchors()) - len(points)
+        points.append(here)
+        points.sort()
+        setter = getattr(self._config, "set_mp3_anchors_for", None)
+        if setter is None:
+            return
+        setter(self._song_key, points)
+        self._config.save()
+        self._describe_sync(replaced=dropped)
+        self._mp3_loaded_build = None          # the plan changed
+
+    def _describe_sync(self, replaced: int = 0) -> None:
+        """The sync points and what they add up to, kept on screen.
+
+        Not a note that expires: the player spends minutes moving between
+        points, and a message that is gone by then leaves them guessing which
+        press the next one will be.
+        """
+        points = self._mp3_anchors()
+        rates = self._sync_map().rates()
+        lines = [
+            "  ".join(f"{_clock_text(at)} {_offset_text(off)}"
+                      for at, off in points)
+        ]
+        if len(points) < 2:
+            lines.append("SYNC 1 of 2 — now go somewhere else in the song, "
+                         "line the recording up with Shift+N/M, Shift+S again")
+        else:
+            spans = "  ".join(f"{(1 / rate - 1) * 100:+.2f} %"
+                              for rate in rates) or "nothing usable"
+            # Where the points actually ARE. Beyond the outermost one the map
+            # extrapolates, and a song whose points all sit in the first
+            # minute is a song whose last four are a guess -- which the
+            # panel has to say rather than leave to be discovered.
+            covered = (f"measured {_clock_text(points[0][0])}"
+                       f"–{_clock_text(points[-1][0])} of "
+                       f"{_clock_text(self._timeline.duration_ms)}")
+            lines.append(
+                f"SYNC {len(points)} points, {len(rates)} section(s): "
+                f"{spans}   ({covered})")
+            lines.append("SYNC Shift+S adds one, Ctrl+Shift+S clears, "
+                         "Ctrl+S measures again")
+        if replaced:
+            lines.append(f"replaced {replaced} point(s) closer than "
+                         f"{MIN_SYNC_SPAN_MS / 1000:.0f} s to this one")
+        self._sync_lines = ["SYNC   " + lines[0]] + lines[1:]
+
+    def _clear_sync_rate(self) -> None:
+        """Back to the recording as it was made."""
+        self._sync_anchor = None
+        self._sync_lines = []
+        self._mp3_loaded_build = None
+        for name, value in (("set_mp3_anchors_for", []),
+                            ("set_mp3_rate_for", 1.0)):
+            setter = getattr(self._config, name, None)
+            if setter is not None:
+                setter(self._song_key, value)
+        self._config.save()
+        self._say("Recording sync points cleared")
+
+    def _set_mp3_offset(self, offset_ms: float) -> None:
+        """Store the recording's offset and move the recording to match."""
+        new = max(-MAX_MP3_OFFSET_MS, min(MAX_MP3_OFFSET_MS, offset_ms))
+        setter = getattr(self._config, "set_mp3_offset_for", None)
+        if setter is None or not self._song_key:
+            return
+        setter(self._song_key, new)
+        self._config.save()
+        # Whatever the note said, the number is the news now.
+        self._clear_mp3_note()
+        if self._mp3_player is not None and self._mp3_plays():
+            self._mp3_player.seek(self._mp3_ms(self._playback_ms))
+
+    def _adjust_mp3_offset(self, delta_ms: float) -> None:
+        """Shift the recording against the notes (Shift+N earlier, Shift+M later).
+
+        Its own offset, not the MIDI one: an MP3 decoder emits encoder padding
+        before the music and how much depends on the encoder that made the
+        file, so nothing about the MIDI backing predicts it.
+
+        On a paused song this only stores the number. Moving the recording
+        would mean starting it, and a recording playing under a frozen picture
+        tells the player nothing about whether the two line up -- which is the
+        one question the key exists to answer. The value is dialled in while
+        the song runs, and the HUD shows it either way.
+        """
+        if not self._song_key:
+            return
+        self._set_mp3_offset(self._mp3_offset() + delta_ms)
+
+    def _mp3_hud_text(self) -> str:
+        """What the HUD says about the recording, or "" when there is nothing."""
+        if self._mp3_player is not None and self._mp3_player.error:
+            # A failure while playing outranks whatever was said when the file
+            # was chosen -- that message is now stale news.
+            return f"Audio: {self._mp3_player.error}"
+        if self._mp3_note:
+            return self._mp3_note
+        if self._mp3_player is None:
+            # Not nothing. A song with no recording showed no line at all, so
+            # the key that assigns one was invisible and U looked as though it
+            # had been removed -- which is what the player reported. A feature
+            # that silently does nothing cannot be told from a broken one.
+            return "Audio: no backing track — Shift+U to pick one"
+        name = Path(self._mp3_path()).name
+        if self._mp3_muted:
+            return f"Audio: off (U) — {name}"
+        if self._mp3_is_stuck():
+            return (f"Audio: not following the song — this file cannot be "
+                    f"seeked into; try OGG or WAV — {name}")
+        if self._mp3_stretch_matches(self._mp3_stretch_failed,
+                                     self._mp3_build_tempo()):
+            return f"Audio: {self._mp3_stretch_failed[2]} — {name}"
+        if not self._mp3_source_fits():
+            # Two different reasons for the same wait, and a line saying
+            # "fitting to 100 % speed" would name neither.
+            if abs(self._tempo_factor - 1.0) < 1e-6:
+                what = f"to this tab ({(1 / self._mp3_rate() - 1) * 100:+.2f} %)"
+            else:
+                what = f"to {int(self._tempo_factor * 100)} % speed"
+            return (f"Audio: fitting {what} "
+                    f"— {self._mp3_stretch_progress:.0%} — {name}")
+        rate = self._mp3_rate()
+        speed = ("" if abs(rate - 1.0) < 1e-6
+                 else f"  [{(1 / rate - 1) * 100:+.2f} % Shift+S] ")
+        if self._sync_anchor is not None:
+            speed = "  [sync point 1 set — line up near the end, Shift+S] "
+        return (f"Audio: {_offset_text(self._mp3_offset())}{speed} "
+                f"(Shift+N/M ±10ms, Ctrl ±1s, Ctrl+Shift ±10s) — {name}")
+
+    def _midi_all(self) -> list:
+        """Both MIDI players, in the order they were made.
+
+        Everything that moves the song -- a seek, a pause, a loop turn, a
+        tempo change -- has to reach BOTH or they drift apart, and a guide
+        that is a bar out is worse than no guide. Going through one list is
+        what stops a new transport call being added to only one of them.
+        """
+        return [p for p in (self._midi_player, self._guide_player) if p is not None]
+
+    def _init_guide_player(self, guide_track: BackingTrack) -> None:
+        """The written part of the track being played, as something to hear."""
+        try:
+            player = MidiPlayer(guide_track)
+            if player.open():
+                player.set_muted(self._guide_muted)
+                self._guide_player = player
+            else:
+                player.close()
+        except Exception as exc:
+            print(f"Guide track unavailable: {exc}")
+
+    def _toggle_guide_track(self) -> None:
+        """Hear the part you are meant to play, or stop hearing it (Shift+B)."""
+        if self._guide_player is None:
+            return
+        self._guide_muted = not self._guide_muted
+        self._guide_player.set_muted(self._guide_muted)
+        self._config.guide_track_enabled = not self._guide_muted
+        self._config.save()
+        # It is seeked rather than simply unmuted: the cursor advanced while
+        # it was silent, so unmuting alone would carry on from wherever the
+        # song happens to be -- which is right -- but a mute leaves notes
+        # hanging, and pause() is how they are let go.
+        if self._guide_muted:
+            self._guide_player.pause()
+        else:
+            self._guide_player.seek(self._backing_ms(self._playback_ms))
 
     def _init_midi_player(self, backing_track: BackingTrack) -> None:
         """Create and open MidiPlayer. Silently continues if MIDI unavailable."""

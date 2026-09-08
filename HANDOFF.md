@@ -1,6 +1,6 @@
 # MySician — Session Handoff Notes
 
-Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-17.
+Read this together with `CLAUDE.md` before continuing work. Last updated: 2026-08-19 (second session).
 
 `CLAUDE.md` says how the app is built and why. This file says where it stands,
 what the user's setup is, and what is still open.
@@ -9,14 +9,40 @@ what the user's setup is, and what is still open.
 
 Private Yousician-style guitar practice app for one user (Philipp). Forked from
 [PickHero](https://github.com/Artemarius/PickHero) (MIT, see LICENSE) into
-`Trubar4/MySician`. Working branch: **`claude/handoff-claude-md-review-va3ph4`** —
-all work is pushed there.
+`Trubar4/MySician`. Working branch: **the one named in `UPLOAD_BRANCH`** at the
+repo root — currently `claude/mysician-timing-remeasure-uaj3t8`. That file is
+the single place the branch is written down; `tools/record_reference.py` reads
+it so its upload hint can never send a recording to a branch nobody reads,
+which has now happened twice. When the work moves, update that file first.
 
 ## User's setup (important for debugging)
 
-- Windows PC, PowerShell; repo at `C:\Users\Admin\.vscode\MySician\mysician\mysician`
-- Runs from source: `.venv` with **Python 3.12** (system Python is 3.14 — must
-  NOT be used, aubio/pygame don't build there). Activate first:
+- **Two Windows machines now.** `C:\Users\Admin\.vscode\MySician\mysician\mysician`
+  on the first, `C:\Users\lwnthp0\Mysician\MySician` on the second. A fresh
+  clone has no `.venv` (it holds binaries built for one machine's Python and
+  cannot be committed), so every import fails one at a time and reads like a
+  broken app. `setup.ps1` builds the whole environment in one command and
+  verifies the imports; point them at it rather than at a list of pip
+  commands. It also warns when the checkout is on the wrong branch.
+- **A local install needs the MSVC C++ toolchain, and there is no way round
+  it.** aubio's newest release is 0.4.9 from 2019 and PyPI carries the source
+  tarball *only* — no wheel for any Python on any platform — so it is compiled
+  on every install. The VS Code "C/C++" extension is not a compiler and the
+  player reached for it first; what is needed is the **"Desktop development
+  with C++"** workload in the Visual Studio Installer, or the standalone Build
+  Tools. `setup.ps1` now checks for it with `vswhere.exe` BEFORE installing
+  anything, and distinguishes "no Visual Studio at all" from "Visual Studio
+  without the C++ workload", because the fix differs.
+- **The escape hatch is the built exe.** GitHub Actions builds `MySician.exe`
+  on every push to any `claude/**` branch, and its runner has the compiler. On
+  a machine that cannot build aubio, that is the way to run the current code.
+- Runs from source: `.venv` with **Python 3.12**. The system Python is newer
+  on both machines (3.14 on the first, 3.13 on the second) and must NOT be
+  used. The reason, since it comes up on every new machine: aubio has shipped
+  no wheel since 0.4.9 in 2019, so it compiles from source everywhere — and it
+  needs the numpy 1.x C API, whose last release (1.26.4) has no build above
+  3.12. `setup.ps1` finds a 3.12 through the `py` launcher and says this in
+  plain terms when it cannot. Activate first:
   `.venv\Scripts\Activate.ps1`, then `python -m pickhero`
   ("No module named pygame" = venv not activated)
 - Guitar → **Focusrite Scarlett** USB interface (native 48 kHz) → PC.
@@ -26,20 +52,39 @@ all work is pushed there.
 - User is non-technical ("vibecoding"): give **copy-paste commands**, explain
   simply, and **answer in German**.
 - Songs folder: `songs/` next to the repo, or `python -m pickhero --songs <path>`.
+- Plays rock and metal, and also pop and country.
+
+## Rulings from the user (do not re-litigate these)
+
+- **Where a note is fretted never matters.** The same pitch on a lower string in
+  a high position and on a higher string in a low position must score
+  identically. Already true: matching compares MIDI pitch and never the string.
+- **An octave error stays green.** The matcher's octave equivalence
+  (`dist % 12`) exists to absorb the detector's octave slips on wound strings,
+  and the user has decided it may keep crediting a genuinely wrong octave too.
+- **A dead note counts as played on the strike alone** — "something came, that's
+  good". There is no pitch in one to check.
+- **A bend that does not reach its target scores yellow, not red**, and the
+  target has to be held for as long as it is written.
+- **On six-string chords, err toward tolerance** rather than convicting strings.
 
 ## State
 
-437 tests (`python -m pytest tests -q`). Everything below is implemented,
+506 tests (`python -m pytest tests -q`). Everything below is implemented,
 calibrated where it needed calibrating, and pushed.
 
 **Working:** GP3–GP5 loading, track picker, scrolling display with per-song
 scroll speed, MIDI backing with per-song offset, pitch detection incl. power
 chords, per-string chord verification, wait mode, latency auto-sync, bends,
-slides, hammer-ons and pull-offs (drawn and scored), progress tracking.
+slides, hammer-ons and pull-offs (drawn and scored), palm mutes and dead notes
+(drawn and scored), progress tracking.
 
-**Known-imperfect:** chord verification abstains on chords closer than
-~335 ms. GP7 files load but carry no techniques. The timing spread the user
-reported is now measurable rather than guessed — see below.
+**Known-imperfect:** a note whose neighbour is still ringing on another
+string can be misread (topic 4 — the one miss in a 98.4 % run). A stretched
+recording is audibly imperfect at 50 % (topic 5, and usable anyway). Chord verification abstains on chords closer than ~255 ms
+(eighths past about 118 BPM). GP7 files load with muting but no bends or
+slides. Timing is measured and answered: plain input latency, which `K`
+removes.
 
 ## The three subsystems worth knowing before touching anything
 
@@ -82,6 +127,122 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 
 ## What this session changed (newest first)
 
+-12. **Detection is DONE: 98.4 % (61/62).** The last three sessions' worth of
+   low scores were the input level, and nothing else. The run before this one
+   had 56 strikes heard and 25 landing — strikes arriving with the wrong
+   pitch, which is precisely what a weak input does (it does not lose notes,
+   it renames them; see `CLAUDE.md`). Turned up: `level_loudest_db` -10.2,
+   median while playing -23.1, and the same player on the same song scores
+   61 of 62 with 45 timing samples and nothing ambiguous.
+
+   Two things follow, and the second matters more than the first:
+   - The **one remaining miss** is a B3 read confidently as F#3, five
+     semitones off, at the single place in the song where the previous note
+     sat on a different string and was still ringing. That is topic 4, and it
+     is now the only detection fault left in the file.
+   - **The "player rushes" finding is withdrawn.** See `CLAUDE.md`, "The
+     Rushing That Was Not There": the ramp measured 4.2 % on one run and
+     0.1 % on the clean one. A timing sample is worth no more than the pitch
+     that anchored it, and those pitches were unreliable.
+
+-11. **A pitchless power chord now counts.** `MIN_UNPITCHED_CHORD_STRINGS`
+   goes from 3 to 2. The old line was drawn on a rate (a pitchless strike is
+   rare below three strings) when the question was whether a wrong finger
+   still shows — and it does. Measured through the real path with the power
+   chords added to `check_chord_credit.py`: correct E5 8/10 → 10/10, G5
+   8/10 → 10/10, **palm-muted E5 16/20 → 20/20**, fast E5 76/78 → 78/78, and
+   every deliberate one-fret error still caught, the palm-muted wrong take
+   convicting 10 strings instead of 6. This is the metal case: one in five
+   power-chord strikes arrives with no pitch at all.
+-10. **The run log worked first time.** 91.9 % (57/62) against 34.6 %, with
+   every previous suspect cleared by reading the file instead of trying
+   things — see topic 3, and `CLAUDE.md`, "What A Run Log Answered, First
+   Time Out". Two findings came out of it that are not scoring bugs: the
+   player rushes 4 % inside fast passages (topic 3a), and the
+   `20260818_194323` reference set is silent and must not be calibrated
+   against (topic 3b).
+-9. **Detection is not the problem, and now there is proof.** The player's
+   fresh take (`reference_recordings/20260819_195251`) scored 34.6 % in the
+   app. The same WAV, through the same detector, the same `AudioCapture`
+   callback path, the same song file, the same 200 ms window and the same
+   chord verifier, scores **97.4 %** offline; the detector alone hears
+   **52 of 54** written onsets with the right pitch. So the loss is somewhere
+   between the live audio thread and the score, not in detection and not in
+   matching. It has not been located yet — see topic 3 — and the run log
+   below is the instrument built to locate it.
+-8. **The play-along analyser was reading slowed-down takes at full speed.**
+   The player practises at 80 %; the tool assumed 100 %, so the first bar
+   lined up and everything after it walked away. It reported 22 % on a take
+   it now reports 96 % on, and the whole of the last session's "detection is
+   broken" reading came through that. The practice speed is now recorded into
+   the manifest by the recorder (read from the app's own settings) and
+   measured when it is not, over the eleven speeds the app can be in.
+   `tests/test_play_along_alignment.py` keeps it honest.
+-7. **A run log (`D`), and a completion screen that says which half failed.**
+   Every scored run writes `~/.pickhero/run_<song>_<stamp>.txt`: one line per
+   strike (raw stamp, adjusted stamp, playback position, pitch, confidence,
+   what became of it), every written note's final verdict, and the header that
+   explains a run — resolved sample rate, dropped buffers, gate, thresholds,
+   tempo, offsets, filters. The completion screen names strikes heard next to
+   notes credited, because "few strikes" and "many strikes, low score" are
+   different faults in different places and one percentage cannot tell them
+   apart. See `CLAUDE.md`, "When The Score Is Low, Say Which Half Is Low".
+-6a. **Two clock bugs found by reading, not yet by measurement.** Changing the
+   practice speed mid-song used to displace every later strike by
+   `elapsed x change`, growing for the rest of the song and beyond what `K`
+   can take back; the audio clock is now re-anchored on every speed change.
+   And `_start_audio()` on an already-running capture left the old stream
+   open, writing into the same ring — it stops first now. Whether either was
+   in play in the 34.6 % run is exactly what the run log will say.
+
+-6. **Reading time on dense songs, and the fret filter forgetting itself.**
+   At full-size heads a dense tab gave 1.5 s of look-ahead at 683 px/s
+   (canon.gp5) — faster than a fret number can be read. Heads now shrink per
+   song, down to `MIN_HEAD_PX`, to buy look-ahead up to `READABLE_WINDOW_MS`;
+   canon goes to 2.5 s at 409 px/s and easy songs are untouched. The
+   docstring had promised this behaviour for a while without the code doing
+   it. Rendering was never the problem: 74-106 FPS measured. Separately,
+   `max_fret` no longer survives a restart — a filter left on silently deletes
+   notes and shows a plausible accuracy for a fraction of the song.
+-5. **A dropped audio buffer stopped the clock.** The single biggest cause of
+   "notes are not recognised". `_audio_callback` returned on any status flag,
+   discarding the buffer AND leaving the ring's sample counter frozen — so
+   every later strike was stamped early, cumulatively. On the player's own
+   play-along take: 42/46 strikes heard with nothing dropped, **17/46** with
+   2 % dropped the old way, 40/46 with the counter still advancing. The audio
+   is now always processed and overflows are counted and shown in the HUD.
+   **Detection was never the bottleneck it looked like** — the detector reads
+   that take at 91 % while the app scored it at 24 %.
+-4. **Only honest notes are timed, and K says what it left.** Technique notes
+   no longer contribute timing samples (`_times_its_own_strike`): a bend leaves
+   its pitch on purpose and a legato target is never picked. This was the root
+   cause of a bad offset that sat in the config for days — replayed against the
+   real export, 18 of its 24 samples drop and K would have stayed silent.
+   K itself now applies exactly what the report calls latency, the HUD line
+   reads the same verdict so it can never offer a key that does nothing, and it
+   names a residual ("49 ms still left, K again") instead of repeating the
+   first-time prompt.
+-3. **Chord verdicts at speed, and the tuning on screen.** `MIN_WINDOW_MS`
+   turned out to be stale rather than physical — fitted at 280 ms when the
+   analysis floor was a fixed 150 Hz, and never lowered after `MIN_HZ_SECONDS`
+   made short windows honest. Re-swept: no false alarm from 190 ms up, so the
+   floor is 200 ms and chords are judged down to ~255 ms apart. The sweep now
+   lifts the floor while it runs, because gating it on the constant it was
+   meant to question is what hid this. Separately, `metadata.tuning` was loaded
+   and never shown; the HUD now names it (`tuning_name`, `tuning_notes`) and
+   flags anything but standard with "← retune".
+-2. **Chord credit for pitchless strums.** See topic 2 below.
+-1. **Palm mutes and dead notes.** Both were in the GP files and neither reached
+   the app. A dead note was loaded as an ordinary note on the fret the tab uses
+   to say where the hand DAMPS, so it could not be hit at all and timed out as
+   a miss — and a muted metal riff is full of them. The collector now reports a
+   pitchless strike as `unpitched` instead of dropping it, and a written dead
+   note is credited by any strike; it never competes for a pitched one, and is
+   kept out of the timing report and chord verification. Palm mutes score
+   exactly as before (the pitch is unchanged) and are drawn as the short stubs
+   they sound like, with "PM" badged once per run. Both flags also come out of
+   the GP7 XML path, which still carries no bends. `make_technique_test.py` got
+   three muting sections.
 0. **Timing report** (`Y`). The distribution of your strikes against the beat,
    with the verdict named and the raw samples exportable (`Shift+Y`). Two
    fixes came out of building it: the search radius now narrows as the offset
@@ -112,10 +273,14 @@ palettes (string vs feedback) are kept apart on purpose — see `CLAUDE.md`,
 |---|---|
 | `make_timing_test.py` | Is my timing off, or is the tab sloppy? Click only where a note is. |
 | `make_chord_test.py` | Are chords recognised? C/Am/G/D from isolated to strummed eighths. |
-| `make_technique_test.py` | Are bends/slides/H/P drawn right? States what each bar contains. |
+| `make_technique_test.py` | Are bends/slides/H/P and muting drawn right? States what each bar contains. |
 | `record_reference.py` | Records a labelled take set, including deliberate wrong notes. |
 | `analyze_reference.py` | Per-string verdict table over a take set; counts false alarms. |
 | `sweep_chord_window.py` | How short may the chord window get before it lies? |
+| `check_chord_credit.py` | Does crediting a pitchless strum still catch a wrong finger? Exits non-zero if not. |
+| `record_reference.py --play-along` | Records the player playing a song through — the case the 29 isolated exercises do not contain. |
+| `analyze_play_along.py` | Per written onset: heard right, heard as the wrong note, or not heard at all. Finds both the start offset AND the practice speed. |
+| `D` in the app | The run log: what every strike did, and every note's verdict. The one place a live-only fault shows. |
 | `simulate_timing.py` | Does the timing report name a fault that was injected on purpose? |
 
 Generate the test songs with `python tools/make_*_test.py`; they land in `songs/`.
@@ -125,36 +290,278 @@ Generate the test songs with `python tools/make_*_test.py`; they land in `songs/
 Ordered by what would help the user most. `NEXT_SESSION.md` holds the same
 list as a paste-ready prompt, with what has already been ruled out on each.
 
-1. **Timing spread — the instrument is built, the reading is not in yet.**
-   This is where the next session starts, and it starts by ASKING, not by
-   building: the user was going to play the timing test and press `Y`.
-   Do not guess what it said and do not start fixing before it is known —
-   the whole point of the report was to stop guessing.
+1. ~~**Timing spread.**~~ **MEASURED AND CLOSED — 2026-08-17.** Two runs of the
+   shortened timing test came back `latency`, +120 ms and +128 ms, with a
+   scatter of only ±20 and ±16 ms and a between-string spread of 9 ms (within
+   chance). One constant offset, which is what `K` exists for: it removes 60 %
+   and 67 % of the total error respectively. **Nothing to build here.** Per-string
+   offsets are NOT called for and must not be built on this evidence.
+   The user plays tightly; the error is the input path, not the playing.
 
-   What each answer means for the next move:
+   Two things that made the earlier attempts unreadable, both now fixed:
+   the first export came from the technique test (17 of 24 samples sat on
+   bend/slide/legato notes, which cannot be measured), and the timing test
+   itself repeated one pitch for eighty seconds, so 127 of its samples were
+   refused as ambiguous. Keep diagnostic files pitch-varied and inside the
+   fret filter's default range.
+2. ~~**Chords come up RED.**~~ **DIAGNOSED AND FIXED — 2026-08-17.** A strummed
+   chord gives monophonic YIN no period to lock onto, so a correctly played
+   strum carried no pitch and was scored red: 38-55 % of strikes on chords of
+   four strings and up, against 16 % on one or two, and an open A minor
+   produced none at all in five strikes. Never a speed problem — a fast
+   single-note riff detects 47 of 49 and fast power chords 38 of 39, so the
+   verifier's 335 ms abstention was never the cause either.
+   An unpitched strike now credits a written chord of three strings or more
+   (`MIN_UNPITCHED_CHORD_STRINGS`), and the strum still goes to the verifier,
+   which catches a wrong finger afterwards. Correct chords went from 54 % to
+   100 % credited with every deliberate error still caught — see `CLAUDE.md`,
+   "Chords That Produce No Pitch", and `tools/check_chord_credit.py`.
 
-   | Verdict | What it means | Next move |
-   |---|---|---|
-   | `latency` | one constant offset | `K` already fixes it; nothing to build |
-   | `scatter` | the playing, or the passage | not an app problem — say so plainly |
-   | `mixed` | both | `K` first, then re-measure before anything else |
-   | `per_string` | the detector reacts at different speeds per string | build per-string offsets; the CSV from `Shift+Y` is the data to fit them on |
-   | too few samples | the song has too little pitch variety | check `ambiguous` in the report before blaming anything |
-2. **Bend evaluation.** The visual exists; scoring is deliberately lenient
-   because the detector produces no pitch contour. The user's target is
-   "roughly a quarter-tone accurate on the target pitch".
-3. **Chords at eighth-note speed.** Currently abstains below ~335 ms spacing.
-   Would need analysis before the next strike rather than after it — research,
-   not refactoring.
-4. **Palm mutes and dead notes.** In the GP files, currently drawn as ordinary
-   notes. Smallest of the four.
-5. **GP7 techniques.** The hand-written GP7 XML path carries no bends or slides.
+   The follow-on — chords too fast to get a per-string verdict — went with it:
+   the 335 ms floor turned out to be **stale, not physical**. Re-swept, the
+   reference takes show no false alarm from 190 ms up, so `MIN_WINDOW_MS` is
+   200 ms and the required spacing is ~255 ms, i.e. eighths to about 118 BPM
+   instead of 90. Faster than that still gets no verdict, which is the honest
+   answer at that speed.
+3. ~~**Find where the app loses notes the detector heard.**~~ **LARGELY
+   CLOSED — 2026-08-19, second session.** The next run scored **91.9 %
+   (57/62)** with the run log attached, against 34.6 % before. What is left
+   of this topic is small and named:
+
+   - **The 34.6 % run has no confirmed cause, and one untested suspect.**
+     Two things changed between the runs: the fixes below, and the player
+     regenerating the timing test (their copy was the older 78-note build).
+     Neither explains it on its own — the offline replay of that take reads
+     97.4 % against the OLD file too. The one difference nobody weighed is
+     that `record_reference.py` was capturing from the same interface at the
+     same time. **Worth one experiment**: play the test once with the
+     recorder running. If the score collapses again, every in-app score taken
+     during a play-along recording is void, which matters for every future
+     measurement. If it does not, the fixes did it and this is finished.
+   - **Two one-semitone misreads** remain (a 47 read as 48, a 45 read as 44),
+     which is the detector's honest resolution, not a bug. Nothing to do
+     unless it grows.
+   - **The pitchless power chord is fixed** — see topic 2 below and
+     `CLAUDE.md`, "Chords That Produce No Pitch". That was the other two
+     notes.
+   - The old candidate list is dead: gate -65 dB, 0 dropped buffers, 44100 Hz
+     resolved, no fret filter, no muted string, 0 strings taken back, clock
+     anchored at 5.4 ms. All read off the log rather than tried.
+
+   The evidence that closed it, kept for reference:
+
+   The player's 2026-08-19 take, scored by the app at **34.6 % (27/78)**,
+   reads as follows when the recording is put through the same code offline:
+
+   | read through | result |
+   |---|---|
+   | the detector alone (`analyze_play_along.py`, 80 %) | 52/54 onsets, right pitch |
+   | detector + matcher (`NoteMatcher`, 200 ms window) | 98.7 % |
+   | + the real `AudioCapture` callback and the chord verifier | **97.4 %** |
+   | the app, live, same take | **34.6 %** |
+
+   So: not detection, not matching, not the chord verifier, not the song file
+   (the player's `timing_test_100bpm.gp5` is the older 78-note version, which
+   is what the offline runs used too), and not dropped buffers (the HUD line
+   was absent, i.e. zero). Whatever it is, it is live-only, and the arithmetic
+   says the app saw far FEWER strikes than the 60 the same audio yields
+   offline: its timing samples sit at the right places with a small median, so
+   the strikes it did see were stamped correctly.
+
+   Still parked, and still not worth touching without more data: the
+   confidence threshold (0.65 vs 0.80 measured as marginal — +2 power-chord
+   and +4 chord strikes, but one extra WRONG pitch on single notes, over 150
+   strikes) and doubled strikes on isolated chords (one shows in the 91.9 %
+   log at 12.1 s, harmless to the score).
+
+3a. ~~**Rushing, which the timing report calls scatter.**~~ **WITHDRAWN —
+   2026-08-21.** Measured 4.2 % on a run whose pitches were unreliable and
+   0.1 % on the clean one. Do not build the per-passage slope on this
+   evidence; if it is ever wanted, measure it again from a run with
+   `level_loudest_db` above -38. Original note kept below for the shape of
+   the argument, which was sound even though the data was not.
+
+   ~~The original: inside every fast passage the error ramped from
+   late to early and reset at the next phrase — 0.8 % fast on quarters,
+   **4.2 % on eighths**, 9.2 % on the eighth-note chords. A ramp that resets
+   cannot be a clock and is not scatter; it has a direction, and `K` cannot
+   touch it. The report says `mixed` and sends them to practise slower, which
+   is not wrong but is far less useful than "you speed up inside runs". A
+   per-passage slope, tested against its own standard error the way the median
+   and the per-string gap already are, would name it. See `CLAUDE.md`,
+   "The Rushing That Was Not There".~~
+
+3b. **`reference_recordings/20260818_194323` is unusable and should not be
+   calibrated against.** Every take peaks at -58 dBFS with an RMS of -70;
+   the detector finds zero strikes in the whole set. Use `20260814_160019`,
+   which is what every threshold in `chord_verify.py` was fitted on.
+4. ~~**Ringing strings.**~~ **MEASURED AND FIXED — 2026-08-21.** Recorded
+   (block 5), measured, and the answer was not the one the synthesis gave:
+   **nothing ever comes back as a different note** — not one, in any take.
+   What ringing strings cost is strikes carrying **no pitch at all**, and only
+   at speed. Slow is untouched (85 % against 80 % damped); fast loses 24
+   points (57 % against 81 %).
+
+   That made the planned fix wrong — there was no wrong pitch to correct — and
+   the right one is its mirror: an unpitched strike on a SINGLE written note is
+   held, and `ChordVerifier.confirms` is asked whether that pitch is present in
+   the audio. It acquits on positive evidence the way the chord verifier
+   convicts on it. Fast ringing goes **8/14 → 10/14**, every damped take gains
+   exactly nothing, and the chord and play-along takes are unchanged.
+   `tools/check_ringing_rescue.py` is the regression check and exits non-zero
+   if a damped take ever gains. See `CLAUDE.md`, "Rescuing A Strike That
+   Carries No Pitch".
+
+   **What is left:** it closes about half the gap. The two strikes it cannot
+   recover are the high A4, whose partials sit among the ringing lower
+   strings' harmonics with only 3-5 dB of margin — too little to act on
+   without inviting false credit. Whether that is worth chasing needs a
+   player who says the remaining loss bothers them, not another threshold.
+
+   Kept because it cost two wrong readings: ~~the first version of this
+   topic.~~ This is the only detection fault left after 98.4 %: the one miss
+   in that run was a B3 read confidently as F#3, at the single place where the
+   previous note sat on another string and was still ringing.
+
+   But splitting every note in the three real play-along takes by whether its
+   predecessor shared its string gives **40/40 correct across string changes**,
+   against 133/159 on the same string. Not one string change costs anything.
+   The 59 % figure in `CLAUDE.md` is synthesis, and the takes cannot correct
+   it: in `timing_test_100bpm.gp5` every string change sits in the slow
+   opening section where the previous note has decayed, and every fast passage
+   stays on one string. The recordings hold the easy half of the case and none
+   of the hard half.
+
+   **So the next step is data, not code.** `record_reference.py` block 5 is now
+   the missing half — the same six-note line across all six strings, twice
+   damped and twice ringing, slow and fast, so damping and speed are the only
+   variables. `tools/analyze_ringing.py` reads the four back side by side and
+   says plainly whether there is anything to fix. On synthesis it separates
+   them cleanly (100 % damped, 50 % ringing), so the instrument works; what is
+   missing is a real take.
+
+       python tools/record_reference.py --block 5
+       python tools/analyze_ringing.py reference_recordings/<stamp>
+
+   **If it turns out to be real**, the shape of the fix is already known and
+   is not a new idea: when a strike's pitch matches nothing the tab expects,
+   ask `chord_verify.py` whether the WRITTEN pitch is present in the audio
+   before writing the strike off. That is the same score-informed partial
+   check the chord verifier already does, run one note at a time. It would
+   need `process_strike_windows` to be able to upgrade as well as downgrade,
+   which is a real change to a deliberate rule — positive evidence for the
+   written note is a legitimate reason, but do not make it without the
+   measurement first.
+5. ~~**MP3 backing track.**~~ **BUILT — 2026-08-19.** `U` switches the
+   recording on and off, `Shift+U` picks the file with the Windows dialog,
+   `Shift+N`/`Shift+M` shift it against the notes, and both the path and the
+   offset are stored per song. It runs ALONGSIDE the MIDI backing, both
+   switched separately, which is what the player asked for and why `B` does
+   not cycle. See `CLAUDE.md`, "Two Backing Tracks, Switched Separately".
+
+   **The limit that came up immediately, and is now gone — 2026-08-22.** A
+   recording cannot be played slower without dropping its pitch four
+   semitones, and the player practises at 80 % a great deal, so it bit at
+   once. `audio/timestretch.py` now makes a longer file at the SAME pitch
+   (WSOLA, ~80 lines of numpy, no new dependency), built on a thread and
+   cached per file and per speed under `~/.pickhero/stretched/`. The
+   recording stays silent while the copy is being made and the HUD says so;
+   a file SDL cannot decode into memory is named rather than swallowed.
+   Measured on a synthetic take: 220 Hz stays 220 Hz at every speed from 50 %
+   up, the length lands within 1 %, and eight seconds of stereo takes about
+   a quarter of a second to convert.
+
+   **First real-world bug, found and fixed:** pausing did not silence it.
+   Every route to the recording reaches `Mp3Player.seek`, and seeking STARTS
+   playback — so `Shift+N`/`Shift+M` on a paused song set the recording
+   playing under a frozen picture, which is exactly the state the offset has
+   to be judged in. `_mp3_plays()` now includes `self._playing`; paused, the
+   keys only store the number and the HUD still shows it move.
+
+   Still untested against a real file: `pygame.mixer.music.play(start=...)`
+   seeking into the middle of an MP3 on Windows, and whether the tkinter
+   dialog comes to the front. Both fail loudly rather than silently.
+
+   The original assessment, for reference: The player's feature request, assessed as a
+   moderate, non-research job. Wanted: a file picker, per-song path, on/off,
+   and a per-song sync offset. Most of the machinery exists — `Config` already
+   stores a per-song backing offset and `N`/`M` shift it live; `pygame.mixer.music`
+   plays MP3 with position control. The only real question is the picker:
+   PyGame has no file dialog, so either `tkinter.filedialog` (ten lines, gives
+   the native Windows dialog) or a PyGame browser like `download_menu.py`.
+   **Both questions are now settled by the player (2026-08-19):**
+
+   - **MP3 and MIDI must be switchable INDEPENDENTLY, not cycled.** Not a
+     preference — a workflow: he needs both sounding at once to line the MP3
+     up against the click, and switches one off once it is synced. A `B` that
+     cycles off → MIDI → MP3 makes exactly the state he needs unreachable. So:
+     one toggle each, either or both, and the per-song sync offset applies to
+     the MP3.
+   - **The file picker is the native Windows dialog** (`tkinter.filedialog`).
+
+   MP3 encoder delay varies per file, which is why the manual per-song sync is
+   a requirement rather than a convenience — and why the two-at-once state
+   above is what makes it usable at all.
+6. ~~**Settings screen.**~~ **BUILT — 2026-08-22.** `O` on the song list opens
+   `ui/settings_menu.py`: device, calibration, noise gate, hit window, timing
+   offset, fret limit, muted strings, chord scoring, per-string chord check,
+   practice speed, scroll speed, count-in, both backing tracks and their sync,
+   wait mode, theme. Up/down chooses, left/right changes, ENTER opens the
+   screens that need one, `R` puts one row back to standard, ESC leaves —
+   everything saved as it is changed.
+
+   **The point is the seeing, not the changing.** Anything away from its
+   standard value is marked and named in the header, which is what would have
+   caught the fret-filter incident. See `CLAUDE.md`, "A Setting You Cannot See
+   Is A Setting You Cannot Undo".
+7. ~~**Bend evaluation.**~~ **BUILT — 2026-08-22, thresholds still unmeasured.**
+   The matcher keeps the pitch contour it was already being handed and asks two
+   questions once a bent note is over: did it reach the written top within a
+   quarter tone, and was that top held as long as the tab writes it. Either
+   failing turns the note yellow, never red, per the player's ruling; too few
+   readings turns nothing at all, per the presumption of innocence.
+
+   **Measured — 2026-08-23**, on 18 bends the player recorded as block 6.
+   `tools/check_bends.py` prints the window each threshold sits in and then
+   runs the real matcher over the same audio: 12 correct bends green, 6
+   deliberate errors yellow. The tolerance stayed at 50 cents (it cannot be
+   tightened: the player overshoots by up to 51), the hold fraction dropped
+   from a guessed 0.5 to a measured 0.3, and the hold became a run with a
+   250 ms gap tolerance rather than a frame count — which is what makes
+   vibrato survive. See `CLAUDE.md`, "How Far The Bend Went". `O` on the song
+   list still has a switch for it.
+8. ~~**GP7 techniques.**~~ **BUILT — 2026-08-22, and GP6 with it.** The GPIF
+   path now reads bends, slides and hammer-ons as well as muting
+   (`_parse_gpif_notes`), so a GP6/GP7/GP8 tab no longer scores its techniques
+   as wrong notes. `.gpx` files load at all for the first time: `tabs/gpx.py`
+   unwraps GP6's own container (BCFZ compression over a BCFS sector image) and
+   hands the same XML to the same parser. Verified against all 35 of
+   alphaTab's GP6 test files. See `CLAUDE.md`, "Three Guitar Pro Generations,
+   One Parser".
+9. ~~**Palm-mute leniency.**~~ **MEASURED AND REMOVED — 2026-08-23.** Built
+   on the argument that a chug is choked on purpose and its riff is too fast
+   for the audio window that would confirm it. Block 7 settled it the other
+   way: a single chug arrives with no pitch **3.4 %** of the time (3 of 87),
+   and on the take played a fret off, **3.5 %** — the same rate. The rule
+   would have bought three notes and turned two wrong ones green.
+   `tools/check_palm_mute.py` reports the rate and fails if it ever reaches a
+   fifth of strikes. See `CLAUDE.md`, "Muting".
+
+   **The takes read as 0 of 87 at first**, and the cause was the tuning: they
+   were played in drop D while the manifest said E2, because the recorder
+   asked only for a uniform offset and forbade drop tunings. Fixed — see
+   `CLAUDE.md`, "Reference Takes Are Only Worth Their Tuning".
 
 ## Conventions
 
 - Commit style: imperative subject + explanatory body saying *why*, not what.
   No model names anywhere in commits, PRs or code.
-- Always push to `claude/handoff-claude-md-review-va3ph4`.
+- Always push to the branch named in `UPLOAD_BRANCH`, and update that file
+  when the branch changes.
+- **The player's local checkout drifted onto the old branch once.** Their pulls
+  still brought this work in (a pull merges into whatever is checked out), but
+  their pushes landed elsewhere and one push failed outright. If they report a
+  push error, check which branch they are on before looking anywhere else.
 - Run the full suite before pushing; add tests for every behaviour change.
 - **Verify signal-processing changes against the reference recordings**, not
   against intuition. Synthetic tones are a trap unless they carry the property

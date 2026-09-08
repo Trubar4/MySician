@@ -27,6 +27,11 @@ class DetectedNote:
     # by multiple strings sounding at once — it is evidence of a strummed
     # chord, not a single note.
     subharmonic: bool = False
+    # True for a strike loud enough to be real that never produced a pitch at
+    # all: a dead note, or one choked so hard YIN finds no period. midi_note
+    # and frequency carry nothing in that case — the tab is the only thing
+    # that can say whether such a strike was what the music asked for.
+    unpitched: bool = False
 
 
 class PitchDetector:
@@ -42,7 +47,7 @@ class PitchDetector:
         hop_size: int = 512,
         sample_rate: int = 44100,
         confidence_threshold: float = 0.8,
-        onset_threshold: float = 0.3,
+        onset_threshold: float = 0.05,
         noise_gate_db: float = -60.0,
         yin_tolerance: float = 0.15,
         calibration: dict | None = None,
@@ -56,6 +61,8 @@ class PitchDetector:
         self.yin_tolerance = yin_tolerance
         self.last_signal_db: float = -120.0
         self.last_freq: float = 0.0
+        # The same reading with no calibration applied -- see process().
+        self.last_freq_raw: float = 0.0
         self.last_confidence: float = 0.0
         self.last_is_onset: bool = False
 
@@ -109,6 +116,16 @@ class PitchDetector:
         # Detect pitch
         freq = float(self._pitch(audio_buffer)[0])
         confidence = float(self._pitch.get_confidence())
+
+        # What the detector actually heard, before the calibration is allowed
+        # an opinion. A TUNER must read this one: _correct_octave_jump halves
+        # a frequency whose half lands near a CALIBRATED string, so a stored
+        # calibration that is itself an octave out would have the tuner report
+        # the wrong octave with total confidence -- and this player's stored
+        # calibration is exactly that (A string at 54.87 Hz, an octave low).
+        # Being wrong about the note while playing costs one note; being wrong
+        # about it while tuning makes them detune the guitar.
+        self.last_freq_raw = freq
 
         # Correct octave jumps before exposing values
         if freq > 0:

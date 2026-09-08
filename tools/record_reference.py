@@ -57,10 +57,20 @@ class Exercise:
     # player does not "correct" it by accident.
     intentional_error: str = ""
 
-    def expected_midi(self, offset: int = 0) -> list:
-        """MIDI notes per shape, shifted by a uniform tuning offset."""
+    def expected_midi(self, offset: int = 0, drop: int = 0) -> list:
+        """MIDI notes per shape, for the tuning the guitar is actually in.
+
+        `offset` shifts every string (Eb, D standard, ...); `drop` lowers the
+        sixth string on its own. Drop tunings used to be forbidden here, on
+        the grounds that the shapes only hold for an evenly tuned guitar --
+        which is true of the shapes and false of the player, who plays metal
+        and lives in drop D. The block 7 takes were recorded that way and
+        every expected pitch on the low string was two semitones wrong, so
+        the whole set scored zero until it was worked out by hand.
+        """
         return [
-            sorted(STANDARD_TUNING[s] + fret + offset for s, fret in shape.items())
+            sorted(STANDARD_TUNING[s] + fret + offset - (drop if s == 6 else 0)
+                   for s, fret in shape.items())
             for shape in self.shapes
         ]
 
@@ -192,6 +202,131 @@ EXERCISES = [
              [{3: 7}], technique="free",
              instruction="Anschlagen und einen Ganzton hochziehen. Dreimal.",
              seconds=9),
+
+    # ---- Block 5: ringing strings, the same line damped and undamped ------
+    #
+    # The one case no other take contains, and the reason it matters: a line
+    # walking ACROSS the neck while the strings it left keep sounding is
+    # polyphony, and monophonic YIN reports one pitch for it. That was
+    # measured on synthesis (3 of 8 against 8 of 8 damped) and never on a real
+    # guitar -- and the player's own play-along takes disagree with it, going
+    # 40 for 40 across string changes. But those changes all sit in a slow
+    # passage where the previous note has decayed anyway, so the takes cannot
+    # settle it either way.
+    #
+    # These four can. Same line, same player, same session: only the damping
+    # and the speed change, so whatever separates them IS the effect.
+    *[
+        Exercise(f"5{i}_across_{speed}_{damp}", 5,
+                 f"Saitenwechsel {'schnell' if speed == 'fast' else 'langsam'}"
+                 f" - {'GEDAEMPFT' if damp == 'damped' else 'KLINGEN LASSEN'}",
+                 [{6: 5}, {5: 5}, {4: 5}, {3: 5}, {2: 5}, {1: 5}],
+                 technique="normal" if damp == "damped" else "let_ring",
+                 instruction=(
+                     "Alle im 5. Bund, eine Note pro Saite, tief nach hoch "
+                     "und zurueck - zwei Durchgaenge. "
+                     + ("Jede Saite abdaempfen, sobald du sie verlaesst: "
+                        "immer nur EIN Ton gleichzeitig."
+                        if damp == "damped" else
+                        "NICHTS abdaempfen - alles weiterklingen lassen, "
+                        "auch wenn es matschig wird. Genau darum geht es.")
+                     + (" Zuegig, etwa zwei Toene pro Sekunde."
+                        if speed == "fast" else
+                        " Langsam, etwa ein Ton pro Sekunde.")),
+                 seconds=14 if speed == "slow" else 9)
+        for i, (speed, damp) in enumerate([
+            ("slow", "damped"), ("slow", "ringing"),
+            ("fast", "damped"), ("fast", "ringing"),
+        ])
+    ],
+
+    # ---- Block 6: bends, played right and played short --------------------
+    #
+    # How far a bend went is now scored, and the three thresholds that decide
+    # it (a quarter tone of tolerance, half the written hold, four readings of
+    # evidence) were fitted to NOTHING -- there was no recording of a bend to
+    # fit them to. These takes are that recording.
+    #
+    # The pairs are what make it a measurement rather than a demonstration: a
+    # correct bend and a short one, a held one and one let go at once. A
+    # threshold has to pass every correct take AND catch every deliberate
+    # error, and the gap between those two demands is the room it has.
+    #
+    # 65 is the one most likely to embarrass the rule: vibrato swings the
+    # pitch either side of the target on purpose, and a rule that counts
+    # frames on target can read that as not holding.
+    Exercise("60_bend_full_ok", 6, "Ganzton-Bend, gehalten - RICHTIG",
+             [{3: 7}], technique="free",
+             instruction="7. Bund G-Saite anschlagen, einen GANZEN TON hoch "
+                         "ziehen und etwa zwei Sekunden oben halten. Dreimal.",
+             seconds=12),
+    Exercise("61_bend_half_ok", 6, "Halbton-Bend, gehalten - RICHTIG",
+             [{3: 7}], technique="free",
+             instruction="Dasselbe, aber nur einen HALBEN Ton hoch. Oben "
+                         "halten. Dreimal.",
+             seconds=12),
+    Exercise("62_bend_too_short", 6, "Ganzton-Bend, absichtlich ZU FLACH",
+             [{3: 7}], technique="free",
+             instruction="Ziel ist ein ganzer Ton, aber zieh absichtlich nur "
+                         "etwa die Haelfte und halte dort. Dreimal.",
+             intentional_error="nur etwa ein Halbton statt einem Ganzton",
+             seconds=12),
+    Exercise("63_bend_not_held", 6, "Ganzton-Bend, absichtlich NICHT GEHALTEN",
+             [{3: 7}], technique="free",
+             instruction="Ganzen Ton hochziehen und sofort wieder loslassen, "
+                         "als waere es ein Vorschlag. Dreimal.",
+             intentional_error="oben nicht gehalten",
+             seconds=12),
+    Exercise("64_bend_release", 6, "Bend und Release",
+             [{3: 7}], technique="free",
+             instruction="Ganzen Ton hoch, kurz halten, dann kontrolliert "
+                         "wieder herunterlassen. Dreimal.",
+             seconds=12),
+    Exercise("65_bend_vibrato", 6, "Ganzton-Bend mit Vibrato",
+             [{3: 7}], technique="free",
+             instruction="Ganzen Ton hoch und oben VIBRATO spielen, so wie du "
+                         "es normal machst. Dreimal.",
+             seconds=12),
+
+    # ---- Block 7: single-note chugs, right and wrong ----------------------
+    #
+    # The app now credits a palm-muted note whose strike came back with no
+    # pitch at all. That is leniency, and the only rule in the app granted
+    # without a recording behind it -- because no take contains a SINGLE
+    # palm-muted note. Every palm mute recorded so far is a power chord, and a
+    # chord is credited by a different rule that was measured.
+    #
+    # Two numbers settle it, and both need these takes: how often a single
+    # chug really does arrive pitchless (if it is rare, the leniency buys
+    # nothing and should go), and how many wrong chugs it lets through (a
+    # wrong fret still sounds a PITCH, so the answer should be near zero --
+    # but "should be" is what this project does not accept).
+    #
+    # Fast matters on its own: a chug riff runs in eighths, the verification
+    # window is trimmed to the gap before the next strike, and under 200 ms it
+    # is dropped -- so on exactly this passage no evidence can ever arrive.
+    Exercise("70_chug_slow_ok", 7, "Chugs auf der tiefen E-Saite, LANGSAM",
+             [{6: 0}], technique="palm_mute",
+             instruction="Leere tiefe E-Saite, Handballen auf den Saiten, "
+                         "etwa ein Anschlag pro Sekunde. Acht Stueck.",
+             seconds=10),
+    Exercise("71_chug_fast_ok", 7, "Chugs auf der tiefen E-Saite, SCHNELL",
+             [{6: 0}], technique="palm_mute",
+             instruction="Dasselbe, aber im Achtel-Tempo wie in einem Riff - "
+                         "so schnell du sauber chuggst, durchgehend.",
+             seconds=10),
+    Exercise("72_chug_fast_sharp", 7,
+             "Chugs SCHNELL - absichtlich im 1. Bund statt leer",
+             [{6: 1}], technique="palm_mute",
+             instruction="Wie eben, aber greif die tiefe E-Saite im 1. Bund. "
+                         "Das ist der absichtliche Fehler.",
+             intentional_error="1. Bund statt leerer Saite",
+             seconds=10),
+    Exercise("73_chug_riff", 7, "Chug-Riff mit Wechsel",
+             [{6: 0}, {6: 0}, {6: 3}, {6: 0}], technique="palm_mute",
+             instruction="Leer, leer, 3. Bund, leer - als Riff, mit Palm Mute, "
+                         "vier Durchgaenge.",
+             seconds=12),
 ]
 
 
@@ -322,16 +457,28 @@ def choose_device():
 
 
 def ask_tuning_offset():
-    """Uniform semitone offset, so down-tuned guitars keep the same shapes."""
+    """How the guitar is tuned: a uniform shift, plus a dropped sixth string.
+
+    Both are needed. Asking only for the uniform shift is what invalidated the
+    first block 7 recording: the player answered "standard" because five of
+    their strings are, and the sixth was in drop D -- so every chug was scored
+    against a pitch two semitones above the one that sounded.
+    """
     print("\nStimmung der Gitarre:")
     print("  [0] Standard E")
     print("  [1] Eb / einen Halbton runter")
     print("  [2] D standard / einen Ganzton runter")
     print("  [3] C# standard / anderthalb Toene runter")
-    print("\n  (Drop-Stimmungen bitte NICHT verwenden - die Griffbilder unten")
-    print("   gelten nur fuer gleichmaessig gestimmte Gitarren.)")
     raw = input("\nAuswahl [0]: ").strip()
-    return -{"": 0, "0": 0, "1": 1, "2": 2, "3": 3}.get(raw, 0)
+    offset = -{"": 0, "0": 0, "1": 1, "2": 2, "3": 3}.get(raw, 0)
+
+    print("\nIst die tiefste Saite zusaetzlich heruntergestimmt (Drop)?")
+    print("  [0] nein")
+    print("  [1] Drop: einen Ganzton runter (z.B. Drop D)")
+    print("  [2] Drop: anderthalb Toene runter")
+    raw = input("\nAuswahl [0]: ").strip()
+    drop = {"": 0, "0": 0, "1": 2, "2": 3}.get(raw, 0)
+    return offset, drop
 
 
 def level_check(device, samplerate, channels):
@@ -369,7 +516,7 @@ def level_check(device, samplerate, channels):
     print(f"  Lautester Anschlag: {level['peak']:.1f} dBFS\n")
 
 
-def show_exercise(ex, index, total, offset):
+def show_exercise(ex, index, total, offset, drop=0):
     print("\n" + "=" * 72)
     print(f"[{index}/{total}]  Block {ex.block}  -  {ex.title}")
     print("=" * 72)
@@ -380,7 +527,7 @@ def show_exercise(ex, index, total, offset):
         print(render_tab(ex.shapes))
         names = " | ".join(
             " ".join(midi_name(m) for m in shape)
-            for shape in ex.expected_midi(offset)
+            for shape in ex.expected_midi(offset, drop)
         )
         print(f"\n    erwartete Toene: {names}")
     if ex.technique == "palm_mute":
@@ -396,18 +543,57 @@ def midi_name(m):
     return f"{NOTE_NAMES[m % 12]}{m // 12 - 1}"
 
 
-def current_branch(default="<dein-branch>"):
-    """Branch name for the upload hint, so it is never a stale hard-coded one."""
+def _git(*args, timeout=20):
+    """Run a git command in the repo and return its stdout, or None."""
     try:
         import subprocess
         out = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=5,
+            ["git", *args], cwd=REPO_ROOT,
+            capture_output=True, text=True, timeout=timeout,
         )
-        name = out.stdout.strip()
-        return name if out.returncode == 0 and name and name != "HEAD" else default
+        return out.stdout.strip() if out.returncode == 0 else None
     except Exception:
-        return default
+        return None
+
+
+def current_branch(default="<dein-branch>"):
+    """Whatever is checked out right now."""
+    name = _git("rev-parse", "--abbrev-ref", "HEAD")
+    return name if name and name != "HEAD" else default
+
+
+def upload_branch():
+    """The branch these recordings belong on, which is not always this one.
+
+    The checkout drifts. A recording pushed to a branch nobody is reading is
+    a recording that does not exist, and it has happened twice: the hint used
+    to name whatever was checked out, which is exactly the thing that was
+    wrong. So the branch is read from the repo itself -- UPLOAD_BRANCH, kept
+    up to date by whoever is working on it -- and only falls back to the
+    checkout when the file is missing.
+
+    Returns (branch, switch_needed).
+    """
+    _git("fetch", "--quiet", "origin", timeout=60)
+    named = None
+    marker = REPO_ROOT / "UPLOAD_BRANCH"
+    if marker.exists():
+        for line in marker.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                named = line
+                break
+    if not named:
+        # No marker (an old checkout, which is the case this has to survive):
+        # the most recently updated work branch on the remote is the best
+        # guess available, and still better than the local one.
+        listing = _git("for-each-ref", "--sort=-committerdate", "--count=1",
+                       "--format=%(refname:strip=3)", "refs/remotes/origin/claude")
+        named = listing or None
+    here = current_branch(default="")
+    if not named:
+        return here or "<dein-branch>", False
+    return named, named != here
 
 
 def countdown(n=3):
@@ -421,6 +607,99 @@ def countdown(n=3):
 
 # -------------------------------------------------------------------- main
 
+def practice_tempo(song=None):
+    """The speed THIS SONG is set to play at, as a fraction, or None.
+
+    Read straight out of the app's settings rather than asked for: a take
+    played at 80 % is stretched against the written tab, and an analysis that
+    does not know that reports the detector hearing a quarter of what it
+    actually heard. The recorder is deliberately standalone, so this reads the
+    JSON rather than importing the app.
+
+    The speed belongs to the SONG (`song_tempo_factors`), and the plain
+    `tempo_factor` is whatever was last set globally -- which is nothing this
+    take was played at. Reading the global one wrote 80 % into a take played
+    at 100 %, and the analysis then read that take at 13 % instead of 91 %.
+    A song with no entry of its own opens at full speed, which is what the
+    app does, so it is 1.0 here rather than None.
+    """
+    try:
+        path = Path.home() / ".pickhero" / "settings.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    key = Path(song).stem if song else None
+    per_song = data.get("song_tempo_factors") or {}
+    if key is not None and isinstance(per_song, dict):
+        if key in per_song:
+            value = _tempo_value(per_song[key])
+            return value if value is not None else 1.0
+        # The song is not in there, so the app opens it at full speed. Falling
+        # back to the global value here is what caused the wrong number.
+        return 1.0
+    return _tempo_value(data.get("tempo_factor"))
+
+
+def _tempo_value(raw):
+    """A practice speed the app could actually be set to, or None."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if 0.4 < value <= 1.0 else None
+
+
+def play_along(device, samplerate, channels, out_dir, seconds, song):
+    """Record while the player plays a song in the app, and save the raw take.
+
+    The 29 exercises are isolated notes with a rest after each -- which is the
+    case that already works. What no take in that set contains is the case
+    that fails: a passage played through, where the strings already struck go
+    on ringing under the next note. So this records exactly that, and leaves
+    the analysis to be aligned afterwards against the song's known onsets.
+
+    Nothing needs to be lined up while recording. Start this, then start the
+    song; tools/analyze_play_along.py finds the offset that best explains the
+    onsets it hears, so a few seconds of fumbling at either end cost nothing.
+    """
+    print("=" * 72)
+    print("MITSCHNITT beim Durchspielen")
+    print("=" * 72)
+    tempo = practice_tempo(song)
+    print(f"  Song:      {song}")
+    print(f"  Dauer:     {seconds:.0f}s")
+    if tempo is not None:
+        print(f"  Tempo:     {tempo * 100:.0f} % (aus den App-Einstellungen)")
+    print()
+    print("  1. Diese Aufnahme mit Enter starten")
+    print("  2. In MySician den Song starten und normal durchspielen")
+    print("  3. Spiel wie immer - NICHT extra sauber daempfen.")
+    print("     Genau das, was schiefgeht, soll drauf sein.")
+    input("\n  [Enter] startet die Aufnahme: ")
+    countdown(3)
+    audio = record(seconds, device, samplerate, channels)
+    peak = dbfs(audio)
+    rms_val = float(np.sqrt(np.mean(audio ** 2))) if audio.size else 0.0
+    rms_db = 20 * np.log10(rms_val) if rms_val > 0 else -120.0
+    print(f"  aufgenommen: Peak {peak:.1f} dBFS, RMS {rms_db:.1f} dBFS")
+    write_wav(out_dir / "play_along.wav", audio, samplerate)
+    return {
+        "id": "play_along",
+        "block": 99,
+        "title": f"Durchgespielt: {song}",
+        "file": "play_along.wav",
+        "technique": "free",
+        "intentional_error": "",
+        "shapes": [],
+        "expected_midi": [],
+        "song": song,
+        "tempo_percent": None if tempo is None else round(tempo * 100),
+        "seconds": seconds,
+        "peak_dbfs": round(peak, 1),
+        "rms_dbfs": round(rms_db, 1),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--list", action="store_true",
@@ -428,6 +707,17 @@ def main():
     ap.add_argument("--block", type=int, action="append",
                     help="nur diese Bloecke aufnehmen (mehrfach moeglich)")
     ap.add_argument("--out", default=None, help="Zielordner")
+    # No default song. A take is only worth its metadata: this one silently
+    # said "timing_test_100bpm.gp5" for a take of a completely different
+    # piece, and the analysis then reported 3 of 46 notes -- which reads
+    # exactly like a detector that has stopped working. Same lesson as the
+    # tuning: ask for what varies, never assume it.
+    ap.add_argument("--play-along", metavar="SONG", default=None,
+                    help="statt der Uebungen einen Mitschnitt beim "
+                         "Durchspielen aufnehmen; SONG ist die Tab-Datei, "
+                         "die dabei gespielt wird (Pflichtangabe)")
+    ap.add_argument("--seconds", type=float, default=45.0,
+                    help="Dauer des Mitschnitts (Standard 45)")
     args = ap.parse_args()
 
     todo = [e for e in EXERCISES if not args.block or e.block in args.block]
@@ -446,9 +736,12 @@ def main():
     print("=" * 72)
     print("MySician - Referenzaufnahmen")
     print("=" * 72)
-    print("Wir nehmen ein paar kurze Uebungen auf, richtige und absichtlich")
-    print("falsche. Damit kalibrieren wir die Akkorderkennung an deiner")
-    print("echten Gitarre statt an simulierten Toenen.")
+    if args.play_along:
+        print("Ein einzelner Mitschnitt beim Durchspielen - kein Uebungssatz.")
+    else:
+        print("Wir nehmen ein paar kurze Uebungen auf, richtige und absichtlich")
+        print("falsche. Damit kalibrieren wir die Akkorderkennung an deiner")
+        print("echten Gitarre statt an simulierten Toenen.")
     print("\nWICHTIG: Das Signal muss CLEAN reinkommen - keine Verzerrung,")
     print("kein Amp-Sim vor der Aufnahme. Verzerrung zum Mithoeren ist egal.")
 
@@ -457,9 +750,11 @@ def main():
     print(f"\n  Geraet {device}: {samplerate} Hz, "
           f"{'mono' if channels == 1 else 'stereo'}")
 
-    offset = ask_tuning_offset()
+    offset, drop = ask_tuning_offset()
     if offset:
         print(f"  Stimmung: {abs(offset)} Halbtoene runter")
+    if drop:
+        print(f"  Tiefste Saite: {drop} Halbtoene tiefer (Drop)")
 
     level_check(device, samplerate, channels)
 
@@ -473,16 +768,28 @@ def main():
         "channels": channels,
         "device": str(sd.query_devices(device)["name"]),
         "tuning_offset_semitones": offset,
+        "drop_semitones": drop,
         "takes": [],
     }
 
     print(f"\n  Aufnahmen landen in: {out_dir}")
-    print("\nEnter startet jede Aufnahme. 's' ueberspringt, 'q' beendet.")
+
+    if args.play_along:
+        manifest["takes"].append(
+            play_along(device, samplerate, channels, out_dir,
+                       args.seconds, args.play_along)
+        )
+        with open(out_dir / "manifest.json", "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2, ensure_ascii=False)
+        todo = []
+
+    if todo:
+        print("\nEnter startet jede Aufnahme. 's' ueberspringt, 'q' beendet.")
 
     idx = 0
     while idx < len(todo):
         ex = todo[idx]
-        show_exercise(ex, idx + 1, len(todo), offset)
+        show_exercise(ex, idx + 1, len(todo), offset, drop)
 
         key = input("\n  [Enter] aufnehmen  /  s = ueberspringen  /  q = Ende: ")
         key = key.strip().lower()
@@ -519,7 +826,7 @@ def main():
             "technique": ex.technique,
             "intentional_error": ex.intentional_error,
             "shapes": [{str(s): f for s, f in shape.items()} for shape in ex.shapes],
-            "expected_midi": ex.expected_midi(offset),
+            "expected_midi": ex.expected_midi(offset, drop),
             "seconds": ex.seconds,
             "peak_dbfs": round(peak, 1),
             "rms_dbfs": round(rms_db, 1),
@@ -533,10 +840,17 @@ def main():
     print("=" * 72)
     if manifest["takes"]:
         rel = out_dir.relative_to(REPO_ROOT) if out_dir.is_relative_to(REPO_ROOT) else out_dir
+        branch, switch_needed = upload_branch()
         print("\nZum Hochladen, damit ich sie analysieren kann:\n")
+        if switch_needed:
+            print(f"  ! Du bist gerade auf '{current_branch()}',")
+            print(f"    die Aufnahmen gehoeren aber auf '{branch}'.")
+            print("    Der Wechsel unten nimmt die neuen Dateien mit.\n")
+        print("  git fetch origin")
+        print(f"  git switch {branch}")
         print(f'  git add "{rel}"')
         print('  git commit -m "Add reference recordings for detection calibration"')
-        print(f"  git push -u origin {current_branch()}")
+        print(f"  git push -u origin {branch}")
     return 0
 
 

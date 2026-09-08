@@ -7,7 +7,7 @@ of NoteEvents and provides efficient range queries for the game loop.
 from __future__ import annotations
 
 import bisect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,28 @@ class NoteEvent:
     slide_in: int = 0
     # Slid off this note upwards (+1) / downwards (-1), with no target note.
     slide_out: int = 0
+    # Written as a dead note (X in the tab): the fretting hand only damps the
+    # string, so the strike is a click and `fret` says where the hand sits
+    # rather than which pitch will sound. Nothing about the audio can confirm
+    # a pitch here, which is why the matcher accepts any strike for one.
+    dead: bool = False
+    # Palm-muted. Still the written pitch -- the picking hand shortens and
+    # chokes it, it does not change it -- so scoring is unaffected; the flag
+    # exists so the display can show what the tab asked for.
+    palm_mute: bool = False
+    # The note value the tab WROTE, in quarter notes: 1.0 for a quarter, 0.5
+    # for an eighth, 0.75 for a dotted eighth. Kept beside duration_ms rather
+    # than derived from it, because milliseconds cannot be read back into a
+    # note value: a tempo change or a triplet makes the arithmetic ambiguous,
+    # and an engraver needs the written value to draw a stem at all. 0.0 means
+    # the reader did not supply one.
+    duration_quarters: float = 0.0
+    # "let ring": the string is not damped, so the note sounds on until
+    # something else is played on it. It does NOT change the written value --
+    # a let-ring eighth is still an eighth, which is why the tie fix left
+    # these looking short. It changes how long the note is DRAWN, and nothing
+    # about how it is scored: the pick is at the written moment either way.
+    let_ring: bool = False
 
     @property
     def bend_semitones(self) -> float:
@@ -71,6 +93,12 @@ class MeasureInfo:
     index: int
     start_ms: float
     end_ms: float
+    # What the bar is written IN. Kept because an engraver cannot draw a bar
+    # without it, and because it cannot be recovered from the milliseconds:
+    # 3/4 at 120 BPM and 6/8 at 120 BPM are the same length of time and a
+    # different piece of music.
+    beats: int = 4
+    beat_type: int = 4
 
 
 @dataclass
@@ -96,6 +124,50 @@ class Timeline:
         self.metadata = metadata or SongMetadata()
         self._measures = measures or []
         self._cursor = 0
+        # Both computed once, because the notes never change after this and
+        # both were being recomputed over every note in the song, several
+        # times a frame. On a dense song that was the single biggest cost in
+        # the whole loop.
+        # As long as the WRITTEN PIECE, not as long as the notes. A tab
+        # whose final bars are empty -- an outro the guitar sits out -- ends
+        # here the moment the last note stops, and everything downstream
+        # then agrees that the song is over while the recording plays on.
+        # Measured on the player's own files: "What's Up" writes 80 bars of
+        # 3.69 s, so the piece runs 295.4 s, and its last note is at 243.5.
+        # Fifty-two seconds of music with the picture already finished, and
+        # from the inside that is indistinguishable from a sync fault.
+        # (Kid Rock loses 1.6 s to the same thing; the other two lose none.)
+        #
+        # The larger of the two rather than the bars alone, because a
+        # let-ring note may sound past the last bar line and a song is not
+        # over while something is still ringing.
+        self._duration_ms = max(
+            max((n.end_ms for n in self._notes), default=0.0),
+            self._measures[-1].end_ms if self._measures else 0.0,
+        )
+        # How far back a note can START and still be sounding now. Notes are
+        # sorted by their start, so this is what turns "which notes are
+        # sounding" from a scan of the whole song into a slice of it.
+        self._longest_ms = max((n.duration_ms for n in self._notes), default=0.0)
+
+    def transposed(self, semitones: int) -> "Timeline":
+        """The same song, played on a guitar tuned `semitones` away.
+
+        The FRET NUMBERS DO NOT MOVE. Drop C and Drop D differ by a uniform
+        two semitones, so the same shapes on a Drop D guitar are the same
+        music a tone higher -- the picture is identical and only the pitch
+        the app expects to HEAR changes. That is why this is a shift of the
+        notes and the tuning and nothing else; anything that had to move a
+        fret would be a different operation (see tools/retune.py).
+        """
+        if not semitones:
+            return self
+        notes = [replace(n, midi_note=n.midi_note + semitones)
+                 for n in self._notes]
+        meta = replace(
+            self.metadata,
+            tuning={s: v + semitones for s, v in self.metadata.tuning.items()})
+        return Timeline(notes, meta, list(self._measures))
 
     def __len__(self) -> int:
         return len(self._notes)
@@ -114,9 +186,7 @@ class Timeline:
 
     @property
     def duration_ms(self) -> float:
-        if not self._notes:
-            return 0.0
-        return max(n.end_ms for n in self._notes)
+        return self._duration_ms
 
     def get_notes_in_range(self, start_ms: float, end_ms: float) -> list[NoteEvent]:
         """Return notes whose timestamp_ms falls within [start_ms, end_ms)."""
@@ -132,11 +202,19 @@ class Timeline:
         window_start = time_ms - window_ms
         window_end = time_ms + window_ms
 
-        # Find candidates: notes that start before window_end
+        # Candidates start before the window ends AND late enough to still be
+        # sounding in it. The second bound is the one that matters: this used
+        # to scan from the first note of the song every time, so the cost grew
+        # the further in the player got -- and the matcher asks it up to five
+        # times per strike. Three minutes into a dense song that is tens of
+        # thousands of comparisons per note played, arriving in bursts exactly
+        # when the hands are busiest.
         right = bisect.bisect_right(self._timestamps, window_end)
+        left = bisect.bisect_left(self._timestamps,
+                                  window_start - self._longest_ms)
 
         result = []
-        for i in range(right):
+        for i in range(left, right):
             note = self._notes[i]
             if note.end_ms >= window_start and note.timestamp_ms <= window_end:
                 result.append(note)

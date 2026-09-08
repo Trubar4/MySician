@@ -12,9 +12,12 @@ import pygame
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import Config
 from pickhero.progress import ProgressTracker
+from pickhero.tabs.song_index import SongIndex
 from pickhero.ui.colors import cycle_theme, get_theme
 
-GP_EXTENSIONS = {".gp3", ".gp4", ".gp5", ".gp", ".gp7", ".gp8"}
+# .gpx is Guitar Pro 6. It was missing here for as long as the app has
+# existed, so those files never even appeared in the list to be opened.
+GP_EXTENSIONS = {".gp3", ".gp4", ".gp5", ".gp", ".gp7", ".gp8", ".gpx"}
 
 # How many items visible at once before scrolling
 VISIBLE_ITEMS = 18
@@ -47,6 +50,15 @@ class MenuScreen:
         self._progress = progress
         self._sort_mode: str = config.sort_mode if config else "name_asc"
         self._files: list[Path] = []
+        # What the last F5 found, shown until the next keypress. A refresh
+        # that looks like nothing happened is indistinguishable from a dead
+        # key, and this one usually finds exactly one new file.
+        self._reload_note: str = ""
+        # How many instruments each song holds and how each is tuned, read on
+        # a thread and remembered between sessions. See tabs/song_index.py.
+        self._index = SongIndex()
+        self._tuning_filter: str = ""
+        self._favourites_only: bool = False
         self._search_text: str = ""
         self._search_active: bool = False
         self._filtered_files: list[Path] = []
@@ -86,7 +98,7 @@ class MenuScreen:
         return self._search_active
 
     def _apply_filter(self) -> None:
-        """Filter _files by search text, apply sort, and reset selection."""
+        """Filter _files by search text and tuning, sort, reset selection."""
         if self._search_text:
             query = self._search_text.lower()
             self._filtered_files = [
@@ -94,6 +106,19 @@ class MenuScreen:
             ]
         else:
             self._filtered_files = list(self._files)
+        if self._favourites_only and self._config is not None:
+            self._filtered_files = [
+                p for p in self._filtered_files
+                if self._config.is_favourite(p.stem)
+            ]
+        if self._tuning_filter:
+            # A song still being indexed is kept OUT rather than shown: while
+            # the filter is on, a row with no answer yet would look like an
+            # answer of "yes", and the count beside it would be wrong.
+            self._filtered_files = [
+                p for p in self._filtered_files
+                if self._index.has(p, self._tuning_filter)
+            ]
         self._sort_files()
         self._selected = 0
         self._scroll_offset = 0
@@ -142,13 +167,149 @@ class MenuScreen:
         )
         self._search_text = ""
         self._search_active = False
+        self._index.scan_in_background(self._files)
         self._apply_filter()
+
+    def reload_files(self) -> str:
+        """Read the folder again without losing the player's place (F5).
+
+        A file copied in while the app is open was invisible until it was
+        restarted. Rescanning is the whole of the work; what takes care is
+        everything around it.
+
+        The search is KEPT. Dropping a new song in the middle of hunting for
+        one and coming back to an unfiltered list means typing it all again,
+        and the new file is very likely the one being searched for.
+
+        The selection is kept too, by name rather than by row: the list is
+        sorted, so a file added above the cursor moves every row below it and
+        the highlight would land on a different song than the one it was on.
+
+        And it says what it found. A refresh that looks exactly like no
+        refresh cannot be told apart from a dead key -- the same rule as every
+        other silent failure in this app.
+        """
+        before = set(self._files)
+        selected = self._selected_path()
+        text, active = self._search_text, self._search_active
+        self.scan_files()
+        self._search_text, self._search_active = text, active
+        self._apply_filter()
+        self._select_path(selected)
+        added = len(set(self._files) - before)
+        gone = len(before - set(self._files))
+        parts = [f"{len(self._files)} songs"]
+        if added:
+            parts.append(f"{added} new")
+        if gone:
+            parts.append(f"{gone} gone")
+        if not added and not gone:
+            parts.append("nothing changed")
+        return "Reloaded: " + ", ".join(parts)
+
+    def _toggle_favourite(self) -> None:
+        """Star the selected song, or take the star off (M)."""
+        if self._config is None:
+            return
+        song = self._selected_path()
+        if song is None:
+            return
+        starred = not self._config.is_favourite(song.stem)
+        self._config.set_favourite(song.stem, starred)
+        self._config.save()
+        self._reload_note = (("Favourite: " if starred
+                              else "No longer a favourite: ") + song.stem[:40])
+        if self._favourites_only:
+            # It has just left the list it is being shown in, so the list has
+            # to be rebuilt and the cursor put somewhere that still exists.
+            self._apply_filter()
+            self._select_path(song)
+
+    def _toggle_favourites_only(self) -> None:
+        """Show only the starred songs, or all of them again (Shift+M).
+
+        Refuses when nothing is starred: a filter that empties the list looks
+        exactly like a list that has lost its songs.
+        """
+        if self._config is None:
+            return
+        if not self._favourites_only and not any(
+                self._config.is_favourite(p.stem) for p in self._files):
+            self._reload_note = "No favourites yet — M marks the selected song"
+            return
+        selected = self._selected_path()
+        self._favourites_only = not self._favourites_only
+        self._apply_filter()
+        self._select_path(selected)
+
+    def _cycle_tuning_filter(self) -> None:
+        """All songs -> each tuning in turn -> all songs again.
+
+        Built from the tunings actually present, so it can never offer one
+        that would empty the list, and it is rebuilt on every press: a song
+        indexed since the last one has to be able to join.
+        """
+        selected = self._selected_path()
+        options = self._index.tunings_present(self._files)
+        if not options:
+            self._tuning_filter = ""
+            self._reload_note = ("Tunings are still being read"
+                                 if self._index.busy else "No tunings known yet")
+            return
+        try:
+            position = options.index(self._tuning_filter) + 1
+        except ValueError:
+            position = 0
+        self._tuning_filter = "" if position >= len(options) else options[position]
+        self._apply_filter()
+        self._select_path(selected)
+
+    def _selected_path(self):
+        """The song under the cursor, or None when the list is empty."""
+        files = self._display_files
+        if not files or not (0 <= self._selected < len(files)):
+            return None
+        return files[self._selected]
+
+    def selected_tuning(self) -> tuple[str, str]:
+        """(open strings, song name) of the song under the cursor.
+
+        For the tuner, which the player opens from here: the list already
+        shows every song's tuning, so asking them to dial it in again is
+        asking for something this screen has. Empty when the song has not
+        been read yet, or holds no guitar -- and an empty answer is what
+        makes the tuner fall back to Standard.
+        """
+        path = self._selected_path()
+        if path is None:
+            return "", ""
+        info = self._index.get(path)
+        if info is None or not info.distinct_tunings:
+            return "", path.stem
+        return info.distinct_tunings[0], path.stem
+
+    def _select_path(self, path) -> None:
+        """Put the cursor back on this song, or leave it where it fits."""
+        files = self._display_files
+        if not files:
+            self._selected = 0
+            self._scroll_offset = 0
+            return
+        if path is not None and path in files:
+            self._selected = files.index(path)
+        else:
+            self._selected = min(self._selected, len(files) - 1)
+        self._ensure_visible()
 
     def handle_event(self, event: pygame.event.Event) -> Path | str | None:
         """Process input. Returns Path (file selected), "escape" (quit), or None."""
         files = self._display_files
 
         if event.type == pygame.KEYDOWN:
+            if event.key != pygame.K_F5:
+                # A note is for what just happened, not for the rest of the
+                # session. Any other key means the player has moved on.
+                self._reload_note = ""
             if event.key == pygame.K_ESCAPE:
                 if self._search_active:
                     self._search_text = ""
@@ -157,11 +318,40 @@ class MenuScreen:
                     return None
                 return "escape"
 
-            # F activates filter mode
-            if event.key == pygame.K_f and not self._search_active:
+            # F, / and Ctrl+F all open the search. One of them is the key
+            # this app happened to pick; the other two are the ones everybody
+            # already has in their fingers.
+            if not self._search_active and (
+                    event.key == pygame.K_f
+                    or event.unicode == "/"
+                    or (event.key == pygame.K_f and event.mod & pygame.KMOD_CTRL)):
                 self._search_active = True
                 self._search_text = ""
                 self._apply_filter()
+                return None
+
+            # M marks, Shift+M filters. A letter is fine here because it is
+            # only reached when the search box is closed -- and "merken" is
+            # what the player calls it.
+            if event.key == pygame.K_m and not self._search_active:
+                if event.mod & pygame.KMOD_SHIFT:
+                    self._toggle_favourites_only()
+                else:
+                    self._toggle_favourite()
+                return None
+
+            # TAB steps through the tunings the folder actually contains,
+            # ending back at all of them. Not a letter, for the same reason
+            # as F5 -- and the same key that steps through a song's tracks
+            # once one is open, which is the same idea one level up.
+            if event.key == pygame.K_TAB:
+                self._cycle_tuning_filter()
+                return None
+
+            # F5, the key everybody already reaches for. It cannot be a
+            # letter: the search box takes those the moment it is open.
+            if event.key == pygame.K_F5:
+                self._reload_note = self.reload_files()
                 return None
 
             if event.key == pygame.K_BACKSPACE:
@@ -265,20 +455,51 @@ class MenuScreen:
         )
         surface.blit(sub_surf, (w // 2 - sub_surf.get_width() // 2, 68))
 
-        list_top = 110
         item_h = 30
         list_left = 60
         list_width = w - 120
 
-        # Search bar
+        # The search box is always drawn, empty or not. It existed as a hidden
+        # mode for a long time and was asked for as a missing feature, which is
+        # what a feature nobody can see amounts to.
+        box = pygame.Rect(list_left - 8, 88, min(420, list_width), 26)
+        pygame.draw.rect(surface, t.menu_selected_bg if self._search_active
+                         else t.menu_bg, box, border_radius=4)
+        pygame.draw.rect(surface, t.hud_accent if self._search_active
+                         else t.hud_text, box, width=1, border_radius=4)
         if self._search_active:
-            search_label = f"Filter: {self._search_text}_"
-            search_surf = item_font.render(search_label, True, t.hud_accent)
-            surface.blit(search_surf, (list_left, 90))
-            count_label = f"({len(files)} of {len(self._files)} songs)"
+            label, colour = f"{self._search_text}_", t.hud_accent
+        elif self._search_text:
+            label, colour = self._search_text, t.menu_item
+        else:
+            label, colour = "Search  (F or /)", t.hud_text
+        surface.blit(item_font.render(label, True, colour), (box.x + 8, box.y + 2))
+        if self._reload_note:
+            note_surf = hint_font.render(self._reload_note, True, t.hud_accent)
+            surface.blit(note_surf, (box.right + 12, box.y + 6))
+        elif self._favourites_only:
+            label = f"* favourites — {len(files)} of {len(self._files)} songs"
+            surface.blit(hint_font.render(label, True, t.hud_accent),
+                         (box.right + 12, box.y + 6))
+        elif self._tuning_filter:
+            # A filter nobody can see is a list that has lost songs. It says
+            # what is being shown AND how many, next to the box that is the
+            # other reason a list can be short.
+            label = (f"{self._tuning_filter}  —  {len(files)} of "
+                     f"{len(self._files)} songs")
+            surface.blit(hint_font.render(label, True, t.hud_accent),
+                         (box.right + 12, box.y + 6))
+        elif self._search_text:
+            count_label = f"{len(files)} of {len(self._files)} songs"
             count_surf = hint_font.render(count_label, True, t.hud_text)
-            surface.blit(count_surf, (list_left + search_surf.get_width() + 12, 95))
-            list_top = 120
+            surface.blit(count_surf, (box.right + 12, box.y + 6))
+        elif self._index.busy:
+            # Rows fill themselves in, so the empty ones need explaining.
+            done, total = self._index.scanned, self._index.to_scan
+            surface.blit(hint_font.render(
+                f"reading songs… {done}/{total}", True, t.hud_text),
+                (box.right + 12, box.y + 6))
+        list_top = 124
 
         # Empty states
         if not files:
@@ -287,7 +508,15 @@ class MenuScreen:
                     f"No songs found — add .gp3/.gp4/.gp5 files to {self._songs_dir}/"
                 )
             else:
-                empty_msg = f'No songs match "{self._search_text}"'
+                bits = []
+                if self._search_text:
+                    bits.append(f'"{self._search_text}"')
+                if self._favourites_only:
+                    bits.append("favourites")
+                if self._tuning_filter:
+                    bits.append(self._tuning_filter)
+                empty_msg = f"No songs match {' + '.join(bits)}" if bits else \
+                    "No songs match"
             msg_surf = item_font.render(empty_msg, True, t.menu_item)
             surface.blit(msg_surf, (w // 2 - msg_surf.get_width() // 2, h // 2))
         else:
@@ -306,25 +535,52 @@ class MenuScreen:
                 else:
                     color = t.menu_item
 
-                # Show relative path for subfolder files, just name for root
-                rel = files[i].relative_to(self._songs_dir)
-                label = str(rel) if len(rel.parts) > 1 else files[i].name
-                text_surf = item_font.render(label, True, color)
-                surface.blit(text_surf, (list_left, y + 4))
+                # Everything on a row is laid out from the RIGHT edge
+                # inwards, and the song name is cut to whatever is left. A
+                # long title would otherwise run under the score, and the
+                # thing it collides with is the thing being compared.
+                right = list_left + list_width - 8
 
-                # Show attempts + best accuracy if available
                 if self._progress is not None:
                     record = self._progress.get_best(files[i].stem)
                     if record is not None and record.attempts > 0:
                         pct = f"{record.best_accuracy:.0f}%"
                         pct_surf = item_font.render(pct, True, t.hud_accent)
-                        pct_x = list_left + list_width - pct_surf.get_width() - 8
-                        surface.blit(pct_surf, (pct_x, y + 4))
+                        right -= pct_surf.get_width()
+                        surface.blit(pct_surf, (right, y + 4))
 
                         att = f"{record.attempts}x"
                         att_surf = item_font.render(att, True, t.hud_text)
-                        att_x = pct_x - att_surf.get_width() - 12
-                        surface.blit(att_surf, (att_x, y + 4))
+                        right -= att_surf.get_width() + 12
+                        surface.blit(att_surf, (right, y + 4))
+                        right -= 16
+
+                info = self._index.get(files[i])
+                summary = info.summary() if info else ""
+                if summary:
+                    sum_surf = hint_font.render(summary, True, t.hud_text)
+                    right -= sum_surf.get_width()
+                    surface.blit(sum_surf, (right, y + 8))
+                    right -= 16
+
+                # The star sits LEFT of the name, in a column of its own, so
+                # the eye scans one edge instead of hunting along each row --
+                # and so a long title cannot push it off the screen.
+                star_w = 0
+                if self._config is not None and self._config.is_favourite(
+                        files[i].stem):
+                    star = item_font.render("*", True, t.hud_accent)
+                    surface.blit(star, (list_left, y + 4))
+                    star_w = star.get_width() + 6
+
+                # Show relative path for subfolder files, just name for root
+                rel = files[i].relative_to(self._songs_dir)
+                label = str(rel) if len(rel.parts) > 1 else files[i].name
+                room = max(40, right - list_left - star_w)
+                while label and item_font.size(label)[0] > room:
+                    label = label[:-1]
+                text_surf = item_font.render(label, True, color)
+                surface.blit(text_surf, (list_left + star_w, y + 4))
 
             # Scroll indicators
             if self._scroll_offset > 0:
@@ -347,10 +603,20 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to filter  |  BACKSPACE: edit  |  ESC: exit filter  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
-            hint = f"F: filter  |  N: sort ({sort_label})  |  UP/DOWN: navigate  |  ENTER: select  |  S: search online  |  D: audio device  |  G: calibrate  |  T: theme  |  ESC: quit"
+            tune_label = self._tuning_filter or "all"
+            fav = "on" if self._favourites_only else "off"
+            hint = f"F or /: search  |  M: favourite (Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+        # The build, bottom right and out of the way. It is asked for
+        # exactly once per report -- "which version are you running" --
+        # and answering it has cost several rounds.
+        from pickhero.build_info import build_stamp
+        stamp = _get_font("arial", 11).render(
+            build_stamp(), True, t.lane_line)
+        surface.blit(stamp, (w - stamp.get_width() - 8,
+                             h - stamp.get_height() - 2))
         hint_surf = hint_font.render(hint, True, t.hud_text)
         surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
 

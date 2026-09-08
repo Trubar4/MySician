@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
-from pickhero.audio.note_utils import semitone_distance
+from pickhero.audio.note_utils import freq_to_midi_exact, semitone_distance
 from pickhero.audio.chord_verify import ChordVerifier
 from pickhero.audio.input import StrikeWindow, TimestampedNote
 from pickhero.tabs.timeline import NoteEvent, Timeline
@@ -43,6 +43,80 @@ AMBIGUITY_RATIO = 2.0
 # pitch counts as a different note. Slides off the end of a phrase have no
 # destination in the tab, so the only honest bound is a generous one.
 OPEN_SLIDE_SEMITONES = 2
+
+# -- Bends -------------------------------------------------------------------
+#
+# How far a bend went is judged from the pitch contour: the detector produces a
+# reading every ~11.6 ms and the matcher already receives them, so nothing new
+# has to be measured -- they were simply thrown away.
+#
+# THE NUMBERS BELOW ARE NOT CALIBRATED. Every other threshold in this app was
+# fitted to real takes; these three were fitted to nothing, because there is no
+# recording of a bend to fit them to. Block 6 of tools/record_reference.py
+# exists to produce one, and tools/analyze_bends.py to read it. Until that has
+# happened, treat them as placeholders that behave sensibly, not as findings --
+# and note that the rule they drive can only ever turn green into yellow.
+
+# How near the written top of the bend counts as having reached it. The
+# player's own ruling: "about a quarter tone", which is 50 cents -- and the
+# measurement says it cannot be tightened. Their correct bends land between
+# +7 and +51 cents ABOVE the written top, so a 40-cent band starts convicting
+# good playing on the hold test, while the deliberately shallow take misses by
+# at least 63 cents. The window is 50 to 63 and 50 sits inside it.
+BEND_TOLERANCE_CENTS = 50.0
+# How much of the written hold the bend has to stand across, as one unbroken
+# run. MEASURED on block 6: the correct takes run from 43 % to 100 % of the
+# written hold, the deliberately-not-held one reaches 0 % -- it is gone before
+# the hold begins. Anything between separates them; 0.3 keeps 13 points of
+# margin against the worst correct take and 30 against the error.
+BEND_HOLD_FRACTION = 0.3
+# A dip below the target shorter than this does not end the hold. This is the
+# whole of what makes vibrato survive: at 250 ms the player's vibratoed bends
+# read 69-88 % of the written hold, at 150 ms they read 30-38 % and would be
+# marked down. From 250 ms upwards the reading stops changing, so the value
+# sits on a plateau rather than on a knife edge.
+BEND_HOLD_GAP_MS = 250.0
+# Readings further than this outside what the note could be sounding are not
+# evidence about the bend. Measured: during a vibratoed bend the detector
+# throws out readings 9, 18 and 36 semitones below the written pitch -- octave
+# errors and subharmonics while the pitch is moving. Left in the contour they
+# read as the bend collapsing.
+BEND_STRAY_SEMITONES = 1.5
+# A written hold shorter than this is not a hold, and only the height is
+# judged. A bend written across a sixteenth has no plateau to speak of.
+BEND_MIN_HOLD_MS = 150.0
+# Pitch readings needed before a bend may be judged at all. Fewer than this is
+# not evidence that the bend fell short, only that nothing was heard -- and a
+# note is never marked down for the absence of evidence. Same presumption of
+# innocence the chord verifier runs on.
+BEND_MIN_SAMPLES = 4
+# How long after a bend note ends before its verdict is settled, so the last
+# frames of the note have arrived.
+BEND_VERDICT_DELAY_MS = 120.0
+# How long a pitch reading is kept. Long enough for the longest note anyone
+# writes a bend across, short enough that the list stays small.
+CONTOUR_KEEP_MS = 6000.0
+
+# How many strings a chord needs before a strike carrying no pitch at all is
+# accepted as having played it. Two, and the second string is where it has to
+# sit: a power chord is two strings and is most of what this player plays.
+#
+# It was three for one cycle, on the argument that a pitchless strike is rare
+# below three strings and crediting it would therefore be leniency bought with
+# nothing. The rate was right (16-17 % on one and two strings, against 38-55 %
+# from four up) and the conclusion was wrong -- 17 % of every power chord in a
+# song is not nothing, and the reason to hold the line was never the rate but
+# whether a wrong finger still shows. It does. Run over the reference power
+# chords by tools/check_chord_credit.py, with the credit extended to two
+# strings:
+#
+#   correct E5 8/10 -> 10/10, G5 8/10 -> 10/10, palm-muted E5 16/20 -> 20/20,
+#   fast E5 76/78 -> 78/78, and every deliberate one-fret error still caught
+#   (the palm-muted wrong take goes from 6 strings convicted to 10).
+#
+# One string stays uncredited, because a single written note with no pitch is
+# what a dead note is for, and that path is already there.
+MIN_UNPITCHED_CHORD_STRINGS = 2
 
 # Timing report. Bins are wide enough that a handful of samples still forms a
 # visible shape, narrow enough to separate latency from scatter by eye.
@@ -103,6 +177,31 @@ class TimingSample:
     note_ms: float      # where the note sits in the song
 
 
+@dataclass
+class StrikeTrace:
+    """What became of one strike, kept so a bad run can be read afterwards.
+
+    A percentage at the end of a song says how much went wrong and nothing
+    about where. The same recording that scored 35 % in the app scored 97 %
+    when the same detector and the same matcher were run over it offline, and
+    no number on screen could say which of the two dozen things between the
+    two was responsible. This is that missing evidence: one line per strike,
+    written as it happened.
+
+    Recording only -- nothing here is read back by the matcher.
+    """
+    strike_ms: float        # timestamp as the audio thread stamped it
+    adjusted_ms: float      # after the offset, i.e. where the song thinks it was
+    playback_ms: float      # where the song actually was at that moment
+    midi_note: int
+    confidence: float
+    unpitched: bool
+    subharmonic: bool
+    outcome: str            # hit / close / dead / chord / unmatched / ignored
+    note_ms: float | None   # the tab note it was credited to, if any
+    semitones: int | None   # how far off that note it was
+
+
 class NoteMatcher:
     """Matches detected audio notes against tab timeline events.
 
@@ -120,10 +219,16 @@ class NoteMatcher:
         chord_partial_credit: bool = True,
         late_window_ms: float = 0.0,
         chord_verifier: ChordVerifier | None = None,
+        bend_check: bool = True,
+        subharmonic_rescue: bool = True,
     ):
         self._timeline = timeline
         self._timing_window_ms = timing_window_ms
         self._audio_offset_ms = audio_offset_ms
+        # How far the missed-note sweep has already looked. See
+        # _mark_missed_notes: without it, every strike re-judged the whole
+        # song up to that point.
+        self._missed_swept_ms = 0.0
         self._chord_threshold_ms = chord_threshold_ms
         # Strike notes arrive up to ~70 ms after their timestamp (the onset
         # collector waits for the pitch to settle) — delay miss-marking so
@@ -131,12 +236,21 @@ class NoteMatcher:
         self._late_window_ms = late_window_ms
         self.note_filter = note_filter
         self.chord_partial_credit = chord_partial_credit
+        # Off only in the control run of tools/check_subharmonic_rescue.py,
+        # which has to compare the rule against itself with the verifier
+        # present on both sides -- comparing it against no verifier at all
+        # measures the chord verdicts instead, and did on the first attempt.
+        self.subharmonic_rescue = subharmonic_rescue
 
         # State per note event, keyed by (timestamp_ms, string)
         self._note_states: dict[tuple[float, int], MatchType] = {}
 
         # Statistics
         self.hits = 0
+        # How the credited notes were credited -- see _record_match.
+        self.notes_proved = 0
+        self.notes_by_strum = 0
+        self._credit_proved: dict[tuple[float, int], bool] = {}
         self.close = 0
         self.misses = 0
 
@@ -164,8 +278,37 @@ class NoteMatcher:
         # behaviour is exactly the pitch path's.
         self._chord_verifier = chord_verifier
         self._pending_verifications: dict[int, list[NoteEvent]] = {}
+        # Pitchless strikes on a single written note, waiting for their audio.
+        self._pending_rescues: dict[int, NoteEvent] = {}
         self.chord_verifications = 0
         self.chord_strings_corrected = 0
+        self.rescued_notes = 0
+        # The funnel behind that number. Reconstructing it by hand from the
+        # strike table is what the last report cost, and the answer -- "the
+        # windows never arrived" against "the verifier would not confirm" --
+        # is fixed in two completely different places.
+        self.rescue_held = 0
+        self.rescue_asked = 0
+        self.rescue_already_credited = 0
+        self.rescue_refused = 0
+
+        # One line per strike, and one per string a chord verdict took back.
+        # Written only; see StrikeTrace for why it exists.
+        self.strike_trace: list[StrikeTrace] = []
+
+        # Bends, judged from the pitch contour once the note is over. The
+        # contour is the sustained pitch stream the audio thread already
+        # sends; it used to be dropped on the floor here.
+        self.bend_check = bend_check
+        self._bend_plans = self._build_bend_plans(timeline)
+        self._unjudged_bends = dict(self._bend_plans)
+        self._contour: list[tuple[float, float]] = []
+        # Cleared while wait mode pins every timestamp to one instant: a
+        # contour whose readings all claim the same millisecond says nothing
+        # about how long anything was held. Same reason timing samples stop.
+        self.record_contour = True
+        self.bends_judged = 0
+        self.bends_short = 0
 
         self._pitch_ranges = self._build_pitch_ranges(timeline)
         self._legato_sources = self._build_legato_sources(timeline)
@@ -301,6 +444,11 @@ class NoteMatcher:
 
     def _undo_match(self, event: NoteEvent, match_type: MatchType) -> None:
         """Reverse the counters a previous _record_match applied."""
+        if match_type in (MatchType.HIT, MatchType.CLOSE):
+            if self._credit_proved.pop(self._note_key(event), True):
+                self.notes_proved -= 1
+            else:
+                self.notes_by_strum -= 1
         if match_type == MatchType.HIT:
             self.hits -= 1
             self._measure_stats[event.measure]["hits"] -= 1
@@ -319,9 +467,29 @@ class NoteMatcher:
         self._undo_match(event, previous)
         self._record_match(event, match_type)
 
-    def _record_match(self, event: NoteEvent, match_type: MatchType) -> None:
-        """Record a match for a note, updating stats and measure stats."""
+    def _record_match(self, event: NoteEvent, match_type: MatchType,
+                      proved: bool = True) -> None:
+        """Record a match for a note, updating stats and measure stats.
+
+        `proved` says what the credit rests on. A note whose own written pitch
+        was heard is proved; a chord sibling credited because the STRUM was
+        heard is not -- the evidence is that something was strummed there, and
+        monophonic detection can never report a second chord tone to confirm
+        the rest. The chord verifier is what is supposed to police that, and
+        it convicts only strings whose partials are not masked by a lower one
+        -- which in an open chord is most of them.
+
+        So the two are counted apart and reported apart. A percentage that
+        mixes them cannot answer "was I really that good", which is the
+        question a six-string chord scoring 94 % raises.
+        """
         self._set_state(event, match_type)
+        if match_type in (MatchType.HIT, MatchType.CLOSE):
+            self._credit_proved[self._note_key(event)] = proved
+            if proved:
+                self.notes_proved += 1
+            else:
+                self.notes_by_strum += 1
         if match_type == MatchType.HIT:
             self.hits += 1
             self._measure_stats[event.measure]["hits"] += 1
@@ -344,14 +512,29 @@ class NoteMatcher:
         return False
 
     def _mark_missed_notes(self, playback_ms: float) -> list[MatchResult]:
-        """Mark PENDING notes that have passed the timing window as MISS."""
+        """Mark PENDING notes that have passed the timing window as MISS.
+
+        Only the notes that have gone past since the last look. This ran from
+        millisecond zero every time, so every note already judged was judged
+        again on every strike -- 3600 state lookups per strike three minutes
+        into a dense song, arriving in bursts exactly when the hands are
+        busiest. Nothing before the mark can still be PENDING: this loop is
+        what resolves them, and a note only goes back to PENDING on reset().
+        """
         results = []
         cutoff = playback_ms - self._timing_window_ms - self._late_window_ms
         if cutoff <= 0:
             return results
+        if cutoff < self._missed_swept_ms:
+            # The song moved backwards without a reset. Look at all of it
+            # again rather than trusting a mark that describes a different
+            # moment.
+            self._missed_swept_ms = 0.0
 
         # Check notes that should have been played by now
-        candidates = self._timeline.get_notes_in_range(0, cutoff)
+        candidates = self._timeline.get_notes_in_range(
+            self._missed_swept_ms, cutoff)
+        self._missed_swept_ms = cutoff
         for note in candidates:
             if self._is_filtered(note):
                 continue
@@ -359,7 +542,7 @@ class NoteMatcher:
                 continue
             inherited = self._legato_credit(note)
             if inherited is not None:
-                self._record_match(note, inherited)
+                self._record_match(note, inherited, proved=False)
                 results.append(MatchResult(
                     match_type=inherited,
                     matched_events=[note],
@@ -388,6 +571,85 @@ class NoteMatcher:
         state = self._note_states.get(source_key)
         return state if state in (MatchType.HIT, MatchType.CLOSE) else None
 
+    def _dead_note_credit(self, adjusted_ms: float) -> MatchResult | None:
+        """Credit a written dead note for a strike no pitch accounts for.
+
+        A dead note is the fretting hand damping the string. The tab writes a
+        fret to say where the hand sits, but the sound is a click, and there
+        is no pitch in it to check -- so the only honest test is that
+        something was struck where one was written, which is also the whole
+        of what the player was asked to do. Left unhandled, every dead note in
+        a tab times out as a miss no matter how well it was played.
+        """
+        candidates = self._timeline.get_active_notes_at_time(
+            adjusted_ms, self._timing_window_ms
+        )
+        pending = [
+            n for n in candidates
+            if n.dead and self._get_state(n) == MatchType.PENDING
+            and not self._is_filtered(n)
+        ]
+        if not pending:
+            return None
+        nearest = min(pending, key=lambda n: abs(n.timestamp_ms - adjusted_ms))
+        # A muted strum writes a dead note on several strings at once, and one
+        # stroke is all of them -- there is no second click to wait for.
+        struck = [
+            n for n in pending
+            if abs(n.timestamp_ms - nearest.timestamp_ms) <= self._chord_threshold_ms
+        ]
+        for note in struck:
+            self._record_match(note, MatchType.HIT)
+        return MatchResult(
+            match_type=MatchType.HIT, matched_events=struck,
+            semitone_distance=None,
+        )
+
+    def _unpitched_chord_credit(
+        self, adjusted_ms: float, sample_pos: int | None,
+    ) -> MatchResult | None:
+        """Credit a written chord for a strum that produced no pitch at all.
+
+        A full chord gives monophonic YIN no single period to lock onto, so a
+        correctly played strum routinely arrives carrying no note whatsoever.
+        Measured on the reference recordings: 38-55 % of strikes on chords of
+        four strings and up produce no pitch, and 16-20 % on a two-string
+        power chord. Scored on pitch alone, those strums go red however well
+        they were fretted -- which is exactly what the player reports, and it
+        is the detector's limitation being charged to them.
+
+        This does not guess at the fretting, and it does not have to. The
+        strike still goes to the chord verifier, which reads the raw audio and
+        convicts any string it can positively show to be wrong. So the strum
+        is credited and the fingers are still checked -- the presumption of
+        innocence the verifier already runs on, applied one level up.
+        """
+        candidates = self._timeline.get_active_notes_at_time(
+            adjusted_ms, self._timing_window_ms
+        )
+        pending = [
+            n for n in candidates
+            if self._get_state(n) == MatchType.PENDING
+            and not self._is_filtered(n) and not n.dead
+        ]
+        if not pending:
+            return None
+        nearest = min(pending, key=lambda n: abs(n.timestamp_ms - adjusted_ms))
+        struck = [
+            n for n in pending
+            if abs(n.timestamp_ms - nearest.timestamp_ms) <= self._chord_threshold_ms
+        ]
+        if len(struck) < MIN_UNPITCHED_CHORD_STRINGS:
+            return None
+        for note in struck:
+            self._record_match(note, MatchType.HIT, proved=False)
+        if self._chord_verifier is not None and sample_pos is not None:
+            self._pending_verifications[sample_pos] = struck
+        return MatchResult(
+            match_type=MatchType.HIT, matched_events=struck,
+            semitone_distance=None,
+        )
+
     def process_detected_notes(
         self, detected: list[TimestampedNote], playback_ms: float
     ) -> list[MatchResult]:
@@ -408,10 +670,41 @@ class NoteMatcher:
         # Process each detected note with an onset
         for ts_note in detected:
             if not ts_note.note.is_onset:
+                # Not a strike: one reading of the pitch as it stands. Useless
+                # for matching -- that is what the onset collector is for --
+                # and the only thing that can say how far a bend went.
+                self._collect_contour(ts_note)
                 continue
 
             adjusted_ms = ts_note.timestamp_ms + self._audio_offset_ms
             detected_midi = ts_note.note.midi_note
+
+            if ts_note.note.unpitched:
+                # Nothing here to compare against a pitch or to measure a
+                # timing offset with. Two things in a tab can still account
+                # for such a strike: a written dead note, which has no pitch
+                # by definition, and a full chord, which regularly defeats a
+                # monophonic detector however well it was played. A dead note
+                # is checked first, being the more specific intent.
+                dead = self._dead_note_credit(adjusted_ms)
+                credit = dead or self._unpitched_chord_credit(
+                    adjusted_ms, ts_note.sample_pos)
+                if credit is None:
+                    # A single written note, and a strike with no pitch to
+                    # judge it by. That is what a line played across the
+                    # strings without damping produces -- the note sounded,
+                    # the ringing neighbours left YIN no single period. Held
+                    # for the audio window, which can still show the written
+                    # pitch present.
+                    self._hold_for_rescue(adjusted_ms, ts_note.sample_pos)
+                if credit is not None:
+                    results.append(credit)
+                self._trace(ts_note, adjusted_ms, playback_ms,
+                            "dead" if dead is not None else
+                            ("chord" if credit is not None else "unmatched"),
+                            credit.matched_events[0] if credit
+                            and credit.matched_events else None, None)
+                continue
 
             self._record_timing_sample(adjusted_ms, detected_midi)
 
@@ -420,13 +713,16 @@ class NoteMatcher:
                 adjusted_ms, self._timing_window_ms
             )
 
-            # Filter to PENDING and non-filtered only
+            # Filter to PENDING and non-filtered only. Dead notes are held
+            # back: they have no pitch to compare, so letting one compete for
+            # a pitched strike would let it swallow the strike meant for the
+            # real note beside it. They get their chance below, on strikes
+            # nothing else can explain.
             pending = [
                 n for n in candidates
-                if self._get_state(n) == MatchType.PENDING and not self._is_filtered(n)
+                if self._get_state(n) == MatchType.PENDING
+                and not self._is_filtered(n) and not n.dead
             ]
-            if not pending:
-                continue
 
             # Find closest match by semitone distance (with octave equivalence)
             best = None
@@ -440,16 +736,51 @@ class NoteMatcher:
                     best = note
                     best_dist = effective
 
-            if best is None or best_dist is None:
-                continue
-
             # Classify match
             if best_dist == 0:
                 match_type = MatchType.HIT
             elif best_dist == 1:
                 match_type = MatchType.CLOSE
             else:
-                # Too far off — ignore this detection, no penalty
+                # No written pitch explains this strike. A dead note might:
+                # damping the string still lets some pitch through, and which
+                # pitch that is says nothing about whether the mute was right.
+                dead_result = self._dead_note_credit(adjusted_ms)
+                if dead_result is not None:
+                    results.append(dead_result)
+                elif (self.subharmonic_rescue
+                      and getattr(ts_note.note, "subharmonic", False)):
+                    # A subharmonic is not a reading of one string. The
+                    # detector folded it up from BELOW the guitar's range
+                    # because several strings that are ringing together share
+                    # that period, so its value names the chord sounding in
+                    # the room and not the note just struck -- and when it
+                    # matches nothing written it is exactly as much evidence
+                    # about that note as no pitch at all.
+                    #
+                    # So it goes where a pitchless strike goes, and that is
+                    # BOTH of the places a pitchless strike goes. For a
+                    # cycle it only went to one: held for the audio, which
+                    # then refuses a chord by design. Measured on the
+                    # player's own take of an acoustic arpeggio, 92 strikes
+                    # came back subharmonic and only 28 were held -- the
+                    # other 64 sat on a written chord and were dropped
+                    # outright. A subharmonic is if anything STRONGER
+                    # evidence of a strum than silence is: it exists only
+                    # because several strings are sounding together, which
+                    # is the very thing being credited.
+                    credit = self._unpitched_chord_credit(
+                        adjusted_ms, ts_note.sample_pos)
+                    if credit is not None:
+                        results.append(credit)
+                    else:
+                        self._hold_for_rescue(adjusted_ms,
+                                              ts_note.sample_pos)
+                self._trace(ts_note, adjusted_ms, playback_ms,
+                            "dead" if dead_result is not None else "unmatched",
+                            dead_result.matched_events[0] if dead_result
+                            and dead_result.matched_events else None, best_dist)
+                # Too far off otherwise — ignore this detection, no penalty
                 continue
 
             # Chord handling
@@ -467,7 +798,8 @@ class NoteMatcher:
                 matched_events = []
                 for sibling in siblings:
                     if self._get_state(sibling) == MatchType.PENDING:
-                        self._record_match(sibling, match_type)
+                        self._record_match(sibling, match_type,
+                                           proved=sibling is best)
                         matched_events.append(sibling)
             elif self.chord_partial_credit and len(siblings) > 1:
                 # Partial credit mode: only mark the matched note
@@ -487,14 +819,15 @@ class NoteMatcher:
                     # Auto-complete remaining pending notes
                     for s in siblings:
                         if self._get_state(s) == MatchType.PENDING:
-                            self._record_match(s, match_type)
+                            self._record_match(s, match_type, proved=False)
                             matched_events.append(s)
             else:
                 # Easy mode (old behavior): mark all chord siblings
                 matched_events = []
                 for sibling in siblings:
                     if self._get_state(sibling) == MatchType.PENDING:
-                        self._record_match(sibling, match_type)
+                        self._record_match(sibling, match_type,
+                                           proved=sibling is best)
                         matched_events.append(sibling)
 
                 # Ensure the best note itself is included
@@ -507,9 +840,17 @@ class NoteMatcher:
             # arrives later, can be checked string by string. Keyed by sample
             # position: timestamps are rescaled by tempo and rewritten in wait
             # mode, the sample index is not.
-            if (self._chord_verifier is not None and len(siblings) > 1
+            # Dead notes are left out: the verifier is told which pitches to
+            # expect, and a damped string sounds none of the one written for
+            # it. Handing it that pitch would have it hunt for partials that
+            # were never there and convict a neighbour for their absence.
+            verifiable = [s for s in siblings if not s.dead]
+            if (self._chord_verifier is not None and len(verifiable) > 1
                     and ts_note.sample_pos is not None):
-                self._pending_verifications[ts_note.sample_pos] = siblings
+                self._pending_verifications[ts_note.sample_pos] = verifiable
+
+            self._trace(ts_note, adjusted_ms, playback_ms,
+                        match_type.value, best, best_dist)
 
             results.append(MatchResult(
                 match_type=match_type,
@@ -517,7 +858,256 @@ class NoteMatcher:
                 semitone_distance=best_dist,
             ))
 
+        results.extend(self._judge_finished_bends(playback_ms))
         return results
+
+    # -- Bends ---------------------------------------------------------------
+
+    @staticmethod
+    def _build_bend_plans(
+        timeline: Timeline,
+    ) -> dict[tuple[float, int], tuple[NoteEvent, float, float, float, float]]:
+        """What each bent note asks for: (note, top, hold start, hold end, end).
+
+        The tab writes a bend as points along the note -- ((0, 0), (0.5, 2),
+        (1, 2)) is "rise two semitones by halfway and stay there". The top is
+        the highest point, and the stretch of note over which the tab holds it
+        there is what the player has to hold. All three times are absolute
+        song milliseconds, so nothing downstream has to know about positions.
+        """
+        plans: dict[
+            tuple[float, int], tuple[NoteEvent, float, float, float, float]
+        ] = {}
+        for note in timeline.notes:
+            if not note.bend or note.dead:
+                continue
+            top = max(value for _, value in note.bend)
+            if top <= 0:
+                continue                      # a bend that goes nowhere
+            at_top = [pos for pos, value in note.bend if value >= top - 1e-9]
+            duration = max(note.duration_ms, 0.0)
+            plans[(note.timestamp_ms, note.string)] = (
+                note,
+                top,
+                note.timestamp_ms + min(at_top) * duration,
+                note.timestamp_ms + max(at_top) * duration,
+                note.timestamp_ms + duration,
+            )
+        return plans
+
+    def _collect_contour(self, ts_note: TimestampedNote) -> None:
+        """Keep one pitch reading, if any bent note might need it."""
+        if not (self.bend_check and self.record_contour and self._bend_plans):
+            return
+        freq = getattr(ts_note.note, "frequency", 0.0)
+        if freq <= 0 or ts_note.note.unpitched:
+            return
+        self._contour.append((ts_note.timestamp_ms + self._audio_offset_ms,
+                              freq_to_midi_exact(freq)))
+
+    def _judge_finished_bends(self, playback_ms: float) -> list[MatchResult]:
+        """Mark down a bend that measurably fell short of what was written.
+
+        It can only ever turn green into yellow, which is the player's own
+        ruling: a bend that arrives short is a bend played imperfectly, not a
+        note missed. And it never fires on silence -- see `_bend_verdict`.
+        """
+        results: list[MatchResult] = []
+        if not self.bend_check:
+            return results
+        # Pruned first and unconditionally. Hanging it off "is a bend still
+        # waiting" left the list growing for the whole rest of the song once
+        # the last bend had been judged.
+        if self._contour:
+            cutoff = playback_ms - CONTOUR_KEEP_MS
+            if self._contour[0][0] < cutoff:
+                self._contour = [c for c in self._contour if c[0] >= cutoff]
+        if not self._unjudged_bends:
+            return results
+
+        due = [key for key, plan in self._unjudged_bends.items()
+               if playback_ms >= plan[4] + BEND_VERDICT_DELAY_MS]
+        for key in due:
+            plan = self._unjudged_bends.pop(key)
+            note = plan[0]
+            if self._is_filtered(note):
+                continue
+            if self._get_state(note) != MatchType.HIT:
+                # Already yellow or missed: there is nothing left to take
+                # away, and a bend never makes a note worse than that.
+                continue
+            self.bends_judged += 1
+            if self._bend_verdict(note, plan) is False:
+                self.bends_short += 1
+                self._rerecord_match(note, MatchType.CLOSE)
+                results.append(MatchResult(
+                    match_type=MatchType.CLOSE,
+                    matched_events=[note],
+                    semitone_distance=None,
+                ))
+        return results
+
+    def _bend_verdict(self, note: NoteEvent, plan: tuple) -> bool | None:
+        """True if the bend was played, False if it fell short, None if unknown.
+
+        Two separate questions, both of which the player named:
+
+        - **Did it get there?** The highest pitch the note reached, against the
+          written top, within a quarter tone.
+        - **Was it still there at the end?** The tab says how long the bend
+          stands at its top, and touching the pitch on the way past is not the
+          same as holding it. Measured as the SPAN from the first reading on
+          target to the last, which is not the same as counting how many
+          readings sit on target -- and the difference is vibrato. A vibratoed
+          bend is played by releasing and re-bending, so its pitch spends much
+          of the hold BELOW the target on purpose: on the player's own take
+          only 37 % of readings sit within a quarter tone, which counted frame
+          by frame reads as a bend let go. The span reads it as what it is,
+          because the pitch keeps coming back to the top until the end.
+
+        Either can only convict on positive evidence. A note that produced too
+        few readings -- a quiet passage, a chord ringing over it, a pickup that
+        lost the string -- returns None and keeps whatever it was given. This
+        is the presumption of innocence the chord verifier already runs on, and
+        for the same reason: absence of evidence is the commonest thing in this
+        signal path, and a rule that convicts on it marks down good playing.
+        """
+        _, top, hold_start, hold_end, end = plan
+        tolerance = BEND_TOLERANCE_CENTS / 100.0
+        readings = [(ms, midi - note.midi_note) for ms, midi in self._contour
+                    if note.timestamp_ms <= ms <= end + BEND_VERDICT_DELAY_MS]
+        # An octave error or another string is not evidence about this bend.
+        window = [(ms, semis) for ms, semis in readings
+                  if -BEND_STRAY_SEMITONES <= semis
+                  <= top + BEND_STRAY_SEMITONES]
+        if len(window) < BEND_MIN_SAMPLES:
+            return None
+        if max(semis for _, semis in window) < top - tolerance:
+            return False                      # never got there
+
+        if hold_end - hold_start >= BEND_MIN_HOLD_MS:
+            # How long the bend stood, measured anywhere in the note, against
+            # how long the tab asks for it. Looking only INSIDE the written
+            # hold window sounds stricter and is weaker: a bend let go early
+            # takes the note with it, the window then holds no readings at
+            # all, and the rule abstains for want of evidence -- which let two
+            # of the three deliberately-not-held takes through. What the
+            # player was asked for is a duration; where in the note it lands
+            # is not the question.
+            on_target = [ms for ms, semis in window if semis >= top - tolerance]
+            held = _longest_run(on_target, BEND_HOLD_GAP_MS)
+            if held < BEND_HOLD_FRACTION * (hold_end - hold_start):
+                return False                  # got there, did not stay
+        return True
+
+    def _trace(
+        self, ts_note: TimestampedNote, adjusted_ms: float, playback_ms: float,
+        outcome: str, note: NoteEvent | None, semitones: int | None,
+    ) -> None:
+        """Record what became of one strike. Never read back by the matcher."""
+        self.strike_trace.append(StrikeTrace(
+            strike_ms=ts_note.timestamp_ms,
+            adjusted_ms=adjusted_ms,
+            playback_ms=playback_ms,
+            midi_note=ts_note.note.midi_note,
+            confidence=ts_note.note.confidence,
+            unpitched=bool(ts_note.note.unpitched),
+            subharmonic=bool(getattr(ts_note.note, "subharmonic", False)),
+            outcome=outcome,
+            note_ms=note.timestamp_ms if note is not None else None,
+            semitones=semitones,
+        ))
+
+    def _hold_for_rescue(self, adjusted_ms: float, sample_pos: int | None) -> None:
+        """Remember a strike with no usable pitch, so its audio can be asked.
+
+        The note to ask about is the pending one whose own onset is NEAREST
+        the strike. Requiring exactly one was right for the case this was
+        built for -- a line across the strings, where the tab writes one note
+        at a time -- and silently wrong for an arpeggio, where the written
+        notes overlap by design: measured on the player's own take, the rule
+        reached this point 25 times and held nothing, because the window
+        always contained two or three notes. A strike belongs to one note and
+        the tab says which; the others are earlier notes still ringing or
+        later ones not yet due.
+
+        Holding a note does not consume it. A strike that arrives later and
+        matches it outright still wins, because `_apply_rescue` only credits
+        a note that is still not HIT or CLOSE when the audio window lands.
+
+        A dead note is excluded (it has no pitch to look for) and so is a
+        chord written at one instant, which is credited outright and needs no
+        audio.
+        """
+        if self._chord_verifier is None or sample_pos is None:
+            return
+        candidates = self._timeline.get_active_notes_at_time(
+            adjusted_ms, self._timing_window_ms
+        )
+        pending = [
+            n for n in candidates
+            if self._get_state(n) == MatchType.PENDING
+            and not self._is_filtered(n) and not n.dead
+        ]
+        if not pending:
+            return
+        nearest = min(pending, key=lambda n: abs(n.timestamp_ms - adjusted_ms))
+        # A chord at that instant is not a single note and has its own rule.
+        if sum(1 for n in pending
+               if abs(n.timestamp_ms - nearest.timestamp_ms)
+               <= self._chord_threshold_ms) > 1:
+            return
+        self._pending_rescues[sample_pos] = nearest
+        self.rescue_held += 1
+        if len(self._pending_rescues) > 32:
+            oldest = sorted(self._pending_rescues)[:-32]
+            for key in oldest:
+                del self._pending_rescues[key]
+
+    def _sounding_beside(self, note: NoteEvent, at_ms: float) -> list[int]:
+        """What the tab says is ringing on the OTHER strings at that moment.
+
+        A partial identifies a note only if no other sounding string produces
+        it. In a line played across the strings the neighbours are decaying
+        and it hardly matters; in an arpeggio they are the loudest thing in
+        the window, and without this the rival hypotheses next to the written
+        note feed on their partials until nothing can be confirmed.
+        """
+        active = self._timeline.get_active_notes_at_time(at_ms, 0.0)
+        return sorted({n.midi_note for n in active if n.string != note.string})
+
+    def _apply_rescue(self, window: StrikeWindow) -> MatchResult | None:
+        """Credit a held strike if the audio shows the written note present.
+
+        The mirror of the chord verdicts below: those convict on positive
+        evidence of a wrong pitch, this acquits on positive evidence of the
+        right one. A note already marked MISS may be rescued -- the window
+        trails its strike by design, so the verdict simply arrives after the
+        note timed out, and refusing it for that reason would throw away the
+        evidence for being late.
+        """
+        note = self._pending_rescues.pop(window.sample_pos, None)
+        if note is None:
+            return None
+        self.rescue_asked += 1
+        if self._get_state(note) in (MatchType.HIT, MatchType.CLOSE):
+            self.rescue_already_credited += 1
+            return None
+        if not self._chord_verifier.confirms(
+                window.audio, window.sample_rate, note.midi_note,
+                self._sounding_beside(note, window.timestamp_ms)):
+            self.rescue_refused += 1
+            return None
+        self._rerecord_match(note, MatchType.HIT)
+        self.rescued_notes += 1
+        self.strike_trace.append(StrikeTrace(
+            strike_ms=window.timestamp_ms, adjusted_ms=window.timestamp_ms,
+            playback_ms=window.timestamp_ms, midi_note=note.midi_note,
+            confidence=0.0, unpitched=True, subharmonic=False,
+            outcome="rescued", note_ms=note.timestamp_ms, semitones=0,
+        ))
+        return MatchResult(match_type=MatchType.HIT, matched_events=[note],
+                           semitone_distance=0)
 
     def process_strike_windows(
         self, windows: list[StrikeWindow]
@@ -542,6 +1132,9 @@ class NoteMatcher:
             return results
 
         for window in windows:
+            rescue = self._apply_rescue(window)
+            if rescue is not None:
+                results.append(rescue)
             siblings = self._pending_verifications.pop(window.sample_pos, None)
             if not siblings:
                 continue
@@ -560,6 +1153,18 @@ class NoteMatcher:
                     continue
                 self._rerecord_match(note, MatchType.MISS)
                 self.chord_strings_corrected += 1
+                self.strike_trace.append(StrikeTrace(
+                    strike_ms=window.timestamp_ms,
+                    adjusted_ms=window.timestamp_ms,
+                    playback_ms=window.timestamp_ms,
+                    midi_note=note.midi_note,
+                    confidence=0.0,
+                    unpitched=False,
+                    subharmonic=False,
+                    outcome="string_taken_back",
+                    note_ms=note.timestamp_ms,
+                    semitones=None,
+                ))
                 results.append(MatchResult(
                     match_type=MatchType.MISS,
                     matched_events=[note],
@@ -593,6 +1198,35 @@ class NoteMatcher:
         needed = abs(median) + SEARCH_SPREAD_MULTIPLE * spread
         return min(LATENCY_SEARCH_MS, max(MIN_SEARCH_MS, needed))
 
+    def _times_its_own_strike(self, note: NoteEvent) -> bool:
+        """Whether this note can honestly say when it was played.
+
+        The timing report answers "how far from the beat do you pick", so a
+        note may only contribute if its written pitch really sounds at its
+        written moment, on a pick of its own. Three kinds cannot:
+
+        - a dead note has no pitch at all; its fret says where the hand damps
+        - a bent or sliding note leaves its written pitch on purpose, and the
+          collector reports the settled pitch, which is the one it moved TO
+        - a hammered, pulled or slid-into note is never picked at all, so any
+          strike credited to it belongs to something else
+
+        A hammer-on SOURCE is picked normally at its written pitch and keeps
+        contributing. This is the same rule the report already applied to dead
+        notes, carried through: measuring against a pitch that did not sound
+        when it was written invents the number it then reports. It cost real
+        damage once -- a run over a technique test scattered by +-75 ms, and
+        the offset built from it sat in the config for days.
+        """
+        if note.dead:
+            return False
+        key = (note.timestamp_ms, note.string)
+        if key in self._pitch_ranges:      # bend, or a slide in any direction
+            return False
+        if key in self._legato_sources:    # never picked; inherits its source
+            return False
+        return True
+
     def _record_timing_sample(self, adjusted_ms: float, detected_midi: int) -> None:
         """Measure the strike's offset from the nearest pitch-matching tab note.
 
@@ -614,6 +1248,8 @@ class NoteMatcher:
         found: list[tuple[float, NoteEvent]] = []
         for note in candidates:
             if self._is_filtered(note):
+                continue
+            if not self._times_its_own_strike(note):
                 continue
             dist = semitone_distance(detected_midi, note.midi_note)
             octave_dist = dist % 12 if dist >= 12 else dist
@@ -915,13 +1551,55 @@ class NoteMatcher:
 
     def reset(self) -> None:
         """Clear all state. Call on seek/restart."""
+        # Every note is PENDING again, so the missed-note sweep has to start
+        # from the beginning again too. See _mark_missed_notes.
+        self._missed_swept_ms = 0.0
         self._note_states.clear()
         self.hits = 0
         self.close = 0
         self.misses = 0
+        self.notes_proved = 0
+        self.notes_by_strum = 0
+        self._credit_proved.clear()
         self._measure_stats.clear()
         self.reset_timing_samples()
         # Chords awaiting their audio window belong to the abandoned position
         self._pending_verifications.clear()
+        self._pending_rescues.clear()
         self.chord_verifications = 0
         self.chord_strings_corrected = 0
+        self.rescued_notes = 0
+        self.rescue_held = 0
+        self.rescue_asked = 0
+        self.rescue_already_credited = 0
+        self.rescue_refused = 0
+        self._contour.clear()
+        self._unjudged_bends = dict(self._bend_plans)
+        self.bends_judged = 0
+        self.bends_short = 0
+        self.strike_trace.clear()
+
+        # One line per strike, and one per string a chord verdict took back.
+        # Written only; see StrikeTrace for why it exists.
+        self.strike_trace: list[StrikeTrace] = []
+
+
+def _longest_run(times: list[float], gap_ms: float) -> float:
+    """The longest stretch these moments cover without a gap bigger than one.
+
+    A pure span from first to last would call a bend held that was flicked up
+    twice with nothing in between -- measured on the block 6 takes, that let
+    two of the three deliberately-not-held bends through. Counting frames
+    instead marks down vibrato, which leaves the target on purpose. The run
+    with a tolerated gap is the reading that tells all three apart.
+    """
+    if not times:
+        return 0.0
+    longest = 0.0
+    start = previous = times[0]
+    for moment in times[1:]:
+        if moment - previous > gap_ms:
+            start = moment
+        previous = moment
+        longest = max(longest, moment - start)
+    return longest

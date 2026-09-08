@@ -17,6 +17,14 @@ PROGRAM_CHANGE = 0xC0
 
 # All-notes-off CC
 ALL_NOTES_OFF_CC = 123
+# CC 123 asks a note to RELEASE; a patch with a long tail keeps sounding and
+# a held sustain pedal keeps it sounding for ever. CC 120 cuts the sound
+# outright and CC 121 puts the controllers -- sustain among them -- back
+# where they started. The player reported a hum that survived leaving the
+# song and every other song after it, and died only when the app was closed,
+# which is what a synth still holding something sounds like.
+ALL_SOUND_OFF_CC = 120
+RESET_CONTROLLERS_CC = 121
 
 
 @dataclass(frozen=True, order=True)
@@ -37,6 +45,10 @@ class BackingTrack:
         self._events = sorted(events or [])
         self._timestamps = [e.timestamp_ms for e in self._events]
         self._cursor = 0
+        # Instrument assignments, in order. A handful in a whole song, and
+        # they never change, so they are picked out once.
+        self._program_changes = [e for e in self._events
+                                 if e.event_type == PROGRAM_CHANGE]
 
     def __len__(self) -> int:
         return len(self._events)
@@ -68,11 +80,16 @@ class BackingTrack:
         # a count-in, which is negative) sent no instrument assignments at all
         # and every melodic backing track played on whatever the synth
         # happened to have on that channel.
-        end = bisect.bisect_right(self._timestamps, max(0.0, time_ms))
+        cutoff = max(0.0, time_ms)
         latest: dict[int, MidiEvent] = {}
-        for event in self._events[:end]:
-            if event.event_type == PROGRAM_CHANGE:
-                latest[event.channel] = event
+        # Only the program changes, which are a handful, rather than a copy of
+        # every event up to here and a scan of it. That copy grew with the
+        # song: 0.87 ms three minutes in, per player, on every seek -- and a
+        # held arrow key is 25 seeks a second.
+        for event in self._program_changes:
+            if event.timestamp_ms > cutoff:
+                break
+            latest[event.channel] = event
         return list(latest.values())
 
 
@@ -191,6 +208,55 @@ def _open_shared_output():
     return None
 
 
+def _silence(output, reset_controllers: bool = False) -> None:
+    """Tell the synth to stop making sound, on all sixteen channels.
+
+    Tracking note-ons is not enough on its own: a note whose off was never
+    sent (a lost device, a player dropped without being closed) is untracked
+    by definition, and CC 123 alone only asks a note to RELEASE, which a long
+    tail ignores.
+
+    `reset_controllers` is for a PANIC and nothing else. CC 121 puts volume,
+    pan and sustain back to their defaults -- which is what clears a stuck
+    pedal, and also what would undo the mix the tab asked for. A seek must
+    not change how the backing sounds, and a held arrow key is 25 seeks a
+    second: this used to send 48 messages on every one of them.
+    """
+    if output is None:
+        return
+    controllers = [ALL_SOUND_OFF_CC, ALL_NOTES_OFF_CC]
+    if reset_controllers:
+        controllers.append(RESET_CONTROLLERS_CC)
+    for channel in range(16):
+        for controller in controllers:
+            try:
+                output.write_short(0xB0 | channel, controller, 0)
+            except Exception:
+                pass
+
+
+def output_name() -> str:
+    """Which synth the backing is going to, for the run log."""
+    if _SHARED_OUTPUT is None:
+        return "(none open)"
+    return _SHARED_OUTPUT_NAME or "(unnamed)"
+
+
+def panic() -> bool:
+    """Silence the MIDI synth, whoever was playing it.
+
+    Not a method: a player that was dropped without being closed still has
+    its notes sounding, and the whole point is to reach the port rather than
+    any object holding it. Returns whether there was a port at all -- "no
+    MIDI output" and "silenced it" are different answers to "why is it still
+    humming".
+    """
+    if _SHARED_OUTPUT is None:
+        return False
+    _silence(_SHARED_OUTPUT, reset_controllers=True)
+    return True
+
+
 class MidiPlayer:
     """Wraps pygame.midi.Output for backing track playback."""
 
@@ -297,9 +363,4 @@ class MidiPlayer:
             except Exception:
                 pass
         self._active_notes.clear()
-        # CC 123 (All Notes Off) on all 16 channels as safety net
-        for ch in range(16):
-            try:
-                self._output.write_short(0xB0 | ch, ALL_NOTES_OFF_CC, 0)
-            except Exception:
-                pass
+        _silence(self._output)

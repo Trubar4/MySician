@@ -41,6 +41,17 @@ def _apply_songs_argument(config: Config, argv: list[str]) -> None:
 
 
 def main():
+    if "--check-engraver" in sys.argv:
+        # Asked of the THING THAT SHIPS. The build already ran the same
+        # check, but in the build environment -- where verovio was installed
+        # and everything passed, while the EXE it produced had no verovio in
+        # it at all. A check that does not run inside the package cannot
+        # answer the packaging question, which is the only one being asked.
+        from pickhero.ui.scrolling import _engraver_state
+        state = _engraver_state()
+        print(f"engraver: {state}")
+        sys.exit(0 if state == "ready" else 1)
+
     if "--console" in sys.argv:
         # Phase 1 console demo for audio testing
         from pickhero.audio.input import run_console_demo

@@ -2,7 +2,8 @@
 
 import pytest
 
-from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
+from pickhero.tabs.timeline import (MeasureInfo, NoteEvent,
+                                    SongMetadata, Timeline)
 
 
 class TestNoteEvent:
@@ -248,3 +249,37 @@ class TestTechniqueFields:
         note = NoteEvent(timestamp_ms=0.0, duration_ms=100.0, midi_note=64,
                          string=1, fret=0, bend=((0.0, 0.0), (1.0, 2.0)))
         assert len({note, note}) == 1
+
+
+class TestASongIsAsLongAsItIsWritten:
+    """A tab whose final bars are empty -- an outro the guitar sits out --
+    used to end the moment its last note stopped, and everything downstream
+    then agreed the song was over while the recording played on. Measured on
+    the player's own file: "What's Up" writes 80 bars of 3.69 s, so the piece
+    runs 295.4 s and its last note is at 243.5. Fifty-two seconds of music
+    with the picture already finished.
+    """
+
+    def _timeline(self, last_note_ms, last_bar_end_ms):
+        notes = [NoteEvent(timestamp_ms=last_note_ms, duration_ms=500.0,
+                           midi_note=40, string=6, fret=0, measure=0)]
+        bars = [MeasureInfo(index=0, start_ms=0.0, end_ms=last_bar_end_ms)]
+        return Timeline(notes, SongMetadata(title="t", tempo=120), bars)
+
+    def test_the_empty_outro_counts(self):
+        assert self._timeline(243_500.0, 295_400.0).duration_ms == 295_400.0
+
+    def test_a_note_ringing_past_the_last_bar_line_counts_too(self):
+        """A let-ring note may sound past the end of the piece, and the song
+        is not over while something is still sounding."""
+        assert self._timeline(295_000.0, 295_400.0).duration_ms == 295_500.0
+
+    def test_a_tab_with_no_measures_falls_back_to_the_notes(self):
+        notes = [NoteEvent(timestamp_ms=1000.0, duration_ms=500.0,
+                           midi_note=40, string=6, fret=0, measure=0)]
+        assert Timeline(notes).duration_ms == 1500.0
+
+    def test_an_empty_song_is_zero_either_way(self):
+        assert Timeline([]).duration_ms == 0.0
+        assert Timeline([], None, [MeasureInfo(index=0, start_ms=0.0,
+                                               end_ms=0.0)]).duration_ms == 0.0
