@@ -1,30 +1,35 @@
 
+#Üben von Kid Rock - Rock on
+Takt 181–200 — der einzige Abschnitt ohne jeden Fortschritt: 75 % → 75 %. Alles andere hast du verbessert. Fang hier an.
+
+Danach die drei Einzeltakte, die in beiden Läufen auftauchen:
+
+Takt	Zeit	Lage	was dort steht
+171	4:33	Bünde 7–11	ein Slide
+123	3:16	Bünde 14–17	ein Bending
+183	4:52	Bünde 10–12	ein Bending
+
+Alle drei: hohe Lage plus eine Technik. Genau die Kombination, an der du hängst.
+
+Konkret
+Lagenwechsel mit Ankerfinger. Bei jedem Sprung in die 10.–14. Lage: Zeigefinger zuerst setzen, dann greifen. Dein +2-Fehler ist ein Sprung ohne Anker.
+Takt 181–200 mit L in die Schleife, bei 80 % (PgDn). Der Abschnitt bewegt sich seit zwei Läufen nicht.
+Takt 171 / 123 / 183 einzeln, langsam — dort ist Slide bzw. Bending mit hoher Lage kombiniert. Beim Bending: Zielton vorher anschlagen, dann blind hinbiegen.
+Dein Timing ist nicht das Problem. Median −4 ms über 39 Takte, also praktisch auf dem Schlag. Nur Takt 60 fällt aus dem Rahmen (+156 ms). Da musst du nichts ändern.
+Eine Sache am Setup
+
+In allen drei Läufen: 21–30 % des Audios lagen unter der Rauschsperre. Das ist viel — die Sperre steht auf −50 dB, dein lautester Anschlag bei −13 dB. Ein paar leise Noten gehen dabei verloren, und die zählen dann als Fehler, die keine sind. Probier X (senkt die Sperre um 5 dB) vor dem nächsten Lauf; wenn die automatische Sperre an ist, schalte sie mit X bewusst ab und geh auf −60.
+
+
+
+
+#Daten von einem Rechner auf den anderen Kopieren
 :: auf NB1 den ganzen Ordner auf einen Stick
 xcopy /E /I "%USERPROFILE%\.pickhero" D:\pickhero-vom-nb1
 :: auf NB2
 python tools\merge_stats.py --from D:\pickhero-vom-nb1 --dry-run
 python tools\merge_stats.py --from D:\pickhero-vom-nb1
 
-
-
-
-#To Dos
-Sync nochmals testen
-Längere Töne (zB am Anfang von Californication)
-Erkennung Papa Roach
-SHIFT+A um Audio-Device zu resetten
-
-#Features
-Lass uns an zwei anderen Features arbeiten, bis ich wieder sauber testen kann:
-1. Kleiner machen geht nicht richtig. Damit würde ich nämlich das Bild verlangsamen, aber es hängt meist bei Größe 1 und ignoriert kleiner machen. Größer machen geht, aber das macht den Bildlauf schneller.
-2. Wie schwierig ist es ein Stimmgerät mit in die App einzubauen? Dafür gibt es sicher Libs oder? Man wählt die Stimmung und es zeigt um wie viel zu hoch zu niedrig je Seite?
-
-https://www.songsterr.com/a/wsa/red-hot-chili-peppers-californication-tab-s439
-
-#Apps
-https://goplayalong.com/store/
-https://www.gibson.app/subscribe-now?showNavBar=true&source=navbar
-https://soundlane.app/de/
 
 So bedienst du es
 1. Song starten, MP3 an (U)
