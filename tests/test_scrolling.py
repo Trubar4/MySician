@@ -1323,7 +1323,7 @@ class TestFooterCompleteness:
         "SPACE": "SPACE", "ESCAPE": "ESC", "LEFT": "LEFT", "RIGHT": "RIGHT",
         "HOME": "HOME", "PAGEDOWN": "PgDn", "PAGEUP": "PgUp", "TAB": "TAB",
         "a": "A: audio", "b": "B: backing", "c": "X/C", "d": "D: run log",
-        "f": "F: frets",
+        "e": "E: skip a rest", "f": "F: frets",
         "g": "G: hit window", "h": "H: help", "i": "I/O", "j": "J: strings",
         "k": "K: sync", "l": "L: weakest", "m": "N/M", "n": "N/M",
         "r": "R: play in another tuning",
@@ -3864,3 +3864,316 @@ class TestTheFooterFitsOnTheScreen:
         screen._blit_footer_lines(Recorder(surface), layout,
                                   screen._footer_lines(), (200, 200, 200))
         assert widest and max(widest) <= 1911
+
+
+class TestSkippingALongRest:
+    """E jumps over a stretch with nothing written on this track.
+
+    Measured before it was built: over every track of the four songs to hand,
+    a guitar track's inner rests are 4-6 s (part of the music) or 12 s and up
+    (a section it does not play), with nothing in between -- so any threshold
+    from 7 to 12 s finds the same rests and GAP_MIN_MS is not on a knife edge.
+    """
+
+    class _MockSurface:
+        def __init__(self, w, h):
+            self._size = (w, h)
+
+        def get_size(self):
+            return self._size
+
+    def _screen(self, notes, duration_pad_ms=0.0):
+        from pickhero.ui.scrolling import PlayingScreen
+        end = max(n.end_ms for n in notes) + duration_pad_ms
+        song = Timeline(
+            notes, SongMetadata(title="t", tempo=120),
+            measures=[MeasureInfo(index=0, start_ms=0.0, end_ms=end)])
+        screen = PlayingScreen(song, config=Config())
+        layout = screen._layout(self._MockSurface(1280, 720))
+        screen._last_layout = layout
+        screen._recompute_scroll_speed(layout)
+        return screen
+
+    @staticmethod
+    def _note(at_ms, dur=500.0):
+        return NoteEvent(timestamp_ms=at_ms, duration_ms=dur,
+                         midi_note=40, string=6, fret=0)
+
+    def _with_a_rest(self):
+        # 0-1 s of notes, then twenty seconds of nothing, then more.
+        notes = [self._note(0.0), self._note(500.0)]
+        notes += [self._note(21_000.0 + i * 500.0) for i in range(4)]
+        return self._screen(notes)
+
+    def test_a_short_rest_is_not_a_rest(self):
+        """Four bars at 120 BPM is music, and the player counts through it."""
+        notes = [self._note(0.0), self._note(6_000.0)]
+        assert self._screen(notes)._rests == []
+
+    def test_a_long_rest_is_found_with_its_next_note(self):
+        screen = self._with_a_rest()
+        assert screen._rests == [(1_000.0, 21_000.0)]
+
+    def test_a_note_still_sounding_is_not_a_rest(self):
+        """Counted from the END of the notes before it, not from their onset.
+
+        Skipping over a held note would skip a note that is still being
+        scored, which costs the player the note.
+        """
+        notes = [self._note(0.0, dur=20_000.0), self._note(21_000.0)]
+        assert self._screen(notes)._rests == []
+
+    def test_the_outro_is_not_offered_as_a_jump(self):
+        """There is no next note to land in front of."""
+        notes = [self._note(0.0), self._note(500.0)]
+        screen = self._screen(notes, duration_pad_ms=60_000.0)
+        assert screen._rests == []
+
+    def test_the_key_lands_a_lead_in_before_the_next_note(self):
+        from pickhero.ui.scrolling import GAP_LEAD_IN_MS
+        screen = self._with_a_rest()
+        screen._playback_ms = 2_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(21_000.0 - GAP_LEAD_IN_MS)
+
+    def test_it_never_jumps_backwards(self):
+        screen = self._with_a_rest()
+        screen._playback_ms = 19_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(19_000.0)
+
+    def test_a_track_with_no_rest_says_so_rather_than_moving(self):
+        screen = self._screen([self._note(0.0), self._note(1_000.0)])
+        screen._playback_ms = 500.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(500.0)
+        assert screen._status_note_text()
+
+    def test_a_loop_outranks_the_skip(self):
+        """Jumping out of a loop would be undone on the very next frame."""
+        screen = self._with_a_rest()
+        screen._playback_ms = 2_000.0
+        screen._set_loop_start(0.0)
+        screen._set_loop_end(5_000.0)
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(2_000.0)
+        assert "Loop" in screen._status_note_text()
+
+    def test_the_hud_speaks_only_inside_the_rest(self):
+        screen = self._with_a_rest()
+        screen._playback_ms = 500.0
+        assert screen._rest_hud_text() is None
+        screen._playback_ms = 5_000.0
+        assert "E" in (screen._rest_hud_text() or "")
+
+    def test_the_hud_goes_quiet_once_the_next_note_is_near(self):
+        """Inside the lead-in there is nothing left worth skipping."""
+        screen = self._with_a_rest()
+        screen._playback_ms = 20_000.0
+        assert screen._rest_hud_text() is None
+
+    def test_the_outro_is_announced_even_though_it_cannot_be_skipped(self):
+        notes = [self._note(0.0), self._note(500.0)]
+        screen = self._screen(notes, duration_pad_ms=60_000.0)
+        screen._playback_ms = 10_000.0
+        assert "Nothing left to play" in (screen._rest_hud_text() or "")
+
+    def test_the_key_is_in_the_footer(self):
+        screen = self._with_a_rest()
+        assert any("E:" in line for line in screen._footer_lines())
+
+    def test_the_rest_list_is_built_once_per_song_and_never_in_a_frame(self):
+        """A walk over every note, so it must not run 60 times a second."""
+        pygame.init()
+        try:
+            surface = pygame.Surface((1280, 720))
+            screen = self._with_a_rest()
+            screen._playback_ms = 5_000.0
+            screen.render(surface)
+            calls = []
+            original = screen._build_rests
+            screen._build_rests = lambda: calls.append(1) or original()
+            for i in range(60):
+                screen._playback_ms = 5_000.0 + i * 16.7
+                screen.render(surface)
+            assert calls == []
+        finally:
+            pygame.quit()
+
+
+class TestAPressMustBuySomethingVisible:
+    """+/- refuse a step that changes nothing anybody can see.
+
+    Measured over the guitar tracks of the four songs to hand: while the trade
+    is live a step moves the window by 7-17 %, and the one dead step -- 0.7x
+    to 0.6x, once the head is already on its floor -- buys 1.7 %. The old
+    guard only refused a step that bought under one millisecond, so the dead
+    one stored a new number and redrew nothing.
+    """
+
+    class _MockSurface:
+        def __init__(self, w, h):
+            self._size = (w, h)
+
+        def get_size(self):
+            return self._size
+
+    def _screen(self, spacing_ms, count=200):
+        from pickhero.ui.scrolling import PlayingScreen
+        notes = [
+            NoteEvent(timestamp_ms=i * spacing_ms, duration_ms=spacing_ms * 0.8,
+                      midi_note=40, string=6, fret=12)
+            for i in range(count)
+        ]
+        screen = PlayingScreen(Timeline(notes, SongMetadata(tempo=120)),
+                               config=Config())
+        layout = screen._layout(self._MockSurface(1280, 720))
+        screen._last_layout = layout
+        screen._recompute_scroll_speed(layout)
+        return screen
+
+    def test_a_step_that_moves_the_picture_is_taken(self):
+        from pickhero.ui.scrolling import SCROLL_FACTOR_STEP
+        screen = self._screen(spacing_ms=400.0)
+        before = screen._visible_window_ms
+        screen._adjust_scroll_factor(SCROLL_FACTOR_STEP)
+        assert screen._visible_window_ms != pytest.approx(before)
+        assert screen._config.scroll_speed_factor == pytest.approx(1.1)
+
+    def test_the_dead_step_at_the_floor_is_put_back(self):
+        """0.6x -> 0.5x once the head is on its floor.
+
+        Concrete rather than a restatement of the constant: on this song the
+        head reaches 26 px at 0.6x, so the next press buys 222 ms of a 13.1 s
+        window -- 1.7 %, which is nothing anybody can see. The old guard let
+        it through because it only refused a step worth under one
+        millisecond, and the player was left with a number that had moved and
+        a picture that had not.
+        """
+        from pickhero.ui.scrolling import SCROLL_FACTOR_STEP
+        screen = self._screen(spacing_ms=400.0)
+        screen._config.scroll_speed_factor = 0.6
+        screen._recompute_scroll_speed()
+        at_floor = screen._visible_window_ms
+        assert screen._head_px == pytest.approx(26.0, abs=0.5)
+
+        screen._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
+        assert screen._config.scroll_speed_factor == pytest.approx(0.6)
+        assert screen._visible_window_ms == pytest.approx(at_floor)
+        assert screen._status_note_text()
+
+        # And the step just above it, which is worth 14 %, is still taken.
+        screen._config.scroll_speed_factor = 0.8
+        screen._recompute_scroll_speed()
+        screen._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
+        assert screen._config.scroll_speed_factor == pytest.approx(0.7)
+
+
+    def test_the_hud_names_the_direction_of_each_key(self):
+        """A player who wants the notes further apart and presses - gets the
+        opposite, and nothing on screen said which way either key goes."""
+        pygame.init()
+        try:
+            screen = self._screen(spacing_ms=300.0)
+            surface = pygame.Surface((1280, 720))
+            drawn = []
+
+            class _Watched:
+                def __init__(self, font):
+                    self._font = font
+
+                def render(self, text, *a, **k):
+                    drawn.append(text)
+                    return self._font.render(text, *a, **k)
+
+                def __getattr__(self, name):
+                    return getattr(self._font, name)
+
+            real_get_font = scrolling._get_font
+            scrolling._get_font = lambda *a, **k: _Watched(real_get_font(*a, **k))
+            try:
+                screen._playback_ms = 1000.0
+                screen.render(surface)
+            finally:
+                scrolling._get_font = real_get_font
+            line = next((d for d in drawn if d.startswith("Scroll:")), "")
+            assert "further apart" in line and "look-ahead" in line
+        finally:
+            pygame.quit()
+
+
+class TestOneShortPressIsOneStep:
+    """A burst of key repeats must move a discrete setting by one step.
+
+    Measured: `pygame.key.set_repeat(300, 40)` is one global setting for every
+    key, and 40 ms is 25 steps a second. The practice speed has ELEVEN
+    positions, so 700 ms of holding crosses the whole range from 100 % to
+    50 % -- and every repeat that arrives during a stalled frame is drained
+    together and applied in one go. The player reported exactly that: a short
+    press on PgDn showing 95 % for a moment and then 50 %.
+    """
+
+    def _screen(self):
+        from pickhero.ui.scrolling import PlayingScreen
+        notes = [NoteEvent(timestamp_ms=i * 500.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=3) for i in range(40)]
+        return PlayingScreen(
+            Timeline(notes, SongMetadata(tempo=120),
+                     measures=[MeasureInfo(index=0, start_ms=0.0,
+                                           end_ms=20_000.0)]),
+            config=Config(), song_key="s")
+
+    @staticmethod
+    def _press(screen, key):
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=key, mod=0, unicode=""))
+
+    @staticmethod
+    def _release(screen, key):
+        screen.handle_event(pygame.event.Event(pygame.KEYUP, key=key, mod=0))
+
+    def test_a_burst_drained_in_one_frame_is_one_step(self):
+        """Ten repeats arriving together, which is what a stalled frame does."""
+        screen = self._screen()
+        assert screen._tempo_factor == pytest.approx(1.0)
+        for _ in range(10):
+            self._press(screen, pygame.K_PAGEDOWN)
+        assert screen._tempo_factor == pytest.approx(0.95)
+
+    def test_the_first_press_is_never_delayed(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_PAGEDOWN)
+        assert screen._tempo_factor == pytest.approx(0.95)
+
+    def test_letting_go_makes_the_next_press_instant(self):
+        """Two deliberate presses both count, however fast they arrive."""
+        screen = self._screen()
+        self._press(screen, pygame.K_PAGEDOWN)
+        self._release(screen, pygame.K_PAGEDOWN)
+        self._press(screen, pygame.K_PAGEDOWN)
+        assert screen._tempo_factor == pytest.approx(0.90)
+
+    def test_holding_still_walks_the_setting(self):
+        """Gated, not blocked: the key has to keep working when held."""
+        from pickhero.ui.scrolling import STEP_KEY_REPEAT_S
+        screen = self._screen()
+        for i in range(4):
+            screen._step_key_at -= STEP_KEY_REPEAT_S
+            self._press(screen, pygame.K_PAGEDOWN)
+        assert screen._tempo_factor == pytest.approx(0.80)
+
+    def test_the_other_direction_is_a_different_key(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_PAGEDOWN)
+        self._press(screen, pygame.K_PAGEUP)
+        assert screen._tempo_factor == pytest.approx(1.0)
+
+    def test_the_scroll_factor_is_gated_the_same_way(self):
+        """22 positions, crossed in 1.14 s of holding. Same fault, same fix."""
+        screen = self._screen()
+        screen._last_layout = None
+        before = screen._config.scroll_speed_factor
+        for _ in range(10):
+            self._press(screen, pygame.K_MINUS)
+        moved = before - screen._config.scroll_speed_factor
+        assert moved <= 0.1 + 1e-9

@@ -1525,3 +1525,98 @@ class TestARecordingCarriedToAnotherMachine:
         config = Config()
         config.songs_dir = str(tmp_path)
         assert config.mp3_path_for("song") == ""
+
+
+class TestTheRecordingFollowsTheTuning:
+    """A song played in another tuning needs the recording shifted with it.
+
+    The transpose is what makes a Drop C song playable on a Drop D guitar:
+    the frets do not move, so the same shapes sound a tone higher and the
+    backing has to. Two ways that was thrown away, both silent.
+    """
+
+    def _screen(self, tmp_path, monkeypatch, tempo=1.0, transpose=0):
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        config.set_tempo_factor_for("song", tempo)
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        screen = PlayingScreen(_timeline(), config=config, song_key="song",
+                               transpose=transpose)
+        screen._playing = True
+        return screen
+
+    def test_full_speed_in_another_tuning_still_needs_a_build(
+            self, tmp_path, monkeypatch):
+        """The whole bug in one line.
+
+        "No stretch needed" was decided from the practice speed alone, so at
+        100 % the original recording was loaded whatever the tuning -- and
+        `_mp3_loaded_source_transpose` was then set to the transpose it had
+        NOT applied, so the fit check agreed and it was never rebuilt. The
+        player heard the recording at its written pitch against a guitar
+        playing a tone higher.
+        """
+        screen = self._screen(tmp_path, monkeypatch, tempo=1.0, transpose=2)
+        started = []
+        screen._start_mp3_stretch = lambda tempo: started.append(tempo)
+        screen._ensure_mp3_source()
+        assert started, "a shifted copy was never asked for"
+        # And it stays silent meanwhile rather than playing the written pitch
+        # under a guitar that is no longer at it.
+        assert not screen._mp3_plays()
+        assert not screen._mp3_source_fits()
+
+    def test_at_the_written_tuning_full_speed_still_needs_nothing(
+            self, tmp_path, monkeypatch):
+        """The control: without a shift there is nothing to build."""
+        screen = self._screen(tmp_path, monkeypatch, tempo=1.0, transpose=0)
+        started = []
+        screen._start_mp3_stretch = lambda tempo: started.append(tempo)
+        screen._ensure_mp3_source()
+        assert started == []
+        assert screen._mp3_player.path.name == "backing.mp3"
+
+    def test_a_copy_built_for_another_tuning_is_not_served(
+            self, tmp_path, monkeypatch):
+        """The second way it was lost. The screen's memo of the last finished
+        build was keyed by speed and file only, so the +2 copy was handed
+        straight back for the written tuning and the other way round."""
+        screen = self._screen(tmp_path, monkeypatch, tempo=0.8, transpose=2)
+        other = tmp_path / "backing_080_+0st.wav"
+        other.write_bytes(b"x")
+        screen._mp3_stretch_done = (0.8, screen._mp3_path(), str(other), 0)
+        started = []
+        screen._start_mp3_stretch = lambda tempo: started.append(tempo)
+        screen._ensure_mp3_source()
+        assert started, "the +0 copy was served for a +2 song"
+
+    def test_the_copy_built_for_this_tuning_is_served(
+            self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, tempo=0.8, transpose=2)
+        mine = tmp_path / "backing_080_+2st.wav"
+        mine.write_bytes(b"x")
+        screen._mp3_stretch_done = (0.8, screen._mp3_path(), str(mine), 2)
+        screen._ensure_mp3_source()
+        assert screen._mp3_player.path == mine
+        assert screen._mp3_plays()
+
+    def test_the_build_is_asked_for_the_semitones_it_needs(
+            self, tmp_path, monkeypatch):
+        """What actually reaches timestretch.build."""
+        import pickhero.audio.timestretch as timestretch
+        screen = self._screen(tmp_path, monkeypatch, tempo=1.0, transpose=-2)
+        asked = {}
+
+        def fake_build(path, tempo, cache_dir, report, semitones=0.0):
+            asked["tempo"] = tempo
+            asked["semitones"] = semitones
+            return tmp_path / "built.wav"
+
+        monkeypatch.setattr(timestretch, "build", fake_build)
+        screen._start_mp3_stretch(screen._mp3_build_tempo())
+        screen._mp3_stretch_thread.join(timeout=5)
+        assert asked["semitones"] == -2
+        assert screen._mp3_stretch_done[3] == -2

@@ -1739,6 +1739,102 @@ where the song is with where the recording got to and corrects only past `RESYNC
   offset cannot be judged in. `_mp3_plays()` includes `self._playing` for that reason. Paused, `Shift+N`/`Shift+M` only store the value;
   the HUD shows it move regardless, so the key never looks dead.
 
+## Skipping A Stretch With Nothing To Play
+
+"Wie überspringe ich Leerstellen?" Measured first, over every track of the four songs to hand — because what a rest IS decides the constant:
+
+| | inner rests >= 8 s | outro |
+|---|---|---|
+| the five guitar tracks | **1** (Kid Rock lead, 12.9 s) | 0 to 52 s |
+| bass and vocal tracks | 2 to 5, running to 44 and 100 s | 17 to 67 s |
+
+A guitar track's inner rests are either **4-6 s** — two bars, part of the music, and the player counts through them — or **12 s and up**,
+which is a section it does not play, with nothing at all in between. So any threshold from 7 to 12 s picks out the same rests on this
+material: `GAP_MIN_MS` sits on a plateau rather than on a knife edge.
+
+- **`E` lands `GAP_LEAD_IN_MS` (3 s) before the next note**, not on it: there has to be time to read the fret and get the hand there.
+- **The whole transport moves with it.** `seek` already carries the MIDI backing, the recording and the audio clock's anchor, so nothing new
+  was needed — and a picture that jumps while the recording plays on is the sync fault this project has paid for several times.
+- **A rest is measured from the END of the notes before it, not from their onset.** Counting from the onset finds three more rests on this
+  material, every one of them a held note — and skipping over one would skip a note still sounding and still being scored.
+- **The outro is the biggest hole and is deliberately not a jump.** 52 s on one song's lead guitar, 37 s on its rhythm track, and no next
+  note to land in front of. It is ANNOUNCED instead ("Nothing left to play — 52 s of song to run"), because a picture scrolling through
+  nothing looks exactly like a picture that has stopped.
+- **A loop outranks it.** Jumping out of a loop would be undone by the loop itself on the very next frame, which is a key that looks broken.
+- **The HUD says the rest is there and names the key**, only while the player is actually sitting in the hole. Announcing one before it
+  arrives is noise on a line that is read at a glance.
+
+## The Knob Had Two Ends And Named Neither
+
+"Im Anhang ist ein Bild bei dem die Noten noch immer zu dicht sind." The layout is doing what it was built to do; the knob was turned the
+other way and nothing said so. Measured across the factor range on the guitar tracks to hand:
+
+| | 0.4x | 0.8x | 1.0x | 1.5x | 2.5x |
+|---|---|---|---|---|---|
+| Kid Rock lead, note pairs closer than one head | 5 % | 5 % | 5 % | **0 %** | 0 % |
+| | 172 px/s | 220 | 275 | 412 | **683** |
+
+**`-` is what makes the notes dense.** It buys look-ahead by pushing them closer together; `+` spreads them out by showing less of the song.
+The HUD read `Scroll: 5.0 s ahead (0.8x, +/-)` — a number that sounds like a good thing, a factor, and two keys with no direction on either.
+It names both ends now, and the head size, which is the thing being traded.
+
+- **`SPACING_PERCENTILE` was measured and left alone.** Dropping it from 10 to 2 takes the Kid Rock tracks from 5 % and 4 % of pairs
+  touching to 1 %, and costs a quarter to a third of the look-ahead — while changing **nothing at all** on the other three tracks, whose
+  window is pinned elsewhere. That is a real trade with no free side, and the player already holds the knob; moving the default would spend
+  every song's look-ahead on 3-4 points of density on some.
+- **And one step of the knob was dead.** While the trade is live a step moves the window by 7-17 %; at 0.7x -> 0.6x, once the head is on its
+  floor, it buys **1.7 %** — a number that moved and a picture that did not, followed by a refusal at the next press. The guard only refused
+  a step worth under one MILLISECOND. It refuses anything under 5 % now, which is the middle of the gap between the live steps and the dead
+  one. Same fault as "Slowing The Tab Down Did Nothing At All", one press further along.
+
+## The Recording Kept The Tuning It Was Made In
+
+"Wenn ich eine andere Stimmung wähle wird die Tonhöhe wohl nicht richtig angepasst. Es klingt zwar minimal anders, passt aber überhaupt
+nicht zu den Tönen, die ich spiele." Correct, and it was one line. `_ensure_mp3_source` decided whether a copy had to be built from the
+**practice speed alone**:
+
+```python
+if abs(wanted - 1.0) < 1e-3:        # "nothing to build"
+    self._mp3_player.set_source(self._mp3_path(), ...)
+    self._mp3_loaded_source_transpose = self._transpose
+```
+
+At 100 % speed that loads the ORIGINAL recording whatever the tuning — and then records the transpose it had **not** applied, so
+`_mp3_source_fits` agreed and it was never rebuilt. The guitar sounds a tone above a backing at its written pitch, which is not a subtle
+error and is exactly what was reported. The "minimal anders" is the tab, the MIDI backing and the guide track, all of which DID move.
+
+- **The practice speed is not the only thing that makes the recording a different file.** The test is the speed AND the tuning.
+- **And the memo in front of the cache had the same hole.** `_mp3_stretch_matches` compared `(tempo, path)` and not the transpose, so a copy
+  built at +2 was handed straight back for the written tuning and the other way round. `timestretch.cache_name` hashes the semitones and had
+  it right all along; it was the screen's own one-entry memo that did not — a second reader of one answer, disagreeing with the first.
+- **Silent until the right copy lands**, the way a slowed-down song already is. Playing the unshifted file meanwhile is the one thing worse
+  than silence, because it sounds like the feature working.
+- The control is what makes it safe: at the written tuning and full speed, nothing is built and the original plays, exactly as before.
+
+## Twenty-Five Steps A Second, For A Setting With Eleven Positions
+
+"Ich drücke die Taste Bild ab einmal. Es zeigt kurz 95 % und springt dann auf 50 %. Drücke die Taste aber super kurz." Measured, and the
+arithmetic is the whole diagnosis:
+
+| | |
+|---|---|
+| `pygame.key.set_repeat(300, 40)` | a repeat every **40 ms** — 25 a second |
+| practice speed | 50 % to 100 % in 5 % steps = **11 positions** |
+| **holding PgDn to cross the entire range** | **700 ms** |
+| scroll factor (22 positions) | 1.14 s |
+
+One global repeat rate for every key in the app. That is right for an arrow key walking through a song, where the player is scrubbing, and
+wrong for a discrete setting — and on top of it **a frame that stalls drains every repeat that arrived during it in one go**, so a single
+press lands at the far end. The 95 % the player saw is the one frame that rendered between the first event and the burst.
+
+- **Only REPEATS are gated, never the first press.** A key that feels dead is the fault this display has already been fixed for twice.
+- **Coming off the key clears the gate**, so two deliberate presses both count. Exact where a timer alone would be a guess — the same reason
+  `Shift+S` waits for its key to come up.
+- **150 ms a step** walks the speed range in 1.5 s, which reads as a deliberate movement, and is nine times a frame, so a burst drained in
+  one frame moves the setting by one step. The test presses the key ten times inside one frame and requires one step; it fails on the
+  unfixed code, which is the only thing that makes it worth having.
+- The scroll factor gets the same gate. It is the same fault, and two answers to one question is how this project has been bitten before.
+
 ## Slowing The Tab Down Did Nothing At All
 
 "Kleiner machen geht nicht richtig — es haengt meist bei Groesse 1 und ignoriert kleiner machen. Groesser machen geht, aber das macht den Bildlauf schneller."

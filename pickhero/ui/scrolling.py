@@ -203,6 +203,45 @@ SPACING_PERCENTILE = 10.0
 # How far the manual speed control may go, and its step.
 SCROLL_FACTOR_RANGE = (0.4, 2.5)
 SCROLL_FACTOR_STEP = 0.1
+# A press has to buy something a player can SEE. Measured over the guitar
+# tracks of the four songs to hand, stepping the factor by 0.1 moves the
+# window by 7-17 % while the trade is live -- and by 1.7 % at 0.7x -> 0.6x,
+# where the head has already reached its floor and there is nothing left to
+# spend. That step stored a new number, redrew nothing anybody could see, and
+# was followed by a refusal at the next press, which is the "key that looks
+# broken" this display has already been fixed for once. Anything from 2 to 7 %
+# separates the live steps from the dead one.
+SCROLL_FACTOR_MIN_GAIN = 0.05
+
+# A DISCRETE SETTING IS NOT A SCRUB. `pygame.key.set_repeat(300, 40)` is one
+# global setting for every key in the app, and 40 ms is 25 steps a second --
+# which is right for an arrow key walking through a song and far too fast for
+# a setting with eleven positions. Measured: the practice speed runs 50 % to
+# 100 % in 5 % steps, so 700 ms of holding crosses the ENTIRE range, and the
+# scroll factor's 22 positions take 1.14 s. On top of that, a frame that
+# stalls drains every repeat that arrived during it in one go, so one press
+# can land at the far end of the range -- which is exactly what the player
+# reported: a short press showing 95 % for a moment and then 50 %.
+#
+# 150 ms a step walks the whole speed range in 1.5 s, which reads as a
+# deliberate movement, and it is nine times a frame, so a burst drained in one
+# frame applies once. The first press of a key is never delayed -- a key that
+# feels dead is the fault this display has already been fixed for twice -- so
+# only REPEATS are gated, and coming off the key clears the gate outright.
+STEP_KEY_REPEAT_S = 0.15
+
+# A rest is worth a key only when it is longer than the music writes rests for.
+# Measured over every track of the four songs to hand: a guitar track's inner
+# rests are either 4-6 s -- two bars, part of the music, and the player counts
+# through them -- or 12 s and up, which is a section they do not play, with
+# nothing at all in between. Bass and vocal tracks run to 44 and 100 s. So
+# anything from 7 to 12 s picks out exactly the same rests on this material:
+# the constant sits on a plateau rather than on a knife edge.
+GAP_MIN_MS = 8000.0
+# Landing ON the next note leaves no time to get the hand there. Three seconds
+# is a bar and a half at 100 BPM -- long enough to read the fret and place the
+# fingers, short enough not to be a second rest.
+GAP_LEAD_IN_MS = 3000.0
 
 # Hit-window presets cycled by G. Strikes scatter by more than the default
 # window even on a metronomic exercise, so how strict this should be is a
@@ -853,8 +892,8 @@ class PlayingScreen:
         # (speed, the recording it was made from, the stretched file). The
         # recording is part of the key because picking a new file mid-session
         # must not inherit the last one's stretch.
-        self._mp3_stretch_done: tuple[float, str, str] | None = None
-        self._mp3_stretch_failed: tuple[float, str, str] | None = None
+        self._mp3_stretch_done: tuple[float, str, str, float] | None = None
+        self._mp3_stretch_failed: tuple[float, str, str, float] | None = None
         # How far the build has got, 0 to 1. A whole song is five to twenty
         # seconds of work and the player hears nothing for all of it -- "one
         # moment" with nothing moving is indistinguishable from broken.
@@ -907,6 +946,11 @@ class PlayingScreen:
         # default: it is an extension to the normal view, not the view.
         self._chord_mode: bool = bool(getattr(config, "chord_view", False))
         self._chord_shapes: list = []
+        # (rest starts, next note) for every stretch of the song with
+        # nothing to play on THIS track. Built once per song, because it
+        # is a walk over every note and this display has been bitten
+        # twice by work that looked cheap until it ran once a frame.
+        self._rests: list[tuple[float, float]] = []
         self._tab_engraving = None
         self._tab_due: bool = False
         self._tab_error: str = ""
@@ -979,6 +1023,9 @@ class PlayingScreen:
         # not work, and this project has now shipped that fault four times.
         self._status_note: str = ""
         self._status_note_until: float = 0.0
+        # Which stepping key is being held, and when it last acted.
+        self._step_key: int | None = None
+        self._step_key_at: float = 0.0
         # What the picture's clock did against real time -- see the advance
         # in update(). Not reset by a seek or a loop: the question is what
         # the machine did over the whole sitting.
@@ -1458,6 +1505,12 @@ class PlayingScreen:
             # the key to come up is exact where a timeout would be a guess.
             if event.key == pygame.K_s:
                 self._sync_key_held = False
+            # Coming off a stepping key makes the next press instant again,
+            # so two deliberate presses in quick succession both count. Exact
+            # where the timer alone would be a guess -- the same reason the
+            # sync key above waits for the key to come up.
+            if event.key == self._step_key:
+                self._step_key = None
             return None
         if event.type != pygame.KEYDOWN:
             return None
@@ -1484,9 +1537,11 @@ class PlayingScreen:
             else:
                 self._toggle_audio()
         elif event.key == pygame.K_PAGEDOWN:
-            self.set_tempo_factor(self._tempo_factor - 0.05)
+            if self._step_key_ready(event.key):
+                self.set_tempo_factor(self._tempo_factor - 0.05)
         elif event.key == pygame.K_PAGEUP:
-            self.set_tempo_factor(self._tempo_factor + 0.05)
+            if self._step_key_ready(event.key):
+                self.set_tempo_factor(self._tempo_factor + 0.05)
         elif event.key == pygame.K_i:
             self._set_loop_start(self._playback_ms)
         elif event.key == pygame.K_o:
@@ -1552,6 +1607,8 @@ class PlayingScreen:
             self._toggle_string(5)
         elif event.key == pygame.K_F6:
             self._toggle_string(6)
+        elif event.key == pygame.K_e:
+            self._skip_rest()
         elif event.key == pygame.K_v:
             self._toggle_chord_mode()
         elif event.key == pygame.K_j:
@@ -1570,15 +1627,17 @@ class PlayingScreen:
         elif event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
             # Same key, the meaning of the view it is pressed in: on a page
             # there is no scroll speed to set and zoom is what it wants.
-            if self._tab_mode:
-                self._zoom_tab(+1)
-            else:
-                self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
+            if self._step_key_ready(event.key):
+                if self._tab_mode:
+                    self._zoom_tab(+1)
+                else:
+                    self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
         elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-            if self._tab_mode:
-                self._zoom_tab(-1)
-            else:
-                self._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
+            if self._step_key_ready(event.key):
+                if self._tab_mode:
+                    self._zoom_tab(-1)
+                else:
+                    self._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
         elif event.key == pygame.K_l:
             self._loop_weakest_section()
         elif event.key == pygame.K_h:
@@ -2116,7 +2175,115 @@ class PlayingScreen:
         self._chord_names = self._build_chord_names()
         from pickhero.tabs.chord_shapes import changes_in
         self._chord_shapes = changes_in(self._timeline)
+        self._rests = self._build_rests()
         self._scroll_speed_signature = self._filter_signature()
+
+    def _build_rests(self) -> list[tuple[float, float]]:
+        """(when the rest starts, when the next note is) for every long rest.
+
+        Measured by the END of the notes before it, not by their onset. A note
+        held for eight seconds is nothing to PLAY, so counting from the onset
+        would find more rests -- and skipping over one would skip a note that
+        is still sounding and still being scored, which costs the player the
+        note. Measured on the four songs to hand, that is the only difference
+        the two definitions make: three rests, every one of them a held note.
+
+        The outro is deliberately NOT in here. It is the biggest hole in the
+        material -- 52 s on one song's lead guitar, 37 s on its rhythm track --
+        and there is no next note to skip to, so it is announced (see
+        `_rest_hud_text`) and never offered as a jump.
+        """
+        notes = sorted(self._timeline.notes, key=lambda n: n.timestamp_ms)
+        rests: list[tuple[float, float]] = []
+        sounding_to = 0.0
+        for note in notes:
+            if note.timestamp_ms - sounding_to >= GAP_MIN_MS:
+                rests.append((sounding_to, note.timestamp_ms))
+            sounding_to = max(sounding_to, note.end_ms)
+        return rests
+
+    def _last_note_end_ms(self) -> float:
+        """When the last written note stops sounding, 0.0 for an empty track."""
+        return max((n.end_ms for n in self._timeline.notes), default=0.0)
+
+    def _rest_at(self, ms: float) -> tuple[float, float] | None:
+        """The long rest the given moment sits inside, if any."""
+        for start, until in self._rests:
+            if start <= ms < until:
+                return (start, until)
+        return None
+
+    def _next_rest_after(self, ms: float) -> tuple[float, float] | None:
+        """The first long rest whose landing point is still ahead of `ms`.
+
+        A rest already within the lead-in is not worth jumping into: the jump
+        would be backwards, or a fraction of a second forwards, and either is
+        worse than doing nothing.
+        """
+        for start, until in self._rests:
+            if until - GAP_LEAD_IN_MS > ms + 1.0:
+                return (start, until)
+        return None
+
+    def _skip_rest(self) -> None:
+        """Jump to shortly before the next note, over a long rest.
+
+        The whole transport moves with it -- `seek` carries the MIDI backing,
+        the recording and the audio clock's anchor -- because a picture that
+        jumps while the recording plays on is the sync fault this project has
+        already paid for several times over.
+        """
+        if not self._rests:
+            if self._playback_ms >= self._last_note_end_ms() > 0:
+                self._say("Nothing left to play on this track")
+            else:
+                self._say("No long rest in this track")
+            return
+        rest = self._next_rest_after(self._playback_ms)
+        if rest is None:
+            if self._playback_ms >= self._last_note_end_ms() > 0:
+                self._say("Nothing left to play on this track")
+            else:
+                self._say("No rest ahead to skip")
+            return
+        start, until = rest
+        target = until - GAP_LEAD_IN_MS
+        # A loop is a decision about where the song is allowed to be, and it
+        # outranks this: jumping out of one would be undone by the loop itself
+        # on the very next frame, which is a key that looks broken.
+        if (self._loop_enabled and self._loop_end_ms is not None
+                and target > self._loop_end_ms):
+            self._say("Loop is on — the next rest is outside it (I/O)")
+            return
+        skipped = target - max(self._playback_ms, start)
+        self.seek(target)
+        if skipped >= 1000.0:
+            self._say(f"Skipped {skipped / 1000.0:.0f} s of rest")
+        else:
+            self._say("Jumped to the next note")
+
+    def _rest_hud_text(self) -> str | None:
+        """What to say while the player has nothing to play, or None.
+
+        Only while they are actually sitting in the hole. Announcing a rest
+        before it arrives is noise on a line that is read at a glance, and the
+        moment it is worth reading is the moment nothing is happening.
+        """
+        if self._playback_ms < 0 or not self._timeline.notes:
+            return None
+        rest = self._rest_at(self._playback_ms)
+        if rest is not None:
+            left = (rest[1] - self._playback_ms) / 1000.0
+            if left <= GAP_LEAD_IN_MS / 1000.0:
+                return None
+            return f"Rest: {left:.0f} s to the next note — E skips ahead"
+        last_end = self._last_note_end_ms()
+        if last_end > 0 and self._playback_ms >= last_end:
+            left = (self._timeline.duration_ms - self._playback_ms) / 1000.0
+            if left < 1.0:
+                return None
+            return f"Nothing left to play — {left:.0f} s of song to run"
+        return None
 
     def _build_chord_names(self) -> list[tuple[float, str]]:
         """(when, name) for every chord CHANGE in the song.
@@ -2465,14 +2632,18 @@ class PlayingScreen:
             return
         self._config.scroll_speed_factor = wanted
         self._recompute_scroll_speed()
-        if abs(self._visible_window_ms - before_window) < 1.0:
+        gained = abs(self._visible_window_ms - before_window)
+        if gained < max(1.0, before_window * SCROLL_FACTOR_MIN_GAIN):
             self._config.scroll_speed_factor = current
             self._recompute_scroll_speed()
-            self._say("The notes are already as small as they may get — "
-                      "this song cannot scroll slower and stay readable")
+            if delta < 0:
+                self._say("The notes are already as small as they may get — "
+                          "this song cannot scroll slower and stay readable")
+            else:
+                self._say("The notes are already as big as the lane allows")
             return
         self._config.save()
-        self._say(f"Tab speed {wanted:.1f}x — "
+        self._say(f"Tab speed {wanted:.1f}x — {self._head_px:.0f} px notes, "
                   f"{self._visible_window_ms / 1000:.1f} s ahead")
 
     def _filter_signature(self) -> tuple:
@@ -3146,7 +3317,7 @@ class PlayingScreen:
             f"|  I/O: loop {loop_state}  |  P: toggle  |  ESC: menu"
         )
         tools = (
-            "+/-: speed  |  G: hit window  |  K: sync (Shift+K: reset)  "
+            "+/-: note spacing  |  G: hit window  |  K: sync (Shift+K: reset)  "
             "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
             "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
             "|  R: play in another tuning (Shift+R: back)  "
@@ -3155,7 +3326,7 @@ class PlayingScreen:
             "|  Shift+S: sync point here (Ctrl+Shift+S: clear)  "
             "|  Shift+A: reopen audio output (if the sound goes bad)  "
             "|  Shift+T: tab page view  "
-            "|  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
+            "|  E: skip a rest  |  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
             "|  Y: timing report  |  D: run log  |  H: help"
         )
@@ -3446,11 +3617,29 @@ class PlayingScreen:
         # shrink, and a factor that changes nothing visible is a puzzle
         ahead = self._visible_window_ms / 1000.0
         trimmed = abs(self._scroll_factor() - 1.0) > 0.01
+        # Which way each key goes, because the two things this knob trades are
+        # opposites and nothing said so: - buys look-ahead by pushing the notes
+        # closer together, + spreads them out again by showing less of the
+        # song. A player who wants the notes further apart and presses - gets
+        # the opposite of what they asked for, and there is no way to find
+        # that out except by pressing.
         speed_surf = hint_font.render(
-            f"Scroll: {ahead:.1f} s ahead ({self._scroll_factor():.1f}x, +/-)",
+            f"Scroll: {ahead:.1f} s ahead, notes {self._head_px:.0f} px "
+            f"({self._scroll_factor():.1f}x — +: further apart, "
+            f"-: more look-ahead)",
             True, t.hud_accent if trimmed else t.hud_text)
         surface.blit(speed_surf, (left, info_y))
         info_y += 16
+
+        # Sitting in a hole with nothing to play looks exactly like a picture
+        # that has stopped, and the key that jumps over it is one nobody finds
+        # by pressing things. Silent whenever there IS something to play, so
+        # it costs no screen space on a track without rests.
+        rest_text = self._rest_hud_text()
+        if rest_text:
+            rest_surf = hint_font.render(rest_text, True, t.hud_accent)
+            surface.blit(rest_surf, (left, info_y))
+            info_y += 16
 
         # Dropped audio HUD — silent while there is nothing to report, loud
         # when there is. A machine that loses buffers loses notes at random,
@@ -4192,6 +4381,22 @@ class PlayingScreen:
         fh.write(f"frames_over_budget_percent\t{100 * late / len(frames):.0f}\n")
         fh.write(f"frames_measured\t{len(frames)}\n")
 
+    def _step_key_ready(self, key: int) -> bool:
+        """Whether a stepping key may act now, or is a repeat arriving too fast.
+
+        The first press of a key always acts. While it stays down, repeats are
+        honoured at most every `STEP_KEY_REPEAT_S`, so holding it walks the
+        setting at a readable pace instead of crossing the whole range in
+        two thirds of a second -- and a burst of repeats drained after a
+        stalled frame moves it by one step, not by ten.
+        """
+        now = time.monotonic()
+        if key != self._step_key or now - self._step_key_at >= STEP_KEY_REPEAT_S:
+            self._step_key = key
+            self._step_key_at = now
+            return True
+        return False
+
     STATUS_NOTE_SECONDS = 8.0
 
     def _say(self, text: str) -> None:
@@ -4625,6 +4830,7 @@ class PlayingScreen:
             "B: backing track     T: theme     I/O: loop markers",
             "P: toggle loop     L: loop the weakest part",
             "F: fret limit     F1-F6: mute a string     V: chord mode",
+            "E: skip a long rest (jumps to 3 s before the next note)",
             "W: wait mode (holds until you play the right note)",
             "J: per-string chord check (finds the wrong-fret string)",
             "K: auto-sync timing     ,/.: nudge sync by 10 ms",
@@ -4640,7 +4846,8 @@ class PlayingScreen:
             "  Two points give one speed, three give two sections, and a",
             "  band that played without a click needs the sections.",
             "  Ctrl+Shift+S clears them all.",
-            "+/-: scroll faster / slower     G: hit window",
+            "+/-: spread the notes out / fit more of the song on",
+            "G: hit window",
             "N/M: MIDI backing earlier / later   Alt+N/M: by a second",
             "TAB: choose track     H: this help     ESC: song list",
             "On the song list, O opens the settings screen — everything that",
@@ -5408,7 +5615,17 @@ class PlayingScreen:
         # The same threshold `stretch` itself gives up at: below it the build
         # returns the audio unchanged, so spending five seconds on a copy of
         # the original would be work bought with nothing.
-        if abs(wanted - 1.0) < 1e-3:
+        #
+        # AND the tuning, which this decided without for a while. The practice
+        # speed is not the only thing that makes the recording a different
+        # file: a song played in another tuning sounds a tone higher, so the
+        # backing has to be shifted with it. At 100 % speed the test passed on
+        # the speed alone, the original was loaded whatever the tuning, and
+        # `_mp3_loaded_source_transpose` was then set to a shift that had NOT
+        # been applied -- so the fit check agreed and it was never rebuilt.
+        # The player heard the recording at its written pitch against a guitar
+        # playing a tone above it, which is precisely what they reported.
+        if abs(wanted - 1.0) < 1e-3 and not self._transpose:
             self._mp3_player.set_source(self._mp3_path(), self._mp3_scale())
             self._mp3_loaded_build = wanted
             self._mp3_loaded_source_transpose = self._transpose
@@ -5426,8 +5643,17 @@ class PlayingScreen:
         self._start_mp3_stretch(wanted)
 
     def _mp3_stretch_matches(self, entry, tempo: float) -> bool:
-        """Whether a finished build belongs to this recording at this speed."""
-        return bool(entry) and entry[0] == tempo and entry[1] == self._mp3_path()
+        """Whether a build belongs to this recording, this speed AND this tuning.
+
+        The tuning is the third of the three and was missing: a copy built at
+        +2 was handed straight back for the written tuning, and the other way
+        round, because the memo was keyed by speed and file only. The cache on
+        disk had it right all along (`timestretch.cache_name` hashes the
+        semitones); it was this one-entry memo in front of it that did not.
+        """
+        if not entry or entry[0] != tempo or entry[1] != self._mp3_path():
+            return False
+        return (entry[3] if len(entry) > 3 else 0) == self._transpose
 
     def _start_mp3_stretch(self, tempo: float) -> None:
         """Build the stretched copy off the game loop."""
@@ -5456,7 +5682,8 @@ class PlayingScreen:
             try:
                 built = timestretch.build(Path(path), tempo, cache_dir,
                                           report, semitones=semitones)
-                self._mp3_stretch_done = (tempo, path, str(built))
+                self._mp3_stretch_done = (tempo, path, str(built),
+                                          semitones)
             except timestretch.Cancelled:
                 pass                          # the speed moved on; not a fault
             except Exception as exc:
@@ -5466,7 +5693,7 @@ class PlayingScreen:
                 self._mp3_stretch_failed = (
                     tempo, path,
                     f"cannot be slowed down ({type(exc).__name__}) — "
-                    f"convert it to OGG or WAV")
+                    f"convert it to OGG or WAV", semitones)
             finally:
                 self._mp3_stretch_wanted = None
 
