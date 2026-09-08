@@ -144,6 +144,8 @@ PALM_MUTE_MAX_HEADS = 1.3
 # a fill: the notes are the thing being read, and a solid slab under them
 # would fight them for attention.
 CHORD_BLOCK_ALPHA = 54
+# Between the two grip cards.
+CHORD_CARD_GAP = 10
 # A palm-muted run is marked once, at its start, the way paper tab writes
 # "P.M." and dashes it onward -- a disc over every note of a muted riff hides
 # the music behind its own labelling. A silence longer than this starts a new
@@ -2261,6 +2263,18 @@ class PlayingScreen:
             return None, shapes[0][1]
         return now, nxt
 
+    def _hud_left_x(self) -> int:
+        """Where the top-left text column starts.
+
+        Past the chord cards when they are up: they occupy the same corner,
+        and the text is the half that can move. Drawn over each other neither
+        can be read, which is what the player's screenshot showed.
+        """
+        if not self._chord_mode or not self._chord_shapes:
+            return 12
+        from pickhero.ui.chord_view import card_size
+        return 12 + 2 * (card_size()[0] + CHORD_CARD_GAP) + 8
+
     def _draw_chord_cards(self, surface: pygame.Surface,
                           layout: _Layout) -> None:
         """The grip now and the grip next, top left (Shift+C).
@@ -2275,17 +2289,18 @@ class PlayingScreen:
         now, nxt = self._chord_now_and_next()
         if now is None and nxt is None:
             return
+        # Both the SAME size. The second card was smaller to say "this one
+        # is next", and the label already says that -- what the smaller one
+        # actually did was make the grip you have to prepare the harder of
+        # the two to read.
         w, h = card_size()
-        small_w, small_h = card_size(0.82)
-        x = 12
-        y = max(layout.lane_top - h - 8, 8)
+        x, y = 12, 6
         if now is not None:
             draw_diagram(surface, pygame.Rect(x, y, w, h), now, label="now")
-            x += w + 8
+        x += w + CHORD_CARD_GAP
         if nxt is not None:
-            draw_diagram(surface,
-                         pygame.Rect(x, y + (h - small_h), small_w, small_h),
-                         nxt, label="next", dim=True)
+            draw_diagram(surface, pygame.Rect(x, y, w, h), nxt, label="next",
+                         dim=True)
 
     def _draw_chord_names(self, surface: pygame.Surface,
                           layout: _Layout) -> None:
@@ -3236,7 +3251,7 @@ class PlayingScreen:
         if meta.artist:
             title = f"{meta.artist} — {title}"
         title_surf = title_font.render(title, True, t.hud_text)
-        surface.blit(title_surf, (12, 12))
+        surface.blit(title_surf, (self._hud_left_x(), 12))
 
         # Top-center: BPM with tempo percentage (and streak below it)
         pct = int(self._tempo_factor * 100)
@@ -3339,26 +3354,32 @@ class PlayingScreen:
             self._mp3_dialog_armed = True
 
         # Top-left second line: track name + filter info
+        #
+        # The whole left column starts wherever the chord cards end, because
+        # both want the top left corner and the text is the one that can
+        # move. Drawn over each other they are both unreadable, which is what
+        # the player's screenshot showed.
+        left = self._hud_left_x()
         info_y = 38
         if meta.track_name:
             track_surf = hint_font.render(
                 f"Track: {meta.track_name}", True, t.hud_text
             )
-            surface.blit(track_surf, (12, info_y))
+            surface.blit(track_surf, (left, info_y))
             info_y += 16
 
         # Difficulty filter HUD
         filter_text = self._filter_hud_text()
         if filter_text:
             filter_surf = hint_font.render(filter_text, True, t.hud_accent)
-            surface.blit(filter_surf, (12, info_y))
+            surface.blit(filter_surf, (left, info_y))
             info_y += 16
 
         # Chord mode HUD
         if self._chord_partial_credit != self._config._default_chord_partial_credit:
             chord_text = "Chords: strict" if self._chord_partial_credit else "Chords: easy"
             chord_surf = hint_font.render(chord_text, True, t.hud_accent)
-            surface.blit(chord_surf, (12, info_y))
+            surface.blit(chord_surf, (left, info_y))
             info_y += 16
 
         # Tuning HUD — always shown, because a tab in Drop C played on a
@@ -3385,19 +3406,19 @@ class PlayingScreen:
                 label += "   ← retune"
             tune_surf = hint_font.render(
                 label, True, t.hud_text if standard else t.feedback_close)
-            surface.blit(tune_surf, (12, info_y))
+            surface.blit(tune_surf, (left, info_y))
             info_y += 16
             step_label = self.tuning_step_label()
             if step_label:
                 step_surf = hint_font.render(step_label, True, t.hud_text)
-                surface.blit(step_surf, (12, info_y))
+                surface.blit(step_surf, (left, info_y))
                 info_y += 16
 
         # Hit-window HUD — always shown, since it decides what counts as a hit
         window_surf = hint_font.render(
             f"Hit window: +/-{int(self._config.timing_window_ms)} ms (G)",
             True, t.hud_text)
-        surface.blit(window_surf, (12, info_y))
+        surface.blit(window_surf, (left, info_y))
         info_y += 16
 
         # Backing offset HUD — only when shifted, but then always visible,
@@ -3407,7 +3428,7 @@ class PlayingScreen:
         if abs(backing_off) > 0.5:
             back_surf = hint_font.render(
                 f"Backing: {int(backing_off):+d} ms (N/M)", True, t.hud_accent)
-            surface.blit(back_surf, (12, info_y))
+            surface.blit(back_surf, (left, info_y))
             info_y += 16
 
         # Recorded backing HUD. Its own line, because it is a second thing
@@ -3417,7 +3438,7 @@ class PlayingScreen:
         mp3_text = self._mp3_hud_text()
         if mp3_text:
             mp3_surf = hint_font.render(mp3_text, True, t.hud_accent)
-            surface.blit(mp3_surf, (12, info_y))
+            surface.blit(mp3_surf, (left, info_y))
             info_y += 16
 
         # Scroll speed HUD — shows the seconds of song on screen, not just the
@@ -3428,7 +3449,7 @@ class PlayingScreen:
         speed_surf = hint_font.render(
             f"Scroll: {ahead:.1f} s ahead ({self._scroll_factor():.1f}x, +/-)",
             True, t.hud_accent if trimmed else t.hud_text)
-        surface.blit(speed_surf, (12, info_y))
+        surface.blit(speed_surf, (left, info_y))
         info_y += 16
 
         # Dropped audio HUD — silent while there is nothing to report, loud
@@ -3441,14 +3462,14 @@ class PlayingScreen:
             drop_surf = hint_font.render(
                 f"Audio dropouts: {drops}  — close other programs",
                 True, t.feedback_miss)
-            surface.blit(drop_surf, (12, info_y))
+            surface.blit(drop_surf, (left, info_y))
             info_y += 16
 
         # Per-string chord check HUD — only when switched off, so the default
         # costs no screen space but a disabled check is never a silent surprise
         if not getattr(self._config, "chord_verify", True):
             verify_surf = hint_font.render("Strings: off (J)", True, t.hud_accent)
-            surface.blit(verify_surf, (12, info_y))
+            surface.blit(verify_surf, (left, info_y))
             info_y += 16
 
         # Latency sync HUD — show measured timing error once enough strikes
@@ -3476,7 +3497,7 @@ class PlayingScreen:
                 sync_color = t.hud_text
             if sync_text:
                 sync_surf = hint_font.render(sync_text, True, sync_color)
-                surface.blit(sync_surf, (12, info_y))
+                surface.blit(sync_surf, (left, info_y))
 
     def _playing_median_db(self) -> float | None:
         """The level while the guitar is sounding, or None with too little.

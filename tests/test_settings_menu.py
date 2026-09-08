@@ -229,18 +229,18 @@ class TestTheChordViewIsFindable:
 
     def test_there_is_a_row_for_it(self):
         screen, _ = self._screen()
-        assert any(row.key == "chords" for row in screen._rows)
+        assert any(row.key == "chord_view" for row in screen._rows)
 
     def test_it_shows_what_it_is_set_to(self):
         screen, config = self._screen()
-        row = next(r for r in screen._rows if r.key == "chords")
+        row = next(r for r in screen._rows if r.key == "chord_view")
         assert row.value() == "off"
         config.chord_view = True
         assert row.value() == "on"
 
     def test_and_changing_it_there_changes_the_setting(self):
         screen, config = self._screen()
-        row = next(r for r in screen._rows if r.key == "chords")
+        row = next(r for r in screen._rows if r.key == "chord_view")
         row.adjust(1)
         assert config.chord_view is True
 
@@ -248,7 +248,7 @@ class TestTheChordViewIsFindable:
         """A row that is not on its standard value is the one that explains
         a surprise, which is what the marking is for."""
         screen, config = self._screen()
-        row = next(r for r in screen._rows if r.key == "chords")
+        row = next(r for r in screen._rows if r.key == "chord_view")
         assert row.is_default()
         config.chord_view = True
         assert not row.is_default()
@@ -275,3 +275,15 @@ class TestTheChordViewIsFindable:
             unicode="C"))
         assert not screen._chord_mode
         assert config.chord_view is False
+
+
+def test_no_two_rows_share_a_key():
+    """Two rows with one key is a lookup that silently returns the wrong
+    setting. The chord VIEW row was added as "chords", which the chord
+    SCORING row two places down already used."""
+    from pickhero.config import Config
+    from pickhero.ui.settings_menu import SettingsMenuScreen
+
+    keys = [row.key for row in SettingsMenuScreen(Config())._rows]
+    assert len(keys) == len(set(keys)), \
+        [k for k in keys if keys.count(k) > 1]

@@ -182,7 +182,10 @@ class SettingsMenuScreen:
                     is_default=lambda: (c.audio.auto_gate
                                         or c.audio.noise_gate_db
                                         == default.audio.noise_gate_db)),
-            Setting("chords", "Chord view",
+            # A key of its own: "chords" was already taken by the chord
+            # SCORING row further down, and two rows sharing one key is a
+            # lookup that silently returns the wrong setting.
+            Setting("chord_view", "Chord view (Shift+C)",
                     lambda: "on" if c.chord_view else "off",
                     lambda step: toggle_chord_view(),
                     note="Draws each chord as one block with its name, and "

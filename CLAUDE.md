@@ -2261,6 +2261,12 @@ has to make, which is why every songbook, every chord app and Yousician draw a g
   noise and buries the moment that actually needs preparing — the same rule the chord NAMES on the board already follow.
 - **Silent on a song that has none.** Kid Rock writes 12 chords in 444 moments; a panel that is always there and usually empty is a panel
   nobody looks at.
+- **The two cards share the top left corner with the HUD text, and the text is what moves.** Drawn over each other neither can be read: the
+  player's screenshot has the song title, the track, the tuning and the sync line straight through the diagrams. `_hud_left_x()` starts the left
+  column past the cards while they are up, and at 12 px when they are not, so nothing moves for a player who never turns this on.
+- **Both cards are the SAME size, and bigger than the first version.** The second was smaller to say "this one is next" -- the label already says
+  that, and being smaller made the grip you have to PREPARE the harder of the two to read. At 210x184 they still clear the board, which matters
+  because each chord block writes its name just above itself and a card hanging into the lanes would cover it.
 - **`Shift+C` is tested before the plain `C`** that raises the noise gate. An `elif` chain is read in order, so a shifted key placed after its
   unshifted twin is never reached — which is exactly how the first version of this shipped inert.
 

@@ -32,8 +32,14 @@ MARK_R = 4
 
 
 def card_size(scale: float = 1.0) -> tuple[int, int]:
-    """How big one diagram card is. One place, so the caller can lay out."""
-    return int(round(150 * scale)), int(round(132 * scale))
+    """How big one diagram card is. One place, so the caller can lay out.
+
+    Bigger than it was, and the same for both cards. At 150x132 the dots sat
+    about 18 px apart, which is a diagram you have to lean in for while
+    playing -- and the "next" card was smaller still, so the grip you have to
+    PREPARE was the harder of the two to read.
+    """
+    return int(round(210 * scale)), int(round(184 * scale))
 
 
 def draw_diagram(surface: pygame.Surface, rect: pygame.Rect,

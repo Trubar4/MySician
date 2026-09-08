@@ -373,3 +373,80 @@ class TestEveryWayAKeyboardCanSayShift:
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN,
                                                key=pygame.K_c, mod=0))
         assert not screen._chord_mode
+
+
+class TestTheCardsAndTheTextShareTheCorner:
+    """Both wanted the top left. Drawn over each other neither can be read,
+    which is what the player's screenshot showed -- the song title, the
+    track, the tuning and the sync line all straight through the diagrams.
+    The text is the half that can move.
+    """
+
+    def _screen(self, chord_view):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+
+        pygame.init()
+        surface = pygame.display.set_mode((1911, 1105))
+        config = Config()
+        config.chord_view = chord_view
+        notes = [_note(s, f, m, 1000.0) for s, f, m in
+                 ((6, 0, 40), (5, 2, 47), (4, 2, 52))]
+        timeline = Timeline(notes, SongMetadata(title="t", tempo=120))
+        screen = PlayingScreen(timeline, config=config, song_key="t")
+        screen.render(surface)
+        return screen, surface
+
+    def test_the_text_starts_past_the_cards(self):
+        from pickhero.ui.scrolling import CHORD_CARD_GAP
+        from pickhero.ui.chord_view import card_size
+
+        screen, _ = self._screen(True)
+        width, _height = card_size()
+        cards_right = 12 + 2 * (width + CHORD_CARD_GAP)
+        assert screen._hud_left_x() >= cards_right
+
+    def test_and_stays_where_it_was_with_the_cards_off(self):
+        """Nothing moves for a player who never turns this on."""
+        screen, _ = self._screen(False)
+        assert screen._hud_left_x() == 12
+
+    def test_a_song_with_no_chords_does_not_indent_it_either(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+
+        pygame.init()
+        surface = pygame.display.set_mode((1911, 1105))
+        config = Config()
+        config.chord_view = True
+        timeline = Timeline([_note(6, 3, 43, 0.0)],
+                            SongMetadata(title="t", tempo=120))
+        screen = PlayingScreen(timeline, config=config, song_key="t")
+        screen.render(surface)
+        assert screen._chord_shapes == []
+        assert screen._hud_left_x() == 12
+
+    def test_both_cards_are_the_same_size(self):
+        """The second was smaller to say "this one is next" -- the label
+        already says that, and being smaller made the grip you have to
+        PREPARE the harder of the two to read."""
+        from pickhero.ui.chord_view import card_size
+
+        assert card_size() == card_size(1.0)
+
+    def test_they_are_bigger_than_they_were(self):
+        from pickhero.ui.chord_view import card_size
+
+        width, height = card_size()
+        assert width >= 200 and height >= 175
+
+    def test_and_they_clear_the_board(self):
+        """The chord names sit just above each block, and a card hanging
+        into the lanes would cover them."""
+        from pickhero.ui.chord_view import card_size
+
+        screen, _ = self._screen(True)
+        _width, height = card_size()
+        assert 6 + height <= screen._last_layout.lane_top
