@@ -5,6 +5,12 @@ about the shape the hand has to make. A diagram says the shape at a glance,
 which is why the reference app the player reads without thinking keeps two of
 them in the corner: the chord being played, and the one coming next.
 
+**It lies the way the board does**: strings across, low E at the BOTTOM,
+frets left to right from the nut. A songbook prints the grid upright with
+the low string on the left, and mixing the two orientations in one app means
+rotating the picture in your head between one glance and the next. The NAME
+stays at the top, where a card is read from.
+
 What is drawn is what the tab WROTE -- see `tabs/chord_shapes.py` for what
 the files actually carry. In particular there are no finger colours here: two
 of the player's three songs give no fingering at all and the third gives one
@@ -29,6 +35,9 @@ PAD = 10
 # marks every diagram uses, and the only way to tell "play it open" from
 # "do not play it" without writing a word.
 MARK_R = 4
+# Room to the LEFT of the nut for those marks, now that the strings lie
+# across rather than down.
+MARK_ROOM = 18
 
 
 def card_size(scale: float = 1.0) -> tuple[int, int]:
@@ -39,13 +48,47 @@ def card_size(scale: float = 1.0) -> tuple[int, int]:
     playing -- and the "next" card was smaller still, so the grip you have to
     PREPARE was the harder of the two to read.
     """
-    return int(round(210 * scale)), int(round(184 * scale))
+    return int(round(240 * scale)), int(round(178 * scale))
+
+
+def grid_rect(rect: pygame.Rect, labelled: bool) -> pygame.Rect:
+    """Where the fret grid sits inside a card.
+
+    One implementation, so the drawing and anything asking where a string
+    landed cannot disagree.
+    """
+    top = rect.top + NAME_H + (12 if labelled else 0)
+    return pygame.Rect(
+        rect.left + PAD + MARK_ROOM,
+        top,
+        max(1, rect.right - PAD - (rect.left + PAD + MARK_ROOM)),
+        max(1, rect.bottom - FOOT_H - 4 - top),
+    )
+
+
+def string_rows(grid: pygame.Rect) -> list[tuple[int, float]]:
+    """(GP string number, y) for the six strings, LOW E AT THE BOTTOM.
+
+    The same way round as the scrolling board, where string 6 sits on the
+    lowest lane -- a diagram that puts it at the top asks the player to flip
+    the picture in their head between one glance and the next.
+    """
+    step = grid.height / (STRINGS - 1)
+    return [(6 - i, grid.top + (STRINGS - 1 - i) * step)
+            for i in range(STRINGS)]
 
 
 def draw_diagram(surface: pygame.Surface, rect: pygame.Rect,
                  shape: ChordShape, *, label: str = "",
                  dim: bool = False) -> None:
-    """Draw one grip into `rect`.
+    """Draw one grip into `rect`, lying the way the board does.
+
+    Strings run ACROSS with the low E at the bottom and the frets left to
+    right from the nut, which is how this app draws a tab everywhere else.
+    A songbook prints the grid the other way up, and mixing the two means
+    rotating the picture in your head between one glance and the next.
+
+    The NAME stays at the top, where a card is read from.
 
     `label` goes above the name ("now", "next") -- a card with no label is a
     card whose meaning depends on where it happens to sit, and the two are
@@ -57,8 +100,8 @@ def draw_diagram(surface: pygame.Surface, rect: pygame.Rect,
     pygame.draw.rect(surface, t.lane_line, rect, 1, border_radius=6)
 
     from pickhero.ui.scrolling import _get_font
-    name_font = _get_font("arial", 19 if not dim else 16)
-    small_font = _get_font("arial", 11)
+    name_font = _get_font("arial", 22)
+    small_font = _get_font("arial", 12)
 
     y = rect.top + 4
     if label:
@@ -69,51 +112,49 @@ def draw_diagram(surface: pygame.Surface, rect: pygame.Rect,
                             t.hud_accent if not dim else t.hud_text)
     surface.blit(name, (rect.left + PAD, y))
 
-    grid_top = rect.top + NAME_H + (12 if label else 0)
-    grid_left = rect.left + PAD + 14        # room for the o/x marks
-    grid_right = rect.right - PAD
-    grid_bottom = rect.bottom - FOOT_H - 4
-    if grid_bottom - grid_top < 20 or grid_right - grid_left < 20:
+    grid = grid_rect(rect, bool(label))
+    if grid.width < 20 or grid.height < 20:
         return
-    step_x = (grid_right - grid_left) / (STRINGS - 1)
-    step_y = (grid_bottom - grid_top) / FRETS_SHOWN
+    step_x = grid.width / FRETS_SHOWN
 
-    # The nut, or the fret number when the shape sits up the neck. An
+    # The nut, or the fret number where the shape sits up the neck. An
     # open-position grid with a dot on the twelfth fret is not a diagram.
     if shape.base_fret:
         base = small_font.render(f"{shape.base_fret + 1}", True, t.hud_text)
-        surface.blit(base, (rect.left + 2, int(grid_top) - 2))
+        surface.blit(base, (grid.left - base.get_width() // 2,
+                            grid.bottom + 2))
     else:
-        pygame.draw.line(surface, t.hud_text,
-                         (grid_left, grid_top), (grid_right, grid_top), 3)
+        pygame.draw.line(surface, t.hud_text, (grid.left, grid.top),
+                         (grid.left, grid.bottom), 3)
 
     for i in range(FRETS_SHOWN + 1):
-        yy = int(grid_top + i * step_y)
-        pygame.draw.line(surface, t.lane_line, (grid_left, yy),
-                         (grid_right, yy), 1)
-    # Strings are drawn LOW STRING FIRST, left to right -- the order a
-    # guitarist reads a diagram and the reverse of the string numbers.
-    for i, (string, fret) in enumerate(shape.rows()):
-        xx = int(grid_left + i * step_x)
-        pygame.draw.line(surface, t.lane_line, (xx, int(grid_top)),
-                         (xx, int(grid_bottom)), 1)
+        x = int(grid.left + i * step_x)
+        pygame.draw.line(surface, t.lane_line, (x, grid.top),
+                         (x, grid.bottom), 1)
+    for string, sy in string_rows(grid):
+        yy = int(sy)
+        pygame.draw.line(surface, t.lane_line, (grid.left, yy),
+                         (grid.right, yy), 1)
         colour = STRING_COLORS.get(string, t.hud_text)
         if dim:
             colour = tuple(c // 2 for c in colour)
+        fret = shape.fret_on(string)
+        mark_x = grid.left - MARK_ROOM // 2
         if fret is None:
-            # Not written here: a cross above the nut.
-            cy = int(grid_top) - 8
-            pygame.draw.line(surface, t.hud_text, (xx - MARK_R, cy - MARK_R),
-                             (xx + MARK_R, cy + MARK_R), 2)
-            pygame.draw.line(surface, t.hud_text, (xx - MARK_R, cy + MARK_R),
-                             (xx + MARK_R, cy - MARK_R), 2)
+            # Not written here: a cross before the nut.
+            pygame.draw.line(surface, t.hud_text,
+                             (mark_x - MARK_R, yy - MARK_R),
+                             (mark_x + MARK_R, yy + MARK_R), 2)
+            pygame.draw.line(surface, t.hud_text,
+                             (mark_x - MARK_R, yy + MARK_R),
+                             (mark_x + MARK_R, yy - MARK_R), 2)
         elif fret == shape.base_fret:
-            # Open (or at the diagram's own base): a ring above the nut.
-            pygame.draw.circle(surface, colour, (xx, int(grid_top) - 8),
-                               MARK_R + 1, 2)
+            # Open (or at the diagram's own base): a ring before the nut.
+            pygame.draw.circle(surface, colour, (mark_x, yy), MARK_R + 1, 2)
         else:
             row = fret - shape.base_fret
             if 1 <= row <= FRETS_SHOWN:
-                cy = int(grid_top + (row - 0.5) * step_y)
-                pygame.draw.circle(surface, colour, (xx, cy),
-                                   max(4, int(step_y * 0.34)))
+                cx = int(grid.left + (row - 0.5) * step_x)
+                pygame.draw.circle(surface, colour, (cx, yy),
+                                   max(4, int(min(step_x, grid.height /
+                                                  (STRINGS - 1)) * 0.34)))

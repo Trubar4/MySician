@@ -437,10 +437,13 @@ class TestTheCardsAndTheTextShareTheCorner:
         assert card_size() == card_size(1.0)
 
     def test_they_are_bigger_than_they_were(self):
+        """The AREA, not both edges: the diagram lies across now, so it is
+        wider and a little shorter than the upright one it replaced. It was
+        150x132 = 19800 to begin with."""
         from pickhero.ui.chord_view import card_size
 
         width, height = card_size()
-        assert width >= 200 and height >= 175
+        assert width * height >= 2 * 150 * 132
 
     def test_and_they_clear_the_board(self):
         """The chord names sit just above each block, and a card hanging
@@ -450,3 +453,101 @@ class TestTheCardsAndTheTextShareTheCorner:
         screen, _ = self._screen(True)
         _width, height = card_size()
         assert 6 + height <= screen._last_layout.lane_top
+
+
+class TestTheDiagramLiesTheWayTheBoardDoes:
+    """Strings across, low E at the BOTTOM, frets left to right from the nut
+    -- the same way round as the scrolling board, where string 6 sits on the
+    lowest lane. A songbook prints the grid upright with the low string on
+    the left, and mixing the two orientations in one app means rotating the
+    picture in your head between one glance and the next.
+    """
+
+    def _grid(self, labelled=True):
+        import pygame
+        from pickhero.ui.chord_view import card_size, grid_rect
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        width, height = card_size()
+        return grid_rect(pygame.Rect(12, 6, width, height), labelled)
+
+    def test_the_low_E_is_at_the_bottom(self):
+        from pickhero.ui.chord_view import string_rows
+
+        rows = string_rows(self._grid())
+        assert rows[0][0] == 6
+        assert rows[0][1] == max(y for _, y in rows)
+
+    def test_and_the_high_e_at_the_top(self):
+        from pickhero.ui.chord_view import string_rows
+
+        rows = string_rows(self._grid())
+        assert rows[-1][0] == 1
+        assert rows[-1][1] == min(y for _, y in rows)
+
+    def test_it_matches_the_board_string_for_string(self):
+        """The property that matters: the order down the card is the order
+        down the lanes."""
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.chord_view import string_rows
+        from pickhero.ui.scrolling import PlayingScreen, _Layout
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        layout = _Layout(screen_w=1280, screen_h=720, lane_height=60.0,
+                         note_h=40.0, hit_zone_x=150.0, usable_width=1000.0,
+                         pixels_per_ms=0.2, visible_window_ms=4000.0)
+        board = [(s, layout.lane_top + (s - 0.5) * layout.lane_height)
+                 for s in range(1, 7)]
+        board.sort(key=lambda pair: pair[1])
+        card = sorted(string_rows(self._grid()), key=lambda pair: pair[1])
+        assert [s for s, _ in card] == [s for s, _ in board]
+
+    def test_all_six_strings_are_there_and_evenly_spaced(self):
+        from pickhero.ui.chord_view import string_rows
+
+        rows = string_rows(self._grid())
+        assert sorted(s for s, _ in rows) == [1, 2, 3, 4, 5, 6]
+        gaps = [b - a for (_, a), (_, b) in zip(rows[1:][::-1], rows[::-1])]
+        assert max(gaps) - min(gaps) < 0.001
+
+    def test_the_grid_stays_inside_the_card(self):
+        import pygame
+        from pickhero.ui.chord_view import card_size, grid_rect
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        width, height = card_size()
+        card = pygame.Rect(12, 6, width, height)
+        for labelled in (True, False):
+            grid = grid_rect(card, labelled)
+            assert card.contains(grid), (labelled, grid, card)
+
+    def test_there_is_room_before_the_nut_for_the_marks(self):
+        """The rings and crosses go to the LEFT of the nut now, and drawn
+        off the card they would simply not be there."""
+        import pygame
+        from pickhero.ui.chord_view import MARK_ROOM, card_size, grid_rect
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        width, height = card_size()
+        card = pygame.Rect(12, 6, width, height)
+        assert grid_rect(card, True).left - card.left >= MARK_ROOM
+
+    def test_a_whole_card_draws_without_raising(self):
+        import pygame
+        from pickhero.ui.chord_view import card_size, draw_diagram
+
+        pygame.init()
+        surface = pygame.display.set_mode((1280, 720))
+        width, height = card_size()
+        for shape in (shape_of(_e_major()),
+                      shape_of([_note(6, 12, 52), _note(5, 14, 59),
+                                _note(4, 14, 64)])):
+            draw_diagram(surface, pygame.Rect(12, 6, width, height), shape,
+                         label="now")
+            draw_diagram(surface, pygame.Rect(12, 6, width, height), shape,
+                         label="next", dim=True)

@@ -2261,6 +2261,10 @@ has to make, which is why every songbook, every chord app and Yousician draw a g
   noise and buries the moment that actually needs preparing — the same rule the chord NAMES on the board already follow.
 - **Silent on a song that has none.** Kid Rock writes 12 chords in 444 moments; a panel that is always there and usually empty is a panel
   nobody looks at.
+- **The diagram lies the way the BOARD does**: strings across, low E at the bottom, frets left to right from the nut. A songbook prints the grid
+  upright with the low string on the left, and this app draws a tab the other way everywhere else -- mixing the two orientations means rotating
+  the picture in your head between one glance and the next. The name stays at the top, where a card is read from. `string_rows()` is the one
+  implementation of where a string lands, and the test asserts the ORDER matches the lanes rather than any particular pixel.
 - **The two cards share the top left corner with the HUD text, and the text is what moves.** Drawn over each other neither can be read: the
   player's screenshot has the song title, the track, the tuning and the sync line straight through the diagrams. `_hud_left_x()` starts the left
   column past the cards while they are up, and at 12 px when they are not, so nothing moves for a player who never turns this on.
