@@ -4606,6 +4606,39 @@ class TestHandingThePicturesToThePanel:
         assert application._apply_display_mode() is not None
         assert application._vsync_refused
 
+    def test_a_no_to_the_first_way_is_not_a_no_to_vsync(self, monkeypatch):
+        """The player's driver refused SCALED with RESIZABLE, and the first
+        shape of this took that for the whole answer -- reporting vsync as
+        impossible on a machine that had not been asked properly. Dropping
+        RESIZABLE costs a window that cannot be dragged bigger, which is
+        worth trying before giving up on the pacing altogether."""
+        import pygame
+        application, calls = self._app(monkeypatch)
+        application._config.display.vsync = True
+        plain = pygame.display.set_mode
+
+        def picky(size, flags=0, *args, **kwargs):
+            if kwargs.get("vsync") and flags & pygame.RESIZABLE:
+                raise pygame.error("vsync not available with that")
+            calls.append((size, flags, kwargs.get("vsync", 0)))
+            return pygame.Surface(size)
+
+        monkeypatch.setattr(pygame.display, "set_mode", picky)
+        application._apply_display_mode()
+        _, flags, vsync = calls[-1]
+        assert vsync == 1 and flags & pygame.SCALED
+        assert not flags & pygame.RESIZABLE
+        assert not application._vsync_refused
+
+    def test_the_ways_are_tried_in_the_order_of_what_they_cost(self):
+        """RESIZABLE first: a window that can still be dragged is worth more
+        than one that cannot, so it is only given up when it has to be."""
+        import pygame
+        from pickhero.ui.app import App
+        assert App.VSYNC_FLAGS[0] & pygame.RESIZABLE
+        assert not App.VSYNC_FLAGS[-1] & pygame.RESIZABLE
+        assert all(f & pygame.SCALED for f in App.VSYNC_FLAGS)
+
     def test_a_resize_cannot_quietly_drop_it(self, monkeypatch):
         """Every mode change goes through one door. The resize used to call
         set_mode itself with the plain flags -- and assign the result to a

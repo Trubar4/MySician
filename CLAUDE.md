@@ -2027,6 +2027,17 @@ never happened.
   drag would silently have dropped vsync — and it assigned the result to a local nobody read, so the loop went on drawing to the surface
   it already had. Both were there before this and both are gone with it.
 - **The window is reopened only when the ANSWER changes**, never per frame: `set_mode` tears the surface down and builds it again.
+- **And the driver said no.** On the player's machine `SCALED|RESIZABLE` with `vsync=1` raises, so the first shape of this reported vsync
+  as impossible on a machine that had been asked exactly once. It asks down a ladder now — `SCALED|RESIZABLE`, then `SCALED` alone, which
+  costs a window that cannot be dragged bigger — because a no to one way of asking is not a no to vsync. **Still untested either way: the
+  run log from that attempt says `vsync off`, so there is no vsync reading yet at all.**
+
+**Which leaves the jitter, and it is bigger than this chapter first allowed.** The reasoning that dismissed it was that `_playback_ms`
+advances by real elapsed time, so a frame computed 3 ms early is early rather than wrong. True, and beside the point: the frame is SHOWN
+on the panel's fixed grid, and one that is ready 3 ms late misses its refresh and is held for two. At 15 to 18 % of frames outside a fifth
+of the median that is several hitches a second — where the 60-into-59 beat is one a second at worst. **The jitter is the larger effect and
+the only one that does not need the driver's permission**, and its cause is named: `clock.tick` sleeps for most of its wait on a system
+that cannot sleep to the millisecond.
 
 
 **Measured in the two passages the player actually named, and they are two different faults after all** — at his window, over the solo of

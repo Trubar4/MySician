@@ -154,6 +154,14 @@ class App:
         except Exception as exc:                    # noqa: BLE001
             print(f"Dashboard konnte nicht geschrieben werden: {exc}")
 
+    # The ways of asking for vsync, in the order of what they cost. pygame
+    # only offers it with SCALED, and the first shape of this asked ONCE --
+    # SCALED with RESIZABLE -- took the driver's no for the whole answer and
+    # reported vsync as impossible on a machine that had not been asked
+    # properly. Dropping RESIZABLE costs a window that cannot be dragged
+    # bigger, which is worth trying before giving up on the pacing entirely.
+    VSYNC_FLAGS = (pygame.RESIZABLE | pygame.SCALED, pygame.SCALED)
+
     def _apply_display_mode(
         self, size: tuple[int, int] | None = None
     ) -> pygame.Surface:
@@ -172,18 +180,19 @@ class App:
         dc = self._config.display
         wanted = size or (dc.width, dc.height)
         self._vsync_asked = bool(dc.vsync)
+        self._vsync_refused = False
         if self._vsync_asked:
-            try:
-                self._surface = pygame.display.set_mode(
-                    wanted, pygame.RESIZABLE | pygame.SCALED, vsync=1)
-                self._vsync_refused = False
-                return self._surface
-            except pygame.error:
-                # Asked for and not given. Said out loud rather than left to
-                # be discovered in a run log that looks unchanged.
-                self._vsync_refused = True
-        else:
-            self._vsync_refused = False
+            for flags in self.VSYNC_FLAGS:
+                try:
+                    self._surface = pygame.display.set_mode(
+                        wanted, flags, vsync=1)
+                    return self._surface
+                except pygame.error:
+                    continue
+            # Asked for and not given, by any of the ways there are of
+            # asking. Said out loud rather than left to be discovered in a
+            # run log that looks unchanged.
+            self._vsync_refused = True
         self._surface = pygame.display.set_mode(wanted, pygame.RESIZABLE)
         return self._surface
 

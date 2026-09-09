@@ -1967,18 +1967,22 @@ class PlayingScreen:
 
         if spot is not None:
             x = int(spot[1] * fitted.get_width())
-            # The WHOLE height of what is shown, not a tick around the system
-            # it is in. Fitted to the band it stopped at the staff, which on
-            # a page holding two rows is a short mark in a tall picture and
-            # took hunting for -- and hunting for the playhead is the one
-            # thing this view exists to spare. Full height needs no finding.
+            # The height of the ROW being played, not of the whole picture.
+            # Fitted to the staff alone it was a short mark that took
+            # hunting for; run down both rows it said nothing about which of
+            # them the hand is on, which is the one thing a page view has to
+            # answer and a scrolling one never has to ask.
             #
             # Its own colour, not the hit zone's. The scrolling board is
             # dark and takes a white line; this page is PAPER, and white on
             # paper is the one thing on screen that cannot be found. Blue
             # reads on the paper and on the dark surround either side of it.
+            row_top, row_h = page.row_window(row, 1)
+            y0 = int(row_top * page_h) - offset + view_top
+            y1 = int((row_top + row_h) * page_h) - offset + view_top
             pygame.draw.line(surface, t.tab_playhead,
-                             (x, view_top), (x, view_top + view_h),
+                             (x, max(view_top, y0)),
+                             (x, min(view_top + view_h, y1)),
                              TAB_PLAYHEAD_PX)
 
         # How each note went, as a dot under its fret number. The page is a
