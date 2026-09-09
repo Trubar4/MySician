@@ -2029,8 +2029,26 @@ never happened.
 - **The window is reopened only when the ANSWER changes**, never per frame: `set_mode` tears the surface down and builds it again.
 - **And the driver said no.** On the player's machine `SCALED|RESIZABLE` with `vsync=1` raises, so the first shape of this reported vsync
   as impossible on a machine that had been asked exactly once. It asks down a ladder now — `SCALED|RESIZABLE`, then `SCALED` alone, which
-  costs a window that cannot be dragged bigger — because a no to one way of asking is not a no to vsync. **Still untested either way: the
-  run log from that attempt says `vsync off`, so there is no vsync reading yet at all.**
+  costs a window that cannot be dragged bigger — because a no to one way of asking is not a no to vsync. **And then a run came back that says it WORKED**, on NB1, whose panel really is 60:
+
+| | vsync off | vsync on |
+|---|---|---|
+| `frames_uneven_percent` | 15 | **4** |
+| `frame_interval_best_tenth` | 13.83 | **15.26** |
+| `frame_interval_worst_tenth` | 19.48 | **18.13** |
+| `frames_per_second_shown` | 59.9 | 60.1 |
+| `frame_ms_median` | 6.8 | **10.2** |
+| `frames_over_budget_percent` | 0 | **9** |
+
+The jitter band halved — 5.7 ms wide against 3.9 — which is the thing vsync is for. It is not free: the frame cost went from 6.8 ms to
+10.2 and a frame in eleven now runs past budget, which is `SCALED` rendering to a texture and scaling it. **And the player reports the
+driver still refusing and the juddering still there.** Both cannot be true of the same run, which is the whole lesson of this chapter
+arriving for the third time: the log said `asked`, so it could not tell a granted request from a refused one, and a reading was again
+being argued about instead of read.
+
+**The log names the OUTCOME now** — `on, window resizable`, `on, window fixed size`, `refused`, `off` — filled in by the window that
+actually opened. `vsync_outcome` is deliberately not stored in the settings file: it belongs to this run on this machine, and the reason
+it exists at all is that "asked" and "got" turned out to be different things nobody could tell apart afterwards.
 
 **Which leaves the jitter, and it is bigger than this chapter first allowed.** The reasoning that dismissed it was that `_playback_ms`
 advances by real elapsed time, so a frame computed 3 ms early is early rather than wrong. True, and beside the point: the frame is SHOWN

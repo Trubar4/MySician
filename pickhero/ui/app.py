@@ -160,7 +160,15 @@ class App:
     # reported vsync as impossible on a machine that had not been asked
     # properly. Dropping RESIZABLE costs a window that cannot be dragged
     # bigger, which is worth trying before giving up on the pacing entirely.
-    VSYNC_FLAGS = (pygame.RESIZABLE | pygame.SCALED, pygame.SCALED)
+    #
+    # Each carries the name the run log will print, because "asked" and
+    # "got" turned out to be different things and a log that cannot tell
+    # them apart sends the next reading to the wrong conclusion -- which is
+    # exactly what happened on the first attempt.
+    VSYNC_FLAGS = (
+        (pygame.RESIZABLE | pygame.SCALED, "on, window resizable"),
+        (pygame.SCALED, "on, window fixed size"),
+    )
 
     def _apply_display_mode(
         self, size: tuple[int, int] | None = None
@@ -182,10 +190,11 @@ class App:
         self._vsync_asked = bool(dc.vsync)
         self._vsync_refused = False
         if self._vsync_asked:
-            for flags in self.VSYNC_FLAGS:
+            for flags, name in self.VSYNC_FLAGS:
                 try:
                     self._surface = pygame.display.set_mode(
                         wanted, flags, vsync=1)
+                    dc.vsync_outcome = name
                     return self._surface
                 except pygame.error:
                     continue
@@ -193,6 +202,7 @@ class App:
             # asking. Said out loud rather than left to be discovered in a
             # run log that looks unchanged.
             self._vsync_refused = True
+        dc.vsync_outcome = "refused" if self._vsync_refused else "off"
         self._surface = pygame.display.set_mode(wanted, pygame.RESIZABLE)
         return self._surface
 

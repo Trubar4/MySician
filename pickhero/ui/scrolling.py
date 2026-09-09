@@ -4841,7 +4841,7 @@ class PlayingScreen:
         # Which pacing this reading came from. Two logs that differ in the
         # one thing being tested are worth nothing if neither says which was
         # which -- and this session has already lost a day to exactly that.
-        fh.write(f"vsync\t{'asked' if self._config.display.vsync else 'off'}\n")
+        fh.write(f"vsync\t{self._config.display.vsync_outcome}\n")
         if self._clock_real_ms > 0:
             ratio = self._clock_song_ms / self._clock_real_ms
             fh.write(f"clock_real_s\t{self._clock_real_ms / 1000:.1f}\n")

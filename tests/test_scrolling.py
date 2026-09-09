@@ -4605,6 +4605,7 @@ class TestHandingThePicturesToThePanel:
         monkeypatch.setattr(pygame.display, "set_mode", refuse)
         assert application._apply_display_mode() is not None
         assert application._vsync_refused
+        assert application._config.display.vsync_outcome == "refused"
 
     def test_a_no_to_the_first_way_is_not_a_no_to_vsync(self, monkeypatch):
         """The player's driver refused SCALED with RESIZABLE, and the first
@@ -4629,15 +4630,27 @@ class TestHandingThePicturesToThePanel:
         assert vsync == 1 and flags & pygame.SCALED
         assert not flags & pygame.RESIZABLE
         assert not application._vsync_refused
+        # And the log will say WHICH way it was granted, because the two
+        # cost different things and only one of them can be dragged bigger.
+        assert application._config.display.vsync_outcome == "on, window fixed size"
 
     def test_the_ways_are_tried_in_the_order_of_what_they_cost(self):
         """RESIZABLE first: a window that can still be dragged is worth more
         than one that cannot, so it is only given up when it has to be."""
         import pygame
         from pickhero.ui.app import App
-        assert App.VSYNC_FLAGS[0] & pygame.RESIZABLE
-        assert not App.VSYNC_FLAGS[-1] & pygame.RESIZABLE
-        assert all(f & pygame.SCALED for f in App.VSYNC_FLAGS)
+        assert App.VSYNC_FLAGS[0][0] & pygame.RESIZABLE
+        assert not App.VSYNC_FLAGS[-1][0] & pygame.RESIZABLE
+        assert all(f & pygame.SCALED for f, _ in App.VSYNC_FLAGS)
+
+    def test_each_way_carries_the_name_the_log_will_print(self):
+        """"Asked" and "got" turned out to be different things, and a log
+        that cannot tell them apart sent a reading to the wrong conclusion --
+        which is what happened on the first attempt."""
+        from pickhero.ui.app import App
+        names = [name for _, name in App.VSYNC_FLAGS]
+        assert len(set(names)) == len(names)
+        assert all(name and name != "off" for name in names)
 
     def test_a_resize_cannot_quietly_drop_it(self, monkeypatch):
         """Every mode change goes through one door. The resize used to call
@@ -4686,7 +4699,15 @@ class TestHandingThePicturesToThePanel:
         buffer = io.StringIO()
         screen._write_run_log(buffer)
         assert "vsync\toff" in buffer.getvalue()
+        # What the DISPLAY did, not what was asked for. The first shape of
+        # this printed the request, so a run where the driver refused and a
+        # run where it obliged wrote the same word.
         screen._config.display.vsync = True
+        screen._config.display.vsync_outcome = "refused"
         buffer = io.StringIO()
         screen._write_run_log(buffer)
-        assert "vsync\tasked" in buffer.getvalue()
+        assert "vsync\trefused" in buffer.getvalue()
+        screen._config.display.vsync_outcome = "on, window fixed size"
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "vsync\ton, window fixed size" in buffer.getvalue()

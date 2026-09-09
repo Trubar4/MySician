@@ -104,6 +104,11 @@ class DisplayConfig:
     # driver may refuse the request outright. It has to be tried on the
     # machine, both ways, with the run log open.
     vsync: bool = False
+    # What the display ACTUALLY did with that request, filled in when the
+    # window is opened. Not stored: it belongs to this run on this machine,
+    # and the whole reason it exists is that "asked" and "got" turned out to
+    # be different things nobody could tell apart from a log.
+    vsync_outcome: str = field(default="off", repr=False)
 
 
 @dataclass
@@ -394,6 +399,7 @@ class Config:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         data = asdict(self)
         data.pop("_default_chord_partial_credit", None)
+        data.get("display", {}).pop("vsync_outcome", None)
         with open(CONFIG_FILE, "w") as f:
             json.dump(data, f, indent=2)
 
@@ -408,6 +414,9 @@ class Config:
             data.pop("_default_chord_partial_credit", None)
             audio_data = data.pop("audio", {})
             display_data = data.pop("display", {})
+            # An older settings.json may carry it from before it was
+            # runtime-only; it is never read from a file.
+            display_data.pop("vsync_outcome", None)
             # Migration: 2048 was the old default and there is no UI to set
             # buf_size, so any stored 2048 came from the old default
             if audio_data.get("buf_size") == 2048:
