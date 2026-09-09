@@ -1982,6 +1982,31 @@ app offers sixty pictures a second into a display that shows fifty-nine, so one 
 is. How often depends on a digit Windows rounds off -- an exact 59 Hz beats once a second, 59.94 once every seventeen -- and neither the
 run log nor `pygame` can tell them apart, because `flip` returns before the panel has done anything.
 
+**Then NB1 was measured on the same build, and it overturned the machine explanation as well.** Three runs, and NB1 is now the FASTER
+of the two:
+
+| | NB1 Bon Jovi | NB1 Thunder | NB1 Thunder | (NB2, for comparison) |
+|---|---|---|---|---|
+| `frame_ms_median` | **5.9** | 7.0 | 6.6 | 8.3 – 9.4 |
+| `frames_over_budget_percent` | 0 | 0 | 0 | 1 – 3 |
+| `frames_uneven_percent` | **6** | 10 | 10 | 15 – 18 |
+| `frames_per_second_shown` | 60.0 | 59.9 | 59.8 | 59.9 – 60.1 |
+
+**So the 19.7 ms is gone on the machine that produced it**, and the second explanation has to go the way of the first. What actually
+separates the two slow runs from the ten fast ones is not the build and not the laptop: it is that **those two are the only runs where the
+guitar was audible.** Focusrite plugged in, `level_under_gate_percent 28`; every run since, on both laptops and four builds, has been a
+dead microphone at 100 %. `_draw_notes` asks the matcher for a verdict and the feedback for a colour on every visible note, every frame,
+and with nothing to judge that work does not happen.
+
+**Which is the hypothesis this file already dismissed once, and dismissing it was the mistake.** It is written down twice now because the
+lesson is the method, not the answer: two variables moved together each time, and each reading picked the one that had just changed.
+`frame_ms` also swings by a factor of two between runs on ONE machine in ONE condition (4.2 to 9.4 on NB2), so nothing under about three
+times is a finding at all. **One run settles it and it has not been done: NB1, this build, the interface plugged in, the guitar heard, D.**
+
+**And NB1's panel runs at 60 where NB2's runs at 59, which the unevenness follows**: 6-10 % against 15-18 %, on the machine whose panel
+matches what the app offers. That is the beat showing up exactly where the arithmetic says it should, and it is the strongest evidence for
+the pacing story that exists so far.
+
 **Which makes `vsync=1` the only remaining lever, and it answers both at once**: a blocked flip takes the panel's cadence, so the jitter
 goes and the beat cannot exist. It also MEASURES the panel: with vsync on, `frames_per_second_shown` is the display's true rate, 59 or
 59.94, and the question above answers itself. The cost is real and has to be tried rather than argued: `vsync` needs `SCALED` in pygame 2,
@@ -1989,6 +2014,27 @@ which fixes a logical size and letterboxes on resize instead of relaying out, an
 
 **What vsync will NOT do, and the player should hear it before it is built: the smearing stays.** It is `px/s ÷ refresh` and no pacing
 touches it -- 6.5 px at 1.0x on this panel. Vsync is the fix for the juddering only.
+
+**Measured in the two passages the player actually named, and they are two different faults after all** — at his window, over the solo of
+each song, counting only pairs on ONE string, where two heads can really collide:
+
+| | look-ahead | head | px/s | smear at 60 Hz | pairs closer than a head | median gap |
+|---|---|---|---|---|---|---|
+| **Bon Jovi solo, 1.0x** | 2.3 s | 42 px | **432** | **7.2 px** | **0 of 57** | 98 px |
+| Bon Jovi solo, 0.6x | 3.7 s | 26 px | 270 | 4.5 px | 0 of 57 | 61 px |
+| **Thunder solo, 1.0x** | 4.0 s | 42 px | 255 | 4.2 px | **30 of 55 (55 %)** | **33 px** |
+| **Thunder solo, 0.6x** | 6.3 s | 26 px | 160 | 2.7 px | **30 of 55 (55 %)** | **20 px** |
+| Thunder solo, 1.5x | 2.6 s | 42 px | 382 | 6.4 px | 18 of 55 (33 %) | 49 px |
+
+**Bon Jovi's solo never overlaps at any speed** — nought of fifty-seven — and is the fastest thing measured in this collection. It is
+smear and nothing else. **Thunder's solo overlaps at the MEDIAN**, not in the tail: half its notes sit closer together than a head is wide,
+20 px against a 26 px head at 0.6x, and 26 px is `MIN_HEAD_PX` — **the floor**. There is no smaller head to spend, so at 0.6x the display
+has already lost. Only 1.5x parts them, at 6.4 px of smear against 2.7.
+
+**That is the trade at the top of this chapter with no room left in it.** For a passage of this density the scrolling view cannot be made
+to work on a 60 Hz panel by any setting it has, and `Shift+T` -- which the player has already confirmed is fine there -- is not a
+workaround but the answer.
+
 
 **And the speed knob cannot separate the notes, which is the question the player asked.** Measured on Thunder's lead at his window:
 
@@ -2016,6 +2062,36 @@ the board's white hit-zone colour onto a paper ground and could not be found; it
 **And the direction that costs nothing has now been tried, and it works:** `Shift+T` HOLDS the page and moves only at a line break, so a
 page view has no persistence blur by construction and no crowding either. On the passage the player could not read while it scrolled,
 the page view was fine. That is the answer for a fast song until the frame question above is settled.
+
+## The Recording Is Only Synced Where Somebody Listened — NOT BUILT
+
+"Thunder synct beim Solo ganz schlecht und liegt weit daneben." Read straight off the run log, and the app was already telling him in a
+line nobody reads at the moment it matters:
+
+```
+mp3_sync_points   11   22s:+11110ms 34s:+11116ms 40s:+11016ms 52s:+10976ms 76s:+10769ms
+                       106s:+10703ms 118s:+10757ms 142s:+10756ms 166s:+10897ms 178s:+10895ms 202s:+10967ms
+mp3_sync_covers   22-202s of 382s   47 %
+```
+
+**The last point is at 3:22 and the solo is at 3:49.** Every note past 3:22 is placed by extrapolating the last measured section, over
+half a song that was never listened to — and the offsets that WERE measured wander from +10703 to +11116 ms, 413 ms of real drift, with
+section rates swinging from -1.64 % to +0.59 %. Extrapolating thirty seconds past the end of that is worth a fifth of a second at best
+and much worse at the rates this song has shown. `mp3_worst_drift_ms` reached 153 in one of the runs.
+
+**The automatic pass did not fail silently, it failed loudly and in the wrong place.** The panel says `found by listening — 28 of 51
+windows usable` and `measured 0:21–3:21 of 6:21`, which is honest and complete. It is also printed once, in blue, next to ten other blue
+lines, while the player is at 0:00 — and read at 3:49, where it is the only thing on screen that explains what he is seeing, it is not
+on screen at all in any form that says "this applies to you NOW".
+
+**What is not built, and it is the smaller half of the fix.** The map already knows its own span (`points[0]` to `points[-1]`, the comment
+at `_sync_lines` says exactly why it has to be shown). Nothing tells the player when the PLAYHEAD has left it. Beyond the covered span the
+line should say so where it can be seen and while it is true, with the honest bound being the drift the song has already shown rather than
+a computed promise.
+
+**And the immediate answer needs no code at all: `Shift+S` adds a point by hand.** One press inside the solo turns the whole extrapolated
+tail into an interpolated one. Nobody has asked the player to do that, which is the same fault as `Shift+T` two chapters up — a key that
+answers the complaint, and a complaint that never reached the key.
 
 ## Slowing The Tab Down Did Nothing At All
 
