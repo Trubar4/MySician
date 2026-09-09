@@ -4438,3 +4438,117 @@ class TestHowEvenlyThePicturesArrived:
         # which is the whole and only claim being made.
         assert len(screen._frame_intervals) == 4
         assert all(ms > 0 for ms in screen._frame_intervals)
+
+
+class TestSayingWhereTheGuessBegins:
+    """"Thunder synct beim Solo ganz schlecht und liegt weit daneben."
+
+    Read straight off the run log: the points stopped at 3:22 and the solo is
+    at 3:49, so half the song was placed by extrapolating the last segment.
+    The panel already said `measured 0:21-3:21 of 6:21` -- once, in blue, at
+    0:00, four minutes of scrolling before it mattered. A warning about now
+    belongs in now.
+    """
+
+    def _screen(self, points):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._song_key = "song"
+        screen._config.set_mp3_anchors_for("song", points)
+        return screen
+
+    _POINTS = [(22_000.0, 11_110.0), (106_000.0, 10_703.0),
+               (202_000.0, 10_967.0)]
+
+    def test_inside_the_measured_part_it_says_nothing(self):
+        screen = self._screen(self._POINTS)
+        for at in (22_000.0, 100_000.0, 202_000.0):
+            screen._playback_ms = at
+            assert screen._beyond_sync_line() == ""
+
+    def test_past_the_last_point_it_says_so(self):
+        screen = self._screen(self._POINTS)
+        screen._playback_ms = 232_000.0                 # the solo
+        line = screen._beyond_sync_line()
+        assert "past" in line and "3:22" in line and "Shift+S" in line
+
+    def test_before_the_first_point_too(self):
+        """The map extrapolates backwards just as freely."""
+        screen = self._screen(self._POINTS)
+        screen._playback_ms = 5_000.0
+        assert "before" in screen._beyond_sync_line()
+
+    def test_the_size_offered_is_drift_the_song_already_showed(self):
+        """Not a modelled bound, which would be a promise. The recording
+        wandered this far where somebody was listening."""
+        screen = self._screen(self._POINTS)
+        screen._playback_ms = 232_000.0
+        spread = max(o for _, o in self._POINTS) - min(o for _, o in self._POINTS)
+        assert f"{spread:.0f} ms" in screen._beyond_sync_line()
+
+    def test_a_song_nobody_synced_has_no_edge_to_fall_off(self):
+        """One stored offset claims to have been measured nowhere, so there
+        is no span and nothing to warn about."""
+        screen = self._screen([])
+        screen._playback_ms = 232_000.0
+        assert screen._beyond_sync_line() == ""
+
+    def test_and_neither_does_a_single_point(self):
+        screen = self._screen([(22_000.0, 11_110.0)])
+        screen._playback_ms = 232_000.0
+        assert screen._beyond_sync_line() == ""
+
+
+class TestThePageViewShowsTwoRows:
+    """The page filled the window, so the HUD -- text with no ground of its
+    own -- was printed straight over the staff, which is what the player's
+    screenshot showed. Two rows is what a reader uses: the one under the hand
+    and the one arriving.
+    """
+
+    def _page(self, tops, band=0.039):
+        from pickhero.ui.tab_view import TabPage
+        page = TabPage(number=1, surface=None)
+        page.systems = [(t, t + band) for t in tops]
+        return page
+
+    _TOPS = [0.05, 0.157, 0.264, 0.371]
+
+    def test_the_window_spans_exactly_two_rows(self):
+        page = self._page(self._TOPS)
+        top, height = page.row_window(0, 2)
+        # From the page edge to the middle of the gap under the second row.
+        assert top == 0.0
+        assert height == pytest.approx((0.157 + 0.039 + 0.264) / 2)
+
+    def test_it_cuts_through_the_gap_and_never_through_a_row(self):
+        """A window measured from an AVERAGE spacing showed two rows and a
+        third of a third one, with its beams sliced off at the bottom edge --
+        which is a strip of music too short to read, in the room the next row
+        was meant to have."""
+        page = self._page(self._TOPS)
+        top, height = page.row_window(1, 2)
+        bottom = top + height
+        for row_top, row_bottom in page.systems:
+            inside = top <= row_top and row_bottom <= bottom
+            outside = row_bottom <= top or bottom <= row_top
+            assert inside or outside, (row_top, row_bottom, top, bottom)
+
+    def test_the_window_moves_by_a_row_and_holds_between(self):
+        page = self._page(self._TOPS)
+        assert page.row_window(1, 2)[0] > page.row_window(0, 2)[0]
+        assert page.row_window(1, 2) == page.row_window(1, 2)
+
+    def test_the_last_rows_run_to_the_end_of_the_page(self):
+        """There is no row after them to cut in front of."""
+        page = self._page(self._TOPS)
+        top, height = page.row_window(3, 2)
+        assert top + height == pytest.approx(1.0)
+
+    def test_a_row_is_found_from_where_a_note_sits(self):
+        page = self._page(self._TOPS)
+        assert page.system_index(0.157 + 0.02) == 1
+        assert page.system_index(0.371) == 3
+
+    def test_a_y_in_no_row_falls_back_to_the_first(self):
+        """Rather than raising in the middle of a frame."""
+        assert self._page(self._TOPS).system_index(0.9) == 0

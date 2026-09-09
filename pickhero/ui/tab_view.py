@@ -52,7 +52,12 @@ ENGRAVING_SCALE = 40
 # paper rather than the app's dark background: inverting an engraving turns
 # every stem and every bar line into a thin white hairline, which is the
 # first thing to disappear at a glance.
-PAPER = (238, 236, 231)
+#
+# Plain white rather than the off-white it was: the player asked for the
+# harder contrast, and the reason the softer ground existed -- paper does not
+# glare -- is a print argument, not a screen one. A stem is one pixel wide
+# and every point of contrast under it counts.
+PAPER = (255, 255, 255)
 
 
 @dataclass
@@ -77,6 +82,35 @@ class TabPage:
     # it sits on, so following it made the page scroll up and down by the
     # string spacing on every note of an arpeggio. Filled in by `_systems`.
     systems: list[tuple[float, float]] = field(default_factory=list)
+
+    def system_index(self, y: float) -> int:
+        """Which row of music this y sits in, 0 when it sits in none."""
+        for index, (top, bottom) in enumerate(self.systems):
+            if top - 1e-9 <= y <= bottom + 1e-9:
+                return index
+        return 0
+
+    def row_window(self, index: int, rows: int) -> tuple[float, float]:
+        """(top, height) as fractions of the page, spanning `rows` rows.
+
+        Cut through the MIDDLE of the gaps either side rather than at a
+        staff's own edge, and taken from the rows this page actually has
+        rather than from an average of them. A median spacing was tried
+        first: it is 0.107 of the page over a whole song and 0.094 on the
+        page that was looked at, so a window built from it showed two rows
+        and a third of a third one, with its beams sliced off at the bottom
+        edge -- a strip of music too short to read, in the room the next row
+        was meant to have.
+        """
+        def cut(i: int) -> float:
+            if i <= 0:
+                return 0.0
+            if i >= len(self.systems):
+                return 1.0
+            return (self.systems[i - 1][1] + self.systems[i][0]) / 2.0
+
+        top = cut(index)
+        return top, max(1e-6, cut(index + rows) - top)
 
     def system_at(self, y: float) -> tuple[float, float]:
         """The row of music this y sits in, or a band around it."""
@@ -133,8 +167,12 @@ def rasterise(svg: str, width: int) -> pygame.Surface:
     and does it FASTER: 140 against 195 ms, 329 against 566, 327 against 844.
     """
     import resvg_py
+    # The ground is PAPER and nothing else. It was written here as a hex
+    # literal while PAPER sat unused two screens up -- so the constant that
+    # every comment in this file talks about was decoration, and changing it
+    # changed nothing at all. One of them had to go.
     png = bytes(resvg_py.svg_to_bytes(svg_string=svg, width=width,
-                                      background="#eeece7"))
+                                      background="#%02x%02x%02x" % PAPER))
     return pygame.image.load(io.BytesIO(png), "page.png")
 
 

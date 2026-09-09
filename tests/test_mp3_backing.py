@@ -1240,9 +1240,66 @@ class TestTheRecordingsOwnSpeed:
         return PlayingScreen(_timeline(), config=config, song_key="song")
 
     def _mark(self, screen, at_ms, offset_ms):
-        screen._config.set_mp3_offset_for("song", offset_ms)
+        """The player, at `at_ms`, nudging until the recording sits right.
+
+        `offset_ms` is where the offset TRULY is here, which is what they
+        measured. It is reached by nudging, because the stored offset is a
+        nudge on top of whatever the existing points already say -- so the
+        press has to be given the difference, exactly as a hand on Shift+N
+        would arrive at it. Setting the stored offset to the absolute value
+        and pressing was the old shape of this, and it only worked because
+        the map threw the number away and `_set_sync_point` saved it anyway.
+        """
         screen._playback_ms = at_ms
+        already = screen._sync_map().offset_at(at_ms)
+        screen._config.set_mp3_offset_for("song", offset_ms - already)
         screen._set_sync_point()
+
+    def test_a_point_records_what_is_heard_not_what_is_stored(
+        self, tmp_path, monkeypatch
+    ):
+        """The fault behind all of this, on the screen rather than the map.
+
+        The player's song carries points around +11.0 s. Standing in the solo
+        with the recording 200 ms out, they nudge and press -- and the point
+        has to say what they were HEARING, roughly +11.2 s. It used to save
+        the nudge alone, which on that song is a point saying +0.2 s where
+        the map says +11.0: not a mended tail, a destroyed map.
+        """
+        screen = self._screen(tmp_path, monkeypatch)
+        self._players_own(screen)
+        screen._playback_ms = 300_000.0
+        heard = screen._sync_map().offset_at(300_000.0)
+        screen._config.set_mp3_offset_for("song", 200.0)      # the nudge
+        screen._set_sync_point()
+        placed = dict(screen._mp3_anchors())[300_000.0]
+        assert placed == pytest.approx(heard + 200.0)
+
+    def test_the_nudge_is_spent_once_the_point_holds_it(
+        self, tmp_path, monkeypatch
+    ):
+        """Left standing it would be applied a second time, to the whole
+        song, including the parts the player had already got right."""
+        screen = self._screen(tmp_path, monkeypatch)
+        self._players_own(screen)
+        before = screen._sync_map().offset_at(0.0)
+        screen._playback_ms = 300_000.0
+        screen._config.set_mp3_offset_for("song", 200.0)
+        screen._set_sync_point()
+        assert screen._mp3_offset() == 0.0
+        # And the part that was already right is still right.
+        assert screen._sync_map().offset_at(0.0) == pytest.approx(before)
+
+    def test_the_offset_keys_move_a_synced_song_at_all(
+        self, tmp_path, monkeypatch
+    ):
+        """They were dead on every song that had ever been synced, while the
+        HUD went on printing a number the player could change."""
+        screen = self._screen(tmp_path, monkeypatch)
+        self._players_own(screen)
+        was = screen._mp3_ms(120_000.0)
+        screen._adjust_mp3_offset(250.0)
+        assert screen._mp3_ms(120_000.0) == pytest.approx(was - 250.0)
 
     def _players_own(self, screen):
         for at, off in ((0.0, -260.0), (177_000.0, -1330.0),

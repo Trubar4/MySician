@@ -2063,7 +2063,31 @@ the board's white hit-zone colour onto a paper ground and could not be found; it
 page view has no persistence blur by construction and no crowding either. On the passage the player could not read while it scrolled,
 the page view was fine. That is the answer for a fast song until the frame question above is settled.
 
-## The Recording Is Only Synced Where Somebody Listened — NOT BUILT
+## Two Rows Of Music And Nothing Else
+
+"Mir reichen 2 Zeilen des Tabs in der Mitte. Danach sollte oben und unten genug Platz sein für die Anzeigen, die aktuell reinlappen."
+The page filled the window between a 56 px margin and a 104 px one, and the HUD — which is text with no ground of its own — was printed
+straight over the staff. Both are right; neither could give way, because neither knew the other's size.
+
+- **The room is measured now, from the things that take it.** `_footer_block` was split out of the footer drawing so two callers can ask
+  the same question at different moments: the footer draws the block, and `_tab_room` asks how tall it came out BEFORE laying a page out.
+  A constant was the obvious fix and it is the wrong one — the footer is between two and five lines depending on the window width, which
+  is exactly what a constant cannot follow.
+- **Two rows, taken from the rows the page actually has.** A median row spacing was tried first and measured 0.107 of the page over the
+  whole song against 0.094 on the page being looked at, so the window showed two rows and a third of a third one with its beams sliced
+  off at the bottom edge. `row_window` cuts through the MIDDLE of the gaps either side instead, so the boundary never falls through a row.
+  The test asserts that property rather than the arithmetic: every row on the page is wholly inside the window or wholly outside it.
+- **`system_pitch` went with it.** It was written for the median, replaced within the hour, and would have sat there tested and unused —
+  which is the same thing `PAPER` was doing (see below) and the fault this file keeps writing up.
+- **The playhead is the full height of what is shown, and 5 px wide.** Fitted to its own system it was a short mark in a tall picture and
+  took hunting for, and hunting for the playhead is the one thing this view exists to spare.
+- **The paper is white, and it is white in ONE place.** `PAPER` sat unused two screens above a hardcoded `background="#eeece7"` in
+  `rasterise`, so the constant every comment in the file talks about was decoration and changing it changed nothing. The player asked for
+  harder contrast; the reason for an off-white ground — paper does not glare — is a print argument and not a screen one.
+- **And the tab label moved off the tempo.** Both wanted the centre of the top edge and the HUD is drawn second, so they read as one
+  illegible line: the same complaint as the page over the staff, one row up.
+
+## The Recording Is Only Synced Where Somebody Listened
 
 "Thunder synct beim Solo ganz schlecht und liegt weit daneben." Read straight off the run log, and the app was already telling him in a
 line nobody reads at the moment it matters:
@@ -2084,14 +2108,28 @@ windows usable` and `measured 0:21–3:21 of 6:21`, which is honest and complete
 lines, while the player is at 0:00 — and read at 3:49, where it is the only thing on screen that explains what he is seeing, it is not
 on screen at all in any form that says "this applies to you NOW".
 
-**What is not built, and it is the smaller half of the fix.** The map already knows its own span (`points[0]` to `points[-1]`, the comment
-at `_sync_lines` says exactly why it has to be shown). Nothing tells the player when the PLAYHEAD has left it. Beyond the covered span the
-line should say so where it can be seen and while it is true, with the honest bound being the drift the song has already shown rather than
-a computed promise.
+**The line is said where it applies now.** `_beyond_sync_line` speaks only while the playhead is outside `SyncMap.covers()`, in the
+warning colour, and the size it offers is `drift_seen_ms()` — how far the recording wandered where somebody WAS listening. A modelled
+bound would be a promise; this is a number the song has already produced. Nothing is said inside the span, and nothing on a song with a
+single stored offset, which claims to have been measured nowhere and so has no edge to fall off.
 
-**And the immediate answer needs no code at all: `Shift+S` adds a point by hand.** One press inside the solo turns the whole extrapolated
-tail into an interpolated one. Nobody has asked the player to do that, which is the same fault as `Shift+T` two chapters up — a key that
-answers the complaint, and a complaint that never reached the key.
+**And then the key it points at turned out to be broken, which is why this chapter grew.** `Shift+S` was going to be the answer that
+needed no code — until it was read:
+
+- **`SyncMap` threw the stored offset away the moment one point existed.** `offset_at` returned the interpolation and ignored
+  `base_offset_ms` entirely. So on every song that had ever been synced, `Shift+N`/`Shift+M` were DEAD: the HUD went on printing a number
+  the player could change while the recording did not move a millisecond. The oldest fault in this file, in the one place nobody looked.
+- **And `_set_sync_point` saved that dead number.** `here = (playback_ms, self._mp3_offset())` — the nudge, not the offset in force. On
+  this player's song the map reads +11.0 s in the solo and the stored offset is +0, so the one press meant to rescue a drifting tail
+  would have written a point saying zero: not a repair, a demolition. **The advice to press it was given before the code was read**, and
+  it would have cost him his sync.
+- **The offset is a nudge ON TOP of the map now**, and a point records the sum. Pressing spends the nudge — left standing it would apply
+  a second time, to the whole song, including the parts already right. The workflow is what it always looked like from outside: nudge
+  with `Shift+N`/`Shift+M` until it sits, then `Shift+S` to pin it there.
+
+**A test helper had to change with it, and that is worth its own line.** `_mark` set the stored offset to an absolute value and pressed;
+it only ever worked because the map discarded the number and the press saved it anyway. It nudges by the difference now, which is what a
+hand does.
 
 ## Slowing The Tab Down Did Nothing At All
 

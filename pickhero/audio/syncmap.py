@@ -73,13 +73,23 @@ class SyncMap:
     # -- the two directions ------------------------------------------------
 
     def offset_at(self, song_ms: float) -> float:
-        """How far the recording is shifted against the tab, here."""
+        """How far the recording is shifted against the tab, here.
+
+        The stored offset is added ON TOP of the points rather than replaced
+        by them. It used to be ignored the moment a single point existed,
+        which made the offset keys dead on every song that had been synced --
+        the HUD went on showing a number the player could change while the
+        sound did not move, and the one press that could rescue a drifting
+        solo saved that dead number instead of the offset actually sounding.
+        Read as a nudge on top, the keys work everywhere and a point set
+        after nudging carries what was heard.
+        """
         if not self.points:
             return self.base_offset_ms
         if len(self.points) == 1:
-            return self._offsets[0]
+            return self._offsets[0] + self.base_offset_ms
         return self._interp(song_ms, self._songs, self._offsets,
-                            slope_of_offset=True)
+                            slope_of_offset=True) + self.base_offset_ms
 
     def recording_at(self, song_ms: float) -> float:
         """Where in the recording this moment of the song is."""
@@ -95,8 +105,11 @@ class SyncMap:
         if not self.points:
             return recording_ms + self.base_offset_ms
         if len(self.points) == 1:
-            return recording_ms + self._offsets[0]
-        return self._interp(recording_ms, self._recordings, self._songs,
+            return recording_ms + self._offsets[0] + self.base_offset_ms
+        # The points' recording positions were taken without the nudge, so a
+        # recording moment is looked up where it would have been without it.
+        return self._interp(recording_ms + self.base_offset_ms,
+                            self._recordings, self._songs,
                             slope_of_offset=False)
 
     # -- how a segment is read ---------------------------------------------
@@ -148,8 +161,32 @@ class SyncMap:
             1.0 - self._slope(self._songs, self._offsets, i, True)
             for i in range(len(self.points) - 1))
 
+    def covers(self) -> tuple[float, float] | None:
+        """The span the points were actually measured over, or None.
+
+        Outside it the map EXTRAPOLATES, which is a guess made from the last
+        segment's slope -- worth having, and worth saying out loud, because a
+        song whose points stop at three minutes has its last three placed by
+        arithmetic rather than by anybody listening.
+        """
+        if len(self.points) < 2:
+            return None
+        return self._songs[0], self._songs[-1]
+
+    def drift_seen_ms(self) -> float:
+        """How far the offset moved across the part that WAS measured.
+
+        The honest size of an extrapolation: a recording that wandered by
+        this much where somebody was listening can wander by that much again
+        where nobody was. A modelled bound would be a promise; this is a
+        number the song has already produced.
+        """
+        if len(self.points) < 2:
+            return 0.0
+        return max(self._offsets) - min(self._offsets)
+
     def worst_correction_ms(self) -> float:
         """The largest offset the map applies. A size for "how far out"."""
         if not self.points:
             return abs(self.base_offset_ms)
-        return max(abs(o) for o in self._offsets)
+        return max(abs(o + self.base_offset_ms) for o in self._offsets)

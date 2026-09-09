@@ -28,9 +28,75 @@ class TestNoPointsIsTodaysBehaviour:
         assert m.song_at(m.recording_at(5000.0)) == pytest.approx(5000.0)
 
     def test_one_point_is_a_constant_offset(self):
+        """One point cannot say a rate, so it says the same thing everywhere.
+
+        It used to say -260 here and DISCARD the 99: the stored offset was
+        ignored the moment any point existed. That is the fault behind a dead
+        offset key, so the nudge is carried now -- but the property this test
+        is about, that one point is flat, is unchanged.
+        """
         m = SyncMap([(120_000.0, -260.0)], base_offset_ms=99.0)
-        assert m.offset_at(0.0) == -260.0
-        assert m.offset_at(300_000.0) == -260.0
+        assert m.offset_at(0.0) == -161.0
+        assert m.offset_at(300_000.0) == -161.0
+
+
+class TestTheStoredOffsetIsANudgeOnTop:
+    """The offset keys were dead on every song that had ever been synced.
+
+    `offset_at` returned the interpolation and dropped `base_offset_ms` on
+    the floor as soon as one point existed. The HUD went on printing a number
+    the player could change with Shift+N/M while the recording did not move
+    -- a feature that cannot be seen working -- and `_set_sync_point` then
+    saved that same dead number, so the one press meant to rescue a drifting
+    solo would have written an offset unrelated to anything being heard.
+    """
+
+    def test_a_nudge_moves_a_synced_map_everywhere(self):
+        plain = SyncMap(THEIRS)
+        nudged = SyncMap(THEIRS, base_offset_ms=250.0)
+        for at in (0.0, 60_000.0, 120_000.0, 400_000.0):
+            assert nudged.offset_at(at) == pytest.approx(
+                plain.offset_at(at) + 250.0)
+
+    def test_it_moves_the_recording_by_the_same_amount(self):
+        plain = SyncMap(THEIRS)
+        nudged = SyncMap(THEIRS, base_offset_ms=250.0)
+        assert nudged.recording_at(90_000.0) == pytest.approx(
+            plain.recording_at(90_000.0) - 250.0)
+
+    def test_and_the_two_directions_still_invert(self):
+        """The inverse is read over the points' recording positions, which
+        were taken without the nudge -- so it has to be put back."""
+        m = SyncMap(THEIRS, base_offset_ms=-175.0)
+        for at in (10_000.0, 95_000.0, 240_000.0):
+            assert m.song_at(m.recording_at(at)) == pytest.approx(at, abs=1e-6)
+
+    def test_a_zero_nudge_changes_nothing(self):
+        plain, zero = SyncMap(THEIRS), SyncMap(THEIRS, base_offset_ms=0.0)
+        for at in (0.0, 120_000.0, 400_000.0):
+            assert zero.offset_at(at) == plain.offset_at(at)
+
+
+class TestWhatTheMapWillAdmitToGuessing:
+    """Beyond the outermost point the map extrapolates, and the player has to
+    be told where that begins -- see the chapter on the recording being synced
+    only where somebody listened."""
+
+    def test_it_says_the_span_it_was_measured_over(self):
+        m = SyncMap(THEIRS)
+        assert m.covers() == (THEIRS[0][0], THEIRS[-1][0])
+
+    def test_one_point_covers_nothing_because_a_point_is_not_a_span(self):
+        assert SyncMap([(1000.0, 5.0)]).covers() is None
+        assert SyncMap([]).covers() is None
+
+    def test_the_drift_it_saw_is_the_size_of_the_guess(self):
+        m = SyncMap(THEIRS)
+        offsets = [o for _, o in THEIRS]
+        assert m.drift_seen_ms() == pytest.approx(max(offsets) - min(offsets))
+
+    def test_nothing_measured_is_no_drift_rather_than_a_guess(self):
+        assert SyncMap([]).drift_seen_ms() == 0.0
 
 
 class TestTheLineBetweenTwoPoints:

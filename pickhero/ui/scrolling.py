@@ -411,6 +411,17 @@ SYNC_PULL_FRACTION = 0.05
 # 0.2 %. The start and the end of the song are what this wants.
 MIN_SYNC_SPAN_MS = 30_000.0
 
+# How many rows of music the page view shows at once, and how wide its
+# playhead is drawn. Two rows because that is what a reader uses -- the one
+# under the hand and the one arriving -- and everything past it was spending
+# the room the HUD needed. Measured on a real engraving a row is 0.107 of
+# the page against a staff band of 0.039, so a row is mostly the air above
+# it and the count has to be in rows rather than in staves.
+TAB_SYSTEMS_SHOWN = 2
+TAB_PLAYHEAD_PX = 5
+# Below the HUD's block of lines, which is text with no ground of its own.
+TAB_TOP_MARGIN = 150
+
 # How a note's verdict is shown on an engraved page. PENDING is absent on
 # purpose: a dot under every note not yet reached would bury the music under
 # its own labelling, the same reason a palm mute is badged once per run.
@@ -1870,7 +1881,8 @@ class PlayingScreen:
         return ("transpose", shift)
 
     def _tab_scroll_for(self, band_top: float, band_bottom: float,
-                        page_h: float, view_h: float) -> int:
+                        page_h: float, view_h: float,
+                        lead_px: float = 0.0) -> int:
         """Where to scroll the page so the current system is readable.
 
         It STAYS PUT while the system it is showing is fully on screen, and
@@ -1888,9 +1900,13 @@ class PlayingScreen:
         if here + margin <= band_top and band_bottom <= here + view_h - margin:
             self._tab_scroll = int(here)
             return int(here)
-        # Out of view: put the system a quarter of the way down, so what
-        # comes next is what most of the screen is showing.
-        wanted = band_top - view_h * 0.25
+        # Out of view: put this row at the TOP, with the air above its staff
+        # that belongs to it -- the beams and the technique marks are drawn
+        # up there and are part of the row. A quarter of the view used to be
+        # the lead, which on a two-row page lands inside the beams and leaves
+        # a slice of the row before it hanging at the top: a strip of music
+        # too short to read, taking room from the row that comes next.
+        wanted = band_top - lead_px
         self._tab_scroll = int(max(0.0, min(limit, wanted)))
         return self._tab_scroll
 
@@ -1915,10 +1931,22 @@ class PlayingScreen:
         page = engraving.pages[spot[0] if spot else 0]
         # The page is as wide as the window allows, and scrolls vertically so
         # the playhead stays in view rather than the player hunting for it.
-        top_margin, bottom_margin = 56, 104
-        view_h = max(1, h - top_margin - bottom_margin)
+        top_margin, room = self._tab_room(self._layout(surface))
         fitted = fit(page, w)
         page_h = fitted.get_height()
+        # TWO rows of music, not as many as fit. The page filled the window,
+        # and the HUD -- which is text with no ground of its own -- was then
+        # printed straight over the staff, which is what the player's
+        # screenshot showed. Two rows is what a reader is actually using:
+        # the one being played and the one coming. Everything else was paying
+        # for itself in the only currency the corners had left.
+        row = page.system_index(spot[2] if spot else 0.0)
+        window_top, window_h = page.row_window(row, TAB_SYSTEMS_SHOWN)
+        view_h = max(1, min(room, int(window_h * page_h)))
+        # Centred in what is left, so the space it gives back is shared
+        # between the block at the top and the lines along the bottom rather
+        # than all landing in one place.
+        view_top = top_margin + (room - view_h) // 2
         # The SYSTEM the playhead is in, never the note's own height. A note's
         # y on a tab staff is the string it is written on, so scrolling to it
         # moved the page up and down by the string spacing on every note of
@@ -1926,26 +1954,30 @@ class PlayingScreen:
         # player reported.
         band_top = (spot[2] if spot else 0.0) * page_h
         band_bottom = (spot[3] if spot else 0.0) * page_h
-        offset = self._tab_scroll_for(band_top, band_bottom, page_h, view_h)
-        surface.blit(fitted, (0, top_margin), (0, offset, w, view_h))
+        # What belongs to this row above its staff -- the beams and the
+        # technique marks are drawn up there and are part of it. Taken from
+        # the gap this page really has above this row, so the cut lands
+        # between two rows instead of through one.
+        lead = max(0.0, band_top - window_top * page_h)
+        offset = self._tab_scroll_for(band_top, band_bottom, page_h, view_h,
+                                      lead)
+        surface.blit(fitted, (0, view_top), (0, offset, w, view_h))
 
         if spot is not None:
             x = int(spot[1] * fitted.get_width())
-            # Across the whole system, the way every notation app draws it.
-            # A short tick at the note's own height would jump between the
-            # strings even with the scrolling held still.
-            reach = max(9.0, (band_bottom - band_top) * 0.6)
-            y0 = int(band_top - reach) - offset + top_margin
-            y1 = int(band_bottom + reach) - offset + top_margin
+            # The WHOLE height of what is shown, not a tick around the system
+            # it is in. Fitted to the band it stopped at the staff, which on
+            # a page holding two rows is a short mark in a tall picture and
+            # took hunting for -- and hunting for the playhead is the one
+            # thing this view exists to spare. Full height needs no finding.
+            #
             # Its own colour, not the hit zone's. The scrolling board is
             # dark and takes a white line; this page is PAPER, and white on
-            # paper is the one thing on screen that cannot be found -- which
-            # is what the player reported. Blue reads on the paper and on
-            # the dark surround either side of the page.
-            if y1 > top_margin and y0 < top_margin + view_h:
-                pygame.draw.line(surface, t.tab_playhead,
-                                 (x, max(top_margin, y0)),
-                                 (x, min(top_margin + view_h, y1)), 2)
+            # paper is the one thing on screen that cannot be found. Blue
+            # reads on the paper and on the dark surround either side of it.
+            pygame.draw.line(surface, t.tab_playhead,
+                             (x, view_top), (x, view_top + view_h),
+                             TAB_PLAYHEAD_PX)
 
         # How each note went, as a dot under its fret number. The page is a
         # picture and cannot be re-coloured, so the verdict is drawn ON it.
@@ -1966,13 +1998,17 @@ class PlayingScreen:
                 pygame.draw.circle(
                     surface, getattr(t, colour),
                     (int(x * fitted.get_width()),
-                     int(y * page_h) - offset + top_margin + 13), 4)
+                     int(y * page_h) - offset + view_top + 13), 4)
 
         label = font.render(
             f"Page {page.number} of {len(engraving.pages)}   |   "
             f"Zoom {self._tab_zoom + 1}   |   +/- zoom   |   "
             f"Shift+T: back to the scrolling tab", True, t.hud_text)
-        surface.blit(label, (w // 2 - label.get_width() // 2, 18))
+        # Below the tempo, not on top of it. Both wanted the centre of the
+        # top edge and the HUD is drawn second, so the two read as one
+        # illegible line -- which is the same complaint as the page over the
+        # staff, one row up.
+        surface.blit(label, (w // 2 - label.get_width() // 2, 48))
 
     def _layout(self, surface: pygame.Surface) -> _Layout:
         """Compute layout from current surface dimensions."""
@@ -3381,6 +3417,51 @@ class PlayingScreen:
                 break
         return surface
 
+    def _footer_block(
+        self, layout: _Layout, lines: tuple[str, ...],
+        color: tuple[int, int, int],
+    ):
+        """The footer's rendered lines, their spacing, and where it starts.
+
+        Measured rather than assumed, and shared, because two callers need
+        the same answer at different moments: the footer draws it, and the
+        page view has to know how much room is left BEFORE it lays a page
+        out. A constant was tried and the page ran into the keys -- the
+        block is between two and five lines depending on how wide the window
+        is, which is exactly the thing a constant cannot follow.
+        """
+        w = layout.screen_w
+        for size in self.FOOTER_FONT_SIZES:
+            font = _get_font("arial", size)
+            wrapped = [part for line in lines
+                       for part in _wrap_on_bars(line, font, w - 16)]
+            rendered = [font.render(part, True, color) for part in wrapped]
+            if max(s.get_width() for s in rendered) <= w - 16:
+                break
+        line_h = rendered[0].get_height() + 2
+        return rendered, line_h, layout.screen_h - 4 - line_h * len(rendered)
+
+    def _tab_room(self, layout: _Layout) -> tuple[int, int]:
+        """(top, height) of the space the page may use, clear of the text.
+
+        The HUD is text with no ground of its own, so anything drawn under it
+        is simply lost -- which is what the player's screenshot showed. The
+        block above is a known number of lines; the one below is the footer
+        plus whatever sync lines are standing, and both are measured here
+        rather than guessed at.
+        """
+        t = get_theme()
+        _, _, footer_top = self._footer_block(
+            layout, self._footer_lines(), t.hud_text)
+        standing = ([self._auto_sync_line()] if self._auto_sync_line()
+                    else list(self._sync_lines))
+        if self._beyond_sync_line() and not self._auto_sync_line():
+            standing.append(self._beyond_sync_line())
+        # The sync panel, the one-line status note above it, and a gap.
+        bottom = footer_top - 18 * (len(standing) + 1) - 12
+        top = TAB_TOP_MARGIN
+        return top, max(1, bottom - top)
+
     def _blit_footer_lines(
         self, surface: pygame.Surface, layout: _Layout,
         lines: tuple[str, ...], color: tuple[int, int, int],
@@ -3401,16 +3482,8 @@ class PlayingScreen:
         it has to know where it ends -- the sync panel used to be placed at a
         fixed height and ran straight into these lines.
         """
+        rendered, line_h, top = self._footer_block(layout, lines, color)
         w = layout.screen_w
-        for size in self.FOOTER_FONT_SIZES:
-            font = _get_font("arial", size)
-            wrapped = [part for line in lines
-                       for part in _wrap_on_bars(line, font, w - 16)]
-            rendered = [font.render(part, True, color) for part in wrapped]
-            if max(s.get_width() for s in rendered) <= w - 16:
-                break
-        line_h = rendered[0].get_height() + 2
-        top = layout.screen_h - 4 - line_h * len(rendered)
         y = top
         for surf in rendered:
             surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
@@ -3534,9 +3607,18 @@ class PlayingScreen:
         # fault this project has now shipped four times.
         lines = ([self._auto_sync_line()] if self._auto_sync_line()
                  else self._sync_lines)
+        # And where it has NOT got to, said while it is true rather than once
+        # at 0:00. The span is printed with the points, honestly and in full
+        # -- and at 3:49, where being past the end of it is the only thing
+        # that explains the picture, that line is four minutes of scrolling
+        # ago and reads as history. A warning about now belongs in now.
+        beyond = self._beyond_sync_line()
+        if beyond and not self._auto_sync_line():
+            lines = lines + [beyond]
         note_y = footer_top - 6 - 18 * len(lines)
         for line in lines:
-            line_surf = self._fit_line(hint_font, line, w - 16, t.hud_accent)
+            colour = (t.feedback_close if line is beyond else t.hud_accent)
+            line_surf = self._fit_line(hint_font, line, w - 16, colour)
             surface.blit(line_surf,
                          (w // 2 - line_surf.get_width() // 2, note_y))
             note_y += 18
@@ -6082,7 +6164,13 @@ class PlayingScreen:
         if self._mp3_player is None:
             self._say("No backing track — Shift+U to pick one")
             return
-        here = (self._playback_ms, self._mp3_offset())
+        # The offset IN FORCE here, not the stored one. On a song that has
+        # never been synced they are the same number. On one that has, the
+        # stored offset is a nudge sitting on top of the map -- and saving
+        # the nudge alone wrote a point unrelated to anything being heard:
+        # a song whose map reads +11.0 s in the solo got a point saying +0,
+        # which does not mend a drifting tail, it destroys a working map.
+        here = (self._playback_ms, self._sync_map().offset_at(self._playback_ms))
         points = [p for p in self._mp3_anchors()
                   if abs(p[0] - here[0]) >= MIN_SYNC_SPAN_MS]
         dropped = len(self._mp3_anchors()) - len(points)
@@ -6092,9 +6180,40 @@ class PlayingScreen:
         if setter is None:
             return
         setter(self._song_key, points)
+        # The nudge has been spent: it is inside the point now, and left
+        # standing it would be applied a second time to the whole song --
+        # including the parts the player had already got right.
+        self._set_mp3_offset(0.0)
         self._config.save()
         self._describe_sync(replaced=dropped)
         self._mp3_loaded_build = None          # the plan changed
+
+    def _beyond_sync_line(self) -> str:
+        """Said only where the playhead is outside the measured span.
+
+        The map extrapolates past its outermost point from the last
+        segment's slope, which is worth having and is still a guess. How big
+        a guess cannot be modelled honestly, so the size offered is the drift
+        the song ALREADY showed where somebody was listening: a recording
+        that wandered that far under measurement can wander that far again
+        where nobody measured.
+
+        Nothing is said inside the span, and nothing on a song with no points
+        at all -- a single stored offset makes no claim to have been measured
+        anywhere, so there is no edge to fall off.
+        """
+        covers = self._sync_map().covers()
+        if covers is None:
+            return ""
+        first, last = covers
+        if first <= self._playback_ms <= last:
+            return ""
+        side = "before" if self._playback_ms < first else "past"
+        drift = self._sync_map().drift_seen_ms()
+        return (f"SYNC   {side} the measured part "
+                f"({_clock_text(first)}–{_clock_text(last)}) — the recording "
+                f"is guessed here, and it drifted {drift:.0f} ms where it was "
+                f"measured. Shift+S pins it.")
 
     def _describe_sync(self, replaced: int = 0) -> None:
         """The sync points and what they add up to, kept on screen.
