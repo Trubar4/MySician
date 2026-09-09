@@ -92,13 +92,20 @@ class App:
             self._update()
             self._render(surface)
             pygame.display.flip()
+            shown = time.perf_counter()
             # How long the work took, BEFORE the wait that pads it out to
             # 60 Hz. clock.get_fps() would report the padded rate and read a
             # healthy 60 right up to the moment the machine can no longer
             # keep up -- which is the one thing it is being asked about.
             if self._playing_screen is not None:
                 self._playing_screen.record_frame_ms(
-                    (time.perf_counter() - frame_started) * 1000.0)
+                    (shown - frame_started) * 1000.0)
+                # And the moment the picture went out, which answers the
+                # OTHER question: not whether the machine keeps up but
+                # whether the pictures arrive evenly. Taken after the flip
+                # and before the pad, so the gap it yields spans one whole
+                # frame including the wait.
+                self._playing_screen.record_frame_shown(shown)
             clock.tick(60)
 
         # Closing the window ends a session as surely as pressing ESC does.

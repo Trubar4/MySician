@@ -1940,10 +1940,22 @@ about once a second a frame is shown twice and the note holds still and then jum
 of the scroll speed — which is exactly why the player still sees it at 0.6x, where the smear is only 3.9 px — and it is a different
 fault from everything above.
 
-**It is not measured yet, and the app cannot currently see it.** `record_frame_ms` times the WORK before `clock.tick` pads it, so it
-answers "can the machine keep up" and says nothing about when the frames were actually shown. The interval BETWEEN presentations is the
-number that would show a beat, and it is not recorded. Measure that before touching `vsync=1` -- which needs `SCALED` in pygame 2, is a
-real change to how the window resizes, and may not be honoured by the driver at all.
+**So the gap BETWEEN pictures is measured now** (`record_frame_shown`, reported as `frame_interval_median`,
+`frames_per_second_shown` and `frames_uneven_percent`). `record_frame_ms` times the WORK before `clock.tick` pads it, which answers "can
+the machine keep up" and says nothing about when the frames were actually handed over. Unevenness is counted against the run's OWN median
+rather than against 16.7 ms, because a steady 17.4 is a different report from an average 16.7 that is really 16.7 and 33.3 in turns --
+only the second one judders, and an average alone cannot tell them apart. A gap spanning a pause is dropped rather than charged to the
+first frame back as a stutter that never happened.
+
+**What it deliberately cannot see is the point of it.** Without vsync `flip` returns before the panel has shown anything, so a frame the
+DISPLAY held twice never reaches the app. That splits the question in two, and the answer decides what gets built: **ragged** here is the
+app's own timer and is fixable without vsync, while **dead even** says the remaining judder is the beat against a panel running at some
+other rate, and only `vsync=1` answers that -- which needs `SCALED` in pygame 2, is a real change to how the window resizes, and may not
+be honoured by the driver at all. That is why it is not being tried first.
+
+**And the measurement is asserted to be WIRED, not only to be correct.** Six tests drive `record_frame_shown` by hand; a seventh runs the
+real `App.run` loop for five frames and counts four gaps, because a measurement nothing calls is a feature that ships doing nothing --
+which this project has shipped before.
 
 **And the speed knob cannot separate the notes, which is the question the player asked.** Measured on Thunder's lead at his window:
 

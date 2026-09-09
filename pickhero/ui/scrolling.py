@@ -381,6 +381,11 @@ AUTO_SYNC_MIN_SAMPLES = 8
 # 60 FPS is a 16.7 ms budget for everything a frame does.
 FRAME_BUDGET_MS = 1000.0 / 60.0
 
+# How far a gap between two pictures may sit from the usual one before it
+# counts as uneven. A fifth is well past what the eye forgives on a moving
+# note and well clear of the millisecond or so a timer costs to read.
+FRAME_EVEN_FRACTION = 0.2
+
 # The longest a single frame may move the song. Fifteen frames' worth: beyond
 # that nothing was drawn and nothing was heard, so charging the song for it
 # only teleports the picture.
@@ -827,6 +832,10 @@ class PlayingScreen:
         # (when, name) for every chord change. Built once per song.
         self._chord_names: list[tuple[float, str]] = []
         self._frame_ms: list[float] = []
+        # The gaps BETWEEN pictures, which is a different question from how
+        # long one took to draw. See `record_frame_shown`.
+        self._frame_intervals: list[float] = []
+        self._frame_shown_at: float | None = None
         # A seek collapsed because more were still arriving, and when the
         # last one did. See _seek_mp3.
         # The file chooser blocks for seconds, so it is opened one frame
@@ -4382,6 +4391,61 @@ class PlayingScreen:
         if len(self._frame_ms) > self.FRAME_SAMPLES:
             del self._frame_ms[:len(self._frame_ms) - self.FRAME_SAMPLES]
 
+    def record_frame_shown(self, at_s: float) -> None:
+        """When a picture actually went out, so the GAPS can be counted.
+
+        `record_frame_ms` answers "can this machine keep up" -- it times the
+        work before the wait that pads a frame out. It cannot answer the
+        other question the player asks, which is whether the pictures arrive
+        EVENLY: a machine drawing in 4 ms of a 16.7 ms budget can still hand
+        them over raggedly, and a note that hesitates and then jumps double
+        reads as juddering however much headroom the log reports.
+
+        **What this cannot see, and it matters.** Without vsync `flip`
+        returns before the panel has shown anything, so a frame the DISPLAY
+        held twice is invisible from in here. This measures the app's own
+        cadence and nothing else -- which is exactly what makes it worth
+        having: a ragged cadence is the app's fault and fixable without
+        vsync, while a dead-even one says the remaining judder is the beat
+        between the app's timer and a panel running at some other rate, and
+        only vsync answers that.
+
+        A gap across a pause is not an interval, so the timestamp is dropped
+        whenever the song is not running rather than charged to the next
+        frame as a stutter that never happened.
+        """
+        previous = self._frame_shown_at
+        self._frame_shown_at = at_s if self._playing else None
+        if previous is None or not self._playing:
+            return
+        self._frame_intervals.append((at_s - previous) * 1000.0)
+        if len(self._frame_intervals) > self.FRAME_SAMPLES:
+            del self._frame_intervals[
+                :len(self._frame_intervals) - self.FRAME_SAMPLES]
+
+    def _interval_line(self, fh) -> None:
+        """How evenly the pictures arrived, against their own usual gap.
+
+        Measured against the MEDIAN interval rather than against 16.7 ms: the
+        question is whether this app hands frames over at a steady rate, and
+        a steady 17.4 ms is a different report from an average 16.7 that is
+        really 16.7 and 33.3 in turns. The second one is what juddering is.
+        """
+        intervals = sorted(self._frame_intervals)
+        if not intervals:
+            fh.write("frame_interval_ms\t(nothing measured)\n")
+            return
+        median = intervals[len(intervals) // 2]
+        uneven = sum(1 for ms in intervals
+                     if abs(ms - median) > median * FRAME_EVEN_FRACTION)
+        fh.write(f"frame_interval_median\t{median:.2f}\n")
+        fh.write(f"frame_interval_best_tenth\t{intervals[int(len(intervals) * 0.1)]:.2f}\n")
+        fh.write(f"frame_interval_worst_tenth\t{intervals[int(len(intervals) * 0.9)]:.2f}\n")
+        fh.write(f"frames_per_second_shown\t{1000.0 / median:.1f}\n"
+                 if median > 0 else "frames_per_second_shown\t(no gap)\n")
+        fh.write(f"frames_uneven_percent\t{100 * uneven / len(intervals):.0f}\n")
+        fh.write(f"frame_intervals_measured\t{len(intervals)}\n")
+
     def _frame_line(self, fh) -> None:
         """Median and worst-tenth frame, and how many frames were late.
 
@@ -4685,6 +4749,7 @@ class PlayingScreen:
         fh.write(f"mp3_leads\t{'yes' if self._mp3_led else 'no'}\n")
         fh.write(f"seeks\t{self._seeks}\n")
         self._frame_line(fh)
+        self._interval_line(fh)
         if self._clock_real_ms > 0:
             ratio = self._clock_song_ms / self._clock_real_ms
             fh.write(f"clock_real_s\t{self._clock_real_ms / 1000:.1f}\n")

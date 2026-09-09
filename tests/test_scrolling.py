@@ -4307,3 +4307,134 @@ class TestThePlayheadOnPaper:
         """
         from pickhero.ui.colors import DARK_THEME
         assert DARK_THEME.tab_playhead != DARK_THEME.hit_zone
+
+
+class TestHowEvenlyThePicturesArrived:
+    """A machine with headroom can still hand its frames over raggedly.
+
+    The player's faster laptop draws in 4.2 ms of a 16.7 ms budget, delivers
+    a clean 60, and still reports juddering at a scroll speed whose smear is
+    3.9 px -- a number that does not move with the speed cannot be the smear.
+    So the gap BETWEEN pictures is measured, against its own usual value:
+    a steady 17.4 ms is a different report from an average 16.7 that is
+    really 16.7 and 33.3 in turns, and only the second one judders.
+
+    What this cannot see is written into `record_frame_shown`: without vsync
+    a frame the PANEL held twice never reaches the app. That is the point of
+    splitting the two -- ragged here is the app's fault and fixable without
+    vsync, even here says the fault is the panel and only vsync answers it.
+    """
+
+    def _screen(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._playing = True
+        return screen
+
+    def _show(self, screen, gaps_ms, start=100.0):
+        """Hand the screen a run of pictures with the given gaps."""
+        at = start
+        screen.record_frame_shown(at)
+        for gap in gaps_ms:
+            at += gap / 1000.0
+            screen.record_frame_shown(at)
+
+    def _log(self, screen):
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen._matcher = NoteMatcher(_make_timeline())
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        return buffer.getvalue()
+
+    def test_a_steady_hand_reports_no_unevenness(self):
+        screen = self._screen()
+        self._show(screen, [16.67] * 200)
+        text = self._log(screen)
+        assert "frames_uneven_percent\t0" in text
+        assert "frames_per_second_shown\t60.0" in text
+
+    def test_every_other_frame_held_twice_is_caught(self):
+        """The shape juddering actually has: the same average, half of it late."""
+        screen = self._screen()
+        self._show(screen, [16.67, 33.3] * 100)
+        text = self._log(screen)
+        # Half the gaps are double the other half, so whichever is the median
+        # the other half is well outside a fifth of it.
+        percent = int(text.split("frames_uneven_percent\t")[1].split("\n")[0])
+        assert 45 <= percent <= 55, text
+
+    def test_the_average_alone_would_have_missed_it(self):
+        """Both runs average 25 ms a frame; only one of them judders."""
+        steady, ragged = self._screen(), self._screen()
+        self._show(steady, [25.0] * 200)
+        self._show(ragged, [16.67, 33.3] * 100)
+        assert "frames_uneven_percent\t0" in self._log(steady)
+        assert "frames_uneven_percent\t0" not in self._log(ragged)
+
+    def test_a_pause_is_not_a_stutter(self):
+        """Stopping and starting again must not invent a frame that hung.
+
+        A gap spanning a pause is minutes long and would otherwise be
+        charged to the first frame after it.
+        """
+        screen = self._screen()
+        screen.record_frame_shown(100.0)
+        screen._playing = False
+        screen.record_frame_shown(160.0)          # a minute on a menu
+        screen._playing = True
+        screen.record_frame_shown(160.5)          # the first frame back
+        screen.record_frame_shown(160.5 + 0.01667)
+        assert len(screen._frame_intervals) == 1
+        assert screen._frame_intervals[0] == pytest.approx(16.67, abs=0.1)
+
+    def test_intervals_are_only_counted_while_the_song_runs(self):
+        screen = self._screen()
+        screen._playing = False
+        self._show(screen, [16.67] * 10)
+        assert screen._frame_intervals == []
+
+    def test_a_long_session_does_not_become_a_leak(self):
+        screen = self._screen()
+        self._show(screen, [16.67] * (PlayingScreen.FRAME_SAMPLES + 500))
+        assert len(screen._frame_intervals) == PlayingScreen.FRAME_SAMPLES
+
+    def test_nothing_measured_says_so_rather_than_dividing_by_zero(self):
+        assert "frame_interval_ms\t(nothing measured)" in self._log(self._screen())
+
+    def test_the_loop_actually_hands_the_moment_over(self, monkeypatch):
+        """The measurement is worthless if nothing calls it.
+
+        Everything above drives `record_frame_shown` by hand, which would
+        pass just as happily on a build where App.run never calls it -- the
+        way a whole feature ships doing nothing. So the real loop is run for
+        a few frames.
+        """
+        import pygame
+        from pickhero.ui.app import App
+
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        application = App(Config())
+        screen = self._screen()
+        application._playing_screen = screen
+
+        frames = []
+        real_flip = pygame.display.flip
+
+        def counting_flip(*args, **kwargs):
+            frames.append(1)
+            if len(frames) >= 5:
+                application._running = False
+            return real_flip(*args, **kwargs)
+
+        monkeypatch.setattr(pygame.display, "flip", counting_flip)
+        application.run()
+
+        # Five pictures make four gaps, one per frame, all forward in time.
+        # Deliberately NOT asserted: how long they were. A test box is a
+        # shared machine building fonts and a song list on its first frames,
+        # and pinning a wall-clock number here would fail for reasons that
+        # have nothing to do with whether the loop hands the moment over --
+        # which is the whole and only claim being made.
+        assert len(screen._frame_intervals) == 4
+        assert all(ms > 0 for ms in screen._frame_intervals)
