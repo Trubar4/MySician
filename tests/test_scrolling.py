@@ -4835,3 +4835,63 @@ class TestWaitingForTheFrameExactly:
     def test_the_footer_names_it(self):
         screen = PlayingScreen(_make_timeline(), config=Config())
         assert "Shift+Z: steady pace" in " ".join(screen._footer_lines())
+
+
+class TestTheSettingUnderTestIsOnScreen:
+    """Three runs in a row were taken to measure a switch that turned out not
+    to have been on: `vsync asked` when it had been refused, `vsync off` when
+    the player believed it on, and `pacing system timer` after being asked to
+    turn the pacing on. Every time, the only places the state appeared were a
+    status note that expires and a log written afterwards.
+
+    A setting under test has to be readable at the moment the player decides
+    to press D, in the same words the log will use.
+    """
+
+    def _screen(self):
+        return PlayingScreen(_make_timeline(), config=Config())
+
+    def test_it_says_what_is_timing_the_pictures(self):
+        screen = self._screen()
+        assert "Pace: system timer" in screen._pacing_line()
+        screen._config.display.steady_pace = True
+        assert "Pace: steady" in screen._pacing_line()
+
+    def test_it_says_what_the_display_did_with_vsync(self):
+        screen = self._screen()
+        screen._config.display.vsync_outcome = "refused"
+        assert "vsync: refused" in screen._pacing_line()
+
+    def test_it_names_the_keys_that_change_them(self):
+        """A state nobody can change from where they read it is a state
+        nobody changes."""
+        line = self._screen()._pacing_line()
+        assert "(Z)" in line and "(Shift+Z)" in line
+
+    def test_the_words_are_the_ones_the_log_uses(self):
+        """A screen that says one thing and a file that says another is how
+        three measurements went to the wrong conclusion."""
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = self._screen()
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._config.display.steady_pace = True
+        screen._config.display.vsync_outcome = "on, window fixed size"
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        log = buffer.getvalue()
+        assert "pacing\tsteady" in log
+        assert "vsync\ton, window fixed size" in log
+        line = screen._pacing_line()
+        assert "steady" in line and "on, window fixed size" in line
+
+    def test_an_experiment_that_is_running_stands_out(self):
+        """An experiment the player has forgotten is running is worse than
+        no experiment."""
+        screen = self._screen()
+        assert not screen._pacing_unusual()
+        screen._config.display.steady_pace = True
+        assert screen._pacing_unusual()
+        screen._config.display.steady_pace = False
+        screen._config.display.vsync = True
+        assert screen._pacing_unusual()

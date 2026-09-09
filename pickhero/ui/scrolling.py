@@ -3751,6 +3751,18 @@ class PlayingScreen:
         surface.blit(speed_surf, (left, info_y))
         info_y += 16
 
+        # How the pictures are being timed, on screen while it is true.
+        # Three runs in a row were taken to measure a switch that turned out
+        # not to have been on, because the only place the setting showed was
+        # a status note that expires and a log written afterwards. A setting
+        # under test has to be readable at the moment the player decides to
+        # press D.
+        pace_surf = hint_font.render(self._pacing_line(), True,
+                                     t.hud_accent if self._pacing_unusual()
+                                     else t.hud_text)
+        surface.blit(pace_surf, (left, info_y))
+        info_y += 16
+
         # Sitting in a hole with nothing to play looks exactly like a picture
         # that has stopped, and the key that jumps over it is one nobody finds
         # by pressing things. Silent whenever there IS something to play, so
@@ -6224,6 +6236,27 @@ class PlayingScreen:
         self._config.save()
         self._say("Vsync on — the panel sets the pace (Z)" if dc.vsync
                   else "Vsync off — a software timer sets the pace (Z)")
+
+    def _pacing_line(self) -> str:
+        """What is timing the pictures, in the words the run log uses.
+
+        The same two words as `pacing` and `vsync` in the log, deliberately:
+        a screen that says one thing and a file that says another is how
+        three measurements were taken of a switch nobody had turned on.
+        """
+        dc = self._config.display
+        pace = "steady" if dc.steady_pace else "system timer"
+        return (f"Pace: {pace} (Shift+Z)   |   vsync: {dc.vsync_outcome} (Z)")
+
+    def _pacing_unusual(self) -> bool:
+        """Whether either setting is away from its default, so it stands out.
+
+        The default is the thing that has been measured for weeks; anything
+        else is an experiment running, and an experiment the player has
+        forgotten is running is worse than no experiment.
+        """
+        dc = self._config.display
+        return bool(dc.steady_pace or dc.vsync)
 
     def _toggle_steady_pace(self) -> None:
         """Wait for each frame precisely, or let the system time it.

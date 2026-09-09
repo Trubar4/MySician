@@ -2069,6 +2069,20 @@ it. The run log names the pacing (`steady` / `system timer`) beside the vsync ou
   replacing `time.perf_counter` for the process, which stopped the spin from ever reaching its due time and hung the suite. A real busy
   wait cannot be tested by freezing time, and it does not need to be: the loop is two lines and the arithmetic is all of it.
 
+**And then the third run came back measuring nothing again.** `pacing   system timer` — the switch had not been pressed, exactly as the
+run before it said `vsync off` when the player believed it on, and the one before that said `asked` when it had been refused. Three
+measurements of three settings, none of which were on.
+
+**That is not the player forgetting. It is where the state was kept.** The only places a setting showed itself were a status note that
+expires after eight seconds and a log written after the fact — so at the moment of pressing `D`, nothing on screen said what was being
+measured. The HUD carries it now, beside the scroll line, in **the same words the log uses**: `Pace: steady (Shift+Z) | vsync: refused
+(Z)`. Highlighted whenever either is away from its default, because an experiment the player has forgotten is running is worse than no
+experiment.
+
+**The rule this session keeps re-learning, now in its general form: a setting under test must be readable at the moment the measurement is
+taken, in the same words the measurement will use.** Everything else — a toast, a keypress, a memory — is a way of finding out afterwards
+that the run was worthless.
+
 **Which leaves the jitter, and it is bigger than this chapter first allowed.** The reasoning that dismissed it was that `_playback_ms`
 advances by real elapsed time, so a frame computed 3 ms early is early rather than wrong. True, and beside the point: the frame is SHOWN
 on the panel's fixed grid, and one that is ready 3 ms late misses its refresh and is held for two. At 15 to 18 % of frames outside a fifth
