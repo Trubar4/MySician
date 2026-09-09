@@ -1915,22 +1915,35 @@ second) does not. `App.run` calls `set_mode` without `vsync=1` and pads with a S
 against each other on top of it. Nothing here has established WHAT costs the 19.7 ms, and the draw path has changed by 338 lines since the
 build these logs came from — chord cards are drawn every frame now — so **the first move is a fresh `D` on the current build, not a guess.**
 
-**Measured AGAIN on the current build, and the frame finding above did not survive it.** Four more run logs, same player, same
-1920x1080 at 60 Hz:
+**Measured AGAIN, and it turned out to be a second COMPUTER rather than a second build.** The player has two laptops and the run logs
+came from both, which is what made the numbers look like a fix:
 
-| | old build `400ac736` | current build |
+| | NB1 — Intel Graphics, 1920x1080 at 60 Hz | NB2 — Iris Xe, 1920x1200 at **59 Hz** |
 |---|---|---|
 | `frame_ms_median` | 19.9 / 19.6 ms | **4.2 / 4.3 ms** |
-| `frame_ms_worst_tenth` | 22.6 / 22.2 ms | 7.9 / 8.5 ms |
 | `frames_over_budget_percent` | 95 / 93 | **0** |
-| frames per second delivered | not derivable | **2497 frames in 41.3 s = 60.5** |
+| delivered | ~51 a second | 2497 frames in 41.3 s = **60.5** |
 
-**Do not read that as "the drawing got four times faster".** The two sets differ in something else as well, and it is the more likely
-cause: the 19.7 ms runs had the guitar actually being heard through the Focusrite (`level_under_gate_percent 28`), while every 4.2 ms
-run came from a headset microphone with the gate closed on everything (`level_under_gate_percent 100`, `hits 0`, `misses 593`).
-`_draw_notes` asks the matcher for a verdict and the feedback for a colour on every visible note, every frame. **A frame with nothing to
-judge is not the frame this app is played in**, so the cheap number may simply be the expensive path never running. Nothing here
-establishes which, and the way to find out is one run with the interface plugged in and the guitar audible.
+A first reading blamed the cheap frames on the microphone — every NB2 run had the gate closed on everything, and `_draw_notes` asks the
+matcher for a verdict per visible note per frame. **That was wrong**, and it is written down because it was nearly built on: the two sets
+differ by MACHINE, and Iris Xe against the older integrated part is the whole four-fold difference. There is nothing to find in the audio
+path.
+
+**And the machine that makes its frames still has the complaint**, which is the finding that matters. NB2 draws in 4.2 ms of a 16.7 ms
+budget, delivers a clean 60, and the player still reports smearing at 1.0x and slight juddering at 0.6x. So making the drawing cheaper
+cannot be the answer: on Thunder's lead at 1.0x the smear is 7.5 px at NB1's 51 frames and 6.5 px at 60 — **the entire prize for fixing
+the frame cost is 13 %**, and NB2 has already collected it.
+
+**What is left on NB2 is not the frame COST but the frame PACING, and it has a number.** The panel runs at **59 Hz** and `App.run` pads
+with `clock.tick(60)`, a software timer against a display nobody asked. Sixty offered into fifty-nine taken is a beat of one a second:
+about once a second a frame is shown twice and the note holds still and then jumps double. That is judder, not blur, it is independent
+of the scroll speed — which is exactly why the player still sees it at 0.6x, where the smear is only 3.9 px — and it is a different
+fault from everything above.
+
+**It is not measured yet, and the app cannot currently see it.** `record_frame_ms` times the WORK before `clock.tick` pads it, so it
+answers "can the machine keep up" and says nothing about when the frames were actually shown. The interval BETWEEN presentations is the
+number that would show a beat, and it is not recorded. Measure that before touching `vsync=1` -- which needs `SCALED` in pygame 2, is a
+real change to how the window resizes, and may not be honoured by the driver at all.
 
 **And the speed knob cannot separate the notes, which is the question the player asked.** Measured on Thunder's lead at his window:
 
