@@ -4950,3 +4950,24 @@ class TestAMeasurementIsAboutOneThing:
         buffer = io.StringIO()
         screen._write_run_log(buffer)
         assert "frame_intervals_measured\t29" in buffer.getvalue()
+
+
+class TestAHighlightHasToDifferFromWhatItStandsOut_From:
+    """"Was bedeutet wird farbig? Die Zeile ist immer blau im HUD."
+
+    The pacing line was highlighted in `hud_accent`, which is the colour half
+    the panel around it is already drawn in -- so "highlighted" and "normal"
+    were the same blue at a glance, and a state that was meant to be obvious
+    was invisible. The player asked what it was supposed to mean and answered
+    the question in the same sentence.
+    """
+
+    def _distance(self, a, b):
+        return sum(abs(x - y) for x, y in zip(a, b))
+
+    def test_it_differs_from_the_plain_text_and_from_the_accent(self):
+        from pickhero.ui.colors import DARK_THEME, LIGHT_THEME
+        for name, theme in (("dark", DARK_THEME), ("light", LIGHT_THEME)):
+            highlight = theme.feedback_streak
+            assert self._distance(highlight, theme.hud_text) > 150, name
+            assert self._distance(highlight, theme.hud_accent) > 150, name

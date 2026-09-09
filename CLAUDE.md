@@ -2077,7 +2077,9 @@ measurements of three settings, none of which were on.
 expires after eight seconds and a log written after the fact — so at the moment of pressing `D`, nothing on screen said what was being
 measured. The HUD carries it now, beside the scroll line, in **the same words the log uses**: `Pace: steady (Shift+Z) | vsync: refused
 (Z)`. Highlighted whenever either is away from its default, because an experiment the player has forgotten is running is worse than no
-experiment.
+experiment — and highlighted in the STREAK colour, not the HUD accent, which is what half that panel is already drawn in: the first
+version made "highlighted" and "normal" the same blue, and the player asked what it was supposed to mean and answered the question in the
+same sentence.
 
 **The rule this session keeps re-learning, now in its general form: a setting under test must be readable at the moment the measurement is
 taken, in the same words the measurement will use.** Everything else — a toast, a keypress, a memory — is a way of finding out afterwards
@@ -2095,6 +2097,34 @@ how long that mode has actually been running, which makes a log taken two second
 the same field, so the two were true at different moments — the outcome VARIES between attempts on this machine, granted once and refused
 the next time. That is worth knowing on its own and it is another reason the history has to be dropped at the switch: a run that spanned
 both is not a reading of either.
+
+## The Pacing Is As Good As It Gets And It Was Never The Answer
+
+Three runs on one machine in three minutes, same song, the only difference the switch:
+
+| | vsync | pacing | `frames_uneven_percent` | interval band | `frame_ms_median` |
+|---|---|---|---|---|---|
+| 16:11 | on, window resizable | system timer | 4 | 15.29–18.17 | 10.3 |
+| **16:12** | on, window resizable | **steady** | **2** | **15.67–17.71** | 13.2 |
+| 16:14 | on, window resizable | system timer | 4 | 15.40–18.03 | 13.1 |
+
+**Both things work, and both are now measured rather than argued.** vsync — granted this time, refused the last — took the unevenness from
+the 12 to 18 % this machine used to show down to 4. Steady pacing halves that again to 2, and narrows the jitter band to 2.0 ms against
+2.9. Reproducible, in the right direction, outside the run-to-run spread: this is a finding by the rule two chapters up.
+
+**And the player still reports the same thing he reported on the first day: "Es ruckelt leicht und ist immer sehr schlierig. Geholfen hat
+nichts."**
+
+That is the result, and it is worth more than the improvement. The frame pacing is now within 2 ms of perfect and the complaint has not
+moved, **so the complaint was never the frame pacing.** What is left is `px/s ÷ refresh` — 7.2 px at Bon Jovi's 432 px/s — which is a
+property of a sample-and-hold display and which no amount of timing touches. The two days of vsync, jitter, spin-waiting and log fields
+bought a real 8-fold improvement in a number that was not the one the player was looking at.
+
+**So this line of work is finished, and it is finished by evidence rather than by exhaustion.** The switches stay, measured and documented,
+because they are right and cost nothing. The judder hunt stops. What is left for a fast passage is the thing the player confirmed on day
+one and that this file has now recommended three times: `Shift+T`, a page that does not move.
+
+
 
 **Which leaves the jitter, and it is bigger than this chapter first allowed.** The reasoning that dismissed it was that `_playback_ms`
 advances by real elapsed time, so a frame computed 3 ms early is early rather than wrong. True, and beside the point: the frame is SHOWN

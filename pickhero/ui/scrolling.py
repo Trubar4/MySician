@@ -3758,8 +3758,8 @@ class PlayingScreen:
         # under test has to be readable at the moment the player decides to
         # press D.
         pace_surf = hint_font.render(self._pacing_line(), True,
-                                     t.hud_accent if self._pacing_unusual()
-                                     else t.hud_text)
+                                     t.feedback_streak
+                                     if self._pacing_unusual() else t.hud_text)
         surface.blit(pace_surf, (left, info_y))
         info_y += 16
 
@@ -6275,6 +6275,11 @@ class PlayingScreen:
         The default is the thing that has been measured for weeks; anything
         else is an experiment running, and an experiment the player has
         forgotten is running is worse than no experiment.
+
+        Drawn in the streak colour rather than the HUD accent, because the
+        accent IS the colour most of this panel is already in -- the player
+        asked what "highlighted" was supposed to mean and answered the
+        question at the same time: "the line is always blue".
         """
         dc = self._config.display
         return bool(dc.steady_pace or dc.vsync)
