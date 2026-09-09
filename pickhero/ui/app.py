@@ -35,6 +35,12 @@ class App:
         self._progress = ProgressTracker()
         self._running = False
         self._state = "menu"
+        # What the window was last OPENED with, and whether the driver said
+        # no. Kept as the request rather than the result, so a refusal does
+        # not have the loop trying again sixty times a second.
+        self._vsync_asked = False
+        self._vsync_refused = False
+        self._surface: pygame.Surface | None = None
         self._load_error: str | None = None
         self._current_song_path: Path | None = None
         self._current_track_index: int | None = None
@@ -75,10 +81,7 @@ class App:
         pygame.key.set_repeat(300, 40)  # 300ms delay, then repeat every 40ms
         pygame.display.set_caption("PickHero")
 
-        dc = self._config.display
-        surface = pygame.display.set_mode(
-            (dc.width, dc.height), pygame.RESIZABLE
-        )
+        surface = self._apply_display_mode()
         clock = pygame.time.Clock()
 
         songs_dir = Path(self._config.songs_dir)
@@ -87,8 +90,21 @@ class App:
         self._running = True
 
         while self._running:
+            # The window is reopened only when the ANSWER changes, not every
+            # frame: set_mode tears the surface down and builds it again, and
+            # doing that sixty times a second is a different bug.
+            if self._config.display.vsync != self._vsync_asked:
+                surface = self._apply_display_mode()
+                # Asked for and not given is a thing the player has to hear.
+                # Silence here reads as "it worked", and the next run log
+                # would then be compared against a mode that never happened.
+                if self._vsync_refused and self._playing_screen is not None:
+                    self._playing_screen._say(
+                        "Vsync: the graphics driver refused it — the "
+                        "software timer is still setting the pace")
             frame_started = time.perf_counter()
             self._process_events(surface)
+            surface = self._surface
             self._update()
             self._render(surface)
             pygame.display.flip()
@@ -138,6 +154,39 @@ class App:
         except Exception as exc:                    # noqa: BLE001
             print(f"Dashboard konnte nicht geschrieben werden: {exc}")
 
+    def _apply_display_mode(
+        self, size: tuple[int, int] | None = None
+    ) -> pygame.Surface:
+        """Open the window, with vsync when it is asked for and granted.
+
+        One door for every mode change -- opening, resizing, and the key --
+        because each of them can silently drop what the others set up.
+
+        vsync needs SCALED in pygame: the window then has a FIXED drawing
+        size and is letterboxed when it is dragged bigger, rather than the
+        lanes being laid out again for the new room. That is a real cost and
+        the reason this is a switch rather than the default. A driver may
+        also refuse the request outright, which raises here and is caught:
+        the window still has to open.
+        """
+        dc = self._config.display
+        wanted = size or (dc.width, dc.height)
+        self._vsync_asked = bool(dc.vsync)
+        if self._vsync_asked:
+            try:
+                self._surface = pygame.display.set_mode(
+                    wanted, pygame.RESIZABLE | pygame.SCALED, vsync=1)
+                self._vsync_refused = False
+                return self._surface
+            except pygame.error:
+                # Asked for and not given. Said out loud rather than left to
+                # be discovered in a run log that looks unchanged.
+                self._vsync_refused = True
+        else:
+            self._vsync_refused = False
+        self._surface = pygame.display.set_mode(wanted, pygame.RESIZABLE)
+        return self._surface
+
     def _process_events(self, surface: pygame.Surface) -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -145,9 +194,11 @@ class App:
                 return
 
             if event.type == pygame.VIDEORESIZE:
-                surface = pygame.display.set_mode(
-                    (event.w, event.h), pygame.RESIZABLE
-                )
+                # Through the one door, so a resize cannot quietly drop
+                # vsync -- and so the loop gets the new surface. Assigning
+                # to the local `surface` here changed nothing at all: the
+                # caller went on drawing to the one it already had.
+                self._apply_display_mode((event.w, event.h))
 
             if self._state == "menu":
                 self._handle_menu_event(event)

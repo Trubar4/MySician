@@ -1330,7 +1330,7 @@ class TestFooterCompleteness:
         "o": "I/O", "p": "P: toggle", "s": "Shift+S: sync point",
         "t": "T: theme", "u": "U: audio track",
         "v": "V: chords",
-        "w": "W: wait", "x": "X/C", "y": "Y: timing",
+        "w": "W: wait", "x": "X/C", "y": "Y: timing", "z": "Z: vsync",
         "COMMA": ",/.", "PERIOD": ",/.",
         "PLUS": "+/-", "EQUALS": "+/-", "MINUS": "+/-",
         "KP_PLUS": "+/-", "KP_MINUS": "+/-",
@@ -4552,3 +4552,108 @@ class TestThePageViewShowsTwoRows:
     def test_a_y_in_no_row_falls_back_to_the_first(self):
         """Rather than raising in the middle of a frame."""
         assert self._page(self._TOPS).system_index(0.9) == 0
+
+
+class TestHandingThePicturesToThePanel:
+    """The app delivers 60.0 a second into a panel Windows calls 59, so one
+    is periodically shown twice however even our own timing is -- and only
+    vsync ends that. It costs SCALED, which fixes the drawing size and
+    letterboxes on resize instead of relaying out, and a driver may refuse it
+    outright. Neither half can be argued from here, so it is a key.
+    """
+
+    def _app(self, monkeypatch):
+        import pygame
+        from pickhero.ui.app import App
+        application = App(Config())
+        calls = []
+
+        def fake_set_mode(size, flags=0, *args, **kwargs):
+            calls.append((size, flags, kwargs.get("vsync", 0)))
+            return pygame.Surface(size)
+
+        monkeypatch.setattr(pygame.display, "set_mode", fake_set_mode)
+        return application, calls
+
+    def test_off_by_default_it_opens_the_plain_window(self, monkeypatch):
+        import pygame
+        application, calls = self._app(monkeypatch)
+        application._apply_display_mode()
+        _, flags, vsync = calls[-1]
+        assert vsync == 0 and not flags & pygame.SCALED
+
+    def test_asked_for_it_asks_the_display_for_it(self, monkeypatch):
+        import pygame
+        application, calls = self._app(monkeypatch)
+        application._config.display.vsync = True
+        application._apply_display_mode()
+        _, flags, vsync = calls[-1]
+        assert vsync == 1 and flags & pygame.SCALED
+
+    def test_a_refusal_still_opens_a_window(self, monkeypatch):
+        """A driver may say no, and the app cannot end up with no window."""
+        import pygame
+        application, calls = self._app(monkeypatch)
+        application._config.display.vsync = True
+        real = pygame.display.set_mode
+
+        def refuse(size, flags=0, *args, **kwargs):
+            if kwargs.get("vsync"):
+                raise pygame.error("vsync not available")
+            return real(size, flags, *args, **kwargs)
+
+        monkeypatch.setattr(pygame.display, "set_mode", refuse)
+        assert application._apply_display_mode() is not None
+        assert application._vsync_refused
+
+    def test_a_resize_cannot_quietly_drop_it(self, monkeypatch):
+        """Every mode change goes through one door. The resize used to call
+        set_mode itself with the plain flags -- and assign the result to a
+        local nobody read, so the loop drew to the surface it already had."""
+        import pygame
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        application, calls = self._app(monkeypatch)
+        application._config.display.vsync = True
+        application._apply_display_mode()
+        # No screen is open: the resize is what is under test, and a menu
+        # would only add a second thing that can fail here.
+        application._state = "between screens"
+        pygame.event.post(pygame.event.Event(pygame.VIDEORESIZE, w=1400,
+                                             h=900, size=(1400, 900)))
+        application._process_events(pygame.display.get_surface())
+        size, flags, vsync = calls[-1]
+        assert size == (1400, 900) and vsync == 1 and flags & pygame.SCALED
+        # And the loop is handed the new surface rather than the old one.
+        assert application._surface is not None
+
+    def test_the_key_flips_it_and_keeps_it(self, monkeypatch):
+        import pygame
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        assert screen._config.display.vsync is False
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_z,
+                                               mod=0))
+        assert screen._config.display.vsync is True
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_z,
+                                               mod=0))
+        assert screen._config.display.vsync is False
+
+    def test_the_footer_names_it(self):
+        """A key that is bound and undocumented is a key nobody finds."""
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        assert "Z: vsync" in " ".join(screen._footer_lines())
+
+    def test_the_log_says_which_pacing_a_reading_came_from(self):
+        """Two logs differing in the one thing under test are worth nothing
+        if neither says which was which."""
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._matcher = NoteMatcher(_make_timeline())
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "vsync\toff" in buffer.getvalue()
+        screen._config.display.vsync = True
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "vsync\tasked" in buffer.getvalue()

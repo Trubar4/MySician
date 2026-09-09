@@ -2015,6 +2015,20 @@ which fixes a logical size and letterboxes on resize instead of relaying out, an
 **What vsync will NOT do, and the player should hear it before it is built: the smearing stays.** It is `px/s ÷ refresh` and no pacing
 touches it -- 6.5 px at 1.0x on this panel. Vsync is the fix for the juddering only.
 
+**Built as a switch on `Z`, not as a decision.** Both halves of the trade are real and neither can be argued from a keyboard: vsync ends
+the beat and the jitter together, and it costs `SCALED`, which fixes the drawing size so the window LETTERBOXES when it is dragged bigger
+instead of laying the lanes out again — and a driver may refuse the request outright, which raises and is caught, because the window still
+has to open. A refusal is said out loud: silence there reads as "it worked", and the next run log would be compared against a mode that
+never happened.
+
+- **The run log names the pacing** (`vsync   asked` / `off`). Two logs that differ in the one thing under test are worth nothing if
+  neither says which was which, and this session has already lost a day to exactly that.
+- **Every mode change goes through one door** (`_apply_display_mode`). The resize path called `set_mode` itself with the plain flags, so a
+  drag would silently have dropped vsync — and it assigned the result to a local nobody read, so the loop went on drawing to the surface
+  it already had. Both were there before this and both are gone with it.
+- **The window is reopened only when the ANSWER changes**, never per frame: `set_mode` tears the surface down and builds it again.
+
+
 **Measured in the two passages the player actually named, and they are two different faults after all** — at his window, over the solo of
 each song, counting only pairs on ONE string, where two heads can really collide:
 

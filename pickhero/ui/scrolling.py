@@ -1627,6 +1627,8 @@ class PlayingScreen:
             self._toggle_string(5)
         elif event.key == pygame.K_F6:
             self._toggle_string(6)
+        elif event.key == pygame.K_z:
+            self._toggle_vsync()
         elif event.key == pygame.K_e:
             self._skip_rest()
         elif event.key == pygame.K_v:
@@ -3392,7 +3394,7 @@ class PlayingScreen:
             "|  Shift+T: tab page view  "
             "|  E: skip a rest  |  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
-            "|  Y: timing report  |  D: run log  |  H: help"
+            "|  Y: timing report  |  D: run log  |  Z: vsync  |  H: help"
         )
         return transport, tools
 
@@ -4832,6 +4834,10 @@ class PlayingScreen:
         fh.write(f"seeks\t{self._seeks}\n")
         self._frame_line(fh)
         self._interval_line(fh)
+        # Which pacing this reading came from. Two logs that differ in the
+        # one thing being tested are worth nothing if neither says which was
+        # which -- and this session has already lost a day to exactly that.
+        fh.write(f"vsync\t{'asked' if self._config.display.vsync else 'off'}\n")
         if self._clock_real_ms > 0:
             ratio = self._clock_song_ms / self._clock_real_ms
             fh.write(f"clock_real_s\t{self._clock_real_ms / 1000:.1f}\n")
@@ -6187,6 +6193,27 @@ class PlayingScreen:
         self._config.save()
         self._describe_sync(replaced=dropped)
         self._mp3_loaded_build = None          # the plan changed
+
+    def _toggle_vsync(self) -> None:
+        """Hand the pictures to the panel on its beat, or back to the timer.
+
+        A switch and not a decision, because the measurement says both
+        halves are real and neither is free. The app hands over 60.0 pictures
+        a second into a panel Windows calls 59, so one is periodically shown
+        twice whatever we do about our own timing -- and vsync is the only
+        thing that ends that. It also costs: SCALED fixes the drawing size,
+        so the window letterboxes instead of relaying out, and a driver may
+        refuse it altogether.
+
+        Which of those matters more cannot be argued from here. It is one
+        key so the same passage can be played both ways with `D` pressed
+        after each, and the run log says which mode a reading came from.
+        """
+        dc = self._config.display
+        dc.vsync = not dc.vsync
+        self._config.save()
+        self._say("Vsync on — the panel sets the pace (Z)" if dc.vsync
+                  else "Vsync off — a software timer sets the pace (Z)")
 
     def _beyond_sync_line(self) -> str:
         """Said only where the playhead is outside the measured span.

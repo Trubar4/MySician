@@ -91,6 +91,19 @@ class DisplayConfig:
     height: int = 720
     visible_beats: int = 16
     hit_zone_fraction: float = 0.20
+    # Hand each picture to the panel on ITS beat instead of on a software
+    # timer. Measured before this existed: the app delivers 60.0 pictures a
+    # second into a display Windows calls 59, which shows one of them twice
+    # at some interval nothing in the app can see -- and its own cadence
+    # jitters by 3 ms on a 16.7 ms frame, 15 to 18 % of frames on one laptop
+    # and 6 to 10 % on the other whose panel really is 60.
+    #
+    # Off by default and a KEY rather than a setting buried in a menu,
+    # because it cannot be argued: pygame needs SCALED for it, which fixes a
+    # logical size and letterboxes on resize instead of relaying out, and a
+    # driver may refuse the request outright. It has to be tried on the
+    # machine, both ways, with the run log open.
+    vsync: bool = False
 
 
 @dataclass
