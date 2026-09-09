@@ -1957,6 +1957,39 @@ be honoured by the driver at all. That is why it is not being tried first.
 real `App.run` loop for five frames and counts four gaps, because a measurement nothing calls is a feature that ships doing nothing --
 which this project has shipped before.
 
+**Measured on NB2, three runs, and they agree to a decimal:**
+
+| | Thunder | Thunder | Bon Jovi |
+|---|---|---|---|
+| `frame_ms_median` | 8.3 | 9.3 | 9.4 |
+| `frames_over_budget_percent` | 1 | 3 | 1 |
+| `frame_interval_median` | 16.67 | 16.68 | 16.63 |
+| `frame_interval_best_tenth` | 13.75 | 13.59 | 13.68 |
+| `frame_interval_worst_tenth` | 19.48 | 19.90 | 19.59 |
+| `frames_per_second_shown` | **60.0** | **59.9** | **60.1** |
+| `frames_uneven_percent` | **15** | **18** | **15** |
+
+**Nothing is being doubled inside the app.** A frame held twice would put the worst tenth near 33 ms; it is 19.5. What the spread shows is
+JITTER -- give or take 3 ms on a 16.7 ms frame, a sixth of it, on one frame in six. `clock.tick` sleeps for most of its wait and Windows
+cannot sleep to the millisecond, so this is the software timer's own resolution and nothing else's.
+
+**How much that is worth in pixels, honestly: not much.** Because `_playback_ms` advances by REAL elapsed time, a frame computed 3 ms early
+is not WRONG, it is simply early -- the note is drawn where it truly is. At 384 px/s the step wobbles between 5.2 and 7.7 px against a
+nominal 6.5. That is a shimmer, not the hesitate-and-jump the player describes.
+
+**The hitch has to come from the other side, and it is the one number the app cannot see: 60.0 handed to a panel Windows calls 59.** The
+app offers sixty pictures a second into a display that shows fifty-nine, so one picture is periodically shown twice however even the app
+is. How often depends on a digit Windows rounds off -- an exact 59 Hz beats once a second, 59.94 once every seventeen -- and neither the
+run log nor `pygame` can tell them apart, because `flip` returns before the panel has done anything.
+
+**Which makes `vsync=1` the only remaining lever, and it answers both at once**: a blocked flip takes the panel's cadence, so the jitter
+goes and the beat cannot exist. It also MEASURES the panel: with vsync on, `frames_per_second_shown` is the display's true rate, 59 or
+59.94, and the question above answers itself. The cost is real and has to be tried rather than argued: `vsync` needs `SCALED` in pygame 2,
+which fixes a logical size and letterboxes on resize instead of relaying out, and a driver may ignore the request entirely.
+
+**What vsync will NOT do, and the player should hear it before it is built: the smearing stays.** It is `px/s ÷ refresh` and no pacing
+touches it -- 6.5 px at 1.0x on this panel. Vsync is the fix for the juddering only.
+
 **And the speed knob cannot separate the notes, which is the question the player asked.** Measured on Thunder's lead at his window:
 
 | | look-ahead | head | px/s | smear at 60 Hz | pairs on one string closer than a head | tightest | tightest / head |
