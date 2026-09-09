@@ -2083,6 +2083,19 @@ experiment.
 taken, in the same words the measurement will use.** Everything else — a toast, a keypress, a memory — is a way of finding out afterwards
 that the run was worthless.
 
+**And with the state finally on screen, the player flipped the switch several times, saw no difference, and was right about the number and
+wrong about the world.** `_frame_ms` and `_frame_intervals` are rolling windows of the last `FRAME_SAMPLES` frames — a minute at 60 Hz.
+Flipping the pacing inside that minute leaves the log averaging half of one mode with half of the other, **so the number could not have
+shown a difference however large the difference was**. Three runs were spent on this before the buffers themselves were looked at.
+
+Changing either setting throws the frame history away now, so a log is always about one mode — and `frame_intervals_measured` doubles as
+how long that mode has actually been running, which makes a log taken two seconds after the switch say so itself.
+
+**His screenshot and his log also disagreed outright**: the HUD read `vsync: on, window resizable` while the log said `refused`. They read
+the same field, so the two were true at different moments — the outcome VARIES between attempts on this machine, granted once and refused
+the next time. That is worth knowing on its own and it is another reason the history has to be dropped at the switch: a run that spanned
+both is not a reading of either.
+
 **Which leaves the jitter, and it is bigger than this chapter first allowed.** The reasoning that dismissed it was that `_playback_ms`
 advances by real elapsed time, so a frame computed 3 ms early is early rather than wrong. True, and beside the point: the frame is SHOWN
 on the panel's fixed grid, and one that is ready 3 ms late misses its refresh and is held for two. At 15 to 18 % of frames outside a fifth

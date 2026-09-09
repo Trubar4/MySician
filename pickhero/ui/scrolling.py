@@ -4495,6 +4495,26 @@ class PlayingScreen:
         if len(self._frame_ms) > self.FRAME_SAMPLES:
             del self._frame_ms[:len(self._frame_ms) - self.FRAME_SAMPLES]
 
+    def forget_frame_measurements(self) -> None:
+        """Throw away the frame history, because it is about to stop being
+        about one thing.
+
+        `_frame_ms` and `_frame_intervals` are rolling windows of the last
+        FRAME_SAMPLES frames -- a minute at 60 Hz. Flipping the pacing in
+        the middle of that leaves the log averaging a minute that was half
+        one mode and half the other, which cannot show a difference however
+        large the difference is. The player pressed the switch repeatedly,
+        read "no difference", and was right about the number and wrong about
+        the world: the number could not have said anything else.
+
+        So a change of pacing starts the measurement again, and
+        `frame_intervals_measured` then doubles as how long the mode being
+        reported has actually been running.
+        """
+        self._frame_ms.clear()
+        self._frame_intervals.clear()
+        self._frame_shown_at = None
+
     def record_frame_shown(self, at_s: float) -> None:
         """When a picture actually went out, so the GAPS can be counted.
 
@@ -6234,6 +6254,7 @@ class PlayingScreen:
         dc = self._config.display
         dc.vsync = not dc.vsync
         self._config.save()
+        self.forget_frame_measurements()
         self._say("Vsync on — the panel sets the pace (Z)" if dc.vsync
                   else "Vsync off — a software timer sets the pace (Z)")
 
@@ -6273,6 +6294,7 @@ class PlayingScreen:
         dc = self._config.display
         dc.steady_pace = not dc.steady_pace
         self._config.save()
+        self.forget_frame_measurements()
         self._say("Steady pace on — each frame is timed exactly (Shift+Z)"
                   if dc.steady_pace
                   else "Steady pace off — the system times the frames (Shift+Z)")

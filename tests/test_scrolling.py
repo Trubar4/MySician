@@ -4895,3 +4895,58 @@ class TestTheSettingUnderTestIsOnScreen:
         screen._config.display.steady_pace = False
         screen._config.display.vsync = True
         assert screen._pacing_unusual()
+
+
+class TestAMeasurementIsAboutOneThing:
+    """"Habe mehrfach hin und hergeschaltet. Ich sehe keinen Unterschied."
+
+    Right about the number and wrong about the world. `_frame_ms` and
+    `_frame_intervals` are rolling windows of the last minute of frames, so
+    flipping the pacing inside that minute leaves the log averaging half of
+    one mode with half of the other -- which cannot show a difference
+    however large the difference is. Three runs were spent on this before
+    the buffers were looked at.
+    """
+
+    def _screen(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._playing = True
+        for i in range(200):
+            screen.record_frame_ms(8.0)
+            screen.record_frame_shown(100.0 + i * 0.0167)
+        return screen
+
+    def test_flipping_the_pacing_starts_the_measurement_again(self):
+        screen = self._screen()
+        assert screen._frame_intervals and screen._frame_ms
+        screen._toggle_steady_pace()
+        assert screen._frame_intervals == [] and screen._frame_ms == []
+
+    def test_and_so_does_flipping_vsync(self):
+        screen = self._screen()
+        screen._toggle_vsync()
+        assert screen._frame_intervals == [] and screen._frame_ms == []
+
+    def test_the_gap_across_the_change_is_not_counted_either(self):
+        """The first frame after the switch has no predecessor any more, so
+        the time spent in the keypress is not charged to it as a stutter."""
+        screen = self._screen()
+        screen._toggle_steady_pace()
+        screen.record_frame_shown(500.0)
+        assert screen._frame_intervals == []
+        screen.record_frame_shown(500.0167)
+        assert len(screen._frame_intervals) == 1
+
+    def test_how_long_the_reported_mode_ran_is_readable(self):
+        """frames_measured doubles as "how much of this mode is in here",
+        so a log taken two seconds after the switch says so itself."""
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = self._screen()
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._toggle_steady_pace()
+        for i in range(30):
+            screen.record_frame_shown(200.0 + i * 0.0167)
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "frame_intervals_measured\t29" in buffer.getvalue()
