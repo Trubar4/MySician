@@ -4272,3 +4272,38 @@ class TestAFretNumberIsNotBuriedByTheNextNote:
         first_mark = kinds.index("mark")
         assert last_head < first_mark, (
             "a note head was drawn after a fret number, so it covered it")
+
+
+class TestThePlayheadOnPaper:
+    """"Der Balken ist nicht gut sichtbar."
+
+    The tab page is PAPER -- an engraver draws black ink and nothing else,
+    so the page carries a near-white ground of its own. The playhead was
+    borrowing the scrolling board's hit-zone colour, which is white because
+    the board is dark. White on paper is the one line on that screen that
+    cannot be found.
+
+    Asserted as contrast against the paper rather than as a named colour, so
+    a later theme cannot quietly reintroduce the fault by picking a pale
+    accent.
+    """
+
+    def _distance(self, colour, ground):
+        return sum(abs(a - b) for a, b in zip(colour, ground))
+
+    def test_it_reads_against_the_paper_in_every_theme(self):
+        from pickhero.ui.colors import DARK_THEME, LIGHT_THEME
+        from pickhero.ui.tab_view import PAPER
+        for name, theme in (("dark", DARK_THEME), ("light", LIGHT_THEME)):
+            assert self._distance(theme.tab_playhead, PAPER) > 200, (
+                f"the {name} theme's playhead vanishes into the page")
+
+    def test_it_is_not_the_hit_zone_borrowed(self):
+        """The two live on different grounds, so one colour cannot serve both.
+
+        The dark theme's board wants white and its page cannot take it; the
+        rule is that they are separate settings, not that they differ by
+        accident.
+        """
+        from pickhero.ui.colors import DARK_THEME
+        assert DARK_THEME.tab_playhead != DARK_THEME.hit_zone

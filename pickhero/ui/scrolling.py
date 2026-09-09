@@ -1928,8 +1928,13 @@ class PlayingScreen:
             reach = max(9.0, (band_bottom - band_top) * 0.6)
             y0 = int(band_top - reach) - offset + top_margin
             y1 = int(band_bottom + reach) - offset + top_margin
+            # Its own colour, not the hit zone's. The scrolling board is
+            # dark and takes a white line; this page is PAPER, and white on
+            # paper is the one thing on screen that cannot be found -- which
+            # is what the player reported. Blue reads on the paper and on
+            # the dark surround either side of the page.
             if y1 > top_margin and y0 < top_margin + view_h:
-                pygame.draw.line(surface, t.hit_zone,
+                pygame.draw.line(surface, t.tab_playhead,
                                  (x, max(top_margin, y0)),
                                  (x, min(top_margin + view_h, y1)), 2)
 

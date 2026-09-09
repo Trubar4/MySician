@@ -1915,8 +1915,49 @@ second) does not. `App.run` calls `set_mode` without `vsync=1` and pads with a S
 against each other on top of it. Nothing here has established WHAT costs the 19.7 ms, and the draw path has changed by 338 lines since the
 build these logs came from — chord cards are drawn every frame now — so **the first move is a fresh `D` on the current build, not a guess.**
 
-**And the direction that costs nothing is still untried:** `Shift+T` HOLDS the page and moves only at a line break, so a page view has no
-persistence blur by construction and no crowding either. The player has still not been asked to try it on a fast song.
+**Measured AGAIN on the current build, and the frame finding above did not survive it.** Four more run logs, same player, same
+1920x1080 at 60 Hz:
+
+| | old build `400ac736` | current build |
+|---|---|---|
+| `frame_ms_median` | 19.9 / 19.6 ms | **4.2 / 4.3 ms** |
+| `frame_ms_worst_tenth` | 22.6 / 22.2 ms | 7.9 / 8.5 ms |
+| `frames_over_budget_percent` | 95 / 93 | **0** |
+| frames per second delivered | not derivable | **2497 frames in 41.3 s = 60.5** |
+
+**Do not read that as "the drawing got four times faster".** The two sets differ in something else as well, and it is the more likely
+cause: the 19.7 ms runs had the guitar actually being heard through the Focusrite (`level_under_gate_percent 28`), while every 4.2 ms
+run came from a headset microphone with the gate closed on everything (`level_under_gate_percent 100`, `hits 0`, `misses 593`).
+`_draw_notes` asks the matcher for a verdict and the feedback for a colour on every visible note, every frame. **A frame with nothing to
+judge is not the frame this app is played in**, so the cheap number may simply be the expensive path never running. Nothing here
+establishes which, and the way to find out is one run with the interface plugged in and the guitar audible.
+
+**And the speed knob cannot separate the notes, which is the question the player asked.** Measured on Thunder's lead at his window:
+
+| | look-ahead | head | px/s | smear at 60 Hz | pairs on one string closer than a head | tightest | tightest / head |
+|---|---|---|---|---|---|---|---|
+| `-` 0.6x | 7.7 s | 32 px | 197 | 3.3 px | **47** | 12.6 px | **39 %** |
+| 1.0x | 4.6 s | 53 px | 328 | 5.5 px | **47** | 21.0 px | **40 %** |
+| `+` 1.5x | 3.1 s | 53 px | 492 | 8.2 px | 32 | 31.5 px | 59 % |
+
+**`-` does not reduce the crowding at all** — 47 pairs at 0.6x and 47 at 1.0x — because the head is sized WITH the speed: slower notes
+are smaller notes, and the ratio that decides whether two heads touch barely moves. `+` does separate them, at 59 % against 40 %, and
+pays for it in smear: 8.2 px against 5.5. **Separation and smear are the same number in pixels**, which is why the player reports
+1.5x as readable and worse at the same time, and it is the top of this chapter restated in measurements.
+
+**So the one lever nobody has pulled is the head width at a FIXED speed.** They are locked together today
+(`window = spacing x usable_width / per_head`), so there is no way to ask for "the notes I have now, narrower". At 1.0x a 32 px head
+would give 21.0 / 32 = 66 % separation — better than `+` delivers — at 328 px/s instead of 492, which is a third less smear. It is not
+free: `MIN_FRET_DIGIT_PX` is 34 px because that is what a two-digit fret needs, so this buys reading room by spending digit size, and
+the player has to say which he would rather have.
+
+**The player confirmed `Shift+T` on the fast passage: no problem at all, because the page does not move.** Its playhead was borrowing
+the board's white hit-zone colour onto a paper ground and could not be found; it has its own colour now, asserted as contrast against
+`PAPER` rather than as a named blue.
+
+**And the direction that costs nothing has now been tried, and it works:** `Shift+T` HOLDS the page and moves only at a line break, so a
+page view has no persistence blur by construction and no crowding either. On the passage the player could not read while it scrolled,
+the page view was fine. That is the answer for a fast song until the frame question above is settled.
 
 ## Slowing The Tab Down Did Nothing At All
 
