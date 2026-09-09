@@ -4177,3 +4177,98 @@ class TestOneShortPressIsOneStep:
             self._press(screen, pygame.K_MINUS)
         moved = before - screen._config.scroll_speed_factor
         assert moved <= 0.1 + 1e-9
+
+
+class TestAFretNumberIsNotBuriedByTheNextNote:
+    """"Ich kann schnelle Toene kaum lesen."
+
+    The pacing is set by the tenth percentile of the onset gaps, so a tenth
+    of every song is by construction tighter than the head it is given. In a
+    fast run the next onset on the same string therefore lands INSIDE the
+    head already drawn -- and the loop drew head-then-number for each note in
+    turn, so the following head covered the number already painted. Measured
+    on the songs the player named, at his 1920x1080: Thunder's "Love Walked
+    In" part-covered 41 fret numbers, 22 of them inside one five second run.
+    That is not blur; the number is behind the next note.
+
+    Asserted as the ORDER the surface is painted in rather than by counting
+    pixels, because a covered number and its neighbour's number sit in the
+    same few pixels -- a pixel count cannot say which of the two it found,
+    and passed on the broken code for exactly that reason. Heads first and
+    numbers second is the property; it changes no geometry and costs no
+    look-ahead.
+    """
+
+    _ROOMY_MS = 200.0
+    _BURST_MS = 60.0
+    _BURST = 6
+
+    class _Recorder:
+        """A surface that remembers what was blitted onto it, in order."""
+
+        def __init__(self, real):
+            self._real = real
+            self.blits = []
+
+        def blit(self, source, dest, *args, **kwargs):
+            self.blits.append(source)
+            return self._real.blit(source, dest, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def _song(self):
+        """A roomy song with one fast run in it, the run under a tenth of it.
+
+        Under a tenth on purpose: the run must NOT be what sets the pacing,
+        because a song whose tenth percentile IS the run gets heads sized for
+        it and never overlaps. The fault lives in the tail the percentile
+        deliberately ignores, which is where a solo lives.
+        """
+        notes, t = [], 0.0
+        for _ in range(100):
+            notes.append(NoteEvent(timestamp_ms=t, duration_ms=80.0,
+                                   midi_note=40, string=6, fret=12))
+            t += self._ROOMY_MS
+        burst_at = t
+        for i in range(self._BURST):
+            notes.append(NoteEvent(timestamp_ms=burst_at + i * self._BURST_MS,
+                                   duration_ms=40.0, midi_note=40,
+                                   string=6, fret=12))
+        end = burst_at + self._BURST * self._BURST_MS + self._ROOMY_MS
+        measures = [MeasureInfo(index=b, start_ms=b * 2000.0,
+                                end_ms=(b + 1) * 2000.0)
+                    for b in range(int(end // 2000) + 2)]
+        return Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=measures), burst_at
+
+    def _draw(self):
+        pygame.init()
+        song, burst_at = self._song()
+        screen = PlayingScreen(song, config=Config())
+        surface = pygame.display.set_mode((1920, 1080))
+        screen.render(surface)                      # sizes the heads
+        layout = screen._layout(surface)
+        # Far enough ahead of the hit line that the whole run is on screen.
+        screen._playback_ms = burst_at - 500.0
+        scrolling._HEAD_CACHE.clear()
+        recorder = self._Recorder(surface)
+        screen._draw_notes(recorder, layout)
+        heads = {id(s) for s in scrolling._HEAD_CACHE.values()}
+        return screen, layout, recorder, heads, burst_at
+
+    def test_the_run_really_does_crowd_its_heads(self):
+        """The premise, so the test below cannot pass by drawing nothing."""
+        screen, layout, _, _, _ = self._draw()
+        head = screen._head_px if screen._head_px is not None else layout.note_h
+        assert self._BURST_MS * layout.pixels_per_ms < head, (
+            "the run was not tight enough to overlap; the test proves nothing")
+
+    def test_no_head_lands_on_a_number_already_drawn(self):
+        _, _, recorder, heads, _ = self._draw()
+        kinds = ["head" if id(s) in heads else "mark" for s in recorder.blits]
+        assert "head" in kinds and "mark" in kinds, "nothing was drawn"
+        last_head = len(kinds) - 1 - kinds[::-1].index("head")
+        first_mark = kinds.index("mark")
+        assert last_head < first_mark, (
+            "a note head was drawn after a fret number, so it covered it")

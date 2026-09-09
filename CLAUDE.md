@@ -1835,10 +1835,10 @@ press lands at the far end. The 95 % the player saw is the one frame that render
   unfixed code, which is the only thing that makes it worth having.
 - The scroll factor gets the same gate. It is the same fault, and two answers to one question is how this project has been bitten before.
 
-## Two Complaints Pulling On One Knob — NOT DIAGNOSED, NOT BUILT
+## Two Complaints Pulling On One Knob — And It Was Never One Fault
 
 "Bei schnelleren Songs wie I'd die for you oder Love walked in wird das Bild irgendwie unscharf und ich kann Töne kaum erkennen." Written
-down before anything is built, because the first measurement says the obvious fix is the one that makes the OTHER complaint worse.
+down before anything was built, because the first measurement said the obvious fix is the one that makes the OTHER complaint worse.
 
 **The same player, the same week, asked for opposite things from `+`/`-`:**
 
@@ -1850,45 +1850,73 @@ down before anything is built, because the first measurement says the obvious fi
 | `+` (2.5x) | 683 | **11.4 px** | furthest apart |
 
 So "the notes are too dense" wants `+` and "the picture is unsharp" wants `-`. **The knob cannot answer both**, and any fix that only moves
-it is trading one report for the other. That is the finding; everything below is a candidate.
+it trades one report for the other. That finding stands. What did not stand is the assumption underneath it: that one cause was behind one
+sentence.
 
-**The arithmetic that makes "unsharp" a real thing and not an impression.** A 60 Hz screen HOLDS each frame for 16.7 ms while the eye tracks
-the moving note smoothly, so an object at `v` px/s is smeared across `v / 60` pixels. It is a property of sample-and-hold displays and no
-amount of drawing quality touches it. Measured on the songs to hand at 1.0x:
+**Then the player's own machine was measured**, which is what this chapter had been waiting for. Two run logs (`D`), one per song, from
+build `400ac736` on 1920x1080 at 60 Hz on Intel integrated graphics:
 
-| | px/s | smear | share of a fret digit |
-|---|---|---|---|
-| Kid Rock rhythm | 128 | 2.1 px | 6 % |
-| Papa Roach | 191 | 3.2 px | 10 % |
-| Kid Rock lead | 275 | 4.6 px | 15 % |
-| **Bon Jovi, "I'd Die For You"** | **432** | **7.2 px** | **23 %** |
+| | Thunder, "Love Walked In" | Bon Jovi, "I'd Die For You" |
+|---|---|---|
+| `frame_ms_median` | **19.9 ms** | **19.6 ms** |
+| `frame_ms_worst_tenth` | 22.6 ms | 22.2 ms |
+| `frames_over_budget_percent` | **95** | **93** |
+| `clock_ratio` | 1.0000 | 1.0000 |
+| `frames_measured` | 3600 | 3600 |
 
-The song the player named is the fastest scroller measured here, at normal speed, and it smears nearly a quarter of the digit's width. That
-is consistent with the report and does not prove it: **nothing has been reproduced or measured on the player's machine**, and "Love Walked
-In" is not in `songs/` at all.
+**The machine draws about 51 frames a second, not 60**, on both songs alike, and `record_frame_ms` samples the WORK before `clock.tick(60)`
+pads it — so this is the drawing, not the wait. `clock_ratio 1.0000` says the app's clock is exact to four places, which rules out the other
+half of this project's oldest lesson: nothing is being lost, everything is being drawn slowly. On an unsynced 60 Hz panel roughly one frame
+in five is then shown twice, at no fixed interval, and the smear per shown frame is `v / 51` rather than `v / 60`.
 
-**Three candidates, fixed in three different places. None is established.**
+**That is a constant, and a constant cannot pick out two songs.** So the tracks the logs actually name — `notes_written` 1819 is Thunder's
+lead, 746 is Bon Jovi's distortion guitar — were measured against a song the player has never once complained about:
 
-- **Persistence blur** (the table above). Only two levers exist: fewer px/s, or more frames a second. It is the one candidate whose size is
-  already known.
-- **Frame pacing.** `App.run` uses `clock.tick(60)` — a SOFTWARE timer — and `set_mode` is called without `vsync=1`. An unsynced 60 against a
-  60 Hz panel beats slowly in and out of phase, which reads as juddering rather than as smooth motion, and is a different complaint wearing
-  the same word. `vsync=1` is one argument; whether it helps has not been tried, and it can fail to be honoured at all.
-- **Pixel quantisation.** A note's x is a float landing on whole pixels, so each frame rounds by up to half a pixel. At 4-7 px of travel a
-  frame that is a tenth of the motion, arriving as jitter on top of the smear.
+| track | px/s | head | smear at 51 Hz | onsets in its densest 2 s |
+|---|---|---|---|---|
+| Kid Rock lead — **never complained about** | **384** | 58 px | 7.5 px | 10 |
+| **Thunder lead** | **384** | 63 px | 7.5 px | 20 |
+| **Bon Jovi distortion** | 432 | 42 px | 8.5 px | 18 |
 
-**And the promising direction is neither of those, which is why this is written down rather than fixed in a hurry:**
+**Kid Rock's lead and Thunder's lead scroll at the identical 384 px/s**, with the identical smear, on the identical machine. One reads, one
+does not. Persistence blur is real and is measured above, but it is NOT what selects these two songs, and the table this chapter opened with
+would have sent the next session to the scroll speed for the rest of the week.
 
-- **The lane's vertical space is free.** "A Note Head Is Squeezed Sideways, Not Downwards" measured 53 % of the lane height unused on a dense
-  song. Look-ahead is bought and sold in WIDTH only, so a taller, bolder head costs nothing at all and is the one improvement that does not
-  come out of the other complaint's budget.
-- **`Shift+T` does not scroll.** `_tab_scroll_for` HOLDS the page while the current system is on screen and moves only at a line break, so a
-  page view has no persistence blur by construction. It may simply be the right view for a fast song, and nobody has asked the player to try
-  it for this.
+**What separates them is what happens on ONE STRING**, which is the only place two heads can actually collide — a head is never taller than
+its lane, so notes on different strings cannot touch however busy the screen looks:
 
-**What the next session needs before building anything:** the two `.gp` files (they are not here), and the player's `frame_ms_median` /
-`frames_over_budget_percent` / `clock_ratio` from a run log of one of them — because a machine dropping frames and a machine smearing them
-look identical on screen and are fixed in different places, which is this project's oldest lesson.
+| track | pairs on one string | closer than a head | the worst one | fret numbers part-covered |
+|---|---|---|---|---|
+| **Thunder lead** | 1813 | 47 (2.6 %) | **24.6 px on a 63 px head** | **41 — and 22 of them inside five seconds from 3:52** |
+| Bon Jovi distortion | 740 | 3 (0.4 %) | 32.7 px on a 42 px head | **0** |
+| Kid Rock lead | 484 | 20 (4.1 %) | 51.4 px on a 58 px head | 5 |
+
+**The count does not discriminate — Kid Rock crowds its heads MORE often than Thunder does.** The severity does: Thunder's worst pair overlaps
+by 61 % of a head where Kid Rock's overlaps by 11 %, and Thunder puts 22 of them in one run. And the Thunder log stops at
+`reached_ms 229084`, three seconds before that run begins.
+
+**So one sentence was two faults, and only one of them is the one that was fixed here:**
+
+- **The fret number was behind the next note.** `_draw_notes` drew head-then-number for each note in turn, so the following head landed on the
+  number already painted. In a fast run on one string that is every number but the last. Heads are drawn in one pass and numbers in a second
+  now — no geometry changed, no look-ahead was spent, and the `+`/`-` trade at the top of this chapter is untouched. It is asserted as the
+  ORDER the surface is painted in: a pixel count cannot say whether the white it found belongs to the covered number or to the neighbour
+  sitting in the same few pixels, and a first version of the test passed on the broken code for exactly that reason.
+- **The pacing ignores its own tail on purpose.** `_spacing_percentile(10.0)` means a tenth of every song is by construction tighter than the
+  head it is given. That is the right call for the look-ahead — a couple of freak-close notes must not set the pacing for everything else —
+  but it means the fault above lives in the tail the percentile deliberately ignores, which is precisely where a solo lives.
+- **Bon Jovi is NOT this fault.** Zero of its numbers were covered. It is the fastest scroller measured on this machine and it carries the
+  smallest head — 432 px/s on a 42 px head whose two-digit number is 40 px wide — so its number is both the smallest and the fastest-moving
+  in the collection. That one is the frame rate, and the frame rate is not fixed yet.
+
+**What is still open, and it is the bigger of the two.** 19.7 ms a frame is the shared cause behind both songs and every other one; it simply
+only becomes visible when the music asks for about ten notes a second, which is what both named songs do and what Kid Rock's lead (five a
+second) does not. `App.run` calls `set_mode` without `vsync=1` and pads with a SOFTWARE `clock.tick(60)`, so the panel and the app beat
+against each other on top of it. Nothing here has established WHAT costs the 19.7 ms, and the draw path has changed by 338 lines since the
+build these logs came from — chord cards are drawn every frame now — so **the first move is a fresh `D` on the current build, not a guess.**
+
+**And the direction that costs nothing is still untried:** `Shift+T` HOLDS the page and moves only at a line break, so a page view has no
+persistence blur by construction and no crowding either. The player has still not been asked to try it on a fast song.
 
 ## Slowing The Tab Down Did Nothing At All
 

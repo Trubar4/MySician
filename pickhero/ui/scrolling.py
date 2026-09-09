@@ -3100,6 +3100,14 @@ class PlayingScreen:
         neighbour_gap = self._neighbour_gaps(notes)
         next_on_string = self._next_on_string(notes)
 
+        # Every head first, every marking second. A fast run puts the next
+        # onset closer than a head is wide, and one loop drawing head-then-
+        # number per note let the following head land on top of the number
+        # that was already there -- so in exactly the passage the player has
+        # to read fastest, every fret number but the last was half covered.
+        # Two passes cost one list and change no geometry at all.
+        marks: list[tuple] = []
+
         for note in notes:
             # Difficulty filter: skip notes that fail
             if not self._note_passes_filter(note):
@@ -3214,10 +3222,16 @@ class PlayingScreen:
             draw_h = max(1, int(2 * half_h))
             surface.blit(_head_surface(draw_w, draw_h, color, t.note_border),
                          (int(x), int(cy - half_h)))
+            marks.append((note, x, cy, head, radius, half_h, capsule_w,
+                          base_color, past_hit_zone))
 
-            # Technique marks go OVER the head. They live inside the note now
-            # rather than arcing out of the lane, so drawing them underneath
-            # would simply hide them behind the note they describe.
+        # Technique marks and the fret number go OVER every head, not only
+        # over their own. They live inside the note rather than arcing out of
+        # the lane, so drawing them underneath would hide them behind the
+        # note they describe -- and drawing them before the NEXT note's head
+        # hid them just as surely.
+        for (note, x, cy, head, radius, half_h, capsule_w,
+             base_color, past_hit_zone) in marks:
             following = None
             target_x = None
             if (note.slide_to_next or note.hammer_to_next
