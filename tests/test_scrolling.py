@@ -4711,3 +4711,127 @@ class TestHandingThePicturesToThePanel:
         buffer = io.StringIO()
         screen._write_run_log(buffer)
         assert "vsync\ton, window fixed size" in buffer.getvalue()
+
+
+class TestWaitingForTheFrameExactly:
+    """vsync is refused on this player's machines, so the jitter it would
+    have cured has to be reached without the driver. Measured: gaps of 13.8
+    to 19.5 ms against a 16.7 ms frame, 15 to 18 % of them more than a fifth
+    from the middle. A frame ready late misses its refresh and is held for
+    two, which is judder and not blur.
+
+    The decision is tested and the busy wait is not. A first attempt tested
+    the whole thing by replacing `time.perf_counter` for the process, which
+    stopped the spin from ever reaching its due time and hung the suite --
+    a real busy wait cannot be tested by freezing time.
+    """
+
+    class _Clock:
+        def __init__(self):
+            self.ticks = []
+
+        def tick(self, fps):
+            self.ticks.append(fps)
+
+    def _app(self):
+        from pickhero.ui.app import App
+        return App(Config()), self._Clock()
+
+    def test_off_it_leaves_the_timing_to_the_system(self):
+        application, clock = self._app()
+        application._wait_for_next_frame(clock)
+        assert clock.ticks == [60]
+        assert application._next_frame_at is None
+
+    def test_the_first_frame_has_nothing_to_wait_for(self):
+        application, _ = self._app()
+        due, nap = application._frame_plan(100.0)
+        assert due is None and nap == 0.0
+        assert application._next_frame_at == pytest.approx(
+            100.0 + application.FRAME_S)
+
+    def test_it_sleeps_all_but_the_last_stretch(self):
+        """The spin is what costs, so it covers only what a system timer
+        gets wrong -- the rest of the wait is spent asleep."""
+        application, _ = self._app()
+        application._next_frame_at = 100.0 + application.FRAME_S
+        due, nap = application._frame_plan(100.001)
+        assert due == pytest.approx(100.0 + application.FRAME_S)
+        assert nap == pytest.approx(
+            application.FRAME_S - 0.001 - application.SPIN_S)
+
+    def test_a_frame_that_is_nearly_due_is_all_spin(self):
+        application, _ = self._app()
+        application._next_frame_at = 100.0
+        _, nap = application._frame_plan(100.0 - application.SPIN_S / 2)
+        assert nap == 0.0
+
+    def test_a_frame_already_late_waits_for_nothing(self):
+        application, _ = self._app()
+        application._next_frame_at = 100.0
+        due, nap = application._frame_plan(100.003)
+        assert due == 100.0 and nap == 0.0
+
+    def test_the_due_time_walks_by_whole_frames(self):
+        """From the frame that was DUE, not from now: a frame that ran long
+        is caught up instead of pushing every frame after it."""
+        application, clock = self._app()
+        application._config.display.steady_pace = True
+        due = 100.0
+        application._next_frame_at = due
+        application._frame_plan(due - 0.001)
+        # The plan does not move it; the wait does, once the moment passed.
+        assert application._next_frame_at == due
+
+    def test_a_real_stall_starts_over_instead_of_sprinting(self):
+        """A seek or an engraving loses half a second, and catching that up
+        would run the picture flat out until it had."""
+        application, _ = self._app()
+        application._next_frame_at = 100.0
+        due, nap = application._frame_plan(100.5)
+        assert due is None and nap == 0.0
+        assert application._next_frame_at == pytest.approx(
+            100.5 + application.FRAME_S)
+
+    def test_one_late_frame_is_not_a_stall(self):
+        """Three milliseconds late is the thing being fixed, not a reason to
+        give up on the schedule."""
+        application, _ = self._app()
+        application._next_frame_at = 100.0
+        due, _ = application._frame_plan(100.0 + application.FRAME_S * 3)
+        assert due == 100.0
+
+    def test_the_spin_is_short_enough_to_be_worth_paying(self):
+        """About a tenth of one core. The first estimate of this cost was
+        six times too high and nearly buried the idea."""
+        from pickhero.ui.app import App
+        assert App.SPIN_S / App.FRAME_S < 0.15
+
+    def test_shift_z_flips_it_and_plain_z_does_not(self):
+        import pygame
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_z, mod=pygame.KMOD_LSHIFT))
+        assert screen._config.display.steady_pace is True
+        assert screen._config.display.vsync is False
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_z, mod=0))
+        assert screen._config.display.steady_pace is True
+        assert screen._config.display.vsync is True
+
+    def test_the_log_says_which_pacing_a_reading_came_from(self):
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._matcher = NoteMatcher(_make_timeline())
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "pacing\tsystem timer" in buffer.getvalue()
+        screen._config.display.steady_pace = True
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "pacing\tsteady" in buffer.getvalue()
+
+    def test_the_footer_names_it(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        assert "Shift+Z: steady pace" in " ".join(screen._footer_lines())

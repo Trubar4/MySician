@@ -1628,7 +1628,10 @@ class PlayingScreen:
         elif event.key == pygame.K_F6:
             self._toggle_string(6)
         elif event.key == pygame.K_z:
-            self._toggle_vsync()
+            if shift_held(event):
+                self._toggle_steady_pace()
+            else:
+                self._toggle_vsync()
         elif event.key == pygame.K_e:
             self._skip_rest()
         elif event.key == pygame.K_v:
@@ -3398,7 +3401,8 @@ class PlayingScreen:
             "|  Shift+T: tab page view  "
             "|  E: skip a rest  |  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
-            "|  Y: timing report  |  D: run log  |  Z: vsync  |  H: help"
+            "|  Y: timing report  |  D: run log  "
+            "|  Z: vsync (Shift+Z: steady pace)  |  H: help"
         )
         return transport, tools
 
@@ -4842,6 +4846,8 @@ class PlayingScreen:
         # one thing being tested are worth nothing if neither says which was
         # which -- and this session has already lost a day to exactly that.
         fh.write(f"vsync\t{self._config.display.vsync_outcome}\n")
+        fh.write("pacing\t"
+                 f"{'steady' if self._config.display.steady_pace else 'system timer'}\n")
         if self._clock_real_ms > 0:
             ratio = self._clock_song_ms / self._clock_real_ms
             fh.write(f"clock_real_s\t{self._clock_real_ms / 1000:.1f}\n")
@@ -6218,6 +6224,25 @@ class PlayingScreen:
         self._config.save()
         self._say("Vsync on — the panel sets the pace (Z)" if dc.vsync
                   else "Vsync off — a software timer sets the pace (Z)")
+
+    def _toggle_steady_pace(self) -> None:
+        """Wait for each frame precisely, or let the system time it.
+
+        The other half of the pacing question, and the half that does not
+        need the driver's permission: vsync is refused on this player's
+        machines, and the jitter it would have cured is measurable without
+        it -- 13.8 to 19.5 ms gaps against a 16.7 ms frame.
+
+        A switch because it costs a busy wait. Only the last two
+        milliseconds of each frame, about a tenth of one core, but a laptop
+        on a battery is entitled to the choice.
+        """
+        dc = self._config.display
+        dc.steady_pace = not dc.steady_pace
+        self._config.save()
+        self._say("Steady pace on — each frame is timed exactly (Shift+Z)"
+                  if dc.steady_pace
+                  else "Steady pace off — the system times the frames (Shift+Z)")
 
     def _beyond_sync_line(self) -> str:
         """Said only where the playhead is outside the measured span.

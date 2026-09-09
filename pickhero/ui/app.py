@@ -41,6 +41,9 @@ class App:
         self._vsync_asked = False
         self._vsync_refused = False
         self._surface: pygame.Surface | None = None
+        # When the next picture is due, on the monotonic clock. See
+        # _wait_for_next_frame.
+        self._next_frame_at: float | None = None
         self._load_error: str | None = None
         self._current_song_path: Path | None = None
         self._current_track_index: int | None = None
@@ -122,7 +125,7 @@ class App:
                 # and before the pad, so the gap it yields spans one whole
                 # frame including the wait.
                 self._playing_screen.record_frame_shown(shown)
-            clock.tick(60)
+            self._wait_for_next_frame(clock)
 
         # Closing the window ends a session as surely as pressing ESC does.
         if self._playing_screen is not None:
@@ -169,6 +172,68 @@ class App:
         (pygame.RESIZABLE | pygame.SCALED, "on, window resizable"),
         (pygame.SCALED, "on, window fixed size"),
     )
+
+    # The frame this app aims for, and how much of the wait for it is spent
+    # spinning rather than asleep. Two milliseconds is enough to cover what
+    # a system timer gets wrong and is about a tenth of one core -- the cost
+    # is the spin, so it is kept as short as it can be and still work.
+    FRAME_S = 1.0 / 60.0
+    SPIN_S = 0.002
+
+    def _wait_for_next_frame(self, clock: "pygame.time.Clock") -> None:
+        """Hold until the next frame is due.
+
+        `clock.tick` asks the system to sleep for most of the wait, and
+        Windows cannot sleep to the millisecond: measured on the player's
+        machines the gaps between pictures run 13.8 to 19.5 ms against a
+        16.7 ms frame, with 15 to 18 % of them more than a fifth away from
+        the middle. A frame ready late misses its refresh and is held for
+        two, which is judder and not blur.
+
+        So the wait is taken in two parts when it is asked for: asleep until
+        two milliseconds before the frame is due, then spinning. The spin is
+        what costs, and it is kept to the last stretch where the sleep
+        cannot be trusted.
+
+        The due time walks forward by whole frames rather than from "now",
+        so a frame that runs long is caught up rather than pushing every
+        frame after it -- but a real STALL (a seek, an engraving) resets it,
+        because catching up a lost half-second would run the picture flat
+        out until it had.
+        """
+        if not self._config.display.steady_pace:
+            clock.tick(60)
+            return
+        due, nap = self._frame_plan(time.perf_counter())
+        if due is None:
+            clock.tick(60)
+            return
+        if nap > 0:
+            time.sleep(nap)
+        while time.perf_counter() < due:
+            pass
+        self._next_frame_at = due + self.FRAME_S
+
+    def _frame_plan(self, now: float) -> tuple[float | None, float]:
+        """(the moment to wait for, how much of that to spend asleep).
+
+        The arithmetic, kept apart from the waiting so it can be tested
+        without a clock. The first version of the test replaced
+        `time.perf_counter` for the whole process to get at this, which
+        stopped the spin from ever finishing and hung the suite -- a real
+        busy wait cannot be tested by freezing time, and it does not need
+        to be: the loop is two lines and the decision is all of it.
+
+        A due time of None means there is nothing to wait for: the first
+        frame, or one arriving after a genuine stall.
+        """
+        due = self._next_frame_at
+        if due is None or now - due > self.FRAME_S * 4:
+            # A seek or an engraving loses half a second, and catching that
+            # up would run the picture flat out until it had.
+            self._next_frame_at = now + self.FRAME_S
+            return None, 0.0
+        return due, max(0.0, due - now - self.SPIN_S)
 
     def _apply_display_mode(
         self, size: tuple[int, int] | None = None

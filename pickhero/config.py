@@ -109,6 +109,15 @@ class DisplayConfig:
     # and the whole reason it exists is that "asked" and "got" turned out to
     # be different things nobody could tell apart from a log.
     vsync_outcome: str = field(default="off", repr=False)
+    # Wait for the next frame precisely instead of asking the system to
+    # sleep for it. Windows cannot sleep to the millisecond, which is where
+    # the measured 3 ms of jitter comes from -- a frame ready late misses
+    # its refresh and is held for two, and that is judder rather than blur.
+    #
+    # Costs a busy wait, but only the last two milliseconds of each frame:
+    # about a tenth of one core, not the whole of it. The first estimate of
+    # this cost was six times too high and nearly buried the idea.
+    steady_pace: bool = False
 
 
 @dataclass

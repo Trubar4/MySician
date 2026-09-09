@@ -2029,7 +2029,7 @@ never happened.
 - **The window is reopened only when the ANSWER changes**, never per frame: `set_mode` tears the surface down and builds it again.
 - **And the driver said no.** On the player's machine `SCALED|RESIZABLE` with `vsync=1` raises, so the first shape of this reported vsync
   as impossible on a machine that had been asked exactly once. It asks down a ladder now — `SCALED|RESIZABLE`, then `SCALED` alone, which
-  costs a window that cannot be dragged bigger — because a no to one way of asking is not a no to vsync. **And then a run came back that says it WORKED**, on NB1, whose panel really is 60:
+  costs a window that cannot be dragged bigger — because a no to one way of asking is not a no to vsync. **A run came back that LOOKED as though it worked, and reading it that way was a mistake.** On NB1, whose panel really is 60:
 
 | | vsync off | vsync on |
 |---|---|---|
@@ -2040,15 +2040,34 @@ never happened.
 | `frame_ms_median` | 6.8 | **10.2** |
 | `frames_over_budget_percent` | 0 | **9** |
 
-The jitter band halved — 5.7 ms wide against 3.9 — which is the thing vsync is for. It is not free: the frame cost went from 6.8 ms to
-10.2 and a frame in eleven now runs past budget, which is `SCALED` rendering to a texture and scaling it. **And the player reports the
-driver still refusing and the juddering still there.** Both cannot be true of the same run, which is the whole lesson of this chapter
-arriving for the third time: the log said `asked`, so it could not tell a granted request from a refused one, and a reading was again
-being argued about instead of read.
+The jitter band looks halved — 5.7 ms wide against 3.9 — and the frame cost looks like `SCALED` paying for itself. **Then the player
+answered the one question that settles it: the window can still be dragged bigger while the refusal is on screen.** `SCALED` fixes the
+window; a resizable window means the fallback path ran and vsync was never on. So the whole table above is one noisy run against another
+— NB1's unevenness had already been measured at 6, 10 and 10 % before any of this, and 4 % sits inside that spread.
 
-**The log names the OUTCOME now** — `on, window resizable`, `on, window fixed size`, `refused`, `off` — filled in by the window that
+**That is the third over-reading in this session and the first one where the rule to prevent it was already written down, two chapters
+up, by the same hand: nothing inside the run-to-run spread is a finding.** It was applied to `frame_ms` and then not applied to
+`frames_uneven_percent` an hour later. The rule is not "be careful with frame times"; it is that a single run of anything on these
+machines carries a factor of two, and a change has to clear that before it is a change.
+
+**So vsync is refused on this hardware, by both ways of asking, and that line of attack is closed.**
+
+**The log names the OUTCOME anyway** — `on, window resizable`, `on, window fixed size`, `refused`, `off` — filled in by the window that
 actually opened. `vsync_outcome` is deliberately not stored in the settings file: it belongs to this run on this machine, and the reason
 it exists at all is that "asked" and "got" turned out to be different things nobody could tell apart afterwards.
+
+**Which leaves the jitter, and it can be had without the driver.** `clock.tick` asks the system to sleep for most of the wait and Windows
+cannot sleep to the millisecond — that is where the 3 ms comes from. `Shift+Z` waits in two parts instead: asleep until two milliseconds
+before the frame is due, then spinning. **The spin is the whole cost and it is a tenth of one core, not the whole of it** — the first
+estimate here said 60 % and nearly buried the idea, because it assumed the spin covered the entire wait rather than the last stretch of
+it. The run log names the pacing (`steady` / `system timer`) beside the vsync outcome.
+
+- **The due time walks forward by whole FRAMES, not from "now"**, so a frame that runs long is caught up rather than pushing every frame
+  after it. A real stall — a seek, an engraving — resets it instead, because catching up half a second would run the picture flat out
+  until it had.
+- **The decision is split from the waiting** (`_frame_plan`), and only the decision is tested. The first attempt tested the whole thing by
+  replacing `time.perf_counter` for the process, which stopped the spin from ever reaching its due time and hung the suite. A real busy
+  wait cannot be tested by freezing time, and it does not need to be: the loop is two lines and the arithmetic is all of it.
 
 **Which leaves the jitter, and it is bigger than this chapter first allowed.** The reasoning that dismissed it was that `_playback_ms`
 advances by real elapsed time, so a frame computed 3 ms early is early rather than wrong. True, and beside the point: the frame is SHOWN
