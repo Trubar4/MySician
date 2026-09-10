@@ -92,7 +92,7 @@ class TestTheSheetIsBuiltOnceNotEveryFrame:
         monkeypatch.setattr(
             scrolling.sheet, "lay_out",
             lambda *a, **k: (built.append(1), real(*a, **k))[1])
-        screen._size_sheet(+1)
+        screen._size_sheet(-1)
         screen.render(surface)
         assert len(built) == 1
 
@@ -246,10 +246,38 @@ class TestANoteKeepsTheColourItLitUpIn:
         self._judge(screen, song.notes[0], MatchType.MISS)
         screen._playback_ms = BAR_MS * 1.5      # long past the flash
         colours = self._colours(screen, _surface())
-        from pickhero.ui.colors import dimmed
-        miss = scrolling.get_theme().feedback_miss
-        assert dimmed(miss, 0.6) in colours or miss in colours, \
+        assert scrolling.get_theme().feedback_miss in colours, \
             "the mistake was already forgotten"
+
+    def test_and_nothing_on_the_sheet_is_dimmed(self):
+        """"Lass sie einfach in der Farbe der Bewertung stehen ohne
+        abdunkeln." The scrolling board dims a note it is done with, because
+        a note behind the hit line is in the way. A sheet has no such
+        moment, and greying half the row to say where the playhead is cost
+        the colours that mean something."""
+        from pickhero.ui.colors import dimmed
+        song = _song()
+        screen = _screen(song)
+        screen._matcher = NoteMatcher(song)
+        screen._audio_enabled = True
+        self._judge(screen, song.notes[0], MatchType.HIT)
+        screen._playback_ms = BAR_MS * 1.5
+        colours = self._colours(screen, _surface())
+        hit = scrolling.get_theme().feedback_hit
+        assert hit in colours
+        assert dimmed(hit, 0.6) not in colours, "it was dimmed after all"
+
+    def test_a_note_the_playhead_has_passed_keeps_its_string_colour(self):
+        """With nothing listening there is no verdict to show, and the
+        playhead already says where the music is."""
+        from pickhero.ui.colors import STRING_COLORS, dimmed
+        song = _song()
+        screen = _screen(song)
+        screen._audio_enabled = False
+        screen._playback_ms = BAR_MS * 0.9      # most of a row behind it
+        colours = self._colours(screen, _surface())
+        assert any(c in colours for c in STRING_COLORS.values())
+        assert not any(dimmed(c) in colours for c in STRING_COLORS.values())
 
     def test_a_note_not_yet_reached_is_still_its_own_string(self):
         song = _song()
@@ -258,6 +286,71 @@ class TestANoteKeepsTheColourItLitUpIn:
         colours = self._colours(screen, _surface())
         from pickhero.ui.colors import STRING_COLORS
         assert any(c in colours for c in STRING_COLORS.values())
+
+
+class TestTheBoardUnderTheNotes:
+    """"Die Saiten am Griffbrett sind nicht mehr sichtbar." They were not
+    drawn at all: the row was painted as six alternating bands, which is the
+    look the scrolling board threw out years ago -- "the banding is what made
+    the old display read as a table of rows instead of a fretboard"."""
+
+    def _lines(self, screen, surface, monkeypatch):
+        """Every line drawn, as (start, end, width)."""
+        drawn = []
+        real = pygame.draw.line
+
+        def watch(target, colour, start, end, width=1):
+            drawn.append((start, end, width))
+            return real(target, colour, start, end, width)
+
+        monkeypatch.setattr(pygame.draw, "line", watch)
+        screen.render(surface)
+        return drawn
+
+    def _rects(self, screen, surface, monkeypatch):
+        drawn = []
+        real = pygame.draw.rect
+
+        def watch(target, colour, rect, *a, **k):
+            drawn.append(pygame.Rect(rect))
+            return real(target, colour, rect, *a, **k)
+
+        monkeypatch.setattr(pygame.draw, "rect", watch)
+        screen.render(surface)
+        return drawn
+
+    def test_the_strings_are_actually_drawn(self, monkeypatch):
+        screen = _screen()
+        surface = _surface()
+        screen.render(surface)          # size the sheet before watching
+        flat = [(s, e, w) for s, e, w in
+                self._lines(screen, surface, monkeypatch) if s[1] == e[1]]
+        assert flat, "not one horizontal line reached the row"
+
+    def test_and_the_thickest_is_far_thicker_than_the_thinnest(self, monkeypatch):
+        screen = _screen()
+        surface = _surface()
+        screen.render(surface)
+        _, room = screen._tab_room(screen._layout(surface))
+        lane_h = sheet.LANE_HEADS * screen._sheet_head_px(room)
+        want = sheet.string_widths(lane_h)
+        widths = {w for s, e, w in self._lines(screen, surface, monkeypatch)
+                  if s[1] == e[1]}
+        assert want[5] in widths, f"no low E of {want[5]} px: {sorted(widths)}"
+        assert want[5] >= 3 * want[0]
+
+    def test_the_board_is_one_panel_not_six_bands(self, monkeypatch):
+        screen = _screen()
+        surface = _surface()
+        screen.render(surface)
+        _, room = screen._tab_room(screen._layout(surface))
+        head = screen._sheet_head_px(room)
+        band = int(6 * sheet.LANE_HEADS * head)
+        rects = self._rects(screen, surface, monkeypatch)
+        full = [r for r in rects if abs(r.height - band) <= 2]
+        sixth = [r for r in rects if abs(r.height - band / 6) <= 2]
+        assert full, "no fretboard panel was drawn"
+        assert not sixth, "the six-band look came back"
 
 
 class TestBarNumbersAndLines:
@@ -299,21 +392,24 @@ class TestPlusAndMinusTradeSizeForBars:
         rows = screen._sheet_layout(1200, screen._sheet_head_px(600))
         return rows[0].last_bar - rows[0].first_bar + 1
 
-    def test_bigger_notes_mean_fewer_bars_on_a_row(self):
+    def test_smaller_notes_mean_more_bars_on_a_row(self):
         screen = _screen(_song(bars=40, per_bar=8))
-        wide = self._bars_in_first_row(screen)
-        screen._sheet_zoom = len(sheet.ZOOM_STEPS) - 1
-        screen._sheet_key = ()
-        assert self._bars_in_first_row(screen) < wide
-
-    def test_and_smaller_ones_mean_more(self):
-        screen = _screen(_song(bars=40, per_bar=8))
-        screen._sheet_zoom = len(sheet.ZOOM_STEPS) - 1
-        screen._sheet_key = ()
-        tight = self._bars_in_first_row(screen)
+        biggest = self._bars_in_first_row(screen)
         screen._sheet_zoom = 0
         screen._sheet_key = ()
-        assert self._bars_in_first_row(screen) > tight
+        assert self._bars_in_first_row(screen) > biggest
+
+    def test_and_it_moves_at_every_step(self):
+        """A control with steps that change nothing is a control that was
+        pressed twice and reported broken."""
+        screen = _screen(_song(bars=60, per_bar=8))
+        seen = []
+        for zoom in range(len(sheet.ZOOM_STEPS)):
+            screen._sheet_zoom = zoom
+            screen._sheet_key = ()
+            seen.append(self._bars_in_first_row(screen))
+        assert seen == sorted(seen, reverse=True), seen
+        assert seen[0] > seen[-1]
 
     def test_the_key_is_the_scroll_speed_only_on_the_board(self):
         """+/- means three things in three views, and pressing it in the
@@ -321,15 +417,29 @@ class TestPlusAndMinusTradeSizeForBars:
         screen = _screen()
         before = screen._scroll_factor()
         screen.handle_event(pygame.event.Event(
-            pygame.KEYDOWN, key=pygame.K_PLUS, mod=0))
+            pygame.KEYDOWN, key=pygame.K_MINUS, mod=0))
         assert screen._scroll_factor() == before
-        assert screen._sheet_zoom == sheet.ZOOM_DEFAULT + 1
+        assert screen._sheet_zoom == sheet.ZOOM_DEFAULT - 1
 
     def test_the_end_of_the_range_is_named_not_silent(self):
         screen = _screen()
         screen._sheet_zoom = len(sheet.ZOOM_STEPS) - 1
         screen._size_sheet(+1)
         assert "as big as they go" in screen._status_note_text()
+
+    def test_the_view_opens_at_the_biggest_size_there_is(self):
+        """Bigger was built, tried and reported useless -- it buys nothing
+        the eye wanted and costs the row that shows what is coming."""
+        assert sheet.ZOOM_DEFAULT == len(sheet.ZOOM_STEPS) - 1
+        assert max(sheet.ZOOM_STEPS) == 1.0
+
+    def test_and_two_rows_still_fit_at_every_size(self):
+        screen = _screen()
+        for zoom in range(len(sheet.ZOOM_STEPS)):
+            screen._sheet_zoom = zoom
+            head = screen._sheet_head_px(780)
+            assert sheet.rows_that_fit(780, head) >= sheet.ROWS_SHOWN, \
+                f"step {zoom} lost the row that shows what is coming"
 
 
 class TestNothingHereGrowsWithTheSong:

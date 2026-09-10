@@ -233,3 +233,36 @@ class TestHowTheRowsStack:
         assert len(large) > len(small)
         assert (large[0].last_bar - large[0].first_bar
                 <= small[0].last_bar - small[0].first_bar)
+
+
+class TestTheStringsAreStringsNotLines:
+    """"Die Saiten am Griffbrett sind nicht mehr sichtbar. Die tiefe Saite
+    muss wesentlich dicker sein als die dünnste." Six lines of one weight
+    throw away the strongest cue a guitarist has for which lane is which --
+    the low E is a rope and the high e is a hair, and the eye knows it
+    before it has read a single fret number."""
+
+    def test_there_is_one_for_every_string(self):
+        from pickhero.ui.sheet import string_widths
+        assert len(string_widths(68.0)) == 6
+
+    def test_they_get_thicker_towards_the_low_e(self):
+        from pickhero.ui.sheet import string_widths
+        widths = string_widths(68.0)
+        assert widths == tuple(sorted(widths))
+
+    def test_and_the_low_e_is_unmistakably_thicker(self):
+        """Not a little thicker. The gauges of a light set run .010 to .046,
+        which is the ratio these are taken from."""
+        from pickhero.ui.sheet import string_widths
+        for lane in (40.0, 55.0, 68.0, 90.0):
+            widths = string_widths(lane)
+            assert widths[5] >= 3 * widths[0], f"lane {lane}: {widths}"
+
+    def test_none_of_them_vanishes_on_a_small_screen(self):
+        from pickhero.ui.sheet import string_widths
+        assert all(w >= 1 for w in string_widths(12.0))
+
+    def test_a_taller_lane_carries_thicker_strings(self):
+        from pickhero.ui.sheet import string_widths
+        assert string_widths(90.0)[5] > string_widths(45.0)[5]

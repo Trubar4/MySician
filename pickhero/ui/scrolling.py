@@ -2165,12 +2165,31 @@ class PlayingScreen:
         lanes_top = y + sheet.NUMBER_STRIP
         band_h = 6 * lane_h
 
-        for string in range(6):
-            pygame.draw.rect(
-                surface,
-                t.lane_bg_even if string % 2 == 0 else t.lane_bg_odd,
-                pygame.Rect(x0, int(lanes_top + string * lane_h),
-                            content_w, int(lane_h) + 1))
+        # ONE board, not six bands. Alternating lanes are what made the old
+        # scrolling display read as a table of rows rather than a fretboard,
+        # and drawing them here brought that fault back AND left the strings
+        # out altogether -- the player saw the bands and no strings at all.
+        pygame.draw.rect(surface, t.lane_bg_even,
+                         (x0, int(lanes_top), content_w, int(band_h)))
+        # The strings, down the middle of each lane, thicker AND warmer
+        # towards the low E -- the same two cues the scrolling board uses,
+        # and the reason a lane can be told apart without reading anything.
+        # A wound string is a dark core with a lighter highlight on top,
+        # which is what makes it read as round rather than as a thick line.
+        for i, width in enumerate(sheet.string_widths(lane_h)):
+            sy = int(lanes_top + (i + 0.5) * lane_h)
+            tint = WOUND_TINT if i >= 6 - WOUND_STRINGS else PLAIN_TINT
+            pygame.draw.line(surface, dimmed(tint, 0.45), (x0, sy),
+                             (x0 + content_w, sy), width)
+            pygame.draw.line(surface, tint, (x0, sy - max(0, width // 3)),
+                             (x0 + content_w, sy - max(0, width // 3)),
+                             max(1, width // 2))
+        # Edges deliberately darker than the strings: drawn in the string
+        # colour they read as a seventh string and a zeroth one.
+        edge = dimmed(t.lane_line, 0.45)
+        for edge_y in (lanes_top, lanes_top + band_h):
+            pygame.draw.line(surface, edge, (x0, int(edge_y)),
+                             (x0 + content_w, int(edge_y)), 2)
 
         # Bar lines and their numbers. A sheet with no bar numbers is a sheet
         # you cannot talk about -- "the run in bar 34" is how a player finds
@@ -2198,20 +2217,7 @@ class PlayingScreen:
             note = placed.note
             base = (OPEN_STRING_COLOR if note.fret == 0 and not note.dead
                     else STRING_COLORS.get(note.string, (180, 180, 180)))
-            # A note lights up when the playhead crosses it and KEEPS the
-            # colour, which is what the player asked for: on a page that
-            # holds still, the row behind the playhead is a record of how
-            # the run just went, and it can be looked back at.
-            if self._audio_enabled and self._matcher is not None:
-                judged = (self._matcher.get_note_state(note)
-                          is not MatchType.PENDING)
-            else:
-                judged = note.timestamp_ms < self._playback_ms
-            if self._audio_enabled:
-                colour = self._feedback.get_note_color(
-                    note, base, self._playback_ms, judged)
-            else:
-                colour = dimmed(base) if judged else base
+            colour = self._sheet_note_colour(note, base)
             cy = lanes_top + (note.string - 0.5) * lane_h
             surface.blit(
                 _head_surface(max(1, int(placed.width)), max(1, int(head)),
@@ -2241,6 +2247,28 @@ class PlayingScreen:
             x = int(x0 + row.x_at(self._playback_ms))
             pygame.draw.line(surface, t.tab_playhead, (x, int(y)),
                              (x, int(lanes_top + band_h)), TAB_PLAYHEAD_PX)
+
+    def _sheet_note_colour(self, note, base: tuple[int, int, int]):
+        """A note's colour on the sheet. Nothing here is dimmed.
+
+        The scrolling board dims a note the moment it is done with, because
+        a note behind the hit line is in the way of the ones still coming.
+        A sheet has no such moment: the row behind the playhead is the
+        RECORD of how the run just went, and it is the one thing this view
+        offers that a scrolling one never can. "Lass sie einfach in der
+        Farbe der Bewertung stehen ohne abdunkeln."
+
+        So a judged note wears its verdict at full strength and keeps it,
+        and an unjudged one stays its own string's colour whether the
+        playhead has passed it or not -- the playhead already says where
+        the music is, and greying half the row to say it again cost the
+        colours that mean something.
+        """
+        if self._audio_enabled and self._matcher is not None:
+            name = _TAB_VERDICT_COLOURS.get(self._matcher.get_note_state(note))
+            if name is not None:
+                return getattr(get_theme(), name)
+        return base
 
     def _draw_sheet_chords(self, surface: pygame.Surface, row, x0: int,
                            lanes_top: float, lane_h: float) -> None:

@@ -69,6 +69,24 @@ LANE_HEADS = 1.18
 NUMBER_STRIP = 20
 # Air between one row and the next, so the eye can tell them apart.
 ROW_GAP = 18
+# How thick each string is drawn, relative to the thinnest, index 0 = high e.
+# Not invented: these are the gauges of a light set -- .010 .013 .017 .026
+# .036 .046 -- divided by the first. A guitarist reads the low E as a rope
+# and the high e as a hair, and one weight for all six throws away the
+# strongest cue there is for which lane is which.
+STRING_GAUGES = (1.0, 1.3, 1.7, 2.6, 3.6, 4.6)
+# What one gauge unit is worth in pixels, as a share of the lane height. Set
+# so the high e is a line you can see and the low E is unmistakably a rope:
+# on a 68 px lane that is 2 px against 9.
+GAUGE_PER_LANE = 1 / 34
+
+
+def string_widths(lane_h: float) -> tuple[int, ...]:
+    """Pixel thickness for the six strings, high e first."""
+    unit = lane_h * GAUGE_PER_LANE
+    return tuple(max(1, int(round(g * unit))) for g in STRING_GAUGES)
+
+
 # Never smaller than this, whatever the window does: below it the fret number
 # inside the head stops being a number.
 MIN_HEAD_PX = 22.0
@@ -76,15 +94,17 @@ MIN_HEAD_PX = 22.0
 # What +/- does in this view. Bigger heads need more room along the row, so
 # fewer bars fit on one -- which is the trade the player asked to be able to
 # hold himself: more readable notes, or more music in sight at once.
-# Weighted DOWNWARD on purpose. The view opens at the size where two rows
-# exactly fill the room there is, which is already the biggest a note can be
+# DOWNWARD only, and the view opens at the top of the range. The size that
+# makes two rows exactly fill the room is already the biggest a note can be
 # drawn without losing the row that shows what is coming -- measured on the
-# player's own machines: a 58 px head on the 1200 px screen, against 26 to 44
-# on the scrolling board. So the useful room to move is towards more music
-# per row, and only two steps go the other way, where the second row is cut
-# off rather than gone.
-ZOOM_STEPS = (0.60, 0.70, 0.85, 1.00, 1.20, 1.45)
-ZOOM_DEFAULT = 3
+# player's own machines: a 58 px head, against 26 to 44 on the scrolling
+# board. Two steps up were built and tried and reported useless
+# ("Vergrößern macht keinen Sinn"), because they buy nothing the eye wanted
+# and cost the second row; they are gone rather than left in as a way to
+# make the view worse. What is left is the direction that does something:
+# smaller notes, more music on a row.
+ZOOM_STEPS = (0.50, 0.60, 0.70, 0.85, 1.00)
+ZOOM_DEFAULT = len(ZOOM_STEPS) - 1
 
 
 def row_height(head_px: float) -> float:

@@ -2221,10 +2221,21 @@ where a note LANDED are new — the heads, the chord blocks, and the playhead.
   `_glide_step` so the two cannot drift apart. The state is NOT shared: two views glide at once and switching between them must not make
   the other one jump. The snap distance is passed in, because a row of the sheet is whatever the head size makes it, so "too far to be a
   page turn" has to be counted in rows and not in pixels.
-- **A note keeps the colour it lit up in.** "Damit kann ich sogar super zurückschauen, wo Fehler waren." This is the thing a scrolling
-  view can never offer: the row you just played is still on the screen with your mistakes still on it. It costs nothing to build — the
-  matcher's verdict was already permanent and the feedback renderer already dims an expired effect rather than dropping it. The scrolling
-  board simply carried the evidence off the left edge before it could be read.
+- **A note keeps the colour it lit up in, and NOTHING on the sheet is dimmed.** "Damit kann ich sogar super zurückschauen, wo Fehler
+  waren" — and then, once it was on screen: "Die bereits passierten Noten werden ausgegraut. Lass sie einfach in der Farbe der Bewertung
+  stehen ohne abdunkeln." The first build reused the board's colour path, which dims a note the moment it is done with — right there,
+  because a note behind the hit line is in the way of the ones still coming, and wrong here, because on a sheet the row behind the
+  playhead is the RECORD of the run and the only thing this view offers that a scrolling one never can. `_sheet_note_colour` does not
+  dim: a judged note wears its verdict at full strength and keeps it, an unjudged one stays its own string's colour, and the playhead
+  is what says where the music is.
+- **The board under the notes is a fretboard, not a table.** The first build painted six alternating bands and no strings at all, which
+  the player saw immediately: "Die Saiten am Griffbrett sind nicht mehr sichtbar." Alternating bands are exactly the look the scrolling
+  view threw out — "the banding is what made the old display read as a table of rows instead of a fretboard" is a comment sitting in
+  `_draw_lanes`, in this same file, and it was re-introduced anyway. One uniform panel now, with the six strings across it, thicker AND
+  warmer towards the low E, and a wound string drawn as a dark core with a highlight so it reads as round rather than as a thick line.
+  The thicknesses are the gauges of a light set (.010 to .046) divided by the first, scaled to the lane: **2 px for the high e against
+  9 for the low E** on a 68 px lane. "Die tiefe Saite wesentlich dicker als die dünnste" is the strongest cue there is for which lane is
+  which, and it works before a single fret number has been read.
 - **Bar numbers and bar lines.** A sheet without them is a sheet you cannot talk about: "the run in bar 34" is how a passage gets found
   again and how a loop gets set.
 - **The chords came along.** The grip cards are the board's own method, called unchanged. Only the BLOCK — the tint that says "these five
@@ -2232,8 +2243,23 @@ where a note LANDED are new — the heads, the chord blocks, and the playhead.
 
 **The size is the one control, and +/- is it.** The head sets both how big a note is drawn AND how far apart two of them have to sit, so
 one key moves legibility and bars-per-row together. The view OPENS at the size where two rows exactly fill the room there is
-(`head_for_room`), which on the player's own machines is a **58 px head against 26 to 44 on the scrolling board** — so the steps are
-weighted downward, towards more music per row, with two going the other way where the second row is cut off rather than gone.
+(`head_for_room`), which on the player's own machines is a **58 px head against 26 to 44 on the scrolling board**.
+
+**The range goes down only, and the view opens at the top of it.** Two steps up were built, shipped and tried: "Verkleinern fühlt sich gut
+an. Vergrößern macht keinen Sinn." They bought nothing the eye wanted and cost the row that shows what is coming, so they are gone rather
+than left in as a way to make the view worse. What the five remaining steps do to Thunder's lead on the 1200 px screen — and this is the
+answer to "can I set the bars per row with +/-":
+
+| step | head | rows in sight | bars a row | row lasts | pairs closer than a head | tightest |
+|---|---|---|---|---|---|---|
+| 0.50x | 29 px | 3 | 6 | 8.9 s | 0 of 1620 | 35 px |
+| 0.60x | 35 px | 3 | 5 | 7.5 s | 0 of 1592 | 42 px |
+| 0.70x | 41 px | 2 | 4 | 6.1 s | 0 of 1549 | 49 px |
+| 0.85x | 49 px | 2 | 3 | 4.5 s | 0 of 1486 | 61 px |
+| **1.00x** | **58 px** | **2** | **3** | **4.4 s** | **0 of 1472** | **69 px** |
+
+**Not one overlapping pair at any size, on either song.** The smallest step draws a 29 px head — still bigger than the 26 px floor the
+scrolling view was pinned at — and parts every pair by at least 35 px, on the passage that started this whole session.
 
 **Measured on the two songs this session is about, on the player's own screens, at the size the view opens at:**
 
@@ -2247,17 +2273,23 @@ weighted downward, towards more music per row, with two going the other way wher
 **Thunder's solo had 47 overlapping pairs in the scrolling view, 30 of them inside five seconds. It has none here**, at a head bigger than
 the scrolling view has ever drawn, with no speed spent — because there is no speed.
 
-**And the frame is cheaper and steadier than the board's**, measured over 300 frames on Thunder's lead at 1920x1200 with a matcher
-running:
+**The frame costs about two milliseconds more than the board's, and that is the whole story** — measured over 300 frames on Thunder's
+lead at 1920x1200 with a matcher running, four runs:
 
 | | median | worst tenth | worst |
 |---|---|---|---|
-| standard | 5.22 ms | 5.97 ms | **19.81 ms** |
-| hybrid | 6.25 ms | 6.77 ms | **7.58 ms** |
+| standard | 5.39 – 5.61 ms | 5.71 – 6.25 ms | 7.24 – 9.08 ms |
+| hybrid | 7.17 – 7.30 ms | 7.52 – 7.69 ms | 9.19 – 10.65 ms |
 
-The median is a millisecond worse and the WORST frame is two and a half times better — which is the whole point restated in the one unit
-the player has been complaining in. The layout is built once per song, size and filter, never per frame; the drawing touches only the rows
-on screen. Both are held by tests, because this display has had to move a loop out of the frame three times already.
+**A retraction belongs here.** The first run of this measurement showed a 19.81 ms worst frame for the standard view against 7.58 for the
+hybrid, and that went into this file as "the worst frame is two and a half times better". It was one outlier in one run: three further
+runs put the standard view's worst at 7.24, 8.47 and 9.08. **Nothing inside the run-to-run spread is a finding** — this file's own rule,
+written two chapters up after breaking it three times, and broken again here within the hour. The honest claim is the boring one: both
+views sit at well under half the 16.7 ms budget, the hybrid costs about two milliseconds more, and the reason to prefer it is what is on
+the screen and not what the profiler says.
+
+The layout is built once per song, size and filter, never per frame; the drawing touches only the rows on screen. Both are held by tests,
+because this display has had to move a loop out of the frame three times already.
 
 **What it costs is a page turn every four to five seconds.** That is the trade, and it is the same one the tab view makes.
 
