@@ -424,13 +424,22 @@ TAB_PLAYHEAD_PX = 5
 # a move is not a page turn at all. Seeking across a song must not crawl.
 TAB_GLIDE_S = 0.25
 TAB_GLIDE_SNAP_PX = 1200.0
-# Below the HUD's block of lines, which is text with no ground of its own.
-TAB_TOP_MARGIN = 150
+# Air between the last line of the HUD and the top of the music. The margin
+# itself is measured -- see _hud_top_used.
+TAB_TOP_GAP = 26
 
 # The three ways this screen can draw one song. Not three screens: the clock,
 # the keys, the matcher and the offsets are the same in all of them, and this
 # project has already paid for four readers of one plan.
 VIEWS = ("standard", "hybrid", "tab")
+# What the footer calls each one. Short, because it sits in a line of twelve
+# entries and the long form is in the settings screen and the help.
+VIEW_SHORT = {"standard": "Standard", "hybrid": "Hybrid", "tab": "Tab page"}
+# How many tunings the one-line strip offers, and how far either side of the
+# one being played. See tuning_segments for why it is one down and three up.
+TUNINGS_SHOWN = 5
+TUNINGS_BELOW = 1
+TUNINGS_ABOVE = 3
 VIEW_NAMES = {
     "standard": "Standard — the board scrolls",
     "hybrid": "Hybrid — the sheet holds still",
@@ -443,6 +452,8 @@ SHEET_SIDE_PAD = 24
 # rather than sliding. In ROWS because a row is whatever the head size makes
 # it -- see _slide_sheet.
 SHEET_SNAP_ROWS = 3.0
+# How dark a string's core is against its highlight, on the sheet.
+SHEET_STRING_CORE = 0.62
 
 # How a note's verdict is shown on an engraved page. PENDING is absent on
 # purpose: a dot under every note not yet reached would bury the music under
@@ -569,6 +580,34 @@ def _chord_block_surface(width: int, height: int, colour) -> pygame.Surface:
     pygame.draw.rect(block, colour, block.get_rect(), 2, border_radius=8)
     _BLOCK_CACHE[key] = block
     return block
+
+
+def _segments_width(font, segments) -> int:
+    """How wide a row of (text, colour) segments comes out."""
+    return sum(font.size(text)[0] for text, _ in segments)
+
+
+def _wrap_segments(font, segments, width: int, sep: str = "  |  "):
+    """Break (text, colour) segments into rows that fit, at the separators.
+
+    The separator belongs to no entry, so it is emitted as its own segment in
+    the ordinary text colour -- a bar drawn in the colour of the entry beside
+    it reads as part of that entry.
+    """
+    rows, row, used = [], [], 0
+    bar = (sep, "hud_text")
+    for segment in segments:
+        piece = ([bar, segment] if row else [segment])
+        wanted = _segments_width(font, piece)
+        if row and used + wanted > width:
+            rows.append(row)
+            row, used, piece = [], 0, [segment]
+            wanted = _segments_width(font, piece)
+        row += piece
+        used += wanted
+    if row:
+        rows.append(row)
+    return rows or [[]]
 
 
 def _glide_step(target: float, value: float, frm: float, to: float,
@@ -1050,6 +1089,15 @@ class PlayingScreen:
         self._sheet_glide_from: float = 0.0
         self._sheet_glide_to: float = 0.0
         self._sheet_glide_at: float = 0.0
+        # Whether the sync panel is open. Everything about lining sound up
+        # against the notes lives in it, and none of it is needed while
+        # playing -- which is what the screen is for.
+        self._show_sync: bool = False
+        # Which page of how many the tab view last drew, so the footer can
+        # say it without the drawing having to reach the footer. The page
+        # number comes from the clock and not from the layout, so unlike
+        # bars-per-row it cannot feed back into the room it is measured in.
+        self._tab_pages: tuple[int, int] = (0, 0)
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         if guide_track is not None and len(guide_track) > 0:
@@ -1640,6 +1688,9 @@ class PlayingScreen:
         elif (event.key == pygame.K_s and event.mod & pygame.KMOD_CTRL
                 and not shift_held(event)):
             self._start_auto_sync()
+        elif (event.key == pygame.K_s and not shift_held(event)
+                and not event.mod & pygame.KMOD_CTRL):
+            self._toggle_sync_block()
         elif event.key == pygame.K_s and shift_held(event):
             if self._sync_key_held:
                 return None                    # a repeat, not a second press
@@ -2142,19 +2193,19 @@ class PlayingScreen:
                                  content_w, index == current)
         surface.set_clip(was)
 
-        crowded = any(rows[i].crowded
-                      for i in range(current, min(len(rows),
-                                                  current + showing)))
-        font = _get_font("arial", 18)
-        bars = (rows[current].last_bar - rows[current].first_bar + 1)
-        label = font.render(
-            f"Hybrid   |   {bars} bars a row, "
-            f"{sheet.rows_that_fit(room, head)} in sight   |   "
-            "+/- note size   |   Shift+T: next view"
-            + ("   |   this bar is too dense to part at this size"
-               if crowded else ""),
-            True, t.feedback_close if crowded else t.hud_text)
-        surface.blit(label, (w // 2 - label.get_width() // 2, 48))
+        # Nothing is written across the top of the music. What the view is
+        # and what +/- does to it are in the footer, beside the keys that do
+        # them; a caption over the staff is a caption you read once.
+        #
+        # A crowded row is the exception, because it is the one thing the
+        # layout could not do and the player would otherwise blame on his
+        # eyes: some heads in this bar really are touching.
+        if any(rows[i].crowded
+               for i in range(current, min(len(rows), current + showing))):
+            warn = _get_font("arial", 16).render(
+                "this bar is too dense to part at this size — press -",
+                True, t.feedback_close)
+            surface.blit(warn, (w // 2 - warn.get_width() // 2, int(top) - 22))
 
     def _draw_sheet_row(self, surface: pygame.Surface, row, x0: int,
                         y: float, head: float, content_w: int,
@@ -2179,11 +2230,17 @@ class PlayingScreen:
         for i, width in enumerate(sheet.string_widths(lane_h)):
             sy = int(lanes_top + (i + 0.5) * lane_h)
             tint = WOUND_TINT if i >= 6 - WOUND_STRINGS else PLAIN_TINT
-            pygame.draw.line(surface, dimmed(tint, 0.45), (x0, sy),
-                             (x0 + content_w, sy), width)
-            pygame.draw.line(surface, tint, (x0, sy - max(0, width // 3)),
-                             (x0 + content_w, sy - max(0, width // 3)),
-                             max(1, width // 2))
+            # Brighter than the scrolling board's, and deliberately so. There
+            # the lanes are half as tall and full of moving notes, so a dim
+            # string is enough; here a row is taller, emptier and still, and
+            # the strings carry the picture between one note and the next.
+            # Measured off the first screenshot of this view: the top three
+            # came out at (93, 95, 99) on a (26, 23, 22) board.
+            pygame.draw.line(surface, dimmed(tint, SHEET_STRING_CORE),
+                             (x0, sy), (x0 + content_w, sy), width)
+            lift = max(1, width // 3)
+            pygame.draw.line(surface, tint, (x0, sy - lift),
+                             (x0 + content_w, sy - lift), lift)
         # Edges deliberately darker than the strings: drawn in the string
         # colour they read as a seventh string and a zeroth one.
         edge = dimmed(t.lane_line, 0.45)
@@ -2400,15 +2457,9 @@ class PlayingScreen:
                     (int(x * fitted.get_width()),
                      int(y * page_h) - offset + view_top + 13), 4)
 
-        label = font.render(
-            f"Page {page.number} of {len(engraving.pages)}   |   "
-            f"Zoom {self._tab_zoom + 1}   |   +/- zoom   |   "
-            f"Shift+T: next view", True, t.hud_text)
-        # Below the tempo, not on top of it. Both wanted the centre of the
-        # top edge and the HUD is drawn second, so the two read as one
-        # illegible line -- which is the same complaint as the page over the
-        # staff, one row up.
-        surface.blit(label, (w // 2 - label.get_width() // 2, 48))
+        # No caption over the staff. Which page of how many rides in the
+        # footer's +/- entry, beside the key that turns them.
+        self._tab_pages = (page.number, len(engraving.pages))
 
     def _layout(self, surface: pygame.Surface) -> _Layout:
         """Compute layout from current surface dimensions."""
@@ -3736,66 +3787,217 @@ class PlayingScreen:
     FRAME_SAMPLES = 3600          # a minute of frames at 60 Hz
     FOOTER_FONT_SIZES = (14, 13, 12, 11, 10)
 
-    def _footer_lines(self) -> tuple[str, str]:
-        """The two footer lines: what is happening, then the rest of the keys.
+    # -- What the HUD says, as data, so it can be tested without a screen --
 
-        Every key handle_event answers appears here, unconditionally. A key
-        that is bound but undocumented is a key nobody finds, so the ones
-        that need something loaded (the backing track, wait mode) are listed
-        with a dash rather than hidden -- the dash is the answer to "why does
-        pressing it do nothing".
+    def tuning_segments(self) -> list[tuple[str, str]]:
+        """The tunings worth offering, as (notes, role) low to high.
+
+        Role is "played", "written", "both" or "other", and the drawing turns
+        that into a colour and a star. One line, six letters a tuning, so the
+        whole question "what is my guitar in, what was this written in, and
+        what else can I play it as" is answered by looking rather than by
+        pressing R to find out -- which reloads the song and costs seconds.
+
+        The window is bounded by what a guitarist would actually do:
+
+        - **At most one step DOWN**, because further down is a floppy string
+          and a fret that buzzes, not a choice.
+        - **Up to three steps UP**, ending at the standard-shaped tuning
+          (EADGBE, or DADGBE for a song written in a drop shape) -- the top
+          of the reachable list is that tuning by construction.
+        - **Never more than five**, and the two that must survive the trim
+          are the one being PLAYED and the one it was WRITTEN in. Anything
+          else is a suggestion; those two are facts.
         """
-        if self._playback_ms < 0:
-            state = "Count-in"
-        elif self._playing:
-            if self._wait_mode_frozen:
-                state = "Waiting..."
-            elif self._audio_enabled:
-                state = "Playing"
+        order, here = self._tuning_order()
+        if not order:
+            return []
+        written = next((i for i, (_, shift) in enumerate(order) if shift == 0),
+                       here)
+        low, high = min(here, written), max(here, written)
+        start = max(0, low - TUNINGS_BELOW)
+        end = min(len(order) - 1, max(here + TUNINGS_ABOVE, high))
+        while end - start + 1 > TUNINGS_SHOWN:
+            # Trim the suggestions first, from whichever end has one to
+            # spare; only if both facts cannot fit does anything real go.
+            if start < low:
+                start += 1
+            elif end > high:
+                end -= 1
+            elif written > here:
+                end -= 1
             else:
-                state = "Auto-scroll"
-        else:
-            state = "Paused"
+                start += 1
 
-        audio_state = "ON" if self._audio_enabled else "off"
-        loop_state = "ON" if self._loop_enabled else "off"
-        if self._midi_player is None:
-            backing_state = "—"
-        else:
-            backing_state = "off" if self._backing_muted else "ON"
-        if self._guide_player is None:
-            guide_state = "—"
-        else:
-            guide_state = "off" if self._guide_muted else "ON"
-        if not self._wait_mode:
-            wait_state = "off" if self._audio_enabled else "—"
-        else:
-            wait_state = "WAIT" if self._wait_mode_frozen else "ON"
+        base = self.written_tuning()
+        out = []
+        for i in range(start, end + 1):
+            shift = order[i][1]
+            notes = tuning_notes({s: v + shift for s, v in base.items()})
+            if i == here and i == written:
+                role = "both"
+            elif i == here:
+                role = "played"
+            elif i == written:
+                role = "written"
+            else:
+                role = "other"
+            out.append(("".join(notes), role))
+        return out
 
-        transport = (
-            f"{state}  |  SPACE: play/pause  "
-            f"|  LEFT/RIGHT: beat (Shift: bar, Ctrl: 30s)  "
-            f"|  HOME: restart  |  PgDn/PgUp: tempo  |  A: audio {audio_state}  "
-            f"|  B: backing {backing_state}  |  Shift+B: my part {guide_state}  "
-            f"|  W: wait {wait_state}  "
-            f"|  I/O: loop {loop_state}  |  P: toggle  |  ESC: menu"
-        )
-        tools = (
-            "+/-: note spacing  |  G: hit window  |  K: sync (Shift+K: reset)  "
-            "|  ,/.: sync +/-10ms  |  N/M: backing sync  |  X/C: gate  "
-            "|  U: audio track (Shift+U: pick, Shift/Ctrl/Alt+N/M: sync)  "
-            "|  R: play in another tuning (Shift+R: back)  "
-            "|  Shift+C: chord view  "
-            "|  Ctrl+S: sync to the recording automatically  "
-            "|  Shift+S: sync point here (Ctrl+Shift+S: clear)  "
-            "|  Shift+A: reopen audio output (if the sound goes bad)  "
-            "|  Shift+T: view (standard / hybrid sheet / tab page)  "
-            "|  E: skip a rest  |  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
-            "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
-            "|  Y: timing report  |  D: run log  "
-            "|  Z: vsync (Shift+Z: steady pace)  |  H: help"
-        )
-        return transport, tools
+    def _latency_line(self) -> tuple[str, str] | None:
+        """The strike-timing offset (K), as (text, theme colour name).
+
+        Shown even at zero with nothing measured yet: it used to vanish in
+        exactly that state, which is the state Shift+K produces -- so the one
+        key whose whole job is to put the offset back to zero looked like it
+        had done nothing at all.
+        """
+        offset = self._config.audio_latency_offset_ms
+        if self._audio_enabled and self._matcher is not None:
+            err = self._matcher.median_timing_error_ms()
+            if err is not None:
+                # Spread separates the two timing problems: a big error with
+                # a small spread is latency and K fixes it; a big spread
+                # means the strikes disagree with each other and no offset
+                # can help.
+                spread = self._matcher.timing_spread_ms()
+                spread_text = f"  ±{int(spread):d} ms" if spread is not None else ""
+                return (f"Sync: {int(offset):+d} ms  |  strikes "
+                        f"{int(abs(err)):d} ms {'late' if err > 0 else 'early'}"
+                        f"{spread_text} {self._sync_advice()}",
+                        "hud_accent" if abs(err) > 20 else "hud_text")
+        return (f"Sync: {int(offset):+d} ms  {self._sync_advice()}", "hud_text")
+
+    def sync_block_lines(self) -> list[tuple[str, str]]:
+        """Everything about lining sound up against the notes, in one place.
+
+        Six lines of it were spread down the left column and across the
+        bottom, permanently, on a screen whose whole point is reading music.
+        None of it is needed while playing and all of it is needed while
+        syncing, which is what a panel behind a key is for.
+        """
+        out: list[tuple[str, str]] = []
+        backing = self._backing_offset()
+        if abs(backing) > 0.5:
+            out.append((f"Backing: {int(backing):+d} ms (N/M)", "hud_accent"))
+        mp3 = self._mp3_hud_text()
+        if mp3:
+            out.append((mp3, "hud_accent"))
+        latency = self._latency_line()
+        if latency:
+            out.append(latency)
+        if self._auto_sync_line():
+            out.append((self._auto_sync_line(), "hud_accent"))
+        else:
+            out += [(line, "hud_accent") for line in self._sync_lines]
+            beyond = self._beyond_sync_line()
+            if beyond:
+                out.append((beyond, "feedback_close"))
+        return out
+
+    def _toggle_sync_block(self) -> None:
+        """S: show what is going on with the sound, or put it away again."""
+        self._show_sync = not self._show_sync
+        self._say("Sync panel open (S)" if self._show_sync
+                  else "Sync panel closed (S)")
+
+    def _left_notes(self) -> list[tuple[str, str]]:
+        """The short lines under the tuning: only what is NOT the default.
+
+        Every one of these is a setting that changes how the song scores and
+        that nothing else on screen would mention -- the fret filter left on
+        by accident cost this project a session. A permanent line saying
+        everything is normal is a line nobody reads.
+        """
+        out: list[tuple[str, str]] = []
+        filter_text = self._filter_hud_text()
+        if filter_text:
+            out.append((filter_text, "hud_accent"))
+        if self._chord_partial_credit != self._config._default_chord_partial_credit:
+            out.append(("Chords: strict" if self._chord_partial_credit
+                        else "Chords: easy", "hud_accent"))
+        if not getattr(self._config, "chord_verify", True):
+            out.append(("Strings: off (J)", "hud_accent"))
+        # Loud when it happens, absent otherwise. A machine that loses
+        # buffers loses notes at random, which looks exactly like bad
+        # detection or bad playing and is neither.
+        if (self._audio_enabled and self._audio_capture is not None
+                and getattr(self._audio_capture, "dropped_buffers", 0)):
+            out.append((f"Audio dropouts: {self._audio_capture.dropped_buffers}"
+                        "  — close other programs", "feedback_miss"))
+        return out
+
+    def footer_segments(self) -> list[tuple[str, str]]:
+        """The one line of keys that stays on screen, as (text, colour name).
+
+        Everything else moved into H. Twenty-three shortcuts along the bottom
+        of a screen you are trying to read music off are not a help system,
+        they are wallpaper -- and the ones that matter while playing are the
+        ones whose STATE you need to see, which is why each of these carries
+        its value and lights up when it is not at rest.
+        """
+        meta = self._timeline.metadata
+        pct = int(self._tempo_factor * 100)
+        on = "hud_accent"
+        off = "hud_text"
+
+        # What the size BOUGHT, not just what it is set to. On the sheet that
+        # is bars on a row, on the page which page of how many, on the board
+        # the seconds of song in sight -- the number actually being traded,
+        # in the entry for the key that trades it. All three used to be
+        # captions across the top of the music, which is read once.
+        if self._view == "hybrid":
+            # Bars-per-row is NOT written here, tempting as it is. It comes
+            # out of the layout, the layout is sized from the room left after
+            # this footer, and a longer footer can need a second line -- so
+            # the number would change the room it was measured in. Caught by
+            # the test that says the sheet is laid out once: it was laid out
+            # twice, at 44.4 px and then 44.5. The bar numbers are on the
+            # screen anyway, which is where a player would count them.
+            size = f"{sheet.ZOOM_STEPS[self._sheet_zoom]:.2f}x"
+            sized = self._sheet_zoom != sheet.ZOOM_DEFAULT
+        elif self._view == "tab":
+            size = f"zoom {self._tab_zoom + 1}"
+            if self._tab_pages[1]:
+                size += f", page {self._tab_pages[0]}/{self._tab_pages[1]}"
+            sized = self._tab_zoom != 2
+        else:
+            size = (f"{self._scroll_factor():.1f}x, "
+                    f"{self._visible_window_ms / 1000.0:.1f} s ahead")
+            sized = abs(self._scroll_factor() - 1.0) > 0.01
+
+        def state(player, muted) -> str:
+            if player is None:
+                return "—"
+            return "off" if muted else "on"
+
+        backing = state(self._midi_player, self._backing_muted)
+        guide = state(self._guide_player, self._guide_muted)
+        window = int(self._config.timing_window_ms)
+        # The sync panel is shut, so anything urgent inside it has to reach
+        # the outside somehow. One coloured word is the whole signal.
+        sync_colour = ("feedback_close" if self._beyond_sync_line()
+                       else on if self._show_sync else off)
+        return [
+            ("SPACE: play/pause", on if self._playing else off),
+            (f"PgDn/PgUp: Tempo {meta.tempo} BPM ({pct}%)",
+             on if pct != 100 else off),
+            (f"A: Audio {'on' if self._audio_enabled else 'off'}",
+             on if self._audio_enabled else off),
+            (f"B: Backing {backing}", on if backing == "on" else off),
+            (f"Shift+B: My Backing {guide}", on if guide == "on" else off),
+            (f"+/- Size ({size})", on if sized else off),
+            (f"G: {window} ms",
+             on if window != int(config_module.Config().timing_window_ms)
+             else off),
+            (f"Shift+C: Chords {'on' if self._chord_mode else 'off'}",
+             on if self._chord_mode else off),
+            (f"Shift+T: View {VIEW_SHORT[self._view]}", off),
+            ("E: Skip", on if self._rest_hud_text() else off),
+            ("S: Sync", sync_colour),
+            ("H: help", on if self._show_help else off),
+        ]
 
     @staticmethod
     def _fit_line(font, text: str, width: int, colour) -> pygame.Surface:
@@ -3818,29 +4020,52 @@ class PlayingScreen:
                 break
         return surface
 
-    def _footer_block(
-        self, layout: _Layout, lines: tuple[str, ...],
-        color: tuple[int, int, int],
-    ):
-        """The footer's rendered lines, their spacing, and where it starts.
+    def _footer_block(self, layout: _Layout, segments=None):
+        """The footer's lines, its spacing, and where the block starts.
 
         Measured rather than assumed, and shared, because two callers need
         the same answer at different moments: the footer draws it, and the
-        page view has to know how much room is left BEFORE it lays a page
-        out. A constant was tried and the page ran into the keys -- the
-        block is between two and five lines depending on how wide the window
-        is, which is exactly the thing a constant cannot follow.
+        sheet and page views have to know how much room is left BEFORE they
+        lay a row out. A constant was tried and the page ran into the keys.
+
+        Segments rather than a string, because each entry carries its own
+        colour: an entry lights up when the thing it names is not at rest,
+        and that is the whole reason the line is worth the space it takes.
         """
+        segments = (self.footer_segments() if segments is None else segments)
         w = layout.screen_w
         for size in self.FOOTER_FONT_SIZES:
             font = _get_font("arial", size)
-            wrapped = [part for line in lines
-                       for part in _wrap_on_bars(line, font, w - 16)]
-            rendered = [font.render(part, True, color) for part in wrapped]
-            if max(s.get_width() for s in rendered) <= w - 16:
+            rows = _wrap_segments(font, segments, w - 16)
+            if len(rows) == 1:
                 break
-        line_h = rendered[0].get_height() + 2
-        return rendered, line_h, layout.screen_h - 4 - line_h * len(rendered)
+        line_h = font.get_height() + 2
+        return font, rows, line_h, layout.screen_h - 4 - line_h * len(rows)
+
+    def _blit_footer_lines(self, surface: pygame.Surface,
+                           layout: _Layout) -> int:
+        """Centre the footer, shrinking and WRAPPING until it fits.
+
+        Shrinking alone was never enough: a line drawn wider than the screen
+        is centred, which cuts BOTH ends -- measured on the player's own
+        screenshot, the first entry and the last were simply not there, and
+        a shortcut nobody can see is a shortcut nobody has.
+
+        Returns the y the block STARTS at, because whatever stacks above it
+        has to know where it ends.
+        """
+        t = get_theme()
+        font, rows, line_h, top = self._footer_block(layout)
+        y = top
+        for row in rows:
+            width = _segments_width(font, row)
+            x = layout.screen_w // 2 - width // 2
+            for text, colour in row:
+                drawn = font.render(text, True, getattr(t, colour))
+                surface.blit(drawn, (x, y))
+                x += drawn.get_width()
+            y += line_h
+        return top
 
     def _tab_room(self, layout: _Layout) -> tuple[int, int]:
         """(top, height) of the space the page may use, clear of the text.
@@ -3851,365 +4076,214 @@ class PlayingScreen:
         plus whatever sync lines are standing, and both are measured here
         rather than guessed at.
         """
-        t = get_theme()
-        _, _, footer_top = self._footer_block(
-            layout, self._footer_lines(), t.hud_text)
-        standing = ([self._auto_sync_line()] if self._auto_sync_line()
-                    else list(self._sync_lines))
-        if self._beyond_sync_line() and not self._auto_sync_line():
-            standing.append(self._beyond_sync_line())
-        # The sync panel, the one-line status note above it, and a gap.
-        bottom = footer_top - 18 * (len(standing) + 1) - 12
-        top = TAB_TOP_MARGIN
+        _, _, _, footer_top = self._footer_block(layout)
+        # The sync panel is NOT counted, deliberately. Counting it made the
+        # music RE-FLOW when S was pressed: less room, a smaller head, more
+        # bars on a row, different line breaks -- the page turned into a
+        # different page while you were looking at it. It is an overlay
+        # instead, drawn over the bottom of the sheet, which is the part you
+        # are not reading while you are lining a recording up.
+        #
+        # What IS counted is the one-line status note above it, and a gap.
+        bottom = footer_top - 18 - 12
+        top = self._hud_top_used() + TAB_TOP_GAP
         return top, max(1, bottom - top)
 
-    def _blit_footer_lines(
-        self, surface: pygame.Surface, layout: _Layout,
-        lines: tuple[str, ...], color: tuple[int, int, int],
-    ) -> int:
-        """Centre the footer lines, shrinking and WRAPPING until they fit.
+    def _hud_top_used(self) -> int:
+        """How far down the text at the top of the screen reaches.
 
-        Shrinking alone was not enough: twenty-three keyboard shortcuts are
-        2986 px of text and the player's window is 1911, so the smallest font
-        still overflowed by a thousand pixels -- and a line drawn wider than
-        the screen is centred, which cuts BOTH ends. Measured on the player's
-        own screenshot: the first entry and the last were simply not there,
-        and a shortcut nobody can see is a shortcut nobody presses.
-
-        Wrapped at the separators the entries already have, so a key is never
-        broken across two lines.
-
-        Returns the y the block STARTS at, because whatever is stacked above
-        it has to know where it ends -- the sync panel used to be placed at a
-        fixed height and ran straight into these lines.
+        Measured, not a constant. It WAS a constant, fitted to a HUD with
+        eight lines down the left and a caption across the middle; with
+        three lines left and nothing in the middle it left 90 px of empty
+        window above the music and took it off the bottom of the sheet. The
+        block is now between two and six lines depending on what is not at
+        its default, which is exactly what a constant cannot follow.
         """
-        rendered, line_h, top = self._footer_block(layout, lines, color)
-        w = layout.screen_w
-        y = top
-        for surf in rendered:
-            surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
-            y += line_h
-        return top
+        # Title, then the small lines: track, tunings, and whatever is off
+        # its default. The right-hand column is shorter than this whenever
+        # the left one is drawn at all.
+        lines = 1 if self._timeline.metadata.track_name else 0
+        lines += 1 if self.tuning_segments() else 0
+        lines += len(self._left_notes())
+        return 38 + 16 * lines
 
     def _draw_hud(self, surface: pygame.Surface, layout: _Layout) -> None:
+        """Everything around the music.
+
+        Rebuilt to a rule the player wrote after living with the old one: a
+        line earns its place by saying something that CHANGES and that
+        nothing else on screen says. Six lines of sync arithmetic, a hit
+        window, a scroll speed and a frame-pacing note were permanently on a
+        screen whose whole job is to be read while both hands are busy. They
+        are behind S, behind H, or gone.
+        """
         t = get_theme()
         title_font = _get_font("arial", 20)
-        time_font = _get_font("consolas", 20)
+        big_font = _get_font("consolas", 20)
         hint_font = _get_font("arial", 14)
 
         meta = self._timeline.metadata
-        w = layout.screen_w
-        h = layout.screen_h
+        w, h = layout.screen_w, layout.screen_h
 
-        # Count-in overlay — large centered beat countdown
+        # Count-in overlay — large centred beat countdown.
         if self._playback_ms < 0 and self._count_in_ms > 0:
-            remaining_beats = int(-self._playback_ms / self._ms_per_beat) + 1
-            remaining_beats = min(remaining_beats, self._config.count_in_beats)
-            countdown_font = _get_font("arial", 120)
-            countdown_surf = countdown_font.render(
-                str(remaining_beats), True, t.hud_accent
-            )
-            surface.blit(
-                countdown_surf,
-                (w // 2 - countdown_surf.get_width() // 2,
-                 h // 2 - countdown_surf.get_height() // 2),
-            )
+            beats = int(-self._playback_ms / self._ms_per_beat) + 1
+            beats = min(beats, self._config.count_in_beats)
+            countdown = _get_font("arial", 120).render(
+                str(beats), True, t.hud_accent)
+            surface.blit(countdown, (w // 2 - countdown.get_width() // 2,
+                                     h // 2 - countdown.get_height() // 2))
 
-        # Song completion overlay
         if self._song_completed:
             self._draw_completion_overlay(surface, layout)
 
-        # Top-left: title + artist
+        # -- Top left: what this is, and what the guitar has to be in ------
+        # The column starts wherever the chord cards end: both want this
+        # corner and the text is the half that can move.
+        left = self._hud_left_x()
         title = meta.title or "Untitled"
         if meta.artist:
             title = f"{meta.artist} — {title}"
-        title_surf = title_font.render(title, True, t.hud_text)
-        surface.blit(title_surf, (self._hud_left_x(), 12))
+        surface.blit(title_font.render(title, True, t.hud_text), (left, 12))
+        y = 38
+        if meta.track_name:
+            surface.blit(hint_font.render(f"Track: {meta.track_name}", True,
+                                          t.hud_text), (left, y))
+            y += 16
+        y = self._blit_tuning_strip(surface, hint_font, left, y)
+        for text, colour in self._left_notes():
+            surface.blit(hint_font.render(text, True, getattr(t, colour)),
+                         (left, y))
+            y += 16
 
-        # Top-center: BPM with tempo percentage (and streak below it)
-        pct = int(self._tempo_factor * 100)
-        bpm_text = f"{meta.tempo} BPM ({pct}%)"
-        bpm_surf = title_font.render(bpm_text, True, t.hud_accent)
-        surface.blit(bpm_surf, (w // 2 - bpm_surf.get_width() // 2, 12))
-
-        # Loop status below BPM
-        loop_y = 36
+        # -- Top centre: nothing, unless something is not normal -----------
+        # The tempo moved into the footer, where the key that changes it is.
+        # A loop, though, silently repeats a section of the song and no other
+        # line would mention it -- the fret-filter trap in another costume.
         loop_info = self._loop_hud_text()
-        if loop_info:
-            loop_color = t.hud_accent if self._loop_enabled else t.hud_text
-            loop_surf = hint_font.render(loop_info, True, loop_color)
-            surface.blit(loop_surf, (w // 2 - loop_surf.get_width() // 2, loop_y))
-            loop_y += 18
+        if loop_info and self._loop_enabled:
+            loop_surf = hint_font.render(loop_info, True, t.hud_accent)
+            surface.blit(loop_surf, (w // 2 - loop_surf.get_width() // 2, 12))
 
-        if self._audio_enabled:
-            self._feedback.draw_streak(surface, title_font, w // 2, loop_y)
-
-        # Top-right column. Every line is stacked on the measured height of
-        # the one above it. Fixed pixel offsets put the noise gate on top of
-        # the hit count, because the block above draws two lines and the
-        # spacing had been counted for one.
-        current = format_time(self._playback_ms)
-        total = format_time(self._timeline.duration_ms)
-        time_text = f"{current} / {total}"
-        time_surf = time_font.render(time_text, True, t.hud_text)
+        # -- Top right: the two numbers you glance at while playing --------
+        # Stacked on the MEASURED height of the line above, never on a fixed
+        # offset: the block used to draw two lines where one was counted for,
+        # and the noise gate landed on top of the hit count.
+        time_text = (f"{format_time(self._playback_ms)} / "
+                     f"{format_time(self._timeline.duration_ms)}")
+        time_surf = big_font.render(time_text, True, t.hud_text)
         surface.blit(time_surf, (w - time_surf.get_width() - 12, 12))
         right_y = 12 + time_surf.get_height() + 2
 
+        # As big as the clock, and for the same reason: it is the other
+        # number worth reading from across the room. The H/C/M breakdown it
+        # used to carry went with the rest of the arithmetic -- the
+        # percentage is the answer, and Y gives the whole report.
         if self._audio_enabled and self._matcher is not None:
             stats = self._matcher.get_statistics()
             if stats["total"] > 0:
-                right_y = self._feedback.draw_stats(
-                    surface, stats, hint_font, w - 12, right_y)
+                accuracy = stats["accuracy_percent"]
+                acc_surf = big_font.render(
+                    f"{accuracy:.0f}%", True,
+                    t.feedback_hit if accuracy >= 80 else t.hud_text)
+                surface.blit(acc_surf, (w - acc_surf.get_width() - 12, right_y))
+                right_y += acc_surf.get_height() + 2
+        if self._audio_enabled and self._feedback.streak >= 3:
+            # Beside the other number that says how it is going, rather than
+            # across the top of the music where nothing else is now. Drawn
+            # here rather than through draw_streak because that one centres
+            # on the x it is given and this column is right-aligned.
+            streak = hint_font.render(f"{self._feedback.streak}x streak",
+                                      True, t.feedback_streak)
+            surface.blit(streak, (w - streak.get_width() - 12, right_y))
+            right_y += streak.get_height() + 4
 
         line_h = hint_font.get_height() + 4
         if self._audio_enabled:
-            gate_surf = hint_font.render(
+            gate = hint_font.render(
                 f"Gate: {int(self._noise_gate_db)} dB"
                 + (" (auto)" if self._auto_gate else " (X/C)"),
                 True, t.hud_accent)
-            surface.blit(gate_surf, (w - gate_surf.get_width() - 12, right_y))
+            surface.blit(gate, (w - gate.get_width() - 12, right_y))
             right_y += line_h
-            if self._audio_capture is not None:
-                self._draw_signal_meter(surface, hint_font, w, right_y)
-                right_y += line_h
-                self._draw_tuner(surface, hint_font, w, right_y)
-                right_y += line_h
-        elif self._audio_capture is not None:
-            # Audio off but capture exists — still show meter and tuner
+        if self._audio_capture is not None:
             self._draw_signal_meter(surface, hint_font, w, right_y)
             right_y += line_h
             self._draw_tuner(surface, hint_font, w, right_y)
             right_y += line_h
-
-        # What to do about the level, when there is something to do. Silent
-        # otherwise: a permanent "everything is fine" is a line nobody reads,
-        # and the one time it changes nobody notices either.
-        if self._audio_capture is not None:
+            # What to DO about the level, when there is something to do.
+            # Silent otherwise: a permanent "everything is fine" is a line
+            # nobody reads, and the one time it changes nobody notices.
             advice = self._level_advice()
             if advice:
-                advice_surf = hint_font.render(advice, True, t.feedback_close)
-                surface.blit(advice_surf,
-                             (w - advice_surf.get_width() - 12, right_y))
+                drawn = hint_font.render(advice, True, t.feedback_close)
+                surface.blit(drawn, (w - drawn.get_width() - 12, right_y))
 
-        # Bottom-centre: play state + controls. Drawn FIRST, because it is
-        # what everything else at the bottom has to stack on top of -- the
-        # sync panel used to start at a fixed height and grow DOWNWARD into
-        # these lines, which is exactly what the player saw overlapping.
-        footer_top = self._blit_footer_lines(
-            surface, layout, self._footer_lines(), t.hud_text)
+        # -- Bottom: the keys, then the sync panel, then the status note ---
+        # Drawn in that order because each stacks on the one below it. The
+        # sync panel used to start at a fixed height and grow downward into
+        # the keys, which is exactly what the player saw overlapping.
+        footer_top = self._blit_footer_lines(surface, layout)
+        note_y = self._blit_sync_block(surface, layout, hint_font, footer_top)
 
-        # Where the recording sync has got to. NOT a note that expires: the
-        # player spends a minute seeking from the first point to the second,
-        # and a message that is gone by then leaves them guessing which press
-        # the next Shift+S will be -- which is what they reported.
-        #
-        # A progress line while the listening runs. Seconds of work with
-        # nothing moving is indistinguishable from a dead key, which is a
-        # fault this project has now shipped four times.
-        lines = ([self._auto_sync_line()] if self._auto_sync_line()
-                 else self._sync_lines)
-        # And where it has NOT got to, said while it is true rather than once
-        # at 0:00. The span is printed with the points, honestly and in full
-        # -- and at 3:49, where being past the end of it is the only thing
-        # that explains the picture, that line is four minutes of scrolling
-        # ago and reads as history. A warning about now belongs in now.
-        beyond = self._beyond_sync_line()
-        if beyond and not self._auto_sync_line():
-            lines = lines + [beyond]
-        note_y = footer_top - 6 - 18 * len(lines)
-        for line in lines:
-            colour = (t.feedback_close if line is beyond else t.hud_accent)
-            line_surf = self._fit_line(hint_font, line, w - 16, colour)
-            surface.blit(line_surf,
-                         (w // 2 - line_surf.get_width() // 2, note_y))
-            note_y += 18
-        note_y = footer_top - 6 - 18 * len(lines) - 18
-
-        # What just happened, over the footer, while it is still news.
         note = self._status_note_text()
         if note:
-            note_surf = hint_font.render(note, True, t.hud_accent)
-            surface.blit(note_surf,
-                         (w // 2 - note_surf.get_width() // 2, note_y))
+            drawn = hint_font.render(note, True, t.hud_accent)
+            surface.blit(drawn, (w // 2 - drawn.get_width() // 2, note_y))
         if self._mp3_dialog_due:
             # Drawn this frame, so the next update may block on the chooser.
             self._mp3_dialog_armed = True
 
-        # Top-left second line: track name + filter info
-        #
-        # The whole left column starts wherever the chord cards end, because
-        # both want the top left corner and the text is the one that can
-        # move. Drawn over each other they are both unreadable, which is what
-        # the player's screenshot showed.
-        left = self._hud_left_x()
-        info_y = 38
-        if meta.track_name:
-            track_surf = hint_font.render(
-                f"Track: {meta.track_name}", True, t.hud_text
-            )
-            surface.blit(track_surf, (left, info_y))
-            info_y += 16
+    def _blit_tuning_strip(self, surface: pygame.Surface, font, left: int,
+                           y: int) -> int:
+        """The tunings on one line: played in blue, written with a star.
 
-        # Difficulty filter HUD
-        filter_text = self._filter_hud_text()
-        if filter_text:
-            filter_surf = hint_font.render(filter_text, True, t.hud_accent)
-            surface.blit(filter_surf, (left, info_y))
-            info_y += 16
+        A tab in Drop C played on a standard-tuned guitar is wrong on every
+        single note and nothing else on screen says so -- the notes scroll by
+        looking perfectly ordinary while every one of them scores red. The
+        old line said it in words and took two rows to do it; this says it in
+        six letters a tuning and answers "what else could I play this as" in
+        the same glance, which used to cost a press of R and a reload.
+        """
+        t = get_theme()
+        segments = self.tuning_segments()
+        if not segments:
+            return y
+        x = left
+        label = font.render("Tuning:  ", True, t.hud_text)
+        surface.blit(label, (x, y))
+        x += label.get_width()
+        for notes, role in segments:
+            text = notes + ("*" if role in ("written", "both") else "")
+            colour = (t.hud_accent if role in ("played", "both")
+                      else t.hud_text)
+            drawn = font.render(text + "   ", True, colour)
+            surface.blit(drawn, (x, y))
+            x += drawn.get_width()
+        return y + 16
 
-        # Chord mode HUD
-        if self._chord_partial_credit != self._config._default_chord_partial_credit:
-            chord_text = "Chords: strict" if self._chord_partial_credit else "Chords: easy"
-            chord_surf = hint_font.render(chord_text, True, t.hud_accent)
-            surface.blit(chord_surf, (left, info_y))
-            info_y += 16
-
-        # Tuning HUD — always shown, because a tab in Drop C played on a
-        # standard-tuned guitar is wrong on every single note, and nothing
-        # else on screen says so: the notes scroll by looking perfectly
-        # ordinary while every one of them scores red. Highlighted when it
-        # differs from standard, since that is the case that needs an action
-        # from the player (and, after retuning, a fresh calibration).
-        tuning = meta.tuning
-        standard = is_standard_tuning(tuning)
-        notes = tuning_notes(tuning)
-        if notes:
-            name = tuning_name(tuning)
-            label = f"Tuning: {name or 'custom'} — {' '.join(notes)}"
-            if self._transpose:
-                # What the tab says and what you are playing are two
-                # different tunings now, and the line has to name both --
-                # otherwise the fret numbers on screen belong to a song
-                # nobody can find.
-                written = tuning_name(self.written_tuning())
-                label += (f"   (written {written or 'custom'}, "
-                          f"{self._transpose:+d} — R)")
-            elif not standard:
-                label += "   ← retune"
-            tune_surf = hint_font.render(
-                label, True, t.hud_text if standard else t.feedback_close)
-            surface.blit(tune_surf, (left, info_y))
-            info_y += 16
-            step_label = self.tuning_step_label()
-            if step_label:
-                step_surf = hint_font.render(step_label, True, t.hud_text)
-                surface.blit(step_surf, (left, info_y))
-                info_y += 16
-
-        # Hit-window HUD — always shown, since it decides what counts as a hit
-        window_surf = hint_font.render(
-            f"Hit window: +/-{int(self._config.timing_window_ms)} ms (G)",
-            True, t.hud_text)
-        surface.blit(window_surf, (left, info_y))
-        info_y += 16
-
-        # Backing offset HUD — only when shifted, but then always visible,
-        # since a backing that disagrees with the notes is the hardest fault
-        # to diagnose by ear
-        backing_off = self._backing_offset()
-        if abs(backing_off) > 0.5:
-            back_surf = hint_font.render(
-                f"Backing: {int(backing_off):+d} ms (N/M)", True, t.hud_accent)
-            surface.blit(back_surf, (left, info_y))
-            info_y += 16
-
-        # Recorded backing HUD. Its own line, because it is a second thing
-        # that can be off: a recording lined up against the click is what the
-        # player is listening for while both are sounding, and a silent one
-        # has to say WHY it is silent or it reads as broken.
-        mp3_text = self._mp3_hud_text()
-        if mp3_text:
-            mp3_surf = hint_font.render(mp3_text, True, t.hud_accent)
-            surface.blit(mp3_surf, (left, info_y))
-            info_y += 16
-
-        # Scroll speed HUD — shows the seconds of song on screen, not just the
-        # trim factor: turning the speed down stops once notes would have to
-        # shrink, and a factor that changes nothing visible is a puzzle
-        ahead = self._visible_window_ms / 1000.0
-        trimmed = abs(self._scroll_factor() - 1.0) > 0.01
-        # Which way each key goes, because the two things this knob trades are
-        # opposites and nothing said so: - buys look-ahead by pushing the notes
-        # closer together, + spreads them out again by showing less of the
-        # song. A player who wants the notes further apart and presses - gets
-        # the opposite of what they asked for, and there is no way to find
-        # that out except by pressing.
-        speed_surf = hint_font.render(
-            f"Scroll: {ahead:.1f} s ahead, notes {self._head_px:.0f} px "
-            f"({self._scroll_factor():.1f}x — +: further apart, "
-            f"-: more look-ahead)",
-            True, t.hud_accent if trimmed else t.hud_text)
-        surface.blit(speed_surf, (left, info_y))
-        info_y += 16
-
-        # How the pictures are being timed, on screen while it is true.
-        # Three runs in a row were taken to measure a switch that turned out
-        # not to have been on, because the only place the setting showed was
-        # a status note that expires and a log written afterwards. A setting
-        # under test has to be readable at the moment the player decides to
-        # press D.
-        pace_surf = hint_font.render(self._pacing_line(), True,
-                                     t.feedback_streak
-                                     if self._pacing_unusual() else t.hud_text)
-        surface.blit(pace_surf, (left, info_y))
-        info_y += 16
-
-        # Sitting in a hole with nothing to play looks exactly like a picture
-        # that has stopped, and the key that jumps over it is one nobody finds
-        # by pressing things. Silent whenever there IS something to play, so
-        # it costs no screen space on a track without rests.
-        rest_text = self._rest_hud_text()
-        if rest_text:
-            rest_surf = hint_font.render(rest_text, True, t.hud_accent)
-            surface.blit(rest_surf, (left, info_y))
-            info_y += 16
-
-        # Dropped audio HUD — silent while there is nothing to report, loud
-        # when there is. A machine that loses buffers loses notes at random,
-        # which looks exactly like bad detection or bad playing and is neither;
-        # without a number on screen there is no way to tell the three apart.
-        if (self._audio_enabled and self._audio_capture is not None
-                and getattr(self._audio_capture, "dropped_buffers", 0)):
-            drops = self._audio_capture.dropped_buffers
-            drop_surf = hint_font.render(
-                f"Audio dropouts: {drops}  — close other programs",
-                True, t.feedback_miss)
-            surface.blit(drop_surf, (left, info_y))
-            info_y += 16
-
-        # Per-string chord check HUD — only when switched off, so the default
-        # costs no screen space but a disabled check is never a silent surprise
-        if not getattr(self._config, "chord_verify", True):
-            verify_surf = hint_font.render("Strings: off (J)", True, t.hud_accent)
-            surface.blit(verify_surf, (left, info_y))
-            info_y += 16
-
-        # Latency sync HUD — show measured timing error once enough strikes
-        # were scored, so the player knows K (auto-sync) has data to work with
-        if self._audio_enabled and self._matcher is not None:
-            offset = self._config.audio_latency_offset_ms
-            err = self._matcher.median_timing_error_ms()
-            if err is not None:
-                direction = "late" if err > 0 else "early"
-                # Spread separates the two timing problems: a big error with a
-                # small spread is latency and K fixes it; a big spread means
-                # the strikes disagree with each other and no offset can help
-                spread = self._matcher.timing_spread_ms()
-                spread_text = f"  ±{int(spread):d} ms" if spread is not None else ""
-                verdict = self._sync_advice()
-                sync_text = (f"Sync: {int(offset):+d} ms  |  strikes {int(abs(err)):d} ms "
-                             f"{direction}{spread_text} {verdict}")
-                sync_color = t.hud_accent if abs(err) > 20 else t.hud_text
-            else:
-                # Shown even at zero with nothing measured yet. It used to
-                # vanish in exactly that state, which is the state Shift+K
-                # produces -- so the one key whose whole job is to put the
-                # offset back to zero looked like it had done nothing at all.
-                sync_text = f"Sync: {int(offset):+d} ms  {self._sync_advice()}"
-                sync_color = t.hud_text
-            if sync_text:
-                sync_surf = hint_font.render(sync_text, True, sync_color)
-                surface.blit(sync_surf, (left, info_y))
+    def _blit_sync_block(self, surface: pygame.Surface, layout: _Layout,
+                         font, footer_top: int) -> int:
+        """The sync panel above the footer (S), and where the room above it
+        starts. Closed, it costs nothing and takes no room."""
+        if not self._show_sync:
+            return footer_top - 6 - 18
+        t = get_theme()
+        lines = self.sync_block_lines()
+        w = layout.screen_w
+        y = footer_top - 6 - 18 * len(lines)
+        top = y
+        # A ground of its own, because it is drawn OVER the music rather than
+        # in room taken from it -- see _tab_room. Text with no ground on top
+        # of a staff is the fault this file has already written up twice.
+        panel = pygame.Surface((w, 18 * len(lines) + 8), pygame.SRCALPHA)
+        panel.fill((*t.bg, 232))
+        surface.blit(panel, (0, top - 4))
+        for text, colour in lines:
+            drawn = self._fit_line(font, text, w - 16, getattr(t, colour))
+            surface.blit(drawn, (w // 2 - drawn.get_width() // 2, y))
+            y += 18
+        return top - 18
 
     def _playing_median_db(self) -> float | None:
         """The level while the guitar is sounding, or None with too little.
@@ -5323,6 +5397,131 @@ class PlayingScreen:
                      f"\t{written_at.get(int(round(note.timestamp_ms)), 1)}"
                      f"\t{matcher.get_note_state(note).value}\n")
 
+    def help_blocks(self) -> list[tuple[str, list, str]]:
+        """The help page as data: (heading, items, text size).
+
+        Data rather than drawing calls because this is now the ONE place
+        every bound key is written down -- the footer carries the twelve
+        worth watching while playing, and the rest live here. A test reads
+        handle_event's own source against this, so adding a shortcut and
+        forgetting to document it fails in the suite instead of shipping a
+        key nobody can find.
+
+        An item is a line of text, or (colour, line) for a colour swatch.
+        """
+        t = get_theme()
+        return [
+                ("Reading the Track", [
+                "The number on each note is the fret to press (0 = open).",
+                "A note's colour matches its row, so it names the string.",
+                "Standard: the board scrolls right-to-left. Play as the",
+                "  START of a note reaches the hit line, not its middle.",
+                "  A note it is done with is dimmed out of the way.",
+                "Hybrid: the sheet holds still and the playhead moves.",
+                "  Nothing is dimmed — the row behind the playhead keeps",
+                "  its verdict colours, so you can look back at the run.",
+                "Tab page: the engraved score, a dot under each note.",
+                ], "body"),
+
+                ("The 6 Rows = 6 Guitar Strings", [
+                (STRING_COLORS.get(s, (180, 180, 180)), label)
+                for s, label in (
+                    (1, "Row 1 (top)      = high E  (thinnest)"),
+                    (2, "Row 2               = B"),
+                    (3, "Row 3               = G"),
+                    (4, "Row 4               = D"),
+                    (5, "Row 5               = A"),
+                    (6, "Row 6 (bottom) = low E  (thickest)"),
+                )
+                ], "body"),
+
+                ("Techniques (badge above the note says which)", [
+                "\u00bd  1  1\u00bd   BEND. Fret the note, then push the string until",
+                "     the pitch rises. \u00bd is one fret, 1 is two. The white",
+                "     curve inside the note draws the same thing.",
+                "SL   SLIDE. Strike only the first note and slide into the",
+                "     second. The bar between them rises to the right for",
+                "     up the neck. A short stub is a slide off into nothing.",
+                "H    HAMMER-ON. Strike the first note, then hammer the",
+                "     finger down for the second without striking again.",
+                "P    PULL-OFF. The same in reverse, lifting the finger.",
+                "PM   PALM MUTE starts here and runs on until the notes",
+                "     stop being drawn as short stubs. Rest the picking",
+                "     hand on the strings; the pitch stays the written one.",
+                "X    DEAD NOTE. Damp the string with the fretting hand and",
+                "     strike it: a click, no pitch. Counts as played as long",
+                "     as you strike it in time — there is no pitch to check.",
+                "",
+                "H, P and SL notes are not struck, so they score with the",
+                "note they came from. Bends are scored leniently: the pitch",
+                "has to land in the right region, not on the target exactly.",
+                ], "body"),
+
+                ("Scoring (colours change after you play)", [
+                (t.feedback_hit, "Green \u2014 you played the correct note"),
+                (t.feedback_close, "Yellow \u2014 close, off by 1 semitone"),
+                (t.feedback_miss, "Red \u2014 missed, or not played in time"),
+                ], "body"),
+
+            # Every key handle_event answers is here, because the footer is now
+            # one line of the twelve worth watching WHILE playing. A key that is
+            # bound and written down nowhere is a key nobody finds, and this
+            # overlay is the only place left that can carry them all.
+                ("Playing", [
+                "SPACE: play/pause     HOME: restart     ESC: song list",
+                "LEFT/RIGHT: a beat   Shift: a bar   Ctrl: 30 seconds",
+                "PgDn/PgUp: practice speed, kept for this song",
+                "A: audio on/off     W: wait mode (holds for the right note)",
+                "E: skip a long rest (jumps to 3 s before the next note)",
+                "I/O: loop markers     P: loop on/off     L: loop the weakest part",
+                "TAB: choose track     H: this help",
+                        ], "small"),
+
+                ("What you see", [
+                "Shift+T: view — the scrolling board, the hybrid sheet that",
+                "  holds still, or the engraved tab page",
+                "+/-: note size on the sheet and the page.  On the board",
+                "  it is a trade: + pushes the notes further apart and shows",
+                "  less of the song, - buys look-ahead by moving them in.",
+                "Shift+C: chord view — grip diagrams and a block per chord",
+                "V: chord scoring     T: theme     F: fret limit",
+                "F1-F6: mute a string     J: per-string chord check",
+                "R / Shift+R: play the same shapes in another tuning",
+                        ], "small"),
+
+                ("Sound and scoring", [
+                "B: MIDI backing     Shift+B: your own part, as a guide",
+                "U: recorded backing on/off     Shift+U: pick the file",
+                "X/C: noise gate down / up",
+                "G: hit window — how far off the beat still counts",
+                "K: measure your timing offset     Shift+K: put it back to 0",
+                ",/.: nudge that offset by 10 ms",
+                "Shift+A: reopen the audio output, if the sound goes bad",
+                "Y: timing report — which timing problem you actually have",
+                "Shift+Y: save the raw measurements as a CSV",
+                "D: save a full run log (what every strike did)",
+                "Z: vsync     Shift+Z: steady frame pacing",
+                        ], "small"),
+
+                ("S: lining the recording up", [
+                "S opens the sync panel at the bottom and closes it again.",
+                "Everything below is in it, and none of it is on screen while",
+                "it is shut — the entry turns yellow if something needs you.",
+                "N/M: MIDI backing earlier / later    Alt+N/M: by a second",
+                "Shift+N / Shift+M: the recording, by 10 ms",
+                "Ctrl+N / Ctrl+M: by a second    Ctrl+Shift: by ten seconds",
+                "  (reaches 8 minutes, for a tab that is only the solo)",
+                "Ctrl+S: find the offsets by listening to the recording",
+                "Shift+S: line it up HERE and add a sync point.",
+                "  Two points give one speed, three give two sections, and a",
+                "  band that played without a click needs the sections.",
+                "  Ctrl+Shift+S clears them all.",
+                "On the song list, O opens the settings screen — everything",
+                "that is set once, with anything away from standard marked.",
+                        ], "small"),
+
+        ]
+
     def _draw_help_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:
         """Explain the track, the note colours, the techniques and the keys.
 
@@ -5339,125 +5538,42 @@ class PlayingScreen:
 
         title_font = _get_font("arial", 26)
         section_font = _get_font("arial", 18)
-        body_font = _get_font("arial", 15)
-        hint_font = _get_font("arial", 13)
+        fonts = {"body": _get_font("arial", 15), "small": _get_font("arial", 13)}
+        steps = {"body": 20, "small": 17}
+        hint_font = fonts["small"]
 
         cx = w // 2
         title_surf = title_font.render("Help", True, t.hud_accent)
         surface.blit(title_surf, (cx - title_surf.get_width() // 2, 12))
 
-        top = 56
-        bottom = h - 30
-        col_w = (w - 60) // 2
-        columns = [30, 30 + col_w + 20]
+        top, bottom = 56, h - 30
+        col_w = (w - 60) // 3
+        columns = [30, 30 + col_w + 15, 30 + 2 * (col_w + 15)]
         col = 0
         x, y = columns[0], top
 
-        def block(title: str, items, font=body_font, step=20) -> None:
-            """One titled section, measured before anything is drawn.
-
-            Whole blocks move to the next column, never halves of one: a
-            heading stranded at the foot of a column with its list continuing
-            at the top of the next reads as two unrelated things.
-
-            An item is either a line of text, or (colour, line) for a swatch.
-            """
-            nonlocal col, x, y
+        for title, items, size in self.help_blocks():
+            font, step = fonts[size], steps[size]
+            # Whole blocks move to the next column, never halves of one: a
+            # heading stranded at the foot of a column with its list carrying
+            # on at the top of the next reads as two unrelated things.
             needed = 24 + step * len(items) + 8
             if y + needed > bottom and col + 1 < len(columns):
                 col += 1
                 x, y = columns[col], top
-
             surface.blit(section_font.render(title, True, t.hud_accent), (x, y))
             y += 24
             for item in items:
                 if isinstance(item, tuple):
-                    color, label = item
-                    pygame.draw.rect(surface, color, (x, y + 3, 13, 13),
+                    colour, label = item
+                    pygame.draw.rect(surface, colour, (x, y + 3, 13, 13),
                                      border_radius=2)
-                    surface.blit(font.render(label, True, t.hud_text), (x + 20, y))
+                    surface.blit(font.render(label, True, t.hud_text),
+                                 (x + 20, y))
                 else:
                     surface.blit(font.render(item, True, t.hud_text), (x, y))
                 y += step
             y += 8
-
-        block("Reading the Track", [
-            "Notes scroll right-to-left toward the hit zone (white line).",
-            "The number on each note is the fret to press (0 = open).",
-            "Play it as the START of the note reaches the line.",
-            "Dimmed notes have already passed the hit zone.",
-            "A note's colour matches its row, so it names the string.",
-        ])
-
-        block("The 6 Rows = 6 Guitar Strings", [
-            (STRING_COLORS.get(s, (180, 180, 180)), label)
-            for s, label in (
-                (1, "Row 1 (top)      = high E  (thinnest)"),
-                (2, "Row 2               = B"),
-                (3, "Row 3               = G"),
-                (4, "Row 4               = D"),
-                (5, "Row 5               = A"),
-                (6, "Row 6 (bottom) = low E  (thickest)"),
-            )
-        ])
-
-        block("Techniques (badge above the note says which)", [
-            "\u00bd  1  1\u00bd   BEND. Fret the note, then push the string until",
-            "     the pitch rises. \u00bd is one fret, 1 is two. The white",
-            "     curve inside the note draws the same thing.",
-            "SL   SLIDE. Strike only the first note and slide into the",
-            "     second. The bar between them rises to the right for",
-            "     up the neck. A short stub is a slide off into nothing.",
-            "H    HAMMER-ON. Strike the first note, then hammer the",
-            "     finger down for the second without striking again.",
-            "P    PULL-OFF. The same in reverse, lifting the finger.",
-            "PM   PALM MUTE starts here and runs on until the notes",
-            "     stop being drawn as short stubs. Rest the picking",
-            "     hand on the strings; the pitch stays the written one.",
-            "X    DEAD NOTE. Damp the string with the fretting hand and",
-            "     strike it: a click, no pitch. Counts as played as long",
-            "     as you strike it in time — there is no pitch to check.",
-            "",
-            "H, P and SL notes are not struck, so they score with the",
-            "note they came from. Bends are scored leniently: the pitch",
-            "has to land in the right region, not on the target exactly.",
-        ])
-
-        block("Scoring (colours change after you play)", [
-            (t.feedback_hit, "Green \u2014 you played the correct note"),
-            (t.feedback_close, "Yellow \u2014 close, off by 1 semitone"),
-            (t.feedback_miss, "Red \u2014 missed, or not played in time"),
-        ])
-
-        block("Controls", [
-            "SPACE: play/pause     LEFT/RIGHT: seek     HOME: restart",
-            "A: toggle audio     PgDn/PgUp: tempo     X/C: noise gate",
-            "B: backing track     T: theme     I/O: loop markers",
-            "P: toggle loop     L: loop the weakest part",
-            "F: fret limit     F1-F6: mute a string     V: chord mode",
-            "E: skip a long rest (jumps to 3 s before the next note)",
-            "W: wait mode (holds until you play the right note)",
-            "J: per-string chord check (finds the wrong-fret string)",
-            "K: auto-sync timing     ,/.: nudge sync by 10 ms",
-            "Shift+K: reset sync to 0, if it has run away",
-            "Y: timing report — which timing problem you actually have",
-            "Shift+Y: save the raw measurements as a CSV file",
-            "D: save a full run log (what every strike did)",
-            "U: recorded backing on/off, Shift+U picks the file",
-            "Shift+N / Shift+M: shift the recording by 10 ms",
-            "Ctrl+N / Ctrl+M: by a second   Ctrl+Shift: by ten seconds",
-            "  (reaches 8 minutes, for a tab that is only the solo)",
-            "Shift+S: line the recording up HERE and add a sync point.",
-            "  Two points give one speed, three give two sections, and a",
-            "  band that played without a click needs the sections.",
-            "  Ctrl+Shift+S clears them all.",
-            "+/-: spread the notes out / fit more of the song on",
-            "G: hit window",
-            "N/M: MIDI backing earlier / later   Alt+N/M: by a second",
-            "TAB: choose track     H: this help     ESC: song list",
-            "On the song list, O opens the settings screen — everything that",
-            "is set once, with anything away from standard marked.",
-        ], font=hint_font, step=17)
 
         close_surf = hint_font.render("Press H to close", True, t.hud_accent)
         surface.blit(close_surf, (cx - close_surf.get_width() // 2, h - 20))

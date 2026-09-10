@@ -101,15 +101,16 @@ class TestTheTwoAreSeparate:
         assert screen._config.guide_track_enabled is False
 
     def test_both_are_named_in_the_footer(self, screen):
-        footer = " ".join(screen._footer_lines())
-        assert "B: backing" in footer and "Shift+B: my part" in footer
+        footer = " ".join(text for text, _ in screen.footer_segments())
+        assert "B: Backing" in footer and "Shift+B: My Backing" in footer
 
     def test_a_song_without_one_says_so_rather_than_nothing(self, monkeypatch):
         """A dash is the answer to "why does pressing it do nothing"."""
         monkeypatch.setattr("pickhero.ui.scrolling.MidiPlayer", _FakePlayer)
         timeline = Timeline([], SongMetadata(title="x", tempo=100))
         s = PlayingScreen(timeline, config=Config(), song_key="x")
-        assert "Shift+B: my part —" in " ".join(s._footer_lines())
+        assert "Shift+B: My Backing —" in " ".join(
+            text for text, _ in s.footer_segments())
 
 
 class TestTheyMoveTogether:

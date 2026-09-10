@@ -899,11 +899,12 @@ class TestAnAlreadySyncedSongSaysSo:
         surface = pygame.display.set_mode((1280, 720))
         screen = self._screen([(0.0, -260.0), (177_000.0, -1330.0)])
         layout = screen._layout(surface)
-        footer_top = screen._blit_footer_lines(
-            surface, layout, screen._footer_lines(), (255, 255, 255))
+        screen._show_sync = True
+        footer_top = screen._blit_footer_lines(surface, layout)
         # Every sync line has to end above where the footer begins.
-        lines = len(screen._sync_lines)
+        lines = len(screen.sync_block_lines())
         top = footer_top - 6 - 18 * lines
+        assert lines >= len(screen._sync_lines)
         assert top + 18 * lines <= footer_top
 
     def test_a_very_long_line_is_cut_to_the_window(self):

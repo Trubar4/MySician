@@ -2301,6 +2301,79 @@ until the right one is up. `O` → **View** sets which one a song opens in.
 `_tab_mode` is a property over `_view` rather than a flag of its own. Two booleans have four states, three of them mean something, and the
 fourth is the bug that gets shipped.
 
+## The Screen Went Back To Being A Screen You Read Music Off
+
+The player sent a screenshot of the hybrid view working and, in the same message, a list of what was in the way. Counted off that
+screenshot: **eight lines down the left, two captions across the middle, six numbers down the right, and twenty-three keyboard shortcuts
+across the bottom in two rows** — on a display whose entire purpose is to be read while both hands are on a guitar.
+
+The rule he wrote, and it is a better one than the rule that produced the old HUD: **a line earns its place by saying something that
+CHANGES and that nothing else on screen says.** Everything below follows from it.
+
+### One line of keys, and each one carries its value
+
+The footer is twelve entries now, and every one of them shows the state of the thing it names — the tempo you are at, the hit window in
+force, the view you are in, the size you set — and **lights up when that is not at rest**. Twenty-three shortcuts with no values are not
+a help system, they are wallpaper, and he read four of them.
+
+The other thirty-odd keys moved into `H`, which is now the ONE place every bound key is written down. **The rule that every key is
+documented did not go away, it moved**: `TestEveryKeyIsWrittenDownSomewhere` still reads `handle_event`'s own source, and now checks it
+against `help_blocks()` — which had to be pulled out of the drawing to be readable at all. Adding a shortcut and forgetting to write it
+down still fails in the suite.
+
+### S, and everything about lining sound up
+
+Six lines of sync arithmetic were permanently on the screen: the MIDI offset, the recording's offset, the strike-timing offset, the
+fifteen sync points, the section rates, and the line telling you which keys change them. None of it is needed while playing; all of it is
+needed while syncing. That is what a key is for. `S` opens it and `S` shuts it.
+
+- **It is an OVERLAY, not room taken from the music.** The first build counted its lines in `_tab_room`, which is honest and wrong:
+  less room means a smaller head, which means more bars on a row, which means different line breaks — so pressing `S` re-broke the music
+  into a different page while you were looking at it. It draws over the bottom of the sheet instead, on a ground of its own, which is the
+  part you are not reading while you line a recording up.
+- **The warning built last session still gets out.** "The recording is guessed here, and it drifted 2128 ms where it was measured" is the
+  one line that explains the picture at 3:49, and shutting it in a panel would make it invisible at exactly the moment it matters. The
+  footer's `S: Sync` entry turns warning-coloured instead. One word is the whole signal.
+
+### The tunings, on one line
+
+`Tuning: CFA#D#GC  C#F#BEG#C#  DGCFAD  D#G#C#F#A#D#  EADGBE*` — the one being played in blue, the one it was written in starred. A tab in
+Drop C played on a standard-tuned guitar is wrong on every single note and nothing else on screen says so.
+
+The window is bounded by what a guitarist would actually do: **at most one step down** (further down is a floppy string, not a choice),
+**up to three up**, ending at the standard-shaped tuning, and **never more than five**. The player's rule as written ("original in the
+middle, one lower, three higher") does not survive contact with his own song — Bon Jovi is written in Standard, so there is nothing above
+it and the original cannot be in the middle. What is invariant is the pair that must be there: **the tuning being PLAYED and the one it
+was WRITTEN in are facts, everything else in the strip is a suggestion**, so the trim takes the suggestions first and only touches a fact
+when both cannot fit.
+
+### What went, and what was kept against instructions
+
+Gone: the hit window, the scroll line, the frame-pacing line, the H/C/M breakdown beside the accuracy, the tempo caption in the middle,
+and the view's own caption over the staff (bars-per-row, page number, zoom — all of it now beside the key that changes it).
+
+Kept, and said out loud rather than done quietly:
+
+- **The loop line, but only while a loop is on.** A loop silently repeating eight bars is the fret-filter trap in another costume, and no
+  other line would mention it.
+- **The streak**, moved to the right column under the accuracy rather than deleted — it is feedback, not chrome, and it only appears at
+  three.
+- **`S: Sync` in the footer**, which he did not list. A key nobody can find is a key nobody presses; that is this project's own rule.
+
+### Two things the cleanup found
+
+- **The top margin was a constant.** `TAB_TOP_MARGIN = 150` was fitted to the old eight-line column. With three lines it left 90 px of
+  empty window above the music and took it off the bottom row. It is measured now (`_hud_top_used`), the same fix `_tab_room` needed at
+  the bottom for the same reason.
+- **A feedback loop, caught by a test.** Putting bars-per-row in the footer's `+/-` entry made the footer longer, which can push it to a
+  second line, which changes the room, which changes the head size, which changes bars-per-row. `test_a_second_frame_lays_nothing_out`
+  failed with "laid out 2 times" — at 44.4 px and then 44.5. The number is not written there. The bar numbers are on the screen anyway,
+  which is where a player would count them.
+
+**And the frame got cheaper**, which was not the point but is worth recording: 300 frames of Thunder's lead at 1920x1200 went from a
+5.4 ms median on the board and 7.2 on the sheet to **3.7 and 4.5**. Text is what this display spends its frame on — measured at 79 % of
+one, in the chapter that built the font cache — so deleting forty text surfaces a frame is the cheapest millisecond in the file.
+
 ## Two Rows Of Music And Nothing Else
 
 "Mir reichen 2 Zeilen des Tabs in der Mitte. Danach sollte oben und unten genug Platz sein für die Anzeigen, die aktuell reinlappen."

@@ -1310,27 +1310,32 @@ class TestSlideTargets:
         assert PlayingScreen._next_on_string([only]) == {}
 
 
-class TestFooterCompleteness:
+class TestEveryKeyIsWrittenDownSomewhere:
     """Every key the screen answers has to be written somewhere on it.
 
-    This reads handle_event's own source rather than a hand-kept list, so
-    adding a shortcut and forgetting to document it fails here instead of
-    quietly shipping a key nobody can find.
+    It used to be the footer, all twenty-three of them across the bottom of
+    a screen you are trying to read music off. The footer is now the twelve
+    worth WATCHING while playing -- the ones whose state you need to see --
+    and H carries the rest. So the rule did not go away, it moved: this
+    reads handle_event's own source against the help page, so adding a
+    shortcut and forgetting to document it fails here instead of quietly
+    shipping a key nobody can find.
     """
 
-    # pygame constant suffix -> the text the footer must contain for it
+    # pygame constant suffix -> the text the help must contain for it
     LABELS = {
         "SPACE": "SPACE", "ESCAPE": "ESC", "LEFT": "LEFT", "RIGHT": "RIGHT",
         "HOME": "HOME", "PAGEDOWN": "PgDn", "PAGEUP": "PgUp", "TAB": "TAB",
-        "a": "A: audio", "b": "B: backing", "c": "X/C", "d": "D: run log",
-        "e": "E: skip a rest", "f": "F: frets",
-        "g": "G: hit window", "h": "H: help", "i": "I/O", "j": "J: strings",
-        "k": "K: sync", "l": "L: weakest", "m": "N/M", "n": "N/M",
-        "r": "R: play in another tuning",
-        "o": "I/O", "p": "P: toggle", "s": "Shift+S: sync point",
-        "t": "T: theme", "u": "U: audio track",
-        "v": "V: chords",
-        "w": "W: wait", "x": "X/C", "y": "Y: timing", "z": "Z: vsync",
+        "a": "A: audio", "b": "B: MIDI backing", "c": "X/C",
+        "d": "D: save a full run log", "e": "E: skip a long rest",
+        "f": "F: fret limit", "g": "G: hit window", "h": "H: this help",
+        "i": "I/O", "j": "J: per-string", "k": "K: measure",
+        "l": "L: loop the weakest", "m": "N/M", "n": "N/M",
+        "o": "I/O", "p": "P: loop on/off",
+        "r": "R / Shift+R", "s": "S opens the sync panel",
+        "t": "T: theme", "u": "U: recorded backing", "v": "V: chord scoring",
+        "w": "W: wait mode", "x": "X/C", "y": "Y: timing report",
+        "z": "Z: vsync",
         "COMMA": ",/.", "PERIOD": ",/.",
         "PLUS": "+/-", "EQUALS": "+/-", "MINUS": "+/-",
         "KP_PLUS": "+/-", "KP_MINUS": "+/-",
@@ -1344,28 +1349,103 @@ class TestFooterCompleteness:
         source = inspect.getsource(PlayingScreen.handle_event)
         return set(re.findall(r"pygame\.K_(\w+)", source))
 
-    def test_every_handled_key_is_in_the_footer(self):
+    def _help_text(self, screen) -> str:
+        return "  ".join(
+            item if isinstance(item, str) else item[1]
+            for _, items, _ in screen.help_blocks() for item in items)
+
+    def test_every_handled_key_is_in_the_help(self):
         screen = PlayingScreen(_make_timeline())
-        footer = "  ".join(screen._footer_lines())
+        text = self._help_text(screen)
         missing = []
         for key in sorted(self._keys_handled()):
-            assert key in self.LABELS, f"new key K_{key} has no footer label"
-            if self.LABELS[key] not in footer:
+            assert key in self.LABELS, f"new key K_{key} has no help label"
+            if self.LABELS[key] not in text:
                 missing.append(key)
         assert missing == [], f"undocumented keys: {missing}"
 
-    def test_footer_keeps_the_keys_when_nothing_is_loaded(self):
+    def test_the_help_keeps_the_keys_when_nothing_is_loaded(self):
         """No backing track still means B is bound, so B stays listed."""
         screen = PlayingScreen(_make_timeline())
         assert screen._midi_player is None
-        footer = "  ".join(screen._footer_lines())
-        assert "B: backing" in footer and "W: wait" in footer
+        text = self._help_text(screen)
+        assert "B: MIDI backing" in text and "W: wait mode" in text
 
-    def test_footer_reports_the_state_it_shows(self):
+
+class TestTheFooterIsTheTwelveWorthWatching:
+    """"Alles in Hilfe verschieben außer diesen Werten (aktiv = blau)."
+
+    A footer entry earns its place by carrying a VALUE that changes while
+    playing -- the tempo you are at, the hit window in force, the view you
+    are in. Twenty-three shortcuts with no values are wallpaper.
+    """
+
+    def _texts(self, screen):
+        return [text for text, _ in screen.footer_segments()]
+
+    def test_it_is_one_line_of_a_dozen(self):
         screen = PlayingScreen(_make_timeline())
-        assert "Paused" in screen._footer_lines()[0]
+        assert 10 <= len(screen.footer_segments()) <= 13
+
+    def test_every_entry_the_player_asked_for_is_there(self):
+        screen = PlayingScreen(_make_timeline())
+        joined = "  ".join(self._texts(screen))
+        for wanted in ("SPACE", "PgDn/PgUp: Tempo", "A: Audio", "B: Backing",
+                       "Shift+B: My Backing", "+/- Size", "G: ",
+                       "Shift+C: Chords", "Shift+T: View", "E: Skip",
+                       "H: help"):
+            assert wanted in joined, f"{wanted} is not in the footer"
+
+    def test_and_nothing_that_belongs_in_the_help(self):
+        screen = PlayingScreen(_make_timeline())
+        joined = "  ".join(self._texts(screen))
+        for gone in ("X/C", "F1-F6", "Y:", "D:", "Z:", "TAB", "I/O",
+                     "Shift+S", "Ctrl+S", "K:", ",/.", "W:", "R:"):
+            assert gone not in joined, f"{gone} is still in the footer"
+
+    def test_each_entry_carries_its_value(self):
+        screen = PlayingScreen(_make_timeline())
+        joined = "  ".join(self._texts(screen))
+        assert f"{screen._timeline.metadata.tempo} BPM (100%)" in joined
+        assert f"{int(screen._config.timing_window_ms)} ms" in joined
+        assert "Standard" in joined
+
+    def test_an_entry_lights_up_when_it_is_not_at_rest(self):
+        screen = PlayingScreen(_make_timeline())
+
+        def audio():
+            return next((text, c) for text, c in screen.footer_segments()
+                        if text.startswith("A: Audio"))
+
+        screen._audio_enabled = True
+        on_text, on_colour = audio()
+        screen._audio_enabled = False
+        off_text, off_colour = audio()
+        assert on_colour == "hud_accent" and off_colour == "hud_text"
+        assert on_text.endswith("on") and off_text.endswith("off")
+
+    def test_the_view_entry_follows_the_view(self):
+        screen = PlayingScreen(_make_timeline())
+        screen._view = "hybrid"
+        assert any("View Hybrid" in text for text in self._texts(screen))
+
+    def test_the_size_entry_means_what_the_view_means(self):
+        """+/- is three different things in three views, and an entry that
+        named only one of them would be a lie in the other two."""
+        screen = PlayingScreen(_make_timeline())
+        screen._view = "hybrid"
+        assert "1.00x" in "".join(self._texts(screen))
+        screen._view = "tab"
+        assert "zoom" in "".join(self._texts(screen))
+
+    def test_it_reports_the_play_state(self):
+        screen = PlayingScreen(_make_timeline())
+        paused = next(c for text, c in screen.footer_segments()
+                      if text.startswith("SPACE"))
         screen.toggle_play()
-        assert "Paused" not in screen._footer_lines()[0]
+        playing = next(c for text, c in screen.footer_segments()
+                       if text.startswith("SPACE"))
+        assert paused != playing
 
 
 class TestTimingOverlay:
@@ -3085,10 +3165,13 @@ class TestSeekingInSteps:
         moved = self._press(screen, pygame.K_RIGHT, pygame.KMOD_SHIFT)
         assert moved > 1_000.0
 
-    def test_the_footer_names_all_three(self):
-        """A key that is bound but undocumented is a key nobody finds."""
-        footer = " ".join(self._screen()._footer_lines())
-        assert "Shift: bar" in footer and "Ctrl: 30s" in footer
+    def test_the_help_names_all_three(self):
+        """A key that is bound but undocumented is a key nobody finds. The
+        footer is the twelve worth watching while playing; H has the rest."""
+        text = "  ".join(item if isinstance(item, str) else item[1]
+                         for _, items, _ in self._screen().help_blocks()
+                         for item in items)
+        assert "Shift: a bar" in text and "Ctrl: 30 seconds" in text
 
 
 class TestChangingTrackKeepsThePlace:
@@ -3861,9 +3944,24 @@ class TestTheFooterFitsOnTheScreen:
             def __getattr__(self, name):
                 return getattr(self._target, name)
 
-        screen._blit_footer_lines(Recorder(surface), layout,
-                                  screen._footer_lines(), (200, 200, 200))
+        screen._blit_footer_lines(Recorder(surface), layout)
         assert widest and max(widest) <= 1911
+
+    def test_and_it_comes_out_as_one_line(self):
+        """Twelve entries, not twenty-three. If this ever wraps, something
+        was put back that belongs in the help."""
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen, _Layout
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        layout = _Layout(screen_w=1280, screen_h=720, lane_height=60.0,
+                         note_h=40.0, hit_zone_x=150.0, usable_width=1100.0,
+                         pixels_per_ms=0.2, visible_window_ms=4000.0)
+        _, rows, _, _ = screen._footer_block(layout)
+        assert len(rows) == 1, f"the footer wrapped onto {len(rows)} lines"
 
 
 class TestSkippingALongRest:
@@ -3980,7 +4078,19 @@ class TestSkippingALongRest:
 
     def test_the_key_is_in_the_footer(self):
         screen = self._with_a_rest()
-        assert any("E:" in line for line in screen._footer_lines())
+        assert any(text.startswith("E: Skip")
+                   for text, _ in screen.footer_segments())
+
+    def test_and_it_lights_up_while_there_is_a_rest_to_skip(self):
+        """Sitting in a hole with nothing to play looks exactly like a
+        picture that has stopped. The line that used to say so is gone with
+        the rest of the left column, so the KEY says it instead."""
+        screen = self._with_a_rest()
+        screen._playback_ms = 0.0
+        quiet = dict(screen.footer_segments())["E: Skip"]
+        screen._playback_ms = screen._rests[0][0] + 500.0
+        assert screen._rest_hud_text()
+        assert dict(screen.footer_segments())["E: Skip"] != quiet
 
     def test_the_rest_list_is_built_once_per_song_and_never_in_a_frame(self):
         """A walk over every note, so it must not run 60 times a second."""
@@ -4069,37 +4179,20 @@ class TestAPressMustBuySomethingVisible:
         assert screen._config.scroll_speed_factor == pytest.approx(0.7)
 
 
-    def test_the_hud_names_the_direction_of_each_key(self):
+    def test_the_help_names_the_direction_of_each_key(self):
         """A player who wants the notes further apart and presses - gets the
-        opposite, and nothing on screen said which way either key goes."""
-        pygame.init()
-        try:
-            screen = self._screen(spacing_ms=300.0)
-            surface = pygame.Surface((1280, 720))
-            drawn = []
+        opposite, and nothing said which way either key goes.
 
-            class _Watched:
-                def __init__(self, font):
-                    self._font = font
-
-                def render(self, text, *a, **k):
-                    drawn.append(text)
-                    return self._font.render(text, *a, **k)
-
-                def __getattr__(self, name):
-                    return getattr(self._font, name)
-
-            real_get_font = scrolling._get_font
-            scrolling._get_font = lambda *a, **k: _Watched(real_get_font(*a, **k))
-            try:
-                screen._playback_ms = 1000.0
-                screen.render(surface)
-            finally:
-                scrolling._get_font = real_get_font
-            line = next((d for d in drawn if d.startswith("Scroll:")), "")
-            assert "further apart" in line and "look-ahead" in line
-        finally:
-            pygame.quit()
+        It used to be said on the scrolling view's own HUD line. That line
+        went with the rest of the left column ("Hit Windows und Scroll
+        ausblenden"), so the sentence has to survive in the help -- the
+        trade itself did not go anywhere.
+        """
+        screen = self._screen(spacing_ms=300.0)
+        text = "  ".join(item if isinstance(item, str) else item[1]
+                         for _, items, _ in screen.help_blocks()
+                         for item in items)
+        assert "look-ahead" in text and "further apart" in text
 
 
 class TestOneShortPressIsOneStep:
@@ -4684,10 +4777,12 @@ class TestHandingThePicturesToThePanel:
                                                mod=0))
         assert screen._config.display.vsync is False
 
-    def test_the_footer_names_it(self):
+    def test_the_help_names_it(self):
         """A key that is bound and undocumented is a key nobody finds."""
         screen = PlayingScreen(_make_timeline(), config=Config())
-        assert "Z: vsync" in " ".join(screen._footer_lines())
+        assert "Z: vsync" in "  ".join(
+            item if isinstance(item, str) else item[1]
+            for _, items, _ in screen.help_blocks() for item in items)
 
     def test_the_log_says_which_pacing_a_reading_came_from(self):
         """Two logs differing in the one thing under test are worth nothing
@@ -4832,9 +4927,11 @@ class TestWaitingForTheFrameExactly:
         screen._write_run_log(buffer)
         assert "pacing\tsteady" in buffer.getvalue()
 
-    def test_the_footer_names_it(self):
+    def test_the_help_names_it(self):
         screen = PlayingScreen(_make_timeline(), config=Config())
-        assert "Shift+Z: steady pace" in " ".join(screen._footer_lines())
+        assert "Shift+Z: steady frame pacing" in "  ".join(
+            item if isinstance(item, str) else item[1]
+            for _, items, _ in screen.help_blocks() for item in items)
 
 
 class TestTheSettingUnderTestIsOnScreen:
