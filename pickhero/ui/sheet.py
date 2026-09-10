@@ -91,6 +91,19 @@ def string_widths(lane_h: float) -> tuple[int, ...]:
     return tuple(max(1, int(round(g * unit))) for g in STRING_GAUGES)
 
 
+# How a note's LENGTH is drawn, mirroring the scrolling board's rules. The
+# numbers live here as well as there because this module may not import the
+# drawing (the drawing imports this one), and `tests/test_sheet.py` asserts
+# the two sets are equal -- so they cannot drift apart in silence.
+#
+# A gap so back-to-back notes abut instead of merging into one ribbon; a
+# bigger one when a slide has to fit a connector into it; and a cap on a
+# palm-muted note, which is choked short of whatever the tab wrote. A dead
+# note is a click with no sustain at all.
+SUSTAIN_GAP = 0.18
+SLIDE_GAP = 0.85
+PALM_MUTE_MAX_HEADS = 1.3
+
 # Never smaller than this, whatever the window does: below it the fret number
 # inside the head stops being a number.
 MIN_HEAD_PX = 22.0
@@ -308,18 +321,37 @@ def _place(row: Row, notes: list[NoteEvent], head_px: float,
     """
     mine = [n for n in notes if row.start_ms <= n.timestamp_ms < row.end_ms]
     mine.sort(key=lambda n: (n.timestamp_ms, n.string))
-    next_on_string: dict[int, list[float]] = {}
-    for note in mine:
-        next_on_string.setdefault(note.string, []).append(note.timestamp_ms)
+    on_string: dict[int, list[float]] = {}
+    for note in notes:
+        on_string.setdefault(note.string, []).append(note.timestamp_ms)
 
     placed = []
     for note in mine:
         x = row.x_at(note.timestamp_ms)
         ends = row.x_at(min(note.timestamp_ms + note.duration_ms, row.end_ms))
-        others = next_on_string[note.string]
+        others = on_string[note.string]
         after = bisect_right(others, note.timestamp_ms)
+        # The next note on this string, wherever it is. Clamped by x_at to
+        # the row's right edge when it belongs to the next row, which is
+        # what a note held over a line break should look like.
         limit = (row.x_at(others[after]) if after < len(others) else width)
-        body = min(ends, limit) - x
+        # "let ring" does not lengthen the written value -- a let-ring eighth
+        # is still an eighth -- it says the string is never damped, so the
+        # note sounds until something else is played on it. That is exactly
+        # the neighbour, which is already the cap for every other note.
+        if note.let_ring:
+            ends = limit
+        gap = head_px * (SLIDE_GAP if note.slide_to_next else SUSTAIN_GAP)
+        body = min(ends, limit) - x - gap
+        # A muted note does not ring for the length the tab wrote. A dead
+        # note is a click with no sustain at all, and a palm-muted one is
+        # choked; drawing either at full length promises a ring that never
+        # comes, and reading a chug as a held note is how a muted riff ends
+        # up played wrong.
+        if note.dead:
+            body = min(body, head_px)
+        elif note.palm_mute:
+            body = min(body, head_px * PALM_MUTE_MAX_HEADS)
         placed.append(Placed(note=note, x=x, width=max(head_px, body)))
     return tuple(placed)
 

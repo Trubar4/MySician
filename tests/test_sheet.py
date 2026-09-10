@@ -266,3 +266,72 @@ class TestTheStringsAreStringsNotLines:
     def test_a_taller_lane_carries_thicker_strings(self):
         from pickhero.ui.sheet import string_widths
         assert string_widths(90.0)[5] > string_widths(45.0)[5]
+
+
+class TestANoteIsAsLongAsItSounds:
+    """The same length rules the scrolling board uses, because a note that
+    reads as held on one view and choked on the other is two answers to one
+    question -- and the choked one is the true one."""
+
+    def _placed(self, note_kwargs, gap_ms=2000.0, head=HEAD):
+        notes = []
+        for i, extra in enumerate(note_kwargs):
+            fields = {"duration_ms": 200.0}
+            fields.update(extra)
+            notes.append(NoteEvent(timestamp_ms=i * gap_ms, midi_note=40,
+                                   string=6, fret=3, measure=0, **fields))
+        measures = [MeasureInfo(index=0, start_ms=0.0,
+                                end_ms=len(notes) * gap_ms)]
+        song = Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=measures)
+        rows = lay_out(song, WIDTH, head)
+        return rows[0].notes
+
+    def test_the_numbers_are_the_boards_own(self):
+        """They live in both files because the drawing imports this module
+        and not the other way round. This is what stops them drifting."""
+        from pickhero.ui import scrolling, sheet
+        assert sheet.SUSTAIN_GAP == scrolling.SUSTAIN_GAP_FRACTION
+        assert sheet.SLIDE_GAP == scrolling.SLIDE_GAP_FRACTION
+        assert sheet.PALM_MUTE_MAX_HEADS == scrolling.PALM_MUTE_MAX_HEADS
+
+    def test_a_dead_note_is_a_click_not_a_sustain(self):
+        plain, dead = self._placed([{}, {"dead": True}])
+        assert dead.width <= HEAD
+        assert dead.width <= plain.width
+
+    def test_a_palm_muted_note_is_choked(self):
+        from pickhero.ui.sheet import PALM_MUTE_MAX_HEADS
+        notes = self._placed([{"palm_mute": True, "duration_ms": 1900.0},
+                              {}])
+        assert notes[0].width <= HEAD * PALM_MUTE_MAX_HEADS + 0.01
+
+    def test_a_let_ring_note_sounds_until_the_next_one_on_its_string(self):
+        """A let-ring eighth is still an eighth -- what it says is that the
+        string is never damped."""
+        short, _ = self._placed([{"let_ring": True}, {}])
+        plain, _ = self._placed([{}, {}])
+        assert short.width > plain.width * 2
+
+    def test_and_still_stops_short_of_it(self):
+        rung, following = self._placed([{"let_ring": True}, {}])
+        assert rung.x + rung.width < following.x
+
+    def test_every_note_leaves_a_gap_before_the_next(self):
+        """Without it a run of eighths renders as one unbroken ribbon."""
+        notes = self._placed([{"duration_ms": 2000.0}] * 4)
+        for note, following in zip(notes, notes[1:]):
+            assert note.x + note.width < following.x
+
+    def test_a_slide_gives_up_more_of_it_so_the_connector_fits(self):
+        sliding, _ = self._placed([{"slide_to_next": True,
+                                    "duration_ms": 1900.0}, {}])
+        holding, _ = self._placed([{"duration_ms": 1900.0}, {}])
+        assert sliding.width < holding.width
+
+    def test_a_note_never_shrinks_below_its_own_head(self):
+        """Whatever the rules say, a head is a head."""
+        for extra in ({"dead": True}, {"palm_mute": True},
+                      {"slide_to_next": True}, {}):
+            for note in self._placed([extra, {}], gap_ms=120.0):
+                assert note.width >= HEAD

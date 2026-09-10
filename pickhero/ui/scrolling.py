@@ -1098,6 +1098,7 @@ class PlayingScreen:
         # is exactly the loop this display has had to move out of a frame
         # three times.
         self._sheet_rows: list = []
+        self._sheet_next: dict = {}
         self._sheet_key: tuple = ()
         self._sheet_zoom: int = sheet.ZOOM_DEFAULT
         self._sheet_scroll: float = 0.0
@@ -2170,9 +2171,16 @@ class PlayingScreen:
         key = (width, round(head_px, 1), self._filter_signature(),
                id(self._timeline))
         if key != self._sheet_key:
+            notes = [n for n in self._timeline.notes
+                     if self._note_passes_filter(n)]
             self._sheet_rows = sheet.lay_out(
                 self._timeline, float(width), head_px,
                 passes=self._note_passes_filter)
+            # Where each slide, hammer-on and pull-off is GOING. Over the
+            # whole song rather than the row, because the note a technique
+            # points at is regularly the first one of the next row -- and
+            # built here rather than per frame, because it walks every note.
+            self._sheet_next = self._next_on_string(notes)
             self._sheet_key = key
         return self._sheet_rows
 
@@ -2282,6 +2290,7 @@ class PlayingScreen:
         for edge_y in (lanes_top, lanes_top + band_h):
             pygame.draw.line(surface, edge, (x0, int(edge_y)),
                              (x0 + content_w, int(edge_y)), 2)
+        self._draw_sheet_loop(surface, row, x0, lanes_top, band_h, content_w)
 
         # Bar lines and their numbers. A sheet with no bar numbers is a sheet
         # you cannot talk about -- "the run in bar 34" is how a player finds
@@ -2315,11 +2324,46 @@ class PlayingScreen:
                 _head_surface(max(1, int(placed.width)), max(1, int(head)),
                               colour, t.note_border),
                 (int(x0 + placed.x), int(cy - head / 2)))
-            marks.append((note, x0 + placed.x, cy))
+            marks.append((note, x0 + placed.x, cy, placed.width, base))
 
+        # Every marking OVER every head, the same two passes the board needs
+        # and for the same reason: a head drawn after its neighbour's mark
+        # covers it, and in a fast run that is every mark but the last.
         radius = head / 2
+        for note, x, cy, width, base in marks:
+            following = self._sheet_next.get((note.timestamp_ms, note.string))
+            target_x = None
+            if following is not None:
+                # x_at clamps to the row, so a note that belongs to the next
+                # row lands on this row's right edge -- which is what a
+                # technique running off the end of a line should look like.
+                target_x = x0 + row.x_at(following.timestamp_ms)
+            # Nothing on the sheet is dimmed, marks included: the row behind
+            # the playhead is the record of the run, and a badge that fades
+            # once it is played takes half that record away.
+            if note.slide_to_next or note.slide_in or note.slide_out:
+                self._draw_slide(surface, note, x, cy, head, width,
+                                 following, target_x, base, False)
+            if (note.hammer_to_next and following is not None
+                    and target_x is not None):
+                self._draw_legato(surface, note, x, cy, head, width,
+                                  following, target_x, base, False)
+            if note.bend:
+                self._draw_bend(surface, note, x, cy, head, width, base, False)
+            # "PM" over the note that opens a muted run, unless that note is
+            # already wearing a technique badge -- two discs in one place
+            # read as neither, and which pitch the note does is the more
+            # urgent of the two.
+            badged = bool(note.bend or note.slide_to_next or note.slide_in
+                          or note.slide_out)
+            if ((note.timestamp_ms, note.string) in self._palm_mute_starts
+                    and not badged):
+                self._draw_badge(surface, "PM", x + head,
+                                 self._badge_y(cy, head, head / 2), head,
+                                 base, False)
+
         fret_font = self._fret_font(radius, radius, self._fret_digits)
-        for note, x, cy in marks:
+        for note, x, cy, _width, _base in marks:
             text = "X" if note.dead else str(note.fret)
             drawn = fret_font.render(text, True, t.note_text)
             if drawn.get_width() > 2 * radius:
@@ -2410,6 +2454,44 @@ class PlayingScreen:
             written_to = x + width_of(label) + SHEET_NAME_GAP
             out.append((x, label))
         return out
+
+    def _draw_sheet_loop(self, surface: pygame.Surface, row, x0: int,
+                         lanes_top: float, band_h: float,
+                         content_w: int) -> None:
+        """The looped stretch, shaded across the rows it covers.
+
+        A loop silently repeating eight bars is the fret-filter trap in
+        another costume: nothing else on the sheet would say why the
+        playhead keeps going back. Drawn OVER the board and under the notes,
+        so it reads as ground rather than as something played.
+        """
+        start, end = self._loop_start_ms, self._loop_end_ms
+        if start is None and end is None:
+            return
+        t = get_theme()
+        marker = (t.loop_marker if self._loop_enabled
+                  else t.loop_marker_disabled)
+        region = (t.loop_region if self._loop_enabled
+                  else t.loop_region_disabled)
+        if start is not None and end is not None:
+            # Only the part of it that is on THIS row. x_at clamps, so a loop
+            # that starts before the row shades from its left edge and one
+            # that ends after it shades to the right -- which is what a
+            # stretch running across a line break looks like.
+            if end > row.start_ms and start < row.end_ms:
+                left = int(x0 + row.x_at(start))
+                right = int(x0 + row.x_at(end))
+                if right > left:
+                    band = pygame.Surface((right - left, int(band_h)),
+                                          pygame.SRCALPHA)
+                    band.fill(region)
+                    surface.blit(band, (left, int(lanes_top)))
+        for when in (start, end):
+            if when is None or not row.holds(when):
+                continue
+            x = int(x0 + row.x_at(when))
+            pygame.draw.line(surface, marker, (x, int(lanes_top)),
+                             (x, int(lanes_top + band_h)), 3)
 
     def _draw_sheet_chords(self, surface: pygame.Surface, row, x0: int,
                            y: float, lanes_top: float,

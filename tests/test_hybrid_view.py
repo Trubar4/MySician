@@ -16,6 +16,7 @@ from pickhero.matcher import MatchType, NoteMatcher
 from pickhero.tabs.timeline import (MeasureInfo, NoteEvent, SongMetadata,
                                     Timeline)
 from pickhero.ui import scrolling, sheet
+from pickhero.ui.scrolling import SHEET_SIDE_PAD
 from pickhero.ui.scrolling import PlayingScreen
 
 BAR_MS = 2000.0
@@ -547,3 +548,147 @@ class TestTheDefaultViewIsASetting:
             seen.append(config.default_view)
         assert seen == ["standard", "hybrid", "tab", "standard"]
         assert "hold" in row.note or "sheet" in row.note
+
+
+class TestEverythingTheBoardDrawsOnANote:
+    """"Kann es sein, dass hammer-on, pull-off, bending etc. beim Hybrid
+    fehlen?" It could, and they did: the sheet drew heads and fret numbers
+    and nothing else. A view that leaves the techniques out is a view you
+    cannot practise a solo on."""
+
+    def _technique_song(self, every=False, **flags):
+        notes, measures = [], []
+        for bar in range(6):
+            measures.append(MeasureInfo(index=bar, start_ms=bar * BAR_MS,
+                                        end_ms=(bar + 1) * BAR_MS))
+            for beat in range(4):
+                extra = (dict(flags) if every or (bar, beat) == (0, 0)
+                         else {})
+                notes.append(NoteEvent(
+                    timestamp_ms=bar * BAR_MS + beat * (BAR_MS / 4),
+                    duration_ms=300.0, midi_note=40 + beat, string=6,
+                    fret=5 + beat, measure=bar, **extra))
+        return Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=measures)
+
+    def _drew(self, screen):
+        """Which of the note-drawing helpers the sheet reached for."""
+        called = []
+        for name in ("_draw_slide", "_draw_legato", "_draw_bend",
+                     "_draw_badge"):
+            setattr(screen, name,
+                    (lambda n: lambda *a, **k: called.append(n))(name))
+        screen.render(pygame.Surface((1280, 800)))
+        return called
+
+    def _screen_for(self, song):
+        screen = PlayingScreen(song, config=Config())
+        screen._view = "hybrid"
+        screen._playback_ms = 100.0
+        return screen
+
+    def test_a_hammer_on_gets_its_arc(self):
+        screen = self._screen_for(self._technique_song(hammer_to_next=True))
+        assert "_draw_legato" in self._drew(screen)
+
+    def test_a_slide_gets_its_connector(self):
+        screen = self._screen_for(self._technique_song(slide_to_next=True))
+        assert "_draw_slide" in self._drew(screen)
+
+    def test_a_bend_gets_its_curve(self):
+        screen = self._screen_for(self._technique_song(bend=((0.0, 0.0),
+                                                             (1.0, 2.0))))
+        assert "_draw_bend" in self._drew(screen)
+
+    def test_a_palm_muted_run_gets_one_badge(self):
+        screen = self._screen_for(self._technique_song(palm_mute=True))
+        assert "_draw_badge" in self._drew(screen)
+
+    def test_and_a_plain_song_gets_none_of_them(self):
+        screen = self._screen_for(self._technique_song())
+        assert self._drew(screen) == []
+
+    def test_a_technique_pointing_into_the_next_row_still_draws(self):
+        """The note a hammer-on points at is regularly the first of the next
+        row. x_at clamps to the row, so it lands on the right edge -- which
+        is what a technique running off the end of a line looks like."""
+        screen = self._screen_for(
+            self._technique_song(every=True, hammer_to_next=True))
+        screen.render(pygame.Surface((1280, 800)))
+        row = screen._sheet_rows[0]
+        last = row.notes[-1]
+        following = screen._sheet_next.get(
+            (last.note.timestamp_ms, last.note.string))
+        assert following is not None
+        assert following.timestamp_ms >= row.end_ms, "not a row break at all"
+        # And the clamp is what makes it drawable at all.
+        assert row.x_at(following.timestamp_ms) == row.xs[-1]
+
+    def test_the_marks_go_over_every_head_not_just_their_own(self):
+        """The board needs two passes for this and so does the sheet: a head
+        drawn after its neighbour's mark covers it, and in a fast run that is
+        every mark but the last."""
+        import inspect
+        source = inspect.getsource(PlayingScreen._draw_sheet_row)
+        heads = source.index("_head_surface")
+        marks = source.index("_draw_slide")
+        numbers = source.index("fret_font.render")
+        assert heads < marks < numbers
+
+
+class TestTheLoopIsVisibleOnTheSheet:
+    """A loop silently repeating eight bars is the fret-filter trap in
+    another costume: nothing else on the sheet says why the playhead keeps
+    going back to the same place."""
+
+    def _looped(self, start=1000.0, end=9000.0, enabled=True):
+        screen = _screen(_song(bars=12))
+        screen._loop_start_ms = start
+        screen._loop_end_ms = end
+        screen._loop_enabled = enabled
+        return screen
+
+    def _painted(self, screen):
+        """How much of the sheet the loop shading changed.
+
+        Counted off a real render rather than watched through a call: the
+        shading is an alpha blend over the board, and what matters is that it
+        reaches the screen, which a mock of the drawing cannot say.
+        """
+        surface = pygame.Surface((1280, 800))
+        screen.render(surface)
+        # The MUSIC only. The HUD prints a loop line of its own whenever a
+        # loop exists anywhere in the song, and comparing whole frames would
+        # score that as shading -- which is how this test first passed for
+        # a loop three minutes off the screen.
+        top, room = screen._tab_room(screen._layout(surface))
+        band = surface.subsurface(pygame.Rect(0, top, 1280, room))
+        return pygame.image.tostring(band, "RGB")
+
+    def _differs(self, a, b) -> int:
+        return sum(1 for x, y in zip(a, b) if x != y)
+
+    def test_the_looped_stretch_is_shaded(self):
+        plain = self._painted(self._looped(start=None, end=None))
+        assert self._differs(self._painted(self._looped()), plain) > 1000
+
+    def test_a_switched_off_loop_is_shown_differently(self):
+        """Off and on are different states, and the shading says which."""
+        off = self._painted(self._looped(enabled=False))
+        on = self._painted(self._looped(enabled=True))
+        plain = self._painted(self._looped(start=None, end=None))
+        assert self._differs(off, plain) > 1000, "a disabled loop is invisible"
+        assert self._differs(off, on) > 1000, "on and off look the same"
+
+    def test_a_stretch_that_has_not_reached_this_row_shades_nothing(self):
+        plain = self._painted(self._looped(start=None, end=None))
+        late = self._painted(self._looped(start=200_000.0, end=210_000.0))
+        assert self._differs(late, plain) == 0
+
+    def test_a_loop_that_ends_on_a_later_row_shades_to_the_row_edge(self):
+        """x_at clamps, so a stretch running across a line break shades from
+        this row's left edge to its right one."""
+        screen = self._looped(start=100.0, end=200_000.0)
+        screen.render(pygame.Surface((1280, 800)))
+        row = screen._sheet_rows[0]
+        assert row.x_at(200_000.0) == row.xs[-1]

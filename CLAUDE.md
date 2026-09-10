@@ -2293,6 +2293,34 @@ because this display has had to move a loop out of the frame three times already
 
 **What it costs is a page turn every four to five seconds.** That is the trade, and it is the same one the tab view makes.
 
+### Everything the board draws on a note
+
+"Kann es sein, dass hammer-on, pull-off, bending etc. beim Hybrid fehlen?" It could, and they did. The sheet drew heads and fret numbers
+and nothing else — no bend curves, no slide connectors, no legato arcs, no PM badges. **A view that leaves the techniques out is a view you
+cannot practise a solo on**, which is the only thing this view was built for.
+
+They cost almost nothing to add, because `_draw_slide`, `_draw_legato`, `_draw_bend` and `_draw_badge` take their geometry as arguments
+and assume nothing about a scrolling board. What the sheet had to supply was the one thing it does differently: **where the technique is
+going.** A hammer-on regularly points at the first note of the NEXT row, so `_sheet_next` is built over the whole song (with the layout,
+not per frame — it walks every note), and `Row.x_at` clamps a target outside the row to that row's right edge. Which is what a technique
+running off the end of a line should look like.
+
+**Two things the sheet was quietly getting wrong, found while porting them.**
+
+- **Note lengths.** The board chokes a palm-muted note to 1.3 heads and a dead one to a click, and lets a `let ring` note sound until the
+  next note on its string; the sheet drew all of them at their written value. Its own comment says why that matters: *reading a chug as a
+  held note is how a muted riff ends up played wrong*. And every note now leaves the same gap before its neighbour, without which a run of
+  eighths renders as one unbroken ribbon. The numbers live in `sheet.py` as well as `scrolling.py` — this module may not import the
+  drawing, since the drawing imports it — and a test asserts the two sets are equal, so they cannot drift apart in silence.
+- **The loop was invisible.** The board shades the looped stretch; the sheet did not, so nothing said why the playhead kept going back to
+  the same bar. The fret-filter trap in another costume. It shades across rows now, clamped by `x_at` at both ends, and a switched-off loop
+  is shaded differently from a live one.
+
+**Nothing is dimmed, marks included** — the same rule the heads follow. A badge that fades once its note is played takes half the record of
+the run away, and the record is what the sheet is for.
+
+The frame went from 4.5 ms to 5.2 ms median on Thunder's lead at 1920x1200, against a 16.7 ms budget.
+
 ### Three views, one key, one default
 
 `Shift+T` walks all three — standard, hybrid, tab — because a view is chosen by LOOKING at it, so what the key has to do is keep going
