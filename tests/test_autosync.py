@@ -433,3 +433,73 @@ class TestSayingWhatCouldNotBeRead:
         rows = self._rows(240, lambda t: 0.0)
         rows[3] = (rows[3][0], 0.0, 0.001)
         assert autosync.read_report(rows)["ambiguous"] == 1
+
+
+class TestATabOfTheWrongLength:
+    """"Ich lade den gleichen Song und das identische GP-File" -- and on
+    Thunder he did not. His old tab is 6:21 in 248 bars at 156 BPM; the
+    recording is 4:40, and the tab he replaced it with is 4:40 in 91 bars at
+    78 BPM, matching to a tenth of a second. A whole session went on the
+    first one's sync before anything compared the two numbers.
+    """
+
+    def _find(self, monkeypatch, tab_s, rec_s, rows=None):
+        rows = rows or [(float(t), 0.0, 0.05) for t in range(0, 240, 6)]
+        monkeypatch.setattr(
+            autosync, "measure",
+            lambda tab, audio, progress=None, tolerance_ms=25.0: (
+                autosync.points_from_rows(rows), rows, (tab_s, rec_s)))
+        return autosync.find("tab", "audio")
+
+    def test_two_lengths_far_apart_are_not_one_song(self, monkeypatch):
+        found = self._find(monkeypatch, 383.3, 280.1)
+        assert found["wrong_length"] and not found["readable"]
+        assert found["points"] == []
+        assert found["length_gap"] == pytest.approx(0.269, abs=0.01)
+
+    def test_the_matching_tab_is_read_normally(self, monkeypatch):
+        found = self._find(monkeypatch, 280.0, 280.1)
+        assert not found["wrong_length"] and found["readable"]
+        assert found["points"]
+
+    def test_the_bound_is_outside_what_drift_could_ever_be(self):
+        """Anything this rejects could not have been fitted anyway."""
+        assert autosync.MAX_LENGTH_MISMATCH > autosync.MAX_DRIFT_RATE
+
+    def test_a_reading_the_windows_could_not_make_sense_of_still_says_so(
+            self, monkeypatch):
+        import random
+        random.seed(5)
+        noise = [(float(t), random.uniform(-40, 40), 0.05)
+                 for t in range(0, 300, 6)]
+        found = self._find(monkeypatch, 280.0, 280.1, noise)
+        assert not found["readable"] and not found["wrong_length"]
+
+
+class TestTheBreaksAreTheOnesTheMapHas:
+    """A section can be big enough to fit and still hold a wrong match at its
+    edge -- Thunder's first 36 s hold six readings, two at +1.2 s and the
+    rest at -23.5 s. Comparing raw section endpoints reported a 24.9 s break
+    the stored points do not have, and a break the map does not contain is a
+    line that lies."""
+
+    def test_a_wrong_match_at_a_section_edge_is_not_a_break(self):
+        rows = [(float(t), 0.0, 0.05) for t in range(0, 240, 6)]
+        rows[3] = (rows[3][0], -23.5, 0.05)       # one wrong match, early
+        report = autosync.read_report(rows)
+        assert report["breaks"] == []
+
+    def test_but_a_real_step_still_is(self):
+        rows = [(float(t), 0.0 if t < 120 else 10.0, 0.05)
+                for t in range(0, 240, 6)]
+        assert [at for at, _ in autosync.read_report(rows)["breaks"]] == [120.0]
+
+    def test_every_reported_break_is_in_the_stored_points(self):
+        rows = [(float(t), 0.0 if t < 120 else 10.0, 0.05)
+                for t in range(0, 240, 6)]
+        report = autosync.read_report(rows)
+        points = autosync.points_from_rows(rows)
+        for at, by in report["breaks"]:
+            near = [offset for song_ms, offset in points
+                    if abs(song_ms / 1000.0 - (at + autosync.WINDOW_S / 2)) < 10]
+            assert near, f"the map has nothing at {at}"

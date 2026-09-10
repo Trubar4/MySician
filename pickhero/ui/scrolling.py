@@ -6805,9 +6805,8 @@ class PlayingScreen:
         def work() -> None:
             from pickhero.audio import autosync
             try:
-                points, rows = autosync.find_points(source, path, report)
-                self._auto_sync_result = ("ok", points,
-                                          autosync.read_report(rows))
+                found = autosync.find(source, path, report)
+                self._auto_sync_result = ("ok", found["points"], found)
             except Exception as exc:
                 # Named rather than swallowed: "the file cannot be decoded"
                 # is a thing the player can act on; silence is not.
@@ -6863,6 +6862,21 @@ class PlayingScreen:
         thing the old line never said -- it stored a map either way and the
         player found out four minutes later.
         """
+        if report.get("wrong_length"):
+            # Said before anything else and in different words, because it is
+            # the one finding here that means "go and get another file"
+            # rather than "place a point". The player spent a session on
+            # Thunder's sync with a tab a hundred seconds longer than the
+            # recording, and nothing on screen ever compared the two numbers.
+            return [
+                f"SYNC   this tab is "
+                f"{format_time(report['tab_s'] * 1000)} long and the "
+                f"recording is {format_time(report['recording_s'] * 1000)} — "
+                f"{report['length_gap'] * 100:.0f} % apart",
+                "SYNC   they are not the same transcription, and no sync can "
+                "bridge that. Nothing was stored — try another tab of this "
+                "song",
+            ]
         if not report["readable"] or len(points) < 2:
             why = (f"{report['usable']} of {report['windows']} windows agreed"
                    + (f", {report['ambiguous']} could not tell one chorus "

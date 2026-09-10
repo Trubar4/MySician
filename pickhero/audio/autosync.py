@@ -111,6 +111,15 @@ MIN_SECTION_S = 30.0
 # the map is not thin, it is WRONG: What's Up's came out at -3.02 % drift and
 # 5.1 s of correction, and it looked exactly as measured as the good ones.
 MIN_USABLE_SHARE = 1.0 / 3.0
+# How far the tab and the recording may differ in LENGTH before they are not
+# the same transcription at all. Measured on the player's own files: his old
+# Thunder tab is 6:21 at 156 BPM in 248 bars against a 4:40 recording -- 36 %
+# apart -- and his new one is 4:40 in 91 bars at 78 BPM, matching to a tenth
+# of a second. No offset, rate or map can bridge the first, and a whole
+# session was spent on its sync before anyone compared the two numbers. Ten
+# per cent is far outside the 5 % the drift model allows, so nothing this
+# rejects could have been fitted anyway.
+MAX_LENGTH_MISMATCH = 0.10
 
 
 def decode(path: str | Path, samplerate: int = 44100) -> tuple[np.ndarray, int]:
@@ -502,9 +511,13 @@ def read_report(rows: Sequence[tuple[float, float, float]]) -> dict:
         "share": share,
         "windows": len(rows),
         "ambiguous": len(rows) - len(by_margin),
-        "breaks": [(part[0][0], part[0][1] - previous[-1][1])
-                   for previous, part in zip(parts, parts[1:])
-                   if big_enough(previous) and big_enough(part)],
+        # From the readings the MAP is built on, not from the raw sections.
+        # A section can be big enough to fit and still contain a wrong match
+        # at its edge -- Thunder's first 36 s hold six readings, two at +1.2 s
+        # and the rest at -23.5 s -- and comparing raw endpoints then reported
+        # a 24.9 s break that the stored points do not have. A break the map
+        # does not contain is a line that lies.
+        "breaks": breaks_in(kept),
         "sections": len(parts),
         "sections_used": len(used),
         "unreadable": dropped,
@@ -561,16 +574,19 @@ def points_from_rows(rows: Iterable[tuple[float, float, float]],
     return [(round(a, 1), round(b, 1)) for a, b in thinned]
 
 
-def find_points(timeline: Timeline | str | Path, audio_path: str | Path,
-                progress: Callable[[float, str], bool] | None = None,
-                tolerance_ms: float = SIMPLIFY_MS
-                ) -> tuple[list[tuple[float, float]],
-                           list[tuple[float, float, float]]]:
-    """Measure this recording against this tab. Returns (points, rows).
+def measure(timeline: Timeline | str | Path, audio_path: str | Path,
+            progress: Callable[[float, str], bool] | None = None,
+            tolerance_ms: float = SIMPLIFY_MS
+            ) -> tuple[list[tuple[float, float]],
+                       list[tuple[float, float, float]],
+                       tuple[float, float]]:
+    """Measure this recording against this tab.
 
-    The rows come back as well as the points, because "how many windows were
-    usable" is the difference between a song this could not read and a song
-    that is already in sync.
+    Returns (points, rows, (tab seconds, recording seconds)). The rows come
+    back as well as the points, because "how many windows were usable" is the
+    difference between a song this could not read and a song that is already
+    in sync -- and the lengths, because two files of different lengths are
+    not the same transcription and no map can bridge that.
     """
     def stage(share: float, base: float, span: float, what: str):
         if progress is None:
@@ -585,7 +601,45 @@ def find_points(timeline: Timeline | str | Path, audio_path: str | Path,
         tab = chroma_of_timeline(timeline, fps)
     else:
         tab = chroma_of_tab_file(timeline, fps)
+    lengths = (len(tab) / fps, len(samples) / rate)
     if len(tab) == 0 or len(rec) == 0:
-        return [], []
+        return [], [], lengths
     rows = drift_curve(tab, rec, fps, stage(1, 0.5, 0.5, "comparing"))
-    return points_from_rows(rows, tolerance_ms), rows
+    return points_from_rows(rows, tolerance_ms), rows, lengths
+
+
+def find_points(timeline: Timeline | str | Path, audio_path: str | Path,
+                progress: Callable[[float, str], bool] | None = None,
+                tolerance_ms: float = SIMPLIFY_MS
+                ) -> tuple[list[tuple[float, float]],
+                           list[tuple[float, float, float]]]:
+    """Just the points and the rows, for the tools and the tests."""
+    points, rows, _ = measure(timeline, audio_path, progress, tolerance_ms)
+    return points, rows
+
+
+def find(timeline: Timeline | str | Path, audio_path: str | Path,
+         progress: Callable[[float, str], bool] | None = None,
+         tolerance_ms: float = SIMPLIFY_MS) -> dict:
+    """The whole answer in one place: the points, and what to say about them.
+
+    The app needs both, and it needs them to agree -- a report derived from a
+    second measurement could disagree with the map that was stored.
+    """
+    points, rows, (tab_s, rec_s) = measure(
+        timeline, audio_path, progress, tolerance_ms)
+    report = read_report(rows)
+    report["tab_s"] = tab_s
+    report["recording_s"] = rec_s
+    longer = max(tab_s, rec_s, 1e-9)
+    report["length_gap"] = abs(tab_s - rec_s) / longer
+    # A tab of a different length is not a sync problem and no map can fix
+    # it. Said before anything else, because it is the only finding here that
+    # tells the player to go and get a different file.
+    if report["length_gap"] > MAX_LENGTH_MISMATCH:
+        report["readable"] = False
+        report["wrong_length"] = True
+    else:
+        report["wrong_length"] = False
+    report["points"] = points if report["readable"] else []
+    return report

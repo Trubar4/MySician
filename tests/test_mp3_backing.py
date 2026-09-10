@@ -991,7 +991,8 @@ class TestAutoSyncInsideTheApp:
         monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
         return PlayingScreen(_timeline(), config=config, song_key="song")
 
-    def _found(self, monkeypatch, points, windows=20, usable=18, breaks=()):
+    def _found(self, monkeypatch, points, windows=20, usable=18, breaks=(),
+               wrong_length=False):
         """Stand in for the measurement, so the app's half is what is tested.
 
         The report is what the app now reads -- how much was readable, and
@@ -999,17 +1000,19 @@ class TestAutoSyncInsideTheApp:
         what has to be faked, not the row list it was derived from.
         """
         from pickhero.audio import autosync
-        monkeypatch.setattr(
-            autosync, "find_points",
-            lambda tab, audio, progress=None, tolerance_ms=25.0: (
-                points, [(0.0, 0.0, 0.9)] * windows))
-        monkeypatch.setattr(autosync, "read_report", lambda rows: {
-            "readable": usable >= windows * autosync.MIN_USABLE_SHARE,
-            "share": usable / max(1, windows),
+        readable = (usable >= windows * autosync.MIN_USABLE_SHARE
+                    and not wrong_length)
+        monkeypatch.setattr(autosync, "find", lambda tab, audio,
+                            progress=None, tolerance_ms=25.0: {
+            "points": points if readable else [],
+            "readable": readable, "share": usable / max(1, windows),
             "windows": windows, "ambiguous": windows - usable,
             "breaks": list(breaks), "sections": 1, "sections_used": 1,
             "unreadable": [], "usable": usable,
             "covered": (0.0, 240.0), "song_s": 260.0,
+            "tab_s": 381.5 if wrong_length else 260.0, "recording_s": 280.1,
+            "length_gap": 0.27 if wrong_length else 0.0,
+            "wrong_length": wrong_length,
         })
 
     def _run(self, screen):
@@ -1047,6 +1050,23 @@ class TestAutoSyncInsideTheApp:
         screen._start_auto_sync()
         self._run(screen)
         assert "22 of 30" in " ".join(screen._sync_lines)
+
+    def test_a_tab_of_the_wrong_length_is_named_as_such(self, tmp_path,
+                                                        monkeypatch):
+        """The player spent a session on Thunder's sync with a tab 6:21 long
+        against a 4:40 recording -- 248 bars at 156 BPM against 91 at 78, two
+        different transcriptions -- and nothing on screen ever compared the
+        two numbers. No offset, rate or map can bridge that."""
+        self._found(monkeypatch, [(0.0, -260.0), (60_000.0, -300.0)],
+                    windows=51, usable=42, wrong_length=True)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        assert screen._mp3_anchors() == []
+        panel = " ".join(screen._sync_lines)
+        assert "not the same transcription" in panel
+        assert "6:21" in panel and "4:40" in panel
+        assert "27 %" in panel
 
     def test_a_reading_too_thin_to_trust_is_not_stored_at_all(
             self, tmp_path, monkeypatch):
@@ -1104,7 +1124,7 @@ class TestAutoSyncInsideTheApp:
         def explode(*a, **k):
             raise RuntimeError("that file cannot be decoded")
 
-        monkeypatch.setattr(autosync, "find_points", explode)
+        monkeypatch.setattr(autosync, "find", explode)
         screen = self._screen(tmp_path, monkeypatch)
         screen._start_auto_sync()
         self._run(screen)

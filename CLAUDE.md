@@ -2484,6 +2484,36 @@ keeps under a third of a song's windows is now refused outright and the panel sa
 **And where the two part company is named**, because "29 of 47 windows usable" is a number nobody can act on and "1:29 (−8.8 s)" is a
 place to put a point.
 
+### And the loudest finding was not in the algorithm at all
+
+**Thunder's tab is 6:21 long and the recording is 4:40.** 248 bars at 156 BPM against a 4:40 file — a 27 % difference. The tab the player
+replaced it with is 4:40 in 91 bars at 78 BPM, and matches the recording **to a tenth of a second**. They are two different transcriptions
+of one song, and no offset, rate or map can bridge that.
+
+A whole session went on Thunder's sync — the drifting solo, the extrapolation past 3:22, the `Shift+S` workflow, two real bugs in
+`SyncMap` — and **nothing on screen ever compared the two numbers**. The check is one subtraction. It is now the first thing the listening
+says, in different words from every other verdict, because it is the only one that means "go and get another file" rather than "place a
+point".
+
+Measured across every song the player has, with the new Thunder tab in place:
+
+| tab | tab length | recording | apart |
+|---|---|---|---|
+| What's Up | 4:55 | 4:52 | 1 % |
+| Bon Jovi | 4:27 | 4:30 | 1 % |
+| Godsmack | 4:58 | 4:50 | 3 % |
+| Kid Rock | 5:11 | 5:21 | 3 % |
+| Thunder (old) | **6:21** | 4:40 | **27 %** |
+| Thunder (new) | 4:40 | 4:40 | **0 %** |
+
+And with the right tab, Thunder needs almost nothing from the map: **39 of 44 windows usable, 0:00–4:37 of 4:37 covered, offsets between
+−1.4 s and −0.7 s** — seven hundred milliseconds of drift over the whole song, against the 13 seconds the old tab implied.
+
+**One more thing this found, in the reporting rather than the measurement.** A section can be big enough to fit and still hold a wrong
+match at its edge: Thunder's first 36 s hold six readings, two at +1.2 s and four at −23.5 s. Comparing raw section endpoints reported a
+24.9 s break that the stored points do not contain, and **a break the map does not have is a line that lies**. Breaks are read off the
+readings the map is built from.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus
