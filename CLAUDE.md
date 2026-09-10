@@ -2545,6 +2545,13 @@ correlation against the actual file has neither problem.
 listening is asked first and Songsterr only when it comes back empty, and the panel never dresses one up as the other: it says which
 measurement is under the song, and that this one is the coarser.
 
+**And it can be asked for by name.** The first build made it an automatic fallback only — used when the listening judged itself
+unreadable and never otherwise — which left a player who can HEAR that the listening got it wrong with nothing to press. "Where it works"
+is a judgement the listening makes about itself, and that is not the last word. `Alt+S` uses the bar map whatever the listening would have
+said, and falls back to listening if the map turns out not to fit this recording: asking for it by name is not asking for a wrong answer.
+The sync panel names the stored link and both keys, because a key nobody can find is a key nobody presses — it was written down only in
+the help page.
+
 `Ctrl+U` takes the link off the clipboard — the app has no text field and building one for a URL somebody just copied out of their browser
 is a screen nobody wants. A map whose bar count differs from the tab's is refused rather than stretched: it is a different revision, or the
 repeats written out differently, and stretching it would be silent and wrong everywhere after the first difference.

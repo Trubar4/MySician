@@ -314,3 +314,109 @@ class TestInsideTheApp:
         self._run(screen)
         assert screen._mp3_anchors() == []
         assert "404" in " ".join(screen._sync_lines)
+
+
+class TestAskingForTheBarMapByName:
+    """"Was muss ich machen, damit es die Songsterr Version nimmt?" -- and
+    the honest answer was: nothing you can do. It was built as an automatic
+    fallback only, so a player who can HEAR that the listening got it wrong
+    had no way to say so. The listening judges itself, and that judgement is
+    not the last word."""
+
+    def _screen(self, tmp_path, monkeypatch, song_id=2333598):
+        return TestInsideTheApp()._screen(tmp_path, monkeypatch, song_id)
+
+    def _run(self, screen):
+        return TestInsideTheApp()._run(screen)
+
+    def _both(self, monkeypatch, listening_readable=True, bars_readable=True):
+        asked = []
+        monkeypatch.setattr(autosync, "find", lambda *a, **k: asked.append(
+            "listened") or {
+            "points": [(0.0, -100.0), (60_000.0, -120.0)]
+            if listening_readable else [],
+            "readable": listening_readable, "share": 0.8, "windows": 40,
+            "ambiguous": 2, "usable": 32, "breaks": [], "sections": 1,
+            "sections_used": 1, "unreadable": [], "covered": (0.0, 240.0),
+            "song_s": 260.0, "tab_s": 260.0, "recording_s": 260.0,
+            "length_gap": 0.0, "wrong_length": False})
+        monkeypatch.setattr(songsterr, "fetch_bar_times",
+                            lambda song_id: ([0.94, 4.04, 7.11, 10.2],
+                                             {"title": "t"}))
+        monkeypatch.setattr(autosync, "align_to_bar_times",
+                            lambda tl, path, bars, progress=None: asked.append(
+                                "songsterr") or {
+                                "source": "songsterr", "bars": 4,
+                                "measures": 4, "readable": bars_readable,
+                                "points": [(0.0, -2150.0), (9231.0, -2160.0)]
+                                if bars_readable else [],
+                                "windows": 40, "usable": 38, "ambiguous": 1,
+                                "constant_s": 1.21, "scatter_ms": 76.0,
+                                "breaks": [], "covered": (0.0, 240.0),
+                                "song_s": 260.0, "wrong_bars": False})
+        return asked
+
+    def test_alt_s_uses_the_bar_map_even_when_the_listening_works(
+            self, tmp_path, monkeypatch):
+        import pygame
+        asked = self._both(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_LALT))
+        self._run(screen)
+        assert asked == ["songsterr"], "it listened anyway"
+        assert screen._mp3_anchors() == [(0.0, -2150.0), (9231.0, -2160.0)]
+
+    def test_and_ctrl_s_still_listens_first(self, tmp_path, monkeypatch):
+        import pygame
+        asked = self._both(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_LCTRL))
+        self._run(screen)
+        assert asked == ["listened"]
+
+    def test_alt_s_falls_back_to_listening_if_the_map_does_not_fit(
+            self, tmp_path, monkeypatch):
+        """Asking for it by name is not asking for a wrong answer."""
+        import pygame
+        asked = self._both(monkeypatch, bars_readable=False)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_LALT))
+        self._run(screen)
+        assert asked == ["songsterr", "listened"]
+        assert screen._mp3_anchors() == [(0.0, -100.0), (60_000.0, -120.0)]
+
+    def test_plain_s_still_opens_the_panel(self, tmp_path, monkeypatch):
+        """Alt is neither Ctrl nor Shift, so the bare-S branch would have
+        swallowed it."""
+        import pygame
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_s, mod=0))
+        assert screen._show_sync is True
+
+    def test_the_panel_says_a_link_is_stored_and_which_key_uses_it(
+            self, tmp_path, monkeypatch):
+        """A key nobody can find is a key nobody presses, and the link was
+        invisible everywhere but the help page."""
+        screen = self._screen(tmp_path, monkeypatch)
+        panel = " ".join(text for text, _ in screen.sync_block_lines())
+        assert "2333598" in panel and "Alt+S" in panel
+
+    def test_and_says_nothing_on_a_song_with_no_link(self, tmp_path,
+                                                     monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, song_id=0)
+        panel = " ".join(text for text, _ in screen.sync_block_lines())
+        assert "Alt+S" not in panel
+
+    def test_alt_s_with_no_link_pasted_just_listens(self, tmp_path,
+                                                    monkeypatch):
+        import pygame
+        asked = self._both(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch, song_id=0)
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_LALT))
+        self._run(screen)
+        assert asked == ["listened"]

@@ -1692,6 +1692,12 @@ class PlayingScreen:
         elif event.key == pygame.K_r:
             return self._next_tuning(-1 if shift_held(event)
                                      else +1)
+        elif (event.key == pygame.K_s and event.mod & pygame.KMOD_ALT
+                and not shift_held(event)):
+            # Tested before the bare S below, which would otherwise swallow
+            # it: an elif chain is read in order, and Alt is neither Ctrl nor
+            # Shift.
+            self._start_auto_sync(prefer_songsterr=True)
         elif (event.key == pygame.K_s and event.mod & pygame.KMOD_CTRL
                 and not shift_held(event)):
             self._start_auto_sync()
@@ -3964,6 +3970,10 @@ class PlayingScreen:
         mp3 = self._mp3_hud_text()
         if mp3:
             out.append((mp3, "hud_accent"))
+        if self._songsterr_id():
+            out.append((f"SYNC   Songsterr {self._songsterr_id()} is stored — "
+                        f"Alt+S uses its bar map, Ctrl+S listens instead",
+                        "hud_accent"))
         latency = self._latency_line()
         if latency:
             out.append(latency)
@@ -5650,6 +5660,8 @@ class PlayingScreen:
                 "Shift+N / Shift+M: the recording, by 10 ms",
                 "Ctrl+N / Ctrl+M: by a second    Ctrl+Shift: by ten seconds",
                 "  (reaches 8 minutes, for a tab that is only the solo)",
+                ("Alt+S: use Songsterr\'s bar map instead of listening",
+                 "ready" if self._songsterr_id() else "paste a link first"),
                 ("Ctrl+S: find the offsets by listening to the recording",
                  self._sync_span_label()),
                 "Shift+S: line it up HERE and add a sync point.",
@@ -6781,7 +6793,7 @@ class PlayingScreen:
                   + (f" ({had} points dropped)" if had else "")
                   + ". Ctrl+S measures it.")
 
-    def _start_auto_sync(self) -> None:
+    def _start_auto_sync(self, prefer_songsterr: bool = False) -> None:
         """Find this recording's sync points by listening to it (Ctrl+S).
 
         Setting five points by hand is what the other tools ask for and it
@@ -6811,6 +6823,20 @@ class PlayingScreen:
         def work() -> None:
             from pickhero.audio import autosync
             try:
+                if prefer_songsterr and song_id:
+                    # Asked for by name (Alt+S). The listening is finer where
+                    # it works -- 8 to 16 ms against 80 to 92 on the player's
+                    # own recording -- but "where it works" is a judgement
+                    # this makes about itself, and a player who can hear that
+                    # it did not outranks it.
+                    found = self._ask_songsterr(song_id, path, report, None)
+                    if not found["readable"]:
+                        listened = autosync.find(source, path, report)
+                        if listened["readable"]:
+                            listened["songsterr_fell_back"] = found
+                            found = listened
+                    self._auto_sync_result = ("ok", found["points"], found)
+                    return
                 found = autosync.find(source, path, report)
                 if not found["readable"] and song_id:
                     # The listening produced nothing. A made per-bar map does
@@ -6887,14 +6913,15 @@ class PlayingScreen:
             # Marked as Songsterr's answer, not left wearing the listening's.
             # "could not read this recording" would send the player looking
             # for a better recording when the fault is a 404.
-            out = dict(failed)
-            out["source"] = "songsterr"
-            out["songsterr_error"] = str(exc)
+            out = dict(failed or {})
+            out.update(source="songsterr", readable=False, points=[],
+                       songsterr_error=str(exc))
             return out
         found = autosync.align_to_bar_times(
             self._whole_song_timeline(), audio_path, bars, report)
         found["songsterr_title"] = str(meta.get("title") or "")
-        found["listening"] = failed
+        if failed is not None:
+            found["listening"] = failed
         return found
 
     def _whole_song_timeline(self):
