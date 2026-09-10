@@ -206,6 +206,12 @@ class Config:
     # repeats itself -- which is exactly where listening does. Kept per song
     # because it belongs to the tab, not to the app.
     song_songsterr: dict = field(default_factory=dict)
+    # {song key: "auto" | "songsterr" | "listen" | "hand"}. WHICH measurement
+    # this song's sync comes from, decided by the player and not by the app.
+    # "auto" listens and falls back to the bar map; the other three do one
+    # thing and say so. The default is auto only because a song nobody has
+    # decided about has to do something.
+    song_sync_source: dict = field(default_factory=dict)
     # Where the player lined the recording up, per song, as
     # [[song ms, offset ms], ...]. A LIST because two points are a straight
     # line and a band that played without a click does not follow one:
@@ -311,6 +317,22 @@ class Config:
         name = stored.replace("\\", "/").rsplit("/", 1)[-1]
         beside = Path(self.songs_dir) / name
         return str(beside) if name and beside.exists() else stored
+
+    #: What Ctrl+S does, in the order the settings screen walks them.
+    SYNC_SOURCES = ("auto", "listen", "songsterr", "hand")
+
+    def sync_source_for(self, song_key: str) -> str:
+        """Which measurement this song's sync comes from."""
+        chosen = self.song_sync_source.get(song_key, "auto")
+        return chosen if chosen in self.SYNC_SOURCES else "auto"
+
+    def set_sync_source_for(self, song_key: str, source: str) -> None:
+        if not song_key or source not in self.SYNC_SOURCES:
+            return
+        if source == "auto":
+            self.song_sync_source.pop(song_key, None)
+        else:
+            self.song_sync_source[song_key] = source
 
     def songsterr_for(self, song_key: str) -> int:
         """This song's Songsterr id, or 0 if none was ever pasted."""

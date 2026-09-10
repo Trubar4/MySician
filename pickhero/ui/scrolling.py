@@ -435,6 +435,14 @@ VIEWS = ("standard", "hybrid", "tab")
 # What the footer calls each one. Short, because it sits in a line of twelve
 # entries and the long form is in the settings screen and the help.
 VIEW_SHORT = {"standard": "Standard", "hybrid": "Hybrid", "tab": "Tab page"}
+# What each sync source is called on screen. The words say what will HAPPEN
+# when Ctrl+S is pressed, not what the setting is named in the file.
+SYNC_SOURCE_WORDS = {
+    "auto": "listen, then Songsterr if that fails",
+    "listen": "listen only",
+    "songsterr": "Songsterr's bar map only",
+    "hand": "by hand only — Ctrl+S does nothing",
+}
 # How many tunings the one-line strip offers, and how far either side of the
 # one being played. See tuning_segments for why it is one down and three up.
 TUNINGS_SHOWN = 5
@@ -1697,7 +1705,7 @@ class PlayingScreen:
             # Tested before the bare S below, which would otherwise swallow
             # it: an elif chain is read in order, and Alt is neither Ctrl nor
             # Shift.
-            self._start_auto_sync(prefer_songsterr=True)
+            self._cycle_sync_source()
         elif (event.key == pygame.K_s and event.mod & pygame.KMOD_CTRL
                 and not shift_held(event)):
             self._start_auto_sync()
@@ -3970,10 +3978,11 @@ class PlayingScreen:
         mp3 = self._mp3_hud_text()
         if mp3:
             out.append((mp3, "hud_accent"))
-        if self._songsterr_id():
-            out.append((f"SYNC   Songsterr {self._songsterr_id()} is stored — "
-                        f"Alt+S uses its bar map, Ctrl+S listens instead",
-                        "hud_accent"))
+        out.append((f"SYNC   source: {SYNC_SOURCE_WORDS[self._sync_source()]}"
+                    + (f"   |   Songsterr {self._songsterr_id()} stored"
+                       if self._songsterr_id() else
+                       "   |   no Songsterr link (Ctrl+U pastes one)")
+                    + "   |   Alt+S changes it", "hud_accent"))
         latency = self._latency_line()
         if latency:
             out.append(latency)
@@ -5660,8 +5669,8 @@ class PlayingScreen:
                 "Shift+N / Shift+M: the recording, by 10 ms",
                 "Ctrl+N / Ctrl+M: by a second    Ctrl+Shift: by ten seconds",
                 "  (reaches 8 minutes, for a tab that is only the solo)",
-                ("Alt+S: use Songsterr\'s bar map instead of listening",
-                 "ready" if self._songsterr_id() else "paste a link first"),
+                ("Alt+S: choose where this song\'s sync comes from",
+                 SYNC_SOURCE_WORDS[self._sync_source()]),
                 ("Ctrl+S: find the offsets by listening to the recording",
                  self._sync_span_label()),
                 "Shift+S: line it up HERE and add a sync point.",
@@ -6793,7 +6802,7 @@ class PlayingScreen:
                   + (f" ({had} points dropped)" if had else "")
                   + ". Ctrl+S measures it.")
 
-    def _start_auto_sync(self, prefer_songsterr: bool = False) -> None:
+    def _start_auto_sync(self) -> None:
         """Find this recording's sync points by listening to it (Ctrl+S).
 
         Setting five points by hand is what the other tools ask for and it
@@ -6813,8 +6822,17 @@ class PlayingScreen:
         # matched against the recording rather than the one guitar being
         # practised. A recording is the whole arrangement, and one track of
         # it is most of the evidence thrown away.
-        source = Path(self._song_path) if self._song_path else self._timeline
+        tab = Path(self._song_path) if self._song_path else self._timeline
         song_id = self._songsterr_id()
+        source = self._sync_source()
+        if source == "hand":
+            self._say("This song is set to sync by hand (O → Sync source). "
+                      "Shift+N/M to line it up, Shift+S to pin it")
+            return
+        if source == "songsterr" and not song_id:
+            self._say("This song is set to use Songsterr, but no link is "
+                      "stored — copy one and press Ctrl+U")
+            return
 
         def report(fraction: float, what: str) -> bool:
             self._auto_sync_progress = (fraction, what)
@@ -6823,22 +6841,20 @@ class PlayingScreen:
         def work() -> None:
             from pickhero.audio import autosync
             try:
-                if prefer_songsterr and song_id:
+                if source == "songsterr":
                     # Asked for by name (Alt+S). The listening is finer where
                     # it works -- 8 to 16 ms against 80 to 92 on the player's
                     # own recording -- but "where it works" is a judgement
                     # this makes about itself, and a player who can hear that
                     # it did not outranks it.
+                    # Chosen by the player, so it is the only thing tried.
+                    # Falling back to the listening here would be the app
+                    # deciding again -- which is the thing that was reported.
                     found = self._ask_songsterr(song_id, path, report, None)
-                    if not found["readable"]:
-                        listened = autosync.find(source, path, report)
-                        if listened["readable"]:
-                            listened["songsterr_fell_back"] = found
-                            found = listened
                     self._auto_sync_result = ("ok", found["points"], found)
                     return
-                found = autosync.find(source, path, report)
-                if not found["readable"] and song_id:
+                found = autosync.find(tab, path, report)
+                if source == "auto" and not found["readable"] and song_id:
                     # The listening produced nothing. A made per-bar map does
                     # not care that a song repeats itself, which is the one
                     # thing that defeats a windowed search -- so it is the
@@ -6893,6 +6909,37 @@ class PlayingScreen:
         described = list(self._sync_lines)
         self._describe_sync()
         self._sync_lines = described + self._sync_lines
+
+    def _sync_source(self) -> str:
+        """Which measurement this song's sync comes from.
+
+        A setting rather than a judgement the app makes per run: "the
+        listening decides whether the listening worked" is a circle, and the
+        player who can hear the answer was left outside it.
+        """
+        getter = getattr(self._config, "sync_source_for", None)
+        return getter(self._song_key) if getter else "auto"
+
+    def _cycle_sync_source(self) -> None:
+        """Alt+S: choose where this song's sync comes from.
+
+        A CHOICE, not a one-off override. The first build had Alt+S run the
+        bar map once and Ctrl+S go on judging for itself, and the player
+        read that exactly right: "Ich habe das Gefühl es entscheidet noch
+        immer selbst." One setting, four answers, and Ctrl+S obeys it.
+        """
+        setter = getattr(self._config, "set_sync_source_for", None)
+        if setter is None:
+            return
+        order = list(getattr(self._config, "SYNC_SOURCES",
+                             ("auto", "listen", "songsterr", "hand")))
+        here = order.index(self._sync_source())
+        chosen = order[(here + 1) % len(order)]
+        setter(self._song_key, chosen)
+        self._config.save()
+        warn = ("" if chosen != "songsterr" or self._songsterr_id()
+                else " — but no link is stored, press Ctrl+U")
+        self._say(f"Sync source: {SYNC_SOURCE_WORDS[chosen]}{warn}")
 
     def _songsterr_id(self) -> int:
         getter = getattr(self._config, "songsterr_for", None)

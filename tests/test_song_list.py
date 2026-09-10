@@ -235,6 +235,8 @@ class TestReachingTheTunerWhileSearching:
         app._state = "menu"
         app._return_to = "menu"
         app._tuner_menu = None
+        app._quit_armed = False
+        app._escape_held = False
         opened = []
         app._open_tuner = lambda came_from: opened.append(came_from)
         return app, opened, pygame
@@ -294,3 +296,129 @@ class TestReachingTheTunerWhileSearching:
             pygame.KEYDOWN, key=pygame.K_u, unicode="u", mod=0))
         assert opened == []
         assert app._menu._search_text == "u"
+
+
+class TestEscapeIsNotOneKeystrokeFromGone:
+    """"ESC reagiert oft zu sensibel und ich fliege aus dem Song und die App
+    schließt sich sofort."
+
+    `pygame.key.set_repeat(300, 40)` is one global setting for every key, so
+    holding escape for a third of a second fires it twice -- and the two
+    presses land on two different screens: the first leaves the song, the
+    second closes the app. One hold, and the player is out of the program.
+    """
+
+    def _app(self, tmp_path):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.app import App
+        from pickhero.ui.menu import MenuScreen
+
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        config = Config()
+        config.songs_dir = str(tmp_path)
+        app = App.__new__(App)
+        app._config = config
+        app._menu = MenuScreen(tmp_path, config=config)
+        app._state = "menu"
+        app._return_to = "menu"
+        app._tuner_menu = None
+        app._running = True
+        app._quit_armed = False
+        app._escape_held = False
+        return app, pygame
+
+    def _press(self, app, pygame, key=None, mod=0):
+        app._handle_menu_event(pygame.event.Event(
+            pygame.KEYDOWN, key=key or pygame.K_ESCAPE, unicode="", mod=mod))
+
+    def test_one_escape_on_the_song_list_does_not_close_the_app(self,
+                                                                tmp_path):
+        app, pygame = self._app(tmp_path)
+        self._press(app, pygame)
+        assert app._running is True
+        assert "ESC again" in app._menu._reload_note
+
+    def test_a_second_one_does(self, tmp_path):
+        app, pygame = self._app(tmp_path)
+        self._press(app, pygame)
+        self._press(app, pygame)
+        assert app._running is False
+
+    def test_anything_else_in_between_disarms_it(self, tmp_path):
+        """A screen that stays armed is a trap set an hour ago."""
+        app, pygame = self._app(tmp_path)
+        self._press(app, pygame)
+        self._press(app, pygame, key=pygame.K_DOWN)
+        self._press(app, pygame)
+        assert app._running is True
+
+    def test_and_opening_a_song_disarms_it(self, tmp_path):
+        app, pygame = self._app(tmp_path)
+        app._load_song = lambda path: None
+        app._quit_armed = True
+        app._menu.handle_event = lambda event: tmp_path / "x.gp"
+        app._handle_menu_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_RETURN, unicode="", mod=0))
+        assert app._quit_armed is False
+
+
+class TestOneHoldOfEscapeIsOnePress:
+    """The repeat guard, at the one door every screen's events come
+    through -- a screen added later would otherwise have to remember."""
+
+    def _app(self, tmp_path, monkeypatch, events):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.app import App
+
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        config = Config()
+        config.songs_dir = str(tmp_path)
+        app = App.__new__(App)
+        app._config = config
+        app._menu = None
+        app._state = "nowhere"
+        app._running = True
+        app._escape_held = False
+        app._quit_armed = False
+        seen = []
+        app._handle_menu_event = lambda e: seen.append(e)
+        monkeypatch.setattr(pygame.event, "get", lambda: list(events))
+        return app, seen, pygame
+
+    def test_a_repeat_while_the_key_is_down_is_dropped(self, tmp_path,
+                                                       monkeypatch):
+        import pygame
+        pygame.init()
+        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE,
+                                  unicode="", mod=0)
+        app, seen, pygame = self._app(tmp_path, monkeypatch, [down, down, down])
+        app._state = "menu"
+        app._process_events(pygame.display.get_surface())
+        assert len(seen) == 1, f"{len(seen)} escapes reached the screen"
+
+    def test_but_a_second_real_press_gets_through(self, tmp_path, monkeypatch):
+        import pygame
+        pygame.init()
+        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE,
+                                  unicode="", mod=0)
+        up = pygame.event.Event(pygame.KEYUP, key=pygame.K_ESCAPE)
+        app, seen, pygame = self._app(tmp_path, monkeypatch, [down, up, down])
+        app._state = "menu"
+        app._process_events(pygame.display.get_surface())
+        assert len([e for e in seen if e.type == pygame.KEYDOWN]) == 2
+
+    def test_other_keys_still_repeat(self, tmp_path, monkeypatch):
+        """Only escape is guarded. The arrows and the tempo keys want their
+        repeats, and taking them would be a different bug."""
+        import pygame
+        pygame.init()
+        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_DOWN,
+                                  unicode="", mod=0)
+        app, seen, pygame = self._app(tmp_path, monkeypatch, [down, down, down])
+        app._state = "menu"
+        app._process_events(pygame.display.get_surface())
+        assert len(seen) == 3

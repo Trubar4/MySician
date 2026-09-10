@@ -301,6 +301,15 @@ class MenuScreen:
             self._selected = min(self._selected, len(files) - 1)
         self._ensure_visible()
 
+    def say(self, text: str) -> None:
+        """Put one line under the list, until the player presses anything.
+
+        The same line reload_files and the favourites use. A screen with one
+        place for a note is a screen where the note is always in the same
+        place.
+        """
+        self._reload_note = text
+
     def handle_event(self, event: pygame.event.Event) -> Path | str | None:
         """Process input. Returns Path (file selected), "escape" (quit), or None."""
         files = self._display_files

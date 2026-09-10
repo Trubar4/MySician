@@ -2435,6 +2435,23 @@ Same measurement after: `OBEN` seven times out of seven. `_tab_scroll_for` went 
 against every eight. That is the trade the player asked for — a preview at every line break costs a page turn at every line break.
 
 
+## One Hold Of Escape Was One Press Too Many
+
+"ESC reagiert oft zu sensibel und ich fliege aus dem Song und die App schließt sich sofort."
+
+`pygame.key.set_repeat(300, 40)` is one **global** setting for every key — the same line that has already cost this project a practice
+speed that jumped from 100 % to 50 % on a short press. Escape crosses two screens that do different things: in the song it goes back to
+the list, on the list it closes the app. So holding escape for **340 milliseconds** does both, and the player is out of the program.
+
+Two guards, and they fix different halves:
+
+- **Escape never repeats**, guarded in `App._process_events` rather than on each screen — it is the one door every screen's events come
+  through, and a screen added later would otherwise have to remember. A KEYDOWN that arrives while escape is still physically down is
+  dropped; the KEYUP re-arms it. Only escape: the arrows and the tempo keys want their repeats, and taking those would be a different bug.
+- **The song list does not close on the first press.** It says "Press ESC again to close MySician" and waits for a second, deliberate one.
+  Anything else in between disarms it, because a screen that stays armed is a trap set an hour ago. Escape is the way back out of the
+  song, the settings, the tuner and the device list, so the player arrives on that screen with it already under their finger.
+
 ## A Break Is Not An Outlier
 
 "Ich lade den gleichen Song und das identische GP-File, habe aber Probleme, dass es Sync ist." So it was measured, on the three songs to
@@ -2545,14 +2562,27 @@ correlation against the actual file has neither problem.
 listening is asked first and Songsterr only when it comes back empty, and the panel never dresses one up as the other: it says which
 measurement is under the song, and that this one is the coarser.
 
-**And it can be asked for by name.** The first build made it an automatic fallback only — used when the listening judged itself
-unreadable and never otherwise — which left a player who can HEAR that the listening got it wrong with nothing to press. "Where it works"
-is a judgement the listening makes about itself, and that is not the last word. `Alt+S` uses the bar map whatever the listening would have
-said, and falls back to listening if the map turns out not to fit this recording: asking for it by name is not asking for a wrong answer.
-The sync panel names the stored link and both keys, because a key nobody can find is a key nobody presses — it was written down only in
-the help page.
+**And the player decides which measurement runs, not the app.** The first build made the bar map an automatic fallback — used when the
+listening judged ITSELF unreadable and never otherwise — and then added `Alt+S` as a one-off override on top. He read that exactly right:
+*"Ich habe das Gefühl es entscheidet noch immer selbst."* He was right. Asking the listening whether the listening worked is a circle with
+the player outside it, and a one-off override does not let him back in — it just lets him interrupt.
 
-`Ctrl+U` takes the link off the clipboard — the app has no text field and building one for a URL somebody just copied out of their browser
+So it is one setting with four answers, per song, and `Ctrl+S` obeys it:
+
+| | what Ctrl+S does |
+|---|---|
+| **listen, then Songsterr if that fails** | the old behaviour, and the default, because a song nobody has decided about has to do something |
+| **listen only** | never asks Songsterr, even with nothing to show for it |
+| **Songsterr's bar map only** | never listens, even when the map does not fit |
+| **by hand only** | Ctrl+S does nothing and says so |
+
+`Alt+S` walks the four and names the one it lands on. Neither of the two "only" answers falls back to the other: falling back would be the
+app deciding again, which is the thing that was reported. The sync panel names the source in force, the stored link, and the key that
+changes them — it was written down only in the help page.
+
+The first build made it an automatic fallback only — used when the listening judged itself
+unreadable and never otherwise — which left a player who can HEAR that the listening got it wrong with nothing to press. "Where it works"
+is a judgement the listening makes about itself, and that is not the last word. `Ctrl+U` takes the link off the clipboard — the app has no text field and building one for a URL somebody just copied out of their browser
 is a screen nobody wants. A map whose bar count differs from the tab's is refused rather than stretched: it is a different revision, or the
 repeats written out differently, and stretching it would be silent and wrong everywhere after the first difference.
 

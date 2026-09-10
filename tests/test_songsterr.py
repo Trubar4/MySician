@@ -316,12 +316,15 @@ class TestInsideTheApp:
         assert "404" in " ".join(screen._sync_lines)
 
 
-class TestAskingForTheBarMapByName:
-    """"Was muss ich machen, damit es die Songsterr Version nimmt?" -- and
-    the honest answer was: nothing you can do. It was built as an automatic
-    fallback only, so a player who can HEAR that the listening got it wrong
-    had no way to say so. The listening judges itself, and that judgement is
-    not the last word."""
+class TestTheChoiceIsThePlayersNotTheApps:
+    """"Kannst du es so bauen, dass ich entscheiden kann, ob Songsterr oder
+    manuell. Ich habe das Gefühl es entscheidet noch immer selbst."
+
+    He read it exactly right. The first build asked the listening whether
+    the listening had worked, and only fell back when it said no -- a circle
+    with the player outside it. Alt+S is a CHOICE now, four answers, and
+    Ctrl+S obeys it.
+    """
 
     def _screen(self, tmp_path, monkeypatch, song_id=2333598):
         return TestInsideTheApp()._screen(tmp_path, monkeypatch, song_id)
@@ -356,37 +359,88 @@ class TestAskingForTheBarMapByName:
                                 "song_s": 260.0, "wrong_bars": False})
         return asked
 
-    def test_alt_s_uses_the_bar_map_even_when_the_listening_works(
-            self, tmp_path, monkeypatch):
+    def _alt_s(self, screen):
         import pygame
-        asked = self._both(monkeypatch)
-        screen = self._screen(tmp_path, monkeypatch)
         screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_LALT))
-        self._run(screen)
-        assert asked == ["songsterr"], "it listened anyway"
-        assert screen._mp3_anchors() == [(0.0, -2150.0), (9231.0, -2160.0)]
 
-    def test_and_ctrl_s_still_listens_first(self, tmp_path, monkeypatch):
+    def _ctrl_s(self, screen):
         import pygame
-        asked = self._both(monkeypatch)
-        screen = self._screen(tmp_path, monkeypatch)
         screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_LCTRL))
+
+    def test_alt_s_walks_the_four_answers(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        seen = [screen._sync_source()]
+        for _ in range(4):
+            self._alt_s(screen)
+            seen.append(screen._sync_source())
+        assert seen == ["auto", "listen", "songsterr", "hand", "auto"]
+
+    def test_and_says_which_one_it_landed_on(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._alt_s(screen)
+        assert "listen only" in screen._status_note_text()
+
+    def test_listen_only_never_asks_songsterr(self, tmp_path, monkeypatch):
+        """Even when the listening comes back with nothing. That is the
+        player saying the bar map is not what he wants here."""
+        asked = self._both(monkeypatch, listening_readable=False)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_sync_source_for("song", "listen")
+        self._ctrl_s(screen)
         self._run(screen)
         assert asked == ["listened"]
+        assert screen._mp3_anchors() == []
 
-    def test_alt_s_falls_back_to_listening_if_the_map_does_not_fit(
-            self, tmp_path, monkeypatch):
-        """Asking for it by name is not asking for a wrong answer."""
-        import pygame
+    def test_songsterr_only_never_listens(self, tmp_path, monkeypatch):
+        """Even when the bar map does not fit. Falling back here would be
+        the app deciding again, which is the thing that was reported."""
         asked = self._both(monkeypatch, bars_readable=False)
         screen = self._screen(tmp_path, monkeypatch)
-        screen.handle_event(pygame.event.Event(
-            pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_LALT))
+        screen._config.set_sync_source_for("song", "songsterr")
+        self._ctrl_s(screen)
         self._run(screen)
-        assert asked == ["songsterr", "listened"]
-        assert screen._mp3_anchors() == [(0.0, -100.0), (60_000.0, -120.0)]
+        assert asked == ["songsterr"]
+        assert screen._mp3_anchors() == []
+
+    def test_and_it_is_used_even_when_the_listening_would_have_worked(
+            self, tmp_path, monkeypatch):
+        asked = self._both(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_sync_source_for("song", "songsterr")
+        self._ctrl_s(screen)
+        self._run(screen)
+        assert asked == ["songsterr"]
+        assert screen._mp3_anchors() == [(0.0, -2150.0), (9231.0, -2160.0)]
+
+    def test_by_hand_makes_ctrl_s_do_nothing_and_say_so(self, tmp_path,
+                                                         monkeypatch):
+        asked = self._both(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_sync_source_for("song", "hand")
+        self._ctrl_s(screen)
+        assert asked == []
+        assert screen._auto_sync_thread is None
+        assert "by hand" in screen._status_note_text()
+
+    def test_songsterr_with_no_link_refuses_rather_than_listening(
+            self, tmp_path, monkeypatch):
+        asked = self._both(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch, song_id=0)
+        screen._config.set_sync_source_for("song", "songsterr")
+        self._ctrl_s(screen)
+        assert asked == []
+        assert "Ctrl+U" in screen._status_note_text()
+
+    def test_auto_is_still_the_old_behaviour(self, tmp_path, monkeypatch):
+        """A song nobody has decided about has to do something."""
+        asked = self._both(monkeypatch, listening_readable=False)
+        screen = self._screen(tmp_path, monkeypatch)
+        assert screen._sync_source() == "auto"
+        self._ctrl_s(screen)
+        self._run(screen)
+        assert asked == ["listened", "songsterr"]
 
     def test_plain_s_still_opens_the_panel(self, tmp_path, monkeypatch):
         """Alt is neither Ctrl nor Shift, so the bare-S branch would have
@@ -396,27 +450,22 @@ class TestAskingForTheBarMapByName:
         screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_s, mod=0))
         assert screen._show_sync is True
+        assert screen._sync_source() == "auto", "the source moved too"
 
-    def test_the_panel_says_a_link_is_stored_and_which_key_uses_it(
-            self, tmp_path, monkeypatch):
-        """A key nobody can find is a key nobody presses, and the link was
-        invisible everywhere but the help page."""
+    def test_the_panel_names_the_source_and_the_key(self, tmp_path,
+                                                    monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
         panel = " ".join(text for text, _ in screen.sync_block_lines())
-        assert "2333598" in panel and "Alt+S" in panel
+        assert "source:" in panel and "Alt+S" in panel
+        assert "2333598" in panel
 
-    def test_and_says_nothing_on_a_song_with_no_link(self, tmp_path,
-                                                     monkeypatch):
+    def test_and_says_when_no_link_is_stored(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch, song_id=0)
         panel = " ".join(text for text, _ in screen.sync_block_lines())
-        assert "Alt+S" not in panel
+        assert "no Songsterr link" in panel and "Ctrl+U" in panel
 
-    def test_alt_s_with_no_link_pasted_just_listens(self, tmp_path,
-                                                    monkeypatch):
-        import pygame
-        asked = self._both(monkeypatch)
-        screen = self._screen(tmp_path, monkeypatch, song_id=0)
-        screen.handle_event(pygame.event.Event(
-            pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_LALT))
-        self._run(screen)
-        assert asked == ["listened"]
+    def test_the_choice_is_kept_per_song(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        self._alt_s(screen)
+        assert screen._config.sync_source_for("song") == "listen"
+        assert screen._config.sync_source_for("another") == "auto"

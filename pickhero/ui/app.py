@@ -62,6 +62,12 @@ class App:
         # dropping the player somewhere they did not come from is how a menu
         # starts to feel like a maze.
         self._return_to = "menu"
+        # Whether escape is physically down. See _process_events.
+        self._escape_held = False
+        # And whether the NEXT escape on the song list closes the app. One
+        # keystroke away from gone is too close for a key that is also the
+        # way out of every other screen.
+        self._quit_armed = False
 
     def run(self) -> None:
         """Initialize PyGame, run main loop, clean up."""
@@ -277,6 +283,25 @@ class App:
                 self._running = False
                 return
 
+            # ESCAPE NEVER REPEATS. `set_repeat(300, 40)` is one global
+            # setting for every key, so holding escape for a third of a
+            # second fires it twice -- and the two screens escape crosses do
+            # different things: the first leaves the song, the second closes
+            # the app. One hold, and the player is out of the program.
+            # Reported as "ESC reagiert oft zu sensibel und ich fliege aus
+            # dem Song und die App schließt sich sofort", which is exactly
+            # 300 ms plus 40.
+            #
+            # Guarded here rather than on each screen, because it is the one
+            # door every screen's events come through, and a screen added
+            # later would otherwise have to remember.
+            if event.type == pygame.KEYUP and event.key == pygame.K_ESCAPE:
+                self._escape_held = False
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                if self._escape_held:
+                    continue                  # the same press, still down
+                self._escape_held = True
+
             if event.type == pygame.VIDEORESIZE:
                 # Through the one door, so a resize cannot quietly drop
                 # vsync -- and so the loop gets the new surface. Assigning
@@ -340,10 +365,25 @@ class App:
                 self._open_tuner("menu")
                 return
 
+        if (event.type == pygame.KEYDOWN
+                and event.key != pygame.K_ESCAPE and self._quit_armed):
+            # Anything else means the player has moved on, so the next escape
+            # starts from the beginning again. A screen that stays armed is a
+            # trap set an hour ago.
+            self._quit_armed = False
         result = self._menu.handle_event(event)
         if result == "escape":
-            self._running = False
+            # Not on the first press. Escape is the way back out of the song,
+            # the settings, the tuner and the device list, so the player
+            # arrives on this screen with it already under their finger --
+            # and one more press used to end the session.
+            if self._quit_armed:
+                self._running = False
+            else:
+                self._quit_armed = True
+                self._menu.say("Press ESC again to close MySician")
         elif isinstance(result, Path):
+            self._quit_armed = False
             self._load_song(result)
 
     def _handle_playing_event(self, event: pygame.event.Event) -> None:

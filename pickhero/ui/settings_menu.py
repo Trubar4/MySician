@@ -30,7 +30,8 @@ import pygame
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
                              MIN_GATE_DB, Config)
-from pickhero.ui.scrolling import MAX_BACKING_OFFSET_MS, VIEWS, VIEW_NAMES
+from pickhero.ui.scrolling import (MAX_BACKING_OFFSET_MS, SYNC_SOURCE_WORDS,
+                                   VIEWS, VIEW_NAMES)
 from pickhero.ui.colors import cycle_theme, get_theme
 
 VISIBLE_ROWS = 14
@@ -72,8 +73,12 @@ class Setting:
 class SettingsMenuScreen:
     """The settings list. Owns no state of its own beyond the cursor."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, song_key: str = ""):
         self._config = config
+        # Which song is open, if one is. Two of these rows belong to a SONG
+        # rather than to the app -- the sync source is the whole point of the
+        # setting -- and a screen reached from the song list has no song.
+        self._song_key = song_key
         self._selected = 0
         self._scroll = 0
         # Which of the six strings the strings row is pointing at. That row is
@@ -99,6 +104,12 @@ class SettingsMenuScreen:
             except Exception:
                 pass
             return f"device #{index}"
+
+        def cycle_sync_source(step: int) -> None:
+            order = list(c.SYNC_SOURCES)
+            here = order.index(c.sync_source_for(self._song_key))
+            c.set_sync_source_for(self._song_key,
+                                  order[(here + step) % len(order)])
 
         def cycle_view(step: int) -> None:
             here = VIEWS.index(c.default_view) if c.default_view in VIEWS else 0
@@ -278,6 +289,19 @@ class SettingsMenuScreen:
                     note="Shifts the synth against the notes. N/M while "
                          "playing does 10 ms a press, Alt+N/M a second.",
                     is_default=lambda: c.backing_offset_ms == 0.0),
+            Setting("sync_source", "Sync source",
+                    lambda: (SYNC_SOURCE_WORDS[c.sync_source_for(
+                        self._song_key)] if self._song_key
+                        else "open a song to set this"),
+                    cycle_sync_source if self._song_key else None,
+                    note="Where this song's sync comes from when you press "
+                         "Ctrl+S. Listening is finer where it works; "
+                         "Songsterr's bar map does not care that a song "
+                         "repeats itself. Per song — Alt+S in the song "
+                         "changes it too.",
+                    is_default=lambda: (not self._song_key
+                                        or c.sync_source_for(self._song_key)
+                                        == "auto")),
             Setting("mp3", "Recorded backing track",
                     lambda: "on" if c.mp3_backing_enabled else "off",
                     lambda step: setattr(c, "mp3_backing_enabled",
