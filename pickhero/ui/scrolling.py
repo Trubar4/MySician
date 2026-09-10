@@ -6806,13 +6806,13 @@ class PlayingScreen:
             from pickhero.audio import autosync
             try:
                 points, rows = autosync.find_points(source, path, report)
-                self._auto_sync_result = ("ok", points, len(rows),
-                                          len(autosync.usable_rows(rows)))
+                self._auto_sync_result = ("ok", points,
+                                          autosync.read_report(rows))
             except Exception as exc:
                 # Named rather than swallowed: "the file cannot be decoded"
                 # is a thing the player can act on; silence is not.
                 self._auto_sync_result = (
-                    "error", f"{type(exc).__name__}: {exc}", 0, 0)
+                    "error", f"{type(exc).__name__}: {exc}", None)
 
         self._auto_sync_progress = (0.0, "reading the recording")
         self._sync_lines = ["SYNC   listening to the recording…"]
@@ -6834,21 +6834,13 @@ class PlayingScreen:
             self._audio_capture.busy = False
         if result is None:
             return
-        state = result[0]
-        if state == "error":
+        if result[0] == "error":
             self._sync_lines = [f"SYNC   could not read the recording — "
                                 f"{result[1]}"]
             return
-        _, points, windows, usable = result
-        if len(points) < 2:
-            # A result, not a failure: a recording this could not read is a
-            # different thing from one that needs no correction, and the
-            # window count is what tells them apart.
-            self._sync_lines = [
-                f"SYNC   the recording could not be read against this tab "
-                f"({usable} of {windows} windows usable)",
-                "SYNC   Shift+N/M to line it up by hand, Shift+S to set a "
-                "point"]
+        _, points, report = result
+        self._sync_lines = self._auto_sync_report_lines(points, report)
+        if not report["readable"] or len(points) < 2:
             return
         setter = getattr(self._config, "set_mp3_anchors_for", None)
         if setter is None:
@@ -6858,10 +6850,45 @@ class PlayingScreen:
         if rate_setter is not None:
             rate_setter(self._song_key, 1.0)
         self._config.save()
+        described = list(self._sync_lines)
         self._describe_sync()
-        self._sync_lines.append(
-            f"SYNC   found by listening — {usable} of {windows} windows "
-            f"usable. Shift+S adds one by hand, Ctrl+Shift+S clears")
+        self._sync_lines = described + self._sync_lines
+
+    def _auto_sync_report_lines(self, points, report) -> list[str]:
+        """What the listening found, in words a player can act on.
+
+        "28 of 51 windows usable" is a number nobody can do anything with.
+        Where the two stopped being the same piece of music is a PLACE to put
+        a point, and whether the reading is worth storing at all is the one
+        thing the old line never said -- it stored a map either way and the
+        player found out four minutes later.
+        """
+        if not report["readable"] or len(points) < 2:
+            why = (f"{report['usable']} of {report['windows']} windows agreed"
+                   + (f", {report['ambiguous']} could not tell one chorus "
+                      f"from another" if report["ambiguous"] else ""))
+            return [
+                f"SYNC   could not read this recording against this tab — "
+                f"{why}",
+                "SYNC   nothing was stored. Shift+N/M to line it up by hand, "
+                "Shift+S to pin it there",
+            ]
+        lines = []
+        covered = report["covered"]
+        span = (f", {format_time(covered[0] * 1000)}–"
+                f"{format_time(covered[1] * 1000)} of "
+                f"{format_time(report['song_s'] * 1000)} covered"
+                if covered else "")
+        lines.append(
+            f"SYNC   found by listening — {report['usable']} of "
+            f"{report['windows']} windows{span}")
+        if report["breaks"]:
+            where = "  ".join(f"{format_time(at * 1000)} ({by:+.1f} s)"
+                              for at, by in report["breaks"][:4])
+            lines.append(
+                f"SYNC   the tab and the recording part company at {where}"
+                " — check those places by ear")
+        return lines
 
     def _auto_sync_line(self) -> str:
         """What the panel says while the listening is running."""

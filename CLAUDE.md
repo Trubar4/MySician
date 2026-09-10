@@ -2435,6 +2435,67 @@ Same measurement after: `OBEN` seven times out of seven. `_tab_scroll_for` went 
 against every eight. That is the trade the player asked for — a preview at every line break costs a page turn at every line break.
 
 
+## A Break Is Not An Outlier
+
+"Ich lade den gleichen Song und das identische GP-File, habe aber Probleme, dass es Sync ist." So it was measured, on the three songs to
+hand, before anything was touched:
+
+| | usable windows | covered | what the map claimed |
+|---|---|---|---|
+| Bon Jovi | 32 of 42 (76 %) | 0:00–3:56 of 4:26 | -0.76 % drift, 2.1 s of correction |
+| Godsmack | **11 of 47 (23 %)** | **0:00–1:26 of 4:56** | +1.91 % drift |
+| What's Up | **5 of 41 (12 %)** | 0:00–3:08 of 4:20 | -3.02 % drift, 5.1 s of correction |
+
+**And the filter throwing them away was the wrong one.** Not the margin filter, which drops a window that cannot tell one chorus from
+another — that took 4, 12 and 17. The **outlier** filter took Godsmack from 35 to 11 and What's Up from 24 to 5, with its tolerance pinned
+at the three-second ceiling, which means the readings genuinely disagreed by seconds.
+
+**They disagreed because the curve has STEPS, not a slope.** Godsmack's raw readings: `1:06 → +11.19 s`, `1:36 → −1.89 s`. Thirteen
+seconds, in thirty. That is not a recording running fast; that is thirteen seconds of music one of them has and the other does not — a
+repeat, an added bar, or a window that matched the wrong chorus.
+
+**A single straight line was fitted to the whole song**, so everything after the first step was, correctly by its own logic, an outlier.
+The line described the first minute and the remaining three and a half were extrapolated from it.
+
+### What changed
+
+Three filters now, answering three different questions:
+
+- the **margin**: this window could not tell one chorus from another;
+- the **breaks**: the two stopped being the same piece of music HERE, so stop fitting and start again;
+- the **residual, within a section**: this one window disagrees with the others around it.
+
+A break is told from an outlier by what drift could do. Neighbouring windows are 6 s apart and drift is bounded at 5 %, so drift can move
+them by 0.3 s; a jump past a second is not a speed. **And a break is the curve moving and STAYING moved** — a section shorter than four
+readings and thirty seconds is folded back into the one beside it, because a one-window spike that comes straight back is an outlier and
+splitting there strands the good readings after it. Measured: Bon Jovi's outro has five such spikes of about 14 s, and splitting at all of
+them cost 12 readings and a minute and a half of coverage.
+
+| | usable windows | covered | map vs its own readings |
+|---|---|---|---|
+| Bon Jovi | 32 of 42 | **0:00–3:55 (89 %)** | 3 ms median, 24 ms worst |
+| Godsmack | **29 of 47** | **0:00–4:55 (100 %)** | 0 ms median, 24 ms worst |
+| What's Up | 5 of 41 | — | **nothing stored** |
+
+**What's Up is the important row.** Four chords repeated for four minutes; its windows match +9.9, −34.4, −6.2 and +21.1 s. It used to
+store a map claiming −3.02 % drift and 5.1 s of correction, **and that map looked exactly as measured as a good one**. A reading that
+keeps under a third of a song's windows is now refused outright and the panel says so, with what to do instead. Not thin — wrong.
+
+**And where the two part company is named**, because "29 of 47 windows usable" is a number nobody can act on and "1:29 (−8.8 s)" is a
+place to put a point.
+
+### What this is not
+
+It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus
+while its neighbour matches the first. **A monotone path (DTW) cannot do that by construction**, and on the chroma this file already
+computes it runs over a whole song in 5 s — measured. That is the next piece of work, and the reason this one stops here rather than
+tuning thresholds further.
+
+**What Songsterr actually does, since it is the benchmark:** nothing like this. `songsterr.com/api/video-points/{song}/{revision}/list`
+returns **a timestamp per measure** into a YouTube video. It is a made map, not a found one — by hand, or born with their own
+transcription. Go PlayAlong asks for "2 to 5 points" by hand; Soundslice has you tap `T` on every barline. Every tool that solves this
+well solves it with a human somewhere in the loop, which is worth knowing before spending another week on the search.
+
 ## The Recording Is Only Synced Where Somebody Listened
 
 "Thunder synct beim Solo ganz schlecht und liegt weit daneben." Read straight off the run log, and the app was already telling him in a

@@ -991,14 +991,26 @@ class TestAutoSyncInsideTheApp:
         monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
         return PlayingScreen(_timeline(), config=config, song_key="song")
 
-    def _found(self, monkeypatch, points, windows=20, usable=18):
+    def _found(self, monkeypatch, points, windows=20, usable=18, breaks=()):
+        """Stand in for the measurement, so the app's half is what is tested.
+
+        The report is what the app now reads -- how much was readable, and
+        where the two stopped being the same piece of music -- so that is
+        what has to be faked, not the row list it was derived from.
+        """
         from pickhero.audio import autosync
         monkeypatch.setattr(
             autosync, "find_points",
             lambda tab, audio, progress=None, tolerance_ms=25.0: (
                 points, [(0.0, 0.0, 0.9)] * windows))
-        monkeypatch.setattr(
-            autosync, "usable_rows", lambda rows: [(0.0, 0.0)] * usable)
+        monkeypatch.setattr(autosync, "read_report", lambda rows: {
+            "readable": usable >= windows * autosync.MIN_USABLE_SHARE,
+            "share": usable / max(1, windows),
+            "windows": windows, "ambiguous": windows - usable,
+            "breaks": list(breaks), "sections": 1, "sections_used": 1,
+            "unreadable": [], "usable": usable,
+            "covered": (0.0, 240.0), "song_s": 260.0,
+        })
 
     def _run(self, screen):
         screen.update()
@@ -1036,6 +1048,45 @@ class TestAutoSyncInsideTheApp:
         self._run(screen)
         assert "22 of 30" in " ".join(screen._sync_lines)
 
+    def test_a_reading_too_thin_to_trust_is_not_stored_at_all(
+            self, tmp_path, monkeypatch):
+        """Measured on What's Up -- four chords repeated for four minutes,
+        where the windows match +9.9, -34.4, -6.2 and +21.1 s. It kept 5 of
+        41 and stored a map claiming -3.02 % drift and 5.1 s of correction,
+        and that map looked exactly as measured as a good one."""
+        points = [(0.0, -260.0), (177_000.0, -1330.0)]
+        self._found(monkeypatch, points, windows=41, usable=5)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        assert screen._mp3_anchors() == []
+        panel = " ".join(screen._sync_lines)
+        assert "could not read this recording" in panel
+        assert "Shift+S" in panel, "it does not say what to do instead"
+
+    def test_and_where_the_two_part_company_is_named(self, tmp_path,
+                                                     monkeypatch):
+        """"29 of 47 windows" is a number nobody can act on. A time is a
+        place to put a point."""
+        points = [(0.0, -260.0), (60_000.0, -300.0)]
+        self._found(monkeypatch, points, windows=47, usable=29,
+                    breaks=[(89.0, -8.8), (179.0, -4.2)])
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        panel = " ".join(screen._sync_lines)
+        assert "part company" in panel
+        assert "1:29" in panel and "-8.8" in panel
+
+    def test_a_song_that_reads_cleanly_says_nothing_about_breaks(
+            self, tmp_path, monkeypatch):
+        points = [(0.0, -260.0), (60_000.0, -300.0)]
+        self._found(monkeypatch, points, windows=42, usable=32)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        assert "part company" not in " ".join(screen._sync_lines)
+
     def test_a_recording_it_cannot_read_says_so(self, tmp_path, monkeypatch):
         self._found(monkeypatch, [], windows=30, usable=1)
         screen = self._screen(tmp_path, monkeypatch)
@@ -1043,7 +1094,9 @@ class TestAutoSyncInsideTheApp:
         self._run(screen)
         assert screen._mp3_anchors() == []
         panel = " ".join(screen._sync_lines)
-        assert "could not be read" in panel and "1 of 30" in panel
+        assert "could not read this recording" in panel
+        assert "1 of 30" in panel
+        assert "nothing was stored" in panel
 
     def test_a_failure_is_named_not_swallowed(self, tmp_path, monkeypatch):
         from pickhero.audio import autosync

@@ -88,6 +88,29 @@ MIN_SLOPE_SPAN_S = 30.0
 SIMPLIFY_MS = 25.0
 # Below this many usable windows there is no curve, only noise.
 MIN_WINDOWS = 3
+# A jump between two NEIGHBOURING windows that no drift can explain. They sit
+# STEP_S apart and the fastest drift allowed is MAX_DRIFT_RATE, so drift can
+# move them by at most 0.3 s; a second is three times that. Above it the tab
+# and the recording are not the same piece of music at that moment -- a
+# repeat one of them does not play, a bar the transcriber added, or a window
+# that matched the wrong chorus. Measured on the player's own files: Godsmack
+# jumps 13.1 s between 1:06 and 1:36, and What's Up swings +9.9, -34.4, -6.2,
+# +21.1 across five windows.
+BREAK_S = 1.0
+# What a stretch between two breaks has to be before a line is fitted to it.
+# Below this it is noise pretending to be a section: What's Up produces
+# twenty "sections" of one window each, and a map built from those is worse
+# than no map at all, because it looks measured.
+MIN_SECTION_WINDOWS = 4
+MIN_SECTION_S = 30.0
+# What share of a song's windows has to survive before the answer is worth
+# storing. Fitted on the three songs to hand and nothing more: Bon Jovi keeps
+# 32 of 42 (76 %), Godsmack 29 of 47 (62 %), and What's Up -- four chords
+# repeated for four minutes, where the windows match +9.9, -34.4, -6.2 and
+# +21.1 s -- keeps 5 of 41 (12 %). A third is the gap between them. Below it
+# the map is not thin, it is WRONG: What's Up's came out at -3.02 % drift and
+# 5.1 s of correction, and it looked exactly as measured as the good ones.
+MIN_USABLE_SHARE = 1.0 / 3.0
 
 
 def decode(path: str | Path, samplerate: int = 44100) -> tuple[np.ndarray, int]:
@@ -348,29 +371,147 @@ def spike_tolerance(residuals: Sequence[float]) -> float:
     return min(OUTLIER_S, max(SPIKE_FLOOR_S, SPIKE_FACTOR * mad))
 
 
+def breaks_in(kept: Sequence[tuple[float, float]]
+              ) -> list[tuple[float, float]]:
+    """(when, by how much) the readings jump, in seconds.
+
+    Not an outlier test. An outlier is one window that disagrees with the
+    rest; a BREAK is the whole curve moving and staying moved, and the two
+    need opposite treatment -- an outlier is dropped, a break is a place to
+    stop fitting and start again.
+
+    Told apart by what drift could do: neighbours are STEP_S apart and drift
+    is bounded, so anything past that budget is not the recording running at
+    a different speed, it is the two of them being different music.
+    """
+    out = []
+    for (at, lag), (next_at, next_lag) in zip(kept, kept[1:]):
+        budget = max(BREAK_S, MAX_DRIFT_RATE * (next_at - at))
+        if abs(next_lag - lag) > budget:
+            out.append((next_at, next_lag - lag))
+    return out
+
+
+def sections(kept: Sequence[tuple[float, float]]
+             ) -> list[list[tuple[float, float]]]:
+    """The readings split where they jump, longest run first in time order."""
+    if not kept:
+        return []
+    at_break = {at for at, _ in breaks_in(kept)}
+    out: list[list[tuple[float, float]]] = [[]]
+    for reading in kept:
+        if reading[0] in at_break and out[-1]:
+            out.append([])
+        out[-1].append(reading)
+    return [part for part in out if part]
+
+
+def big_enough(part: Sequence[tuple[float, float]]) -> bool:
+    """Whether a section is worth fitting a line to."""
+    return (len(part) >= MIN_SECTION_WINDOWS
+            and part[-1][0] - part[0][0] >= MIN_SECTION_S)
+
+
+def merged_sections(parts: Sequence[Sequence[tuple[float, float]]]
+                    ) -> list[list[tuple[float, float]]]:
+    """Fold each section too small to fit into the big one beside it.
+
+    **A break is the curve moving and STAYING moved.** A single window that
+    jumps and comes straight back is an outlier, and splitting there strands
+    the good readings after it in a section too small to fit -- so they are
+    thrown away with it.
+
+    Measured on the player's own file: Bon Jovi's outro has five such jumps
+    of about 14 s, each one window wide. Splitting at all of them cost 12
+    readings and a minute and a half of coverage, and every one of the bad
+    ones is dropped by the section's own spike filter anyway. Godsmack's
+    real breaks survive this, because they are followed by four windows and
+    thirty seconds that agree with each other.
+    """
+    out: list[list[tuple[float, float]]] = []
+    for part in parts:
+        if big_enough(part) or not out:
+            out.append(list(part))
+        else:
+            out[-1] += list(part)
+    # A run of small sections before the first big one has nothing to fold
+    # into, so it is kept and judged on its own -- which usually drops it.
+    if out and not big_enough(out[0]) and len(out) > 1:
+        out[1] = out[0] + out[1]
+        out.pop(0)
+    return out
+
+
 def usable_rows(rows: Iterable[tuple[float, float, float]]
                 ) -> list[tuple[float, float]]:
     """Drop the windows that are not readings, and then the outliers.
 
-    Two filters and they answer different questions: the margin says the
-    window could not tell one chorus from another, and the residual says this
-    one disagrees with all the others. Neither is a threshold on the
-    correlation itself, which would have to be fitted per song and would then
-    be measuring the song.
+    Three filters now, and they answer three different questions.
 
-    The residual filter is scaled to the scatter the song shows rather than
-    fixed, because a fixed one has to be set for the worst case it must catch
-    -- a wrong chorus, tens of seconds away -- and is then blind to a spike of
-    one second on a song whose windows agree to within fifty milliseconds.
+    - The **margin** says the window could not tell one chorus from another.
+    - The **breaks** say the two stopped being the same piece of music here.
+      This one is new, and it is what the whole thing was getting wrong: a
+      single line was fitted to the entire song, so a tab that repeats a
+      section the record does not made every window after the repeat look
+      like an outlier. Measured on the player's own files: Godsmack kept 11
+      of 47 windows and covered 0:00-1:26 of 4:56, with the remaining three
+      and a half minutes extrapolated from a line fitted to the first.
+    - The **residual**, WITHIN a section, says this one window disagrees with
+      the others around it. Scaled to the scatter that section shows rather
+      than fixed, because a fixed one has to be set for the worst case it
+      must catch and is then blind to a spike of one second on a song whose
+      windows agree to fifty milliseconds.
+
+    A section too small to fit is dropped whole rather than fitted: four
+    windows over thirty seconds is the least that can say anything, and
+    below it a "section" is one reading calling itself a trend.
     """
     kept = [(at, lag) for at, lag, margin in rows if margin >= MIN_MARGIN]
     if len(kept) < MIN_WINDOWS:
         return []
-    slope, intercept = _robust_line([a for a, _ in kept], [b for _, b in kept])
-    residuals = [lag - (slope * at + intercept) for at, lag in kept]
-    tolerance = spike_tolerance(residuals)
-    return [(at, lag) for (at, lag), gap in zip(kept, residuals)
-            if abs(gap) <= tolerance]
+    out: list[tuple[float, float]] = []
+    for part in merged_sections(sections(kept)):
+        if not big_enough(part):
+            continue
+        slope, intercept = _robust_line([a for a, _ in part],
+                                        [b for _, b in part])
+        residuals = [lag - (slope * at + intercept) for at, lag in part]
+        tolerance = spike_tolerance(residuals)
+        out += [(at, lag) for (at, lag), gap in zip(part, residuals)
+                if abs(gap) <= tolerance]
+    return out
+
+
+def read_report(rows: Sequence[tuple[float, float, float]]) -> dict:
+    """What the listening could and could not read, as numbers.
+
+    Separate from the points because the app has to be able to SAY what
+    happened. "28 of 51 windows usable" is a number nobody can act on; "the
+    tab and the recording part company at 1:36" is a place to put a point.
+    """
+    by_margin = [(at, lag) for at, lag, margin in rows if margin >= MIN_MARGIN]
+    parts = merged_sections(sections(by_margin))
+    used = [part for part in parts if big_enough(part)]
+    kept = usable_rows(rows)
+    dropped = [(part[0][0], part[-1][0] + WINDOW_S)
+               for part in parts if not big_enough(part)]
+    windows = len(rows)
+    share = len(kept) / windows if windows else 0.0
+    return {
+        "readable": bool(used) and share >= MIN_USABLE_SHARE,
+        "share": share,
+        "windows": len(rows),
+        "ambiguous": len(rows) - len(by_margin),
+        "breaks": [(part[0][0], part[0][1] - previous[-1][1])
+                   for previous, part in zip(parts, parts[1:])
+                   if big_enough(previous) and big_enough(part)],
+        "sections": len(parts),
+        "sections_used": len(used),
+        "unreadable": dropped,
+        "usable": len(kept),
+        "covered": ((kept[0][0], kept[-1][0] + WINDOW_S) if kept else None),
+        "song_s": (rows[-1][0] + WINDOW_S) if rows else 0.0,
+    }
 
 
 def simplify(points: list[tuple[float, float]],

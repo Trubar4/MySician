@@ -143,18 +143,30 @@ class TestTheSubFrameRefinement:
 
 class TestWhatIsThrownAway:
 
+    def _steady(self, seconds=120, rate=0.001):
+        """A song's worth of windows on a straight line.
+
+        A song's worth, because a section is only fitted once it is four
+        readings and thirty seconds long -- below that a "section" is one
+        reading calling itself a trend, and What's Up produces seventeen of
+        them. So a fixture of four windows over eighteen seconds is not a
+        short test, it is not a song.
+        """
+        return [(float(t), t * rate, 0.05) for t in range(0, seconds, 6)]
+
     def test_a_window_that_could_not_tell_two_choruses_apart(self):
-        rows = [(0.0, 0.0, 0.05), (6.0, 0.1, 0.001), (12.0, 0.2, 0.05),
-                (18.0, 0.3, 0.05)]
+        rows = self._steady()
+        rows[2] = (rows[2][0], rows[2][1], 0.001)
         kept = autosync.usable_rows(rows)
-        assert [at for at, _ in kept] == [0.0, 12.0, 18.0]
+        assert rows[2][0] not in [at for at, _ in kept]
+        assert len(kept) == len(rows) - 1
 
     def test_a_window_that_matched_the_wrong_chorus(self):
-        rows = [(t, t * 0.001, 0.05) for t in (0.0, 6.0, 12.0, 18.0, 24.0)]
-        rows.insert(3, (13.0, 20.0, 0.05))       # twenty seconds away
+        rows = self._steady()
+        rows.insert(9, (rows[9][0] + 1.0, 20.0, 0.05))   # twenty seconds away
         kept = autosync.usable_rows(rows)
         assert all(abs(lag) < 1.0 for _, lag in kept)
-        assert len(kept) == 5
+        assert len(kept) == len(rows) - 1
 
     def test_too_few_windows_is_no_answer_rather_than_a_bad_one(self):
         assert autosync.usable_rows([(0.0, 0.0, 0.9), (6.0, 0.1, 0.9)]) == []
@@ -317,3 +329,107 @@ class TestASpikeInAnOtherwiseGoodCurve:
         tolerance grow to match: a wrong chorus is what that would admit."""
         assert autosync.spike_tolerance([-4.0, 4.0, -4.0, 4.0]) \
             == autosync.OUTLIER_S
+
+
+class TestABreakIsNotAnOutlier:
+    """The fault this whole pass exists to fix.
+
+    A single line was fitted to the WHOLE song, so a tab that repeats a
+    section the record does not made every window after the repeat look like
+    an outlier. Measured on the player's own files before it was changed:
+    Godsmack kept 11 of 47 windows and covered 0:00-1:26 of 4:56, with three
+    and a half minutes extrapolated from a line fitted to the first minute.
+    """
+
+    def _run(self, seconds, lag_at, margin=0.05):
+        return [(float(t), lag_at(t), margin) for t in range(0, seconds, 6)]
+
+    def _stepped(self):
+        """Two minutes at one offset, two at another ten seconds away."""
+        return self._run(240, lambda t: 0.0 if t < 120 else 10.0)
+
+    def test_a_step_is_found_and_named(self):
+        found = autosync.breaks_in(
+            [(at, lag) for at, lag, _ in self._stepped()])
+        assert len(found) == 1
+        at, by = found[0]
+        assert at == 120.0
+        assert by == pytest.approx(10.0)
+
+    def test_drift_alone_is_never_a_break(self):
+        """A recording running five per cent fast is the fastest this allows,
+        and it must not read as the song changing."""
+        rows = self._run(240, lambda t: t * autosync.MAX_DRIFT_RATE)
+        assert autosync.breaks_in([(a, b) for a, b, _ in rows]) == []
+
+    def test_both_sides_of_a_step_are_kept(self):
+        kept = autosync.usable_rows(self._stepped())
+        assert any(at < 120 for at, _ in kept)
+        assert any(at >= 120 for at, _ in kept)
+        assert len(kept) >= 30
+
+    def test_and_the_map_that_comes_out_covers_the_whole_song(self):
+        points = autosync.points_from_rows(self._stepped())
+        assert points
+        first, last = points[0][0], points[-1][0]
+        assert first < 60_000 and last > 180_000
+
+    def test_a_window_that_jumps_and_comes_back_is_still_an_outlier(self):
+        """A break is the curve moving and STAYING moved. Splitting at a
+        one-window spike stranded the good readings after it in a section too
+        small to fit -- measured on Bon Jovi's outro, five such spikes cost
+        twelve readings and a minute and a half of coverage."""
+        rows = self._run(240, lambda t: 0.0)
+        rows[20] = (rows[20][0], 14.0, 0.05)
+        kept = autosync.usable_rows(rows)
+        assert all(abs(lag) < 1.0 for _, lag in kept)
+        assert len(kept) == len(rows) - 1
+
+    def test_a_section_too_short_to_mean_anything_is_not_fitted(self):
+        """Below four readings and thirty seconds a section is one reading
+        calling itself a trend."""
+        short = [(0.0, 0.0), (6.0, 0.0), (12.0, 0.0)]
+        assert not autosync.big_enough(short)
+        assert autosync.big_enough([(t * 6.0, 0.0) for t in range(6)])
+
+
+class TestSayingWhatCouldNotBeRead:
+    """"28 of 51 windows usable" is a number nobody can act on."""
+
+    def _rows(self, seconds, lag_at, margin=0.05):
+        return [(float(t), lag_at(t), margin) for t in range(0, seconds, 6)]
+
+    def test_a_clean_song_is_readable_and_has_no_breaks(self):
+        report = autosync.read_report(self._rows(240, lambda t: t * 0.001))
+        assert report["readable"] and report["breaks"] == []
+        assert report["covered"][0] == 0.0
+
+    def test_a_stepped_song_names_where(self):
+        report = autosync.read_report(
+            self._rows(240, lambda t: 0.0 if t < 120 else 10.0))
+        assert report["readable"]
+        assert [at for at, _ in report["breaks"]] == [120.0]
+
+    def test_noise_is_not_readable_at_any_count(self):
+        """What's Up: four chords for four minutes, windows matching +9.9,
+        -34.4, -6.2 and +21.1 s. It used to store a map claiming -3.02 %
+        drift, and that map looked exactly as measured as a good one."""
+        import random
+        random.seed(3)
+        rows = self._rows(300, lambda t: random.uniform(-40, 40))
+        report = autosync.read_report(rows)
+        assert not report["readable"]
+        assert report["share"] < autosync.MIN_USABLE_SHARE
+
+    def test_and_a_thin_reading_is_not_readable_either(self):
+        """Not thin: WRONG. A map from an eighth of a song looks as measured
+        as one from three quarters."""
+        rows = self._rows(300, lambda t: 0.0, margin=0.001)
+        for i in range(0, 8):
+            rows[i] = (rows[i][0], 0.0, 0.05)
+        assert not autosync.read_report(rows)["readable"]
+
+    def test_the_report_counts_what_the_margin_threw_away(self):
+        rows = self._rows(240, lambda t: 0.0)
+        rows[3] = (rows[3][0], 0.0, 0.001)
+        assert autosync.read_report(rows)["ambiguous"] == 1
