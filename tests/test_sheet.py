@@ -1,0 +1,194 @@
+"""Laying the song out as a sheet instead of a moving belt.
+
+The scrolling view cannot part two notes without speeding everything up,
+because a note's x IS its time times a speed -- measured on the player's
+songs, half of Thunder's solo sits closer together than a head is wide. A
+sheet has no hit line to reach, so x is free of time and the playhead
+carries the time instead. These tests are about that freedom being real:
+every note gets its room, and the playhead pays for it by running unevenly.
+"""
+
+import pytest
+
+from pickhero.tabs.timeline import (MeasureInfo, NoteEvent, SongMetadata,
+                                    Timeline)
+from pickhero.ui.sheet import (MIN_GAP_HEADS, QUARTER_HEADS, lay_out, row_at)
+
+HEAD = 44.0
+WIDTH = 1200.0
+
+
+def _song(bars_of, tempo=120, bar_ms=2000.0):
+    """A song from a list of per-bar onset offsets, in ms from the bar."""
+    notes, measures = [], []
+    for index, offsets in enumerate(bars_of):
+        start = index * bar_ms
+        measures.append(MeasureInfo(index=index, start_ms=start,
+                                    end_ms=start + bar_ms))
+        for i, offset in enumerate(offsets):
+            notes.append(NoteEvent(timestamp_ms=start + offset,
+                                   duration_ms=100.0, midi_note=40 + (i % 40),
+                                   string=1 + (i % 6), fret=i % 13,
+                                   measure=index))
+    return Timeline(notes, SongMetadata(title="t", tempo=tempo),
+                    measures=measures)
+
+
+class TestEveryNoteGetsItsRoom:
+    """The thing the scrolling view cannot do at any setting."""
+
+    def _burst(self):
+        """One roomy bar and one of sixteenths -- Thunder's solo in little."""
+        return _song([[0.0, 1000.0], [i * 125.0 for i in range(16)]])
+
+    def test_two_notes_on_one_string_never_touch(self):
+        rows = lay_out(self._burst(), WIDTH, HEAD)
+        for row in rows:
+            per_string = {}
+            for placed in row.notes:
+                per_string.setdefault(placed.note.string, []).append(placed.x)
+            for string, xs in per_string.items():
+                xs.sort()
+                for a, b in zip(xs, xs[1:]):
+                    assert b - a >= HEAD, f"string {string}: {b - a:.1f} px"
+
+    def test_and_the_gap_is_the_stated_one(self):
+        rows = lay_out(self._burst(), WIDTH, HEAD)
+        gaps = []
+        for row in rows:
+            xs = sorted({p.x for p in row.notes})
+            gaps += [b - a for a, b in zip(xs, xs[1:])]
+        assert min(gaps) >= MIN_GAP_HEADS * HEAD * 0.99
+
+    def test_a_sixteenth_run_is_evenly_spaced(self):
+        """Below the minimum the proportional term stops mattering, which is
+        what makes a fast run readable instead of merely proportional."""
+        rows = lay_out(self._burst(), WIDTH, HEAD)
+        run = sorted(p.x for row in rows for p in row.notes
+                     if p.note.timestamp_ms >= 2000.0)
+        assert len(run) == 16, "the run was not laid out at all"
+        steps = [b - a for a, b in zip(run, run[1:])]
+        assert max(steps) - min(steps) < 1.0
+
+
+class TestThePlayheadCarriesTheTime:
+    def test_it_only_moves_forwards(self):
+        rows = lay_out(_song([[0.0, 500.0, 1000.0], [0.0, 250.0]]),
+                       WIDTH, HEAD)
+        row = rows[0]
+        seen = [row.x_at(ms) for ms in range(int(row.start_ms),
+                                             int(row.end_ms), 25)]
+        assert seen == sorted(seen)
+
+    def test_it_passes_through_every_note(self):
+        rows = lay_out(_song([[0.0, 500.0, 1000.0]]), WIDTH, HEAD)
+        for placed in rows[0].notes:
+            assert rows[0].x_at(placed.note.timestamp_ms) == pytest.approx(
+                placed.x)
+
+    def test_it_runs_slower_where_the_notes_are_closer(self):
+        """The price of the room above, and the whole reason it is free.
+
+        Both bars are put on ONE row on purpose -- across two rows the
+        justification scales them differently and the comparison would be
+        between two lines rather than between two bars."""
+        song = _song([[0.0, 1000.0], [i * 125.0 for i in range(16)]])
+        rows = lay_out(song, 4000.0, HEAD)
+        assert len(rows) == 1, "the two bars have to share a line"
+        row = rows[0]
+        roomy = (row.x_at(1000.0) - row.x_at(500.0)) / 500.0
+        dense = (row.x_at(2500.0) - row.x_at(2000.0)) / 500.0
+        assert dense > roomy * 1.5, (roomy, dense)
+
+    def test_a_moment_before_or_after_the_row_is_pinned_to_its_edge(self):
+        rows = lay_out(_song([[0.0], [0.0]]), WIDTH, HEAD)
+        row = rows[0]
+        assert row.x_at(row.start_ms - 5_000) == row.xs[0]
+        assert row.x_at(row.end_ms + 5_000) == row.xs[-1]
+
+
+class TestRowsAreWholeBars:
+    def test_a_row_starts_and_ends_on_a_bar_line(self):
+        rows = lay_out(_song([[0.0, 500.0]] * 12), WIDTH, HEAD)
+        for row in rows:
+            assert row.start_ms == row.first_bar * 2000.0
+            assert row.end_ms == (row.last_bar + 1) * 2000.0
+
+    def test_every_bar_appears_exactly_once(self):
+        rows = lay_out(_song([[0.0, 500.0]] * 12), WIDTH, HEAD)
+        covered = []
+        for row in rows:
+            covered += list(range(row.first_bar, row.last_bar + 1))
+        assert covered == list(range(12))
+
+    def test_a_row_fills_the_line(self):
+        """Ragged right edges are what an engraver justifies away, and a
+        half-empty line wastes the room the notes are short of."""
+        rows = lay_out(_song([[0.0, 500.0]] * 12), WIDTH, HEAD)
+        for row in rows:
+            assert row.xs[-1] == pytest.approx(WIDTH)
+
+    def test_a_denser_song_puts_fewer_bars_on_a_line(self):
+        roomy = lay_out(_song([[0.0, 1000.0]] * 12), WIDTH, HEAD)
+        dense = lay_out(_song([[i * 125.0 for i in range(16)]] * 12),
+                        WIDTH, HEAD)
+        assert len(dense) > len(roomy)
+
+    def test_a_bar_too_dense_for_a_whole_line_says_so(self):
+        """It is squeezed rather than dropped, and the row admits that its
+        heads touch -- a silent overlap is the fault this whole view exists
+        to end."""
+        crammed = _song([[i * 5.0 for i in range(300)]])
+        rows = lay_out(crammed, WIDTH, HEAD)
+        assert len(rows) == 1 and rows[0].crowded
+
+    def test_an_ordinary_song_is_never_crowded(self):
+        rows = lay_out(_song([[0.0, 500.0, 1000.0, 1500.0]] * 8),
+                       WIDTH, HEAD)
+        assert not any(row.crowded for row in rows)
+
+
+class TestWhatIsDrawnIsWhatTookRoom:
+    def test_a_filtered_note_takes_no_room(self):
+        """A note nobody can see must not be laid out for, or a song with a
+        fret limit is spaced for notes that are not there."""
+        song = _song([[0.0, 500.0, 1000.0, 1500.0]] * 6)
+        everything = lay_out(song, WIDTH, HEAD)
+        half = lay_out(song, WIDTH, HEAD, passes=lambda n: n.fret % 2 == 0)
+        assert len(half) <= len(everything)
+        assert all(p.note.fret % 2 == 0 for row in half for p in row.notes)
+
+    def test_a_sustain_stops_short_of_the_next_note_on_its_string(self):
+        notes = [
+            NoteEvent(timestamp_ms=0.0, duration_ms=1900.0, midi_note=40,
+                      string=6, fret=3),
+            NoteEvent(timestamp_ms=500.0, duration_ms=100.0, midi_note=41,
+                      string=6, fret=5),
+        ]
+        song = Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=[MeasureInfo(index=0, start_ms=0.0,
+                                              end_ms=2000.0)])
+        row = lay_out(song, WIDTH, HEAD)[0]
+        first, second = sorted(row.notes, key=lambda p: p.x)
+        assert first.x + first.width <= second.x + 1e-6
+
+    def test_a_note_is_never_narrower_than_its_head(self):
+        row = lay_out(_song([[i * 125.0 for i in range(16)]]), WIDTH, HEAD)[0]
+        assert all(p.width >= HEAD for p in row.notes)
+
+
+class TestFindingTheRow:
+    def test_it_finds_the_row_a_moment_belongs_to(self):
+        rows = lay_out(_song([[0.0, 500.0]] * 12), WIDTH, HEAD)
+        for row in rows:
+            assert row_at(rows, row.start_ms + 1.0) == row.index
+
+    def test_before_the_song_is_the_first_row_and_after_it_the_last(self):
+        rows = lay_out(_song([[0.0, 500.0]] * 12), WIDTH, HEAD)
+        assert row_at(rows, -5_000.0) == 0
+        assert row_at(rows, 10_000_000.0) == rows[-1].index
+
+    def test_an_empty_song_does_not_raise(self):
+        song = Timeline([], SongMetadata(title="t", tempo=120))
+        rows = lay_out(song, WIDTH, HEAD)
+        assert len(rows) == 1 and rows[0].notes == ()

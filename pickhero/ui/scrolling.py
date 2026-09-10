@@ -419,6 +419,10 @@ MIN_SYNC_SPAN_MS = 30_000.0
 # it and the count has to be in rows rather than in staves.
 TAB_SYSTEMS_SHOWN = 2
 TAB_PLAYHEAD_PX = 5
+# How long the page takes to slide up by a row, and the distance past which
+# a move is not a page turn at all. Seeking across a song must not crawl.
+TAB_GLIDE_S = 0.25
+TAB_GLIDE_SNAP_PX = 1200.0
 # Below the HUD's block of lines, which is text with no ground of its own.
 TAB_TOP_MARGIN = 150
 
@@ -983,7 +987,13 @@ class PlayingScreen:
         self._tab_ready: tuple = (None, -1)
         # Where the page is scrolled to. Held between frames on purpose: the
         # page moves when the music leaves the screen, not continuously.
-        self._tab_scroll: int = 0
+        # Where the page is, where it is sliding to, and when it started.
+        # A float because a quarter of a second at 60 Hz is fifteen steps and
+        # rounding each of them to a whole pixel is a stutter of its own.
+        self._tab_scroll: float = 0.0
+        self._tab_glide_from: float = 0.0
+        self._tab_glide_to: float = 0.0
+        self._tab_glide_at: float = 0.0
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         if guide_track is not None and len(guide_track) > 0:
@@ -1904,7 +1914,40 @@ class PlayingScreen:
         """
         top, _ = page.row_window(row, TAB_SYSTEMS_SHOWN)
         limit = max(0.0, page_h - view_h)
-        self._tab_scroll = int(max(0.0, min(limit, top * page_h)))
+        target = max(0.0, min(limit, top * page_h))
+        return int(self._glide_to(target))
+
+    def _glide_to(self, target: float) -> float:
+        """The page sliding up to `target`, rather than arriving there.
+
+        A step is the cheapest thing to draw and the hardest thing to
+        follow: the eye has no idea whether the page went up by one row or
+        three, so it has to re-find the playhead every time. A quarter of a
+        second of movement carries the eye with it and costs one page turn's
+        worth of motion every four seconds -- which is not the continuous
+        scrolling this view exists to avoid.
+
+        Eased at both ends (`3t^2 - 2t^3`), because a slide that starts and
+        stops abruptly reads as a jump with extra steps.
+
+        A LONG move is not a page turn and is not glided: seeking half a
+        song would otherwise crawl across the page for a quarter of a second
+        while the music is already somewhere else.
+        """
+        now = time.monotonic()
+        if target != self._tab_glide_to:
+            far = abs(target - self._tab_glide_to) > TAB_GLIDE_SNAP_PX
+            self._tab_glide_from = target if far else self._tab_scroll
+            self._tab_glide_to = target
+            self._tab_glide_at = now
+        share = (now - self._tab_glide_at) / TAB_GLIDE_S
+        if share >= 1.0:
+            self._tab_scroll = self._tab_glide_to
+        else:
+            eased = share * share * (3.0 - 2.0 * share)
+            self._tab_scroll = (self._tab_glide_from
+                                + (self._tab_glide_to - self._tab_glide_from)
+                                * eased)
         return self._tab_scroll
 
     def _draw_tab_page(self, surface: pygame.Surface, layout: _Layout) -> None:

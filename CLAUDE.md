@@ -2182,6 +2182,46 @@ the board's white hit-zone colour onto a paper ground and could not be found; it
 page view has no persistence blur by construction and no crowding either. On the passage the player could not read while it scrolled,
 the page view was fine. That is the answer for a fast song until the frame question above is settled.
 
+## A Sheet Has No Hit Line — HALF BUILT
+
+The scrolling view has one rule it cannot escape, and two days of this session were spent finding out that it cannot. **A note's x is its
+time multiplied by a speed**, because the note has to arrive at the hit line at the moment it is played. So the distance between two notes
+and the speed of the picture are THE SAME NUMBER, and every attempt to part the notes made the picture faster — which is the complaint that
+started all this.
+
+**The player found the way out, and it is not a knob.** A sheet that does not scroll has no hit line, so nothing has to reach a fixed point
+at a fixed moment. **x is then free of time, and the PLAYHEAD carries the time instead** — running quickly through a sparse bar and slowly
+through a dense one. The trade dissolves: every note can have the room it needs, at no cost in speed, because there is no speed.
+
+`ui/sheet.py` is that arithmetic and nothing else — no drawing, so it is tested without a screen, and because two views will want the same
+answer.
+
+- **Proportional until it would overlap, then a floor.** Each gap is `max(gap_ms x per_ms, 1.18 heads)`. That single `max` is the whole
+  idea: rhythm is visible wherever there is room for it, and legibility wins wherever there is not. A run of sixteenths therefore comes out
+  EVENLY spaced rather than proportionally illegible, which is what an engraver does and what Songsterr does — read off the player's own
+  screenshot of it, where a bar of sixteenths is visibly wider than the bar of crotchets beside it.
+- **Rows are whole bars, justified to the line.** Bars are filled in until the next one would not fit, then the row is stretched to the full
+  width rather than left ragged. A single bar too dense for a whole line is squeezed instead of dropped, and the row SAYS SO (`crowded`) —
+  a silent overlap is the fault this view exists to end.
+- **A note that is filtered out takes no room**, or a song with a fret limit is spaced for notes nobody can see.
+
+**Measured on the two songs this session is about, at 1200 px and a 44 px head:**
+
+| | rows | bars per row | row lasts | pairs on one string closer than a head | tightest |
+|---|---|---|---|---|---|
+| **Thunder lead** | 125 | 2 | 3.1 s | **0 of 1372** | 56 px |
+| **Bon Jovi distortion** | 77 | 2 | 3.6 s | **0 of 528** | 53 px |
+
+**Thunder's solo had 47 such pairs in the scrolling view and 30 of them inside five seconds. It has none here**, at full note size, with no
+speed spent — and the two songs the player named are laid out with nothing crowded at all.
+
+**What this costs is a page turn every three seconds**, against every four in the tab view. Whether that is worth it is the one thing the
+arithmetic cannot answer.
+
+**Not built yet: the drawing.** The layout exists and is tested; the view that uses it does not. Also still to do — the key that opens it,
+the setting that makes it the default, and the verdict colours, which in a sheet can STAY on the note after the playhead has passed. That
+last one is the thing a scrolling view can never offer: the row you just played is still on screen, with your mistakes still on it.
+
 ## Two Rows Of Music And Nothing Else
 
 "Mir reichen 2 Zeilen des Tabs in der Mitte. Danach sollte oben und unten genug Platz sein für die Anzeigen, die aktuell reinlappen."
