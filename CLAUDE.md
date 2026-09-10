@@ -2205,6 +2205,18 @@ straight over the staff. Both are right; neither could give way, because neither
   harder contrast; the reason for an off-white ground — paper does not glare — is a print argument and not a screen one.
 - **And the tab label moved off the tempo.** Both wanted the centre of the top edge and the HUD is drawn second, so they read as one
   illegible line: the same complaint as the page over the staff, one row up.
+**And the row stepping was wrong in a way only the player would notice.** The rule was "hold the page while the current row is anywhere
+on screen, then move" — right for a window as tall as the page, and the exact opposite of what it is for with a window two rows tall. It
+showed rows in PAIRS: the playhead sat in the top row for one row and in the BOTTOM row for the next, so half the song was played with
+nothing visible underneath. Measured before it was changed, on Thunder, row by row: `OBEN, unten, OBEN, unten` all the way down the page.
+
+**The row IS the state now** (`_tab_offset_for`). The offset follows from which row is being played, so it holds by itself while the
+playhead crosses a row and steps exactly one row when it leaves — and the row after the one in the hand is always the one underneath it.
+Same measurement after: `OBEN` seven times out of seven. `_tab_scroll_for` went with the old rule rather than sit there tested and unused.
+
+**The price is named rather than hidden: the page now steps once a ROW instead of once every two**, about every four seconds on this song
+against every eight. That is the trade the player asked for — a preview at every line break costs a page turn at every line break.
+
 
 ## The Recording Is Only Synced Where Somebody Listened
 

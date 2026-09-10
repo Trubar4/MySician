@@ -6,6 +6,7 @@ import pytest
 from pickhero.tabs.timeline import (
     MeasureInfo, NoteEvent, SongMetadata, Timeline,
 )
+from pickhero.ui import scrolling
 from pickhero.ui.tab_view import (
     DEFAULT_ZOOM, TabEngraving, ZOOM_STEPS, _view_box,
 )
@@ -378,24 +379,53 @@ class TestThePageDoesNotWanderUpAndDown:
         assert len(heights) == rows
         assert strings > rows, "this song would not show the fault at all"
 
-    def test_the_page_holds_still_while_the_system_is_on_screen(self):
-        screen = _playing_screen()
-        first = screen._tab_scroll_for(1000.0, 1100.0, 4000.0, 700.0)
-        again = screen._tab_scroll_for(1300.0, 1400.0, 4000.0, 700.0)
-        assert first == again
+    def _page(self, tops=(0.05, 0.157, 0.264, 0.371), band=0.039):
+        from pickhero.ui.tab_view import TabPage
+        page = TabPage(number=1, surface=None)
+        page.systems = [(t, t + band) for t in tops]
+        return page
 
-    def test_and_moves_once_the_music_has_left_it(self):
+    def test_the_row_being_played_is_the_top_one(self):
+        """The rule used to be "hold while the row is anywhere on screen",
+        which with a two-row window showed rows in PAIRS -- the playhead in
+        the top row for one row and in the bottom for the next, so half the
+        song was played with no sight of what was coming."""
         screen = _playing_screen()
-        screen._tab_scroll_for(100.0, 200.0, 4000.0, 700.0)
-        before = screen._tab_scroll
-        screen._tab_scroll_for(2000.0, 2100.0, 4000.0, 700.0)
-        assert screen._tab_scroll > before
+        page = self._page()
+        for row in range(3):
+            offset = screen._tab_offset_for(page, row, 4000.0, 700.0)
+            top, _ = page.row_window(row, scrolling.TAB_SYSTEMS_SHOWN)
+            assert offset == int(top * 4000.0)
+
+    def test_so_the_row_after_it_is_always_underneath(self):
+        screen = _playing_screen()
+        page = self._page()
+        for row in range(3):
+            offset = screen._tab_offset_for(page, row, 4000.0, 700.0)
+            _, height = page.row_window(row, scrolling.TAB_SYSTEMS_SHOWN)
+            next_top, _ = page.row_window(row + 1, 1)
+            assert offset <= next_top * 4000.0 <= offset + height * 4000.0
+
+    def test_it_holds_still_while_the_playhead_crosses_a_row(self):
+        """The row is the state, so nothing moves until the row changes."""
+        screen = _playing_screen()
+        page = self._page()
+        first = screen._tab_offset_for(page, 1, 4000.0, 700.0)
+        assert screen._tab_offset_for(page, 1, 4000.0, 700.0) == first
+
+    def test_and_steps_exactly_one_row_when_it_leaves(self):
+        screen = _playing_screen()
+        page = self._page()
+        steps = [screen._tab_offset_for(page, row, 4000.0, 700.0)
+                 for row in range(4)]
+        assert steps == sorted(steps)
+        assert all(b > a for a, b in zip(steps, steps[1:]))
 
     def test_a_page_that_fits_never_scrolls(self):
         screen = _playing_screen()
-        assert screen._tab_scroll_for(300.0, 400.0, 600.0, 700.0) == 0
+        assert screen._tab_offset_for(self._page(), 2, 600.0, 700.0) == 0
 
     def test_it_never_scrolls_past_the_end(self):
         screen = _playing_screen()
-        offset = screen._tab_scroll_for(3990.0, 4000.0, 4000.0, 700.0)
+        offset = screen._tab_offset_for(self._page(), 3, 4000.0, 700.0)
         assert 0 <= offset <= 4000.0 - 700.0

@@ -1885,34 +1885,26 @@ class PlayingScreen:
                      if shift else " — as written"))
         return ("transpose", shift)
 
-    def _tab_scroll_for(self, band_top: float, band_bottom: float,
-                        page_h: float, view_h: float,
-                        lead_px: float = 0.0) -> int:
-        """Where to scroll the page so the current system is readable.
+    def _tab_offset_for(self, page, row: int, page_h: float,
+                        view_h: float) -> int:
+        """Where to scroll the page so the row being played is the TOP one.
 
-        It STAYS PUT while the system it is showing is fully on screen, and
-        moves only when the playhead has left it. A rule that centres the
-        playhead every frame scrolls continuously, and a reader cannot follow
-        a page that is always moving -- which is the other half of what the
-        player reported.
+        The rule used to be "hold still while the current row is anywhere on
+        screen, then move" -- which sounds right and did the opposite of what
+        it was for. With a window two rows tall it showed rows in PAIRS: the
+        playhead was in the top row for one row and in the bottom row for the
+        next, so half the song was played with no sight of what was coming.
+        Measured on Thunder before this was changed: OBEN, unten, OBEN, unten,
+        every row, all the way down the page.
+
+        The row IS the state now. The offset follows from which row is being
+        played, so it holds by itself while the playhead crosses a row and
+        steps exactly one row when it leaves -- and the row after the one in
+        the hand is always the one underneath it.
         """
-        if page_h <= view_h:
-            self._tab_scroll = 0
-            return 0
-        limit = page_h - view_h
-        here = max(0.0, min(limit, float(self._tab_scroll)))
-        margin = min(24.0, view_h * 0.05)
-        if here + margin <= band_top and band_bottom <= here + view_h - margin:
-            self._tab_scroll = int(here)
-            return int(here)
-        # Out of view: put this row at the TOP, with the air above its staff
-        # that belongs to it -- the beams and the technique marks are drawn
-        # up there and are part of the row. A quarter of the view used to be
-        # the lead, which on a two-row page lands inside the beams and leaves
-        # a slice of the row before it hanging at the top: a strip of music
-        # too short to read, taking room from the row that comes next.
-        wanted = band_top - lead_px
-        self._tab_scroll = int(max(0.0, min(limit, wanted)))
+        top, _ = page.row_window(row, TAB_SYSTEMS_SHOWN)
+        limit = max(0.0, page_h - view_h)
+        self._tab_scroll = int(max(0.0, min(limit, top * page_h)))
         return self._tab_scroll
 
     def _draw_tab_page(self, surface: pygame.Surface, layout: _Layout) -> None:
@@ -1945,27 +1937,19 @@ class PlayingScreen:
         # screenshot showed. Two rows is what a reader is actually using:
         # the one being played and the one coming. Everything else was paying
         # for itself in the only currency the corners had left.
+        # The ROW the playhead is in, never the note's own height. A note's y
+        # on a tab staff is the string it is written on, so following that
+        # moved the page up and down by the string spacing on every note of
+        # an arpeggio -- a centimetre, once a second, which is what the
+        # player reported.
         row = page.system_index(spot[2] if spot else 0.0)
-        window_top, window_h = page.row_window(row, TAB_SYSTEMS_SHOWN)
+        _, window_h = page.row_window(row, TAB_SYSTEMS_SHOWN)
         view_h = max(1, min(room, int(window_h * page_h)))
         # Centred in what is left, so the space it gives back is shared
         # between the block at the top and the lines along the bottom rather
         # than all landing in one place.
         view_top = top_margin + (room - view_h) // 2
-        # The SYSTEM the playhead is in, never the note's own height. A note's
-        # y on a tab staff is the string it is written on, so scrolling to it
-        # moved the page up and down by the string spacing on every note of
-        # an arpeggio -- a centimetre, once a second, which is what the
-        # player reported.
-        band_top = (spot[2] if spot else 0.0) * page_h
-        band_bottom = (spot[3] if spot else 0.0) * page_h
-        # What belongs to this row above its staff -- the beams and the
-        # technique marks are drawn up there and are part of it. Taken from
-        # the gap this page really has above this row, so the cut lands
-        # between two rows instead of through one.
-        lead = max(0.0, band_top - window_top * page_h)
-        offset = self._tab_scroll_for(band_top, band_bottom, page_h, view_h,
-                                      lead)
+        offset = self._tab_offset_for(page, row, page_h, view_h)
         surface.blit(fitted, (0, view_top), (0, offset, w, view_h))
 
         if spot is not None:
