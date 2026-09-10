@@ -2360,6 +2360,31 @@ Kept, and said out loud rather than done quietly:
   three.
 - **`S: Sync` in the footer**, which he did not list. A key nobody can find is a key nobody presses; that is this project's own rule.
 
+### A second pass, from living with it
+
+- **`U: MP3` was missing from the footer.** It is a sound you can hear or not, the same kind of switch as `B` and `Shift+B` beside it, and
+  this player has already reported `U` looking removed once — when its line went quiet, the key looked unbound. A dash where there is no
+  file, the same as the other two.
+- **The help says what everything is set TO.** "G: hit window" is a key; "±150 ms" is the answer to the question you opened the page with.
+  Every entry that names one setting now carries its current value in a column of its own — the view, the tempo, the gate, the fret limit,
+  the muted strings, the tuning, each backing, the timing offset, the vsync outcome, whether the sync panel is open. It turns a page you
+  read once into a page worth opening mid-song.
+- **The grip cards were sitting on the top string.** On the scrolling board they hang above a lane band that starts halfway down the
+  window; the sheet reaches into that corner. They are a tenth smaller now, and `_hud_top_used` counts them, so the music starts below
+  them and the head shrinks to fit — the same measured-not-guessed fix the top margin needed one section up.
+- **And the chord names on the sheet were unreadable.** The first build named every GROUP at 20 px, which on a song that strums sixteenths
+  is twenty-four names across one row, each over the note heads. Three rules now, each from looking at the thing:
+  - only where the chord **changes**, from the list built once per song — the same list the board draws from, so the two views can never
+    name a chord differently;
+  - **plus the chord in force at the row's left edge**, because a row whose chord started on the row above sits in front of you for four
+    seconds saying nothing (the board never needed this: there the change itself scrolls past);
+  - and **never a name that would land on the one before it** — measured on the player's screenshot, three changes inside a bar came out
+    as "DadA/EF#", which is worth less than one name.
+
+  The decision is `sheet_chord_names`, which takes a `width_of` callable rather than a font, so the rule is tested without a screen and
+  the drawing cannot use different widths from the decision that placed them. The row's top strip grows from 20 px to 54 when the names
+  are on, and `head_for_room` is told about it — otherwise the extra height is simply taken off the bottom row.
+
 ### Two things the cleanup found
 
 - **The top margin was a constant.** `TAB_TOP_MARGIN = 150` was fitted to the old eight-line column. With three lines it left 90 px of

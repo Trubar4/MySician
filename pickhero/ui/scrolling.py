@@ -454,6 +454,13 @@ SHEET_SIDE_PAD = 24
 SHEET_SNAP_ROWS = 3.0
 # How dark a string's core is against its highlight, on the sheet.
 SHEET_STRING_CORE = 0.62
+# The grip cards, a tenth smaller than they were drawn on the scrolling
+# board. They sit in the corner the music now reaches into, and a tenth is
+# what the player asked for after seeing them over the top string.
+CHORD_CARD_SCALE = 0.9
+# Clear space a chord name needs after it on the sheet before the next one
+# may be drawn. Below this the two read as one word.
+SHEET_NAME_GAP = 10
 
 # How a note's verdict is shown on an engraved page. PENDING is absent on
 # purpose: a dot under every note not yet reached would bury the music under
@@ -2114,6 +2121,16 @@ class PlayingScreen:
 
     # -- The hybrid view: the board's notes on a page that holds still ----
 
+    def _sheet_strip(self) -> float:
+        """How tall a row's top strip is: bar numbers, or names as well.
+
+        One answer, because the size of the head is derived from it and the
+        drawing places the names in it -- two readings of this would put the
+        chord names half over the top string.
+        """
+        return (sheet.CHORD_STRIP if self._chord_mode and self._chord_names
+                else sheet.NUMBER_STRIP)
+
     def _sheet_head_px(self, room: int) -> float:
         """How big a note head is drawn here, and so how much room it needs.
 
@@ -2124,7 +2141,7 @@ class PlayingScreen:
         touches +/-.
         """
         return max(sheet.MIN_HEAD_PX,
-                   sheet.head_for_room(float(room))
+                   sheet.head_for_room(float(room), strip=self._sheet_strip())
                    * sheet.ZOOM_STEPS[self._sheet_zoom])
 
     def _sheet_layout(self, width: int, head_px: float) -> list:
@@ -2176,7 +2193,8 @@ class PlayingScreen:
             return
 
         current = sheet.row_at(rows, self._playback_ms)
-        pitch = sheet.row_height(head) + sheet.ROW_GAP
+        strip = self._sheet_strip()
+        pitch = sheet.row_height(head, strip) + sheet.ROW_GAP
         # The row being played is the TOP one, so the row after it is always
         # underneath -- the page view had to learn this the hard way, where
         # "hold while it is anywhere on screen" showed rows in pairs and half
@@ -2186,11 +2204,11 @@ class PlayingScreen:
 
         was = surface.get_clip()
         surface.set_clip(pygame.Rect(0, top, w, room))
-        showing = sheet.rows_that_fit(room, head) + 1
+        showing = sheet.rows_that_fit(room, head, self._sheet_strip()) + 1
         for index in range(current, min(len(rows), current + showing)):
             self._draw_sheet_row(surface, rows[index], SHEET_SIDE_PAD,
                                  top + index * pitch - scroll, head,
-                                 content_w, index == current)
+                                 content_w, index == current, strip)
         surface.set_clip(was)
 
         # Nothing is written across the top of the music. What the view is
@@ -2209,11 +2227,12 @@ class PlayingScreen:
 
     def _draw_sheet_row(self, surface: pygame.Surface, row, x0: int,
                         y: float, head: float, content_w: int,
-                        active: bool) -> None:
+                        active: bool, strip: float = sheet.NUMBER_STRIP
+                        ) -> None:
         """One line of music: lanes, bar lines and numbers, notes, playhead."""
         t = get_theme()
         lane_h = sheet.LANE_HEADS * head
-        lanes_top = y + sheet.NUMBER_STRIP
+        lanes_top = y + strip
         band_h = 6 * lane_h
 
         # ONE board, not six bands. Alternating lanes are what made the old
@@ -2263,7 +2282,7 @@ class PlayingScreen:
                          (x0 + content_w, int(lanes_top + band_h)), 1)
 
         if self._chord_mode:
-            self._draw_sheet_chords(surface, row, x0, lanes_top, lane_h)
+            self._draw_sheet_chords(surface, row, x0, y, lanes_top, lane_h)
 
         # Every head first, every number second -- the same two passes the
         # board needs, and for the same reason: a head drawn after its
@@ -2327,18 +2346,73 @@ class PlayingScreen:
                 return getattr(get_theme(), name)
         return base
 
+    def sheet_chord_names(self, row, x0: int, width_of) -> list[tuple[int, str]]:
+        """(x, label) for the chord names one row shows, left to right.
+
+        Three rules, and each of them came from looking at the thing:
+
+        - **Only where the chord CHANGES**, from the list built once per song
+          -- the same list the scrolling board draws from, so the two views
+          can never name a chord differently. The first build named every
+          group, which on a song that strums sixteenths is twenty-four names
+          across one row, each over the note heads.
+        - **Plus the chord in force at the row's left edge.** A row whose
+          chord started on the row above would otherwise sit in front of you
+          for four seconds saying nothing. The scrolling board never needed
+          this, because there the change itself scrolls past.
+        - **Never one that would land on the one before it.** Measured on the
+          player's own screenshot: three changes inside a bar came out as
+          "DadA/EF#", which is worth less than one name.
+
+        `width_of` measures a label, so the rule can be tested without a font
+        and the drawing cannot use different widths from the decision.
+        """
+        at: dict[int, list] = {}
+        for placed in row.notes:
+            at.setdefault(int(round(placed.note.timestamp_ms)),
+                          []).append(placed)
+        moments = sorted(at)
+        if not moments:
+            return []
+        changes = {int(round(when)): label for when, label in self._chord_names
+                   if row.start_ms <= when < row.end_ms}
+        if not any(when <= moments[0] for when in changes):
+            carried = [label for when, label in self._chord_names
+                       if when < row.start_ms]
+            if carried:
+                changes[moments[0]] = carried[-1]
+
+        out: list[tuple[int, str]] = []
+        written_to = 0
+        for when in moments:
+            label = changes.get(when)
+            if label is None or len(at[when]) < 2:
+                continue
+            x = int(x0 + min(p.x for p in at[when]))
+            if x < written_to:
+                continue
+            written_to = x + width_of(label) + SHEET_NAME_GAP
+            out.append((x, label))
+        return out
+
     def _draw_sheet_chords(self, surface: pygame.Surface, row, x0: int,
-                           lanes_top: float, lane_h: float) -> None:
-        """The chord blocks and names, on the sheet (Shift+C).
+                           y: float, lanes_top: float,
+                           lane_h: float) -> None:
+        """The chord blocks and their names, on the sheet (Shift+C).
 
         The grip CARDS need nothing from this view -- they are drawn by the
         board's own method, because "which grip is the hand on" never
-        depended on the scrolling. Only the block, which is a rectangle round
-        notes that share a moment, has to be told where the notes ended up.
+        depended on the scrolling. Only the block and the name have to be
+        told where the notes ended up.
         """
         from pickhero.tabs.chord_shapes import shape_of
         t = get_theme()
-        font = _get_font("arial", 20)
+        strip = lanes_top - y
+        # As big as the staff allows, but never taller than the strip it is
+        # drawn in -- the bar number lives at the top of that strip, and a
+        # name sized off the lane alone sat straight on top of it.
+        name_font = _get_font(
+            "arial", max(14, min(int(lane_h * 0.62), int(strip) - 20)), True)
 
         groups: dict[int, list] = {}
         for placed in row.notes:
@@ -2348,8 +2422,7 @@ class PlayingScreen:
             group = groups[when]
             if len(group) < 2:
                 continue
-            shape = shape_of([p.note for p in group])
-            if shape is None:
+            if shape_of([p.note for p in group]) is None:
                 continue
             strings = [p.note.string for p in group]
             left = min(p.x for p in group)
@@ -2363,13 +2436,18 @@ class PlayingScreen:
                                      self._chord_block_colour(
                                          [p.note for p in group])),
                 rect.topleft)
-            label = font.render(shape.name, True, t.note_text)
-            shadow = font.render(shape.name, True, (0, 0, 0))
-            ly = rect.top - label.get_height() - 2
-            if ly < lanes_top:
-                ly = rect.top + 2
-            surface.blit(shadow, (rect.left + 5, ly + 1))
-            surface.blit(label, (rect.left + 4, ly))
+
+        # Sat on the floor of the strip, just above the staff, so the bar
+        # number keeps the ceiling. Outlined like every other pale mark on
+        # this screen: it sits over whatever happens to be behind it.
+        for nx, label in self.sheet_chord_names(
+                row, x0, lambda text: name_font.size(text)[0]):
+            drawn = name_font.render(label, True, t.hud_text)
+            shadow = name_font.render(label, True, (0, 0, 0))
+            ny = int(lanes_top) - drawn.get_height() - 2
+            for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+                surface.blit(shadow, (nx + dx, ny + dy))
+            surface.blit(drawn, (nx, ny))
 
     def _draw_tab_page(self, surface: pygame.Surface, layout: _Layout) -> None:
         """The engraved page, the playhead, and how each note went."""
@@ -2941,7 +3019,7 @@ class PlayingScreen:
         if not self._chord_mode or not self._chord_shapes:
             return 12
         from pickhero.ui.chord_view import card_size
-        return 12 + 2 * (card_size()[0] + CHORD_CARD_GAP) + 8
+        return 12 + 2 * (card_size(CHORD_CARD_SCALE)[0] + CHORD_CARD_GAP) + 8
 
     def _draw_chord_cards(self, surface: pygame.Surface,
                           layout: _Layout) -> None:
@@ -2961,7 +3039,7 @@ class PlayingScreen:
         # is next", and the label already says that -- what the smaller one
         # actually did was make the grip you have to prepare the harder of
         # the two to read.
-        w, h = card_size()
+        w, h = card_size(CHORD_CARD_SCALE)
         x, y = 12, 6
         if now is not None:
             draw_diagram(surface, pygame.Rect(x, y, w, h), now, label="now")
@@ -3974,6 +4052,11 @@ class PlayingScreen:
 
         backing = state(self._midi_player, self._backing_muted)
         guide = state(self._guide_player, self._guide_muted)
+        # A dash where there is no file, the same as the other two: it is the
+        # answer to "why does pressing it do nothing", and U looking removed
+        # is a thing this player has already reported once.
+        mp3 = ("U: MP3 —" if self._mp3_player is None
+               else f"U: MP3 {'off' if self._mp3_muted else 'on'}")
         window = int(self._config.timing_window_ms)
         # The sync panel is shut, so anything urgent inside it has to reach
         # the outside somehow. One coloured word is the whole signal.
@@ -3987,6 +4070,7 @@ class PlayingScreen:
              on if self._audio_enabled else off),
             (f"B: Backing {backing}", on if backing == "on" else off),
             (f"Shift+B: My Backing {guide}", on if guide == "on" else off),
+            (mp3, on if mp3.endswith("on") else off),
             (f"+/- Size ({size})", on if sized else off),
             (f"G: {window} ms",
              on if window != int(config_module.Config().timing_window_ms)
@@ -4105,7 +4189,16 @@ class PlayingScreen:
         lines = 1 if self._timeline.metadata.track_name else 0
         lines += 1 if self.tuning_segments() else 0
         lines += len(self._left_notes())
-        return 38 + 16 * lines
+        used = 38 + 16 * lines
+        # The grip cards are in this corner too, and they are 160 px tall
+        # against three lines of text. On the scrolling board they sat above
+        # a lane band that starts halfway down the window; here the music
+        # reaches into the corner, and the first thing the player saw was a
+        # diagram over his top string.
+        if self._chord_mode and self._chord_shapes:
+            from pickhero.ui.chord_view import card_size
+            used = max(used, 6 + card_size(CHORD_CARD_SCALE)[1])
+        return used
 
     def _draw_hud(self, surface: pygame.Surface, layout: _Layout) -> None:
         """Everything around the music.
@@ -5407,9 +5500,14 @@ class PlayingScreen:
         forgetting to document it fails in the suite instead of shipping a
         key nobody can find.
 
-        An item is a line of text, or (colour, line) for a colour swatch.
+        An item is one of three things: a line of text; a (colour, line)
+        pair for a colour swatch; or a (label, value) pair, where the value
+        is what that setting is RIGHT NOW. The last one is why this page is
+        worth opening mid-song and not only once: "G: hit window" is a key,
+        "±150 ms" is the answer to the question you opened the page with.
         """
         t = get_theme()
+        meta = self._timeline.metadata
         return [
                 ("Reading the Track", [
                 "The number on each note is the fret to press (0 = open).",
@@ -5468,59 +5566,119 @@ class PlayingScreen:
             # bound and written down nowhere is a key nobody finds, and this
             # overlay is the only place left that can carry them all.
                 ("Playing", [
-                "SPACE: play/pause     HOME: restart     ESC: song list",
+                ("SPACE: play/pause", "playing" if self._playing else "paused"),
+                "HOME: restart     ESC: song list",
                 "LEFT/RIGHT: a beat   Shift: a bar   Ctrl: 30 seconds",
-                "PgDn/PgUp: practice speed, kept for this song",
-                "A: audio on/off     W: wait mode (holds for the right note)",
-                "E: skip a long rest (jumps to 3 s before the next note)",
-                "I/O: loop markers     P: loop on/off     L: loop the weakest part",
-                "TAB: choose track     H: this help",
-                        ], "small"),
+                ("PgDn/PgUp: practice speed, kept for this song",
+                 f"{meta.tempo} BPM ({int(self._tempo_factor * 100)} %)"),
+                ("A: audio on/off", "on" if self._audio_enabled else "off"),
+                ("W: wait mode (holds for the right note)",
+                 "on" if self._wait_mode else "off"),
+                ("E: skip a long rest (jumps to 3 s before the next note)",
+                 "a rest is here" if self._rest_hud_text() else "nothing to skip"),
+                ("I/O: loop markers     P: loop on/off",
+                 self._loop_hud_text() or "no loop set"),
+                "L: loop the weakest part",
+                ("TAB: choose track", meta.track_name or "—"),
+                "H: this help",
+                ], "small"),
 
                 ("What you see", [
-                "Shift+T: view — the scrolling board, the hybrid sheet that",
-                "  holds still, or the engraved tab page",
+                ("Shift+T: the board, the hybrid sheet or the tab page",
+                 VIEW_SHORT[self._view]),
                 "+/-: note size on the sheet and the page.  On the board",
                 "  it is a trade: + pushes the notes further apart and shows",
                 "  less of the song, - buys look-ahead by moving them in.",
-                "Shift+C: chord view — grip diagrams and a block per chord",
-                "V: chord scoring     T: theme     F: fret limit",
-                "F1-F6: mute a string     J: per-string chord check",
-                "R / Shift+R: play the same shapes in another tuning",
-                        ], "small"),
+                ("Shift+C: chord view — grips and a block per chord",
+                 "on" if self._chord_mode else "off"),
+                ("V: chord scoring", "one string is enough"
+                 if self._chord_partial_credit else "every string"),
+                ("T: theme", self._config.theme),
+                ("F: fret limit", f"up to fret {self._max_fret}"),
+                # Low string first, the order a guitarist names them in and
+                # the reverse of the index: active_strings[0] is the high e.
+                ("F1-F6: mute a string", "".join(
+                    "EADGBe"[5 - i] if self._active_strings[i] else "·"
+                    for i in (5, 4, 3, 2, 1, 0))),
+                ("J: per-string chord check",
+                 "on" if getattr(self._config, "chord_verify", True) else "off"),
+                ("R / Shift+R: play the same shapes in another tuning",
+                 next((n for n, role in self.tuning_segments()
+                       if role in ("played", "both")), "—")),
+                ], "small"),
 
                 ("Sound and scoring", [
-                "B: MIDI backing     Shift+B: your own part, as a guide",
-                "U: recorded backing on/off     Shift+U: pick the file",
-                "X/C: noise gate down / up",
-                "G: hit window — how far off the beat still counts",
-                "K: measure your timing offset     Shift+K: put it back to 0",
+                ("B: MIDI backing", "—" if self._midi_player is None
+                 else "off" if self._backing_muted else "on"),
+                ("Shift+B: your own part, as a guide",
+                 "—" if self._guide_player is None
+                 else "off" if self._guide_muted else "on"),
+                ("U: recorded backing on/off     Shift+U: pick the file",
+                 "—" if self._mp3_player is None
+                 else "off" if self._mp3_muted else "on"),
+                ("X/C: noise gate down / up",
+                 f"{int(self._noise_gate_db)} dB"
+                 + (" (auto)" if self._auto_gate else "")),
+                ("G: hit window — how far off the beat still counts",
+                 f"±{int(self._config.timing_window_ms)} ms"),
+                ("K: measure your timing offset     Shift+K: back to 0",
+                 f"{int(self._config.audio_latency_offset_ms):+d} ms"),
                 ",/.: nudge that offset by 10 ms",
                 "Shift+A: reopen the audio output, if the sound goes bad",
                 "Y: timing report — which timing problem you actually have",
                 "Shift+Y: save the raw measurements as a CSV",
                 "D: save a full run log (what every strike did)",
-                "Z: vsync     Shift+Z: steady frame pacing",
-                        ], "small"),
+                ("Z: vsync", getattr(self._config.display, "vsync_outcome",
+                                     "off")),
+                ("Shift+Z: steady frame pacing",
+                 "on" if getattr(self._config.display, "steady_pace", False)
+                 else "off"),
+                ], "small"),
 
                 ("S: lining the recording up", [
-                "S opens the sync panel at the bottom and closes it again.",
-                "Everything below is in it, and none of it is on screen while",
-                "it is shut — the entry turns yellow if something needs you.",
-                "N/M: MIDI backing earlier / later    Alt+N/M: by a second",
+                ("S opens the sync panel at the bottom and closes it again",
+                 "open" if self._show_sync else "shut"),
+                "Everything below is in it, and none of it is on screen",
+                "while it is shut — the entry turns yellow if it needs you.",
+                ("N/M: MIDI backing earlier / later    Alt+N/M: by a second",
+                 f"{int(self._backing_offset()):+d} ms"),
                 "Shift+N / Shift+M: the recording, by 10 ms",
                 "Ctrl+N / Ctrl+M: by a second    Ctrl+Shift: by ten seconds",
                 "  (reaches 8 minutes, for a tab that is only the solo)",
-                "Ctrl+S: find the offsets by listening to the recording",
+                ("Ctrl+S: find the offsets by listening to the recording",
+                 self._sync_span_label()),
                 "Shift+S: line it up HERE and add a sync point.",
                 "  Two points give one speed, three give two sections, and a",
                 "  band that played without a click needs the sections.",
                 "  Ctrl+Shift+S clears them all.",
                 "On the song list, O opens the settings screen — everything",
                 "that is set once, with anything away from standard marked.",
-                        ], "small"),
-
+                ], "small"),
         ]
+
+    def help_lines(self) -> list[str]:
+        """Every line of the help page as plain text, values included.
+
+        One reader for three item shapes, so the test that checks every
+        bound key is written down cannot disagree with what is drawn.
+        """
+        out = []
+        for _, items, _ in self.help_blocks():
+            for item in items:
+                if isinstance(item, str):
+                    out.append(item)
+                elif isinstance(item[0], tuple):
+                    out.append(item[1])                 # colour swatch
+                else:
+                    out.append(f"{item[0]}   {item[1]}")
+        return out
+
+    def _sync_span_label(self) -> str:
+        """What the automatic pass has measured, in one phrase."""
+        points = len(self._sync_map().points) if self._sync_map() else 0
+        if not points:
+            return "not measured"
+        return f"{points} points"
 
     def _draw_help_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:
         """Explain the track, the note colours, the techniques and the keys.
@@ -5563,13 +5721,25 @@ class PlayingScreen:
                 x, y = columns[col], top
             surface.blit(section_font.render(title, True, t.hud_accent), (x, y))
             y += 24
+            # Values in a column of their own, at the width of the widest
+            # label in THIS block: a value tacked straight onto the end of
+            # each line makes a ragged edge nobody can scan down.
+            labels = [i[0] for i in items
+                      if isinstance(i, tuple) and isinstance(i[0], str)]
+            value_x = (max(font.size(text)[0] for text in labels) + 16
+                       if labels else 0)
             for item in items:
-                if isinstance(item, tuple):
+                if isinstance(item, tuple) and isinstance(item[0], tuple):
                     colour, label = item
                     pygame.draw.rect(surface, colour, (x, y + 3, 13, 13),
                                      border_radius=2)
                     surface.blit(font.render(label, True, t.hud_text),
                                  (x + 20, y))
+                elif isinstance(item, tuple):
+                    label, value = item
+                    surface.blit(font.render(label, True, t.hud_text), (x, y))
+                    surface.blit(font.render(value, True, t.hud_accent),
+                                 (x + value_x, y))
                 else:
                     surface.blit(font.render(item, True, t.hud_text), (x, y))
                 y += step

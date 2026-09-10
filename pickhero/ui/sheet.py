@@ -67,6 +67,10 @@ ROWS_SHOWN = 2
 LANE_HEADS = 1.18
 # Room above a row for its bar numbers.
 NUMBER_STRIP = 20
+# And the taller strip a row gets when the chord names are on: they are read
+# at a glance from a distance, the way the scrolling board draws them, so
+# they need the height a bar number does not.
+CHORD_STRIP = 54
 # Air between one row and the next, so the eye can tell them apart.
 ROW_GAP = 18
 # How thick each string is drawn, relative to the thinnest, index 0 = high e.
@@ -107,12 +111,13 @@ ZOOM_STEPS = (0.50, 0.60, 0.70, 0.85, 1.00)
 ZOOM_DEFAULT = len(ZOOM_STEPS) - 1
 
 
-def row_height(head_px: float) -> float:
-    """How tall one row of music is, bar numbers included."""
-    return 6 * LANE_HEADS * head_px + NUMBER_STRIP
+def row_height(head_px: float, strip: float = NUMBER_STRIP) -> float:
+    """How tall one row of music is, its top strip included."""
+    return 6 * LANE_HEADS * head_px + strip
 
 
-def head_for_room(room: float, rows: int = ROWS_SHOWN) -> float:
+def head_for_room(room: float, rows: int = ROWS_SHOWN,
+                  strip: float = NUMBER_STRIP) -> float:
     """The head size at which `rows` rows exactly fill the space there is.
 
     The starting point, not a cap: this is what makes two rows fit on any
@@ -120,17 +125,18 @@ def head_for_room(room: float, rows: int = ROWS_SHOWN) -> float:
     in both directions.
     """
     each = (room - ROW_GAP * (rows - 1)) / max(1, rows)
-    return max(MIN_HEAD_PX, (each - NUMBER_STRIP) / (6 * LANE_HEADS))
+    return max(MIN_HEAD_PX, (each - strip) / (6 * LANE_HEADS))
 
 
-def rows_that_fit(room: float, head_px: float) -> int:
+def rows_that_fit(room: float, head_px: float,
+                  strip: float = NUMBER_STRIP) -> int:
     """How many whole rows the space holds at this head size.
 
     At least one. Zoomed all the way in a row is taller than half the window
     and the second one is a sliver at the bottom -- which is honest about
     what was traded rather than hiding the row that no longer fits.
     """
-    pitch = row_height(head_px) + ROW_GAP
+    pitch = row_height(head_px, strip) + ROW_GAP
     if pitch <= 0:
         return 1
     # The half-pixel is not slack, it is arithmetic: head_for_room divides

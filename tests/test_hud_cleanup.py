@@ -13,7 +13,7 @@ from pickhero.audio.note_utils import NAMED_TUNINGS
 from pickhero.config import Config
 from pickhero.tabs.timeline import (MeasureInfo, NoteEvent, SongMetadata,
                                     Timeline)
-from pickhero.ui import scrolling
+from pickhero.ui import scrolling, sheet
 from pickhero.ui.scrolling import PlayingScreen
 
 
@@ -262,3 +262,194 @@ class TestTheTopOfTheScreenIsMeasured:
         layout = screen._layout(surface)
         top, _ = screen._tab_room(layout)
         assert top > screen._hud_top_used()
+
+
+class TestTheHelpSaysWhatEverythingIsSetTo:
+    """"Kannst du unter Help auch den aktuellen Status aller Werte
+    anzeigen?" -- and it is the difference between a page you read once and
+    a page worth opening mid-song. "G: hit window" is a key; "±150 ms" is
+    the answer to the question you opened the page with.
+    """
+
+    def _text(self, screen) -> str:
+        return "  ".join(screen.help_lines())
+
+    def test_the_settings_carry_their_values(self):
+        screen = _screen()
+        screen._config.timing_window_ms = 120.0
+        screen._max_fret = 9
+        screen._config.theme = "light"
+        text = self._text(screen)
+        assert "±120 ms" in text
+        assert "up to fret 9" in text
+        assert "light" in text
+
+    def test_a_value_follows_the_thing_it_names(self):
+        screen = _screen()
+        screen._audio_enabled = False
+        assert "A: audio on/off   off" in self._text(screen)
+        screen._audio_enabled = True
+        assert "A: audio on/off   on" in self._text(screen)
+
+    def test_the_view_and_the_tempo_are_in_it(self):
+        screen = _screen()
+        screen._view = "hybrid"
+        screen._tempo_factor = 0.8
+        text = self._text(screen)
+        assert "Hybrid" in text
+        assert "120 BPM (80 %)" in text
+
+    def test_a_missing_backing_says_so_rather_than_off(self):
+        """A dash is the answer to "why does pressing it do nothing"; "off"
+        would send the player looking for the key that turns it on."""
+        screen = _screen()
+        assert screen._midi_player is None
+        assert "B: MIDI backing   —" in self._text(screen)
+
+    def test_the_muted_strings_are_shown_as_strings(self):
+        screen = _screen()
+        screen._active_strings[0] = False        # the high e
+        assert "EADGB·" in self._text(screen)
+
+    def test_and_the_keys_with_no_value_are_still_plain_lines(self):
+        screen = _screen()
+        assert "L: loop the weakest part" in screen.help_lines()
+
+    def test_it_draws_without_raising(self):
+        screen = _screen()
+        screen._show_help = True
+        screen.render(pygame.Surface((1280, 800)))
+
+
+class TestTheRecordedBackingIsInTheFooter:
+    """"Es fehlt U: MP3 On/Off." It is a sound you can hear or not, the same
+    kind of switch as B and Shift+B beside it -- and this player has already
+    reported U looking removed once, when its line went quiet."""
+
+    def test_it_is_there(self):
+        assert any(text.startswith("U: MP3")
+                   for text, _ in _screen().footer_segments())
+
+    def test_a_song_with_no_recording_shows_a_dash(self):
+        screen = _screen()
+        assert screen._mp3_player is None
+        assert ("U: MP3 —", "hud_text") in screen.footer_segments()
+
+    def test_and_it_lights_up_when_the_recording_is_playing(self):
+        screen = _screen()
+        screen._mp3_player = object()
+        screen._mp3_muted = False
+        assert ("U: MP3 on", "hud_accent") in screen.footer_segments()
+        screen._mp3_muted = True
+        assert ("U: MP3 off", "hud_text") in screen.footer_segments()
+
+
+class TestTheChordsOnTheSheet:
+    """"Die Chords überlappen oben das Griffbrett" and "Chords um 10 %
+    kleiner". On the scrolling board the grip cards sit above a lane band
+    that starts halfway down the window; the sheet reaches into that corner,
+    so the first thing on screen was a diagram over the top string."""
+
+    # A real E minor and a real A minor, with the pitches the strings
+    # actually sound: the name comes from the NOTES, and a shape whose midi
+    # numbers are invented gets no name and no diagram.
+    EM = ((6, 0, 40), (5, 2, 47), (4, 2, 52), (3, 0, 55), (2, 0, 59), (1, 0, 64))
+    AM = ((5, 0, 45), (4, 2, 52), (3, 2, 57), (2, 1, 60), (1, 0, 64))
+
+    def _chord_screen(self, per_bar=2, alternating=False):
+        notes, measures = [], []
+        for bar in range(8):
+            measures.append(MeasureInfo(index=bar, start_ms=bar * 2000.0,
+                                        end_ms=(bar + 1) * 2000.0))
+            for beat in range(per_bar):
+                when = bar * 2000.0 + beat * (2000.0 / per_bar)
+                shape = self.AM if alternating and beat % 2 else self.EM
+                for string, fret, midi in shape:
+                    notes.append(NoteEvent(
+                        timestamp_ms=when, duration_ms=900.0, midi_note=midi,
+                        string=string, fret=fret, measure=bar))
+        meta = SongMetadata(title="t", tempo=120)
+        meta.tuning = _named("Standard")
+        config = Config()
+        config.chord_view = True
+        screen = PlayingScreen(Timeline(notes, meta, measures=measures),
+                               config=config)
+        screen._view = "hybrid"
+        return screen
+
+    def test_the_music_starts_below_the_grip_cards(self):
+        from pickhero.ui.chord_view import card_size
+        from pickhero.ui.scrolling import CHORD_CARD_SCALE
+        screen = self._chord_screen()
+        screen.render(pygame.Surface((1280, 800)))
+        assert screen._chord_shapes, "this song has no grips at all"
+        top, _ = screen._tab_room(screen._layout(pygame.Surface((1280, 800))))
+        assert top > card_size(CHORD_CARD_SCALE)[1]
+
+    def test_and_goes_back_up_when_the_chords_are_off(self):
+        screen = self._chord_screen()
+        surface = pygame.Surface((1280, 800))
+        screen.render(surface)
+        with_cards = screen._hud_top_used()
+        screen._chord_mode = False
+        assert screen._hud_top_used() < with_cards
+
+    def test_the_row_makes_room_for_the_names(self):
+        """A name sized to be read at a glance does not fit in the strip a
+        bar number needs, and drawn there anyway it sat on the top string."""
+        screen = self._chord_screen()
+        screen.render(pygame.Surface((1280, 800)))
+        assert screen._sheet_strip() == sheet.CHORD_STRIP
+        screen._chord_mode = False
+        assert screen._sheet_strip() == sheet.NUMBER_STRIP
+
+    def test_and_the_head_is_sized_for_that_strip(self):
+        """Otherwise the taller strip is simply taken off the bottom row."""
+        screen = self._chord_screen()
+        screen.render(pygame.Surface((1280, 800)))   # builds the name list
+        with_names = screen._sheet_head_px(700)
+        screen._chord_mode = False
+        assert screen._sheet_head_px(700) > with_names
+
+    def test_two_rows_still_fit_with_the_names_on(self):
+        screen = self._chord_screen()
+        screen.render(pygame.Surface((1280, 800)))
+        head = screen._sheet_head_px(700)
+        assert sheet.rows_that_fit(700, head, screen._sheet_strip()) >= 2
+
+    def _names(self, screen, row, width=90):
+        """The names one row would draw, at a fixed label width."""
+        return screen.sheet_chord_names(row, 0, lambda text: width)
+
+    def test_a_name_is_never_drawn_over_the_one_before_it(self):
+        """Measured on the player's screenshot: three changes inside one bar
+        came out as "DadA/EF#"."""
+        screen = self._chord_screen(alternating=True, per_bar=8)
+        screen.render(pygame.Surface((1280, 800)))
+        row = screen._sheet_rows[0]
+        changes = sum(1 for when, _ in screen._chord_names
+                      if row.start_ms <= when < row.end_ms)
+        assert changes >= 8, "this song would not show the fault at all"
+        spots = self._names(screen, row)
+        assert spots, "no chord was named at all"
+        for (x, _), (nx, _) in zip(spots, spots[1:]):
+            assert nx - x >= 90 + scrolling.SHEET_NAME_GAP
+        assert len(spots) < changes
+
+    def test_a_narrower_name_lets_more_of_them_through(self):
+        """The rule is the width of the text, not a fixed count."""
+        screen = self._chord_screen(alternating=True, per_bar=8)
+        screen.render(pygame.Surface((1280, 800)))
+        row = screen._sheet_rows[0]
+        assert len(self._names(screen, row, 20)) >= \
+            len(self._names(screen, row, 200))
+
+    def test_but_every_row_names_the_chord_it_is_in(self):
+        """A row whose chord started on the row above stays in front of you
+        for four seconds saying nothing."""
+        screen = self._chord_screen()
+        screen.render(pygame.Surface((1280, 800)))
+        later = next(r for r in screen._sheet_rows if r.index == 1)
+        assert self._names(screen, later), \
+            "the row in the hand names no chord at all"
+        assert self._names(screen, later)[0][1] == "Em"

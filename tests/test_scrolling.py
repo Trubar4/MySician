@@ -1350,9 +1350,7 @@ class TestEveryKeyIsWrittenDownSomewhere:
         return set(re.findall(r"pygame\.K_(\w+)", source))
 
     def _help_text(self, screen) -> str:
-        return "  ".join(
-            item if isinstance(item, str) else item[1]
-            for _, items, _ in screen.help_blocks() for item in items)
+        return "  ".join(screen.help_lines())
 
     def test_every_handled_key_is_in_the_help(self):
         screen = PlayingScreen(_make_timeline())
@@ -3168,9 +3166,7 @@ class TestSeekingInSteps:
     def test_the_help_names_all_three(self):
         """A key that is bound but undocumented is a key nobody finds. The
         footer is the twelve worth watching while playing; H has the rest."""
-        text = "  ".join(item if isinstance(item, str) else item[1]
-                         for _, items, _ in self._screen().help_blocks()
-                         for item in items)
+        text = "  ".join(self._screen().help_lines())
         assert "Shift: a bar" in text and "Ctrl: 30 seconds" in text
 
 
@@ -4189,9 +4185,7 @@ class TestAPressMustBuySomethingVisible:
         trade itself did not go anywhere.
         """
         screen = self._screen(spacing_ms=300.0)
-        text = "  ".join(item if isinstance(item, str) else item[1]
-                         for _, items, _ in screen.help_blocks()
-                         for item in items)
+        text = "  ".join(screen.help_lines())
         assert "look-ahead" in text and "further apart" in text
 
 
@@ -4780,9 +4774,7 @@ class TestHandingThePicturesToThePanel:
     def test_the_help_names_it(self):
         """A key that is bound and undocumented is a key nobody finds."""
         screen = PlayingScreen(_make_timeline(), config=Config())
-        assert "Z: vsync" in "  ".join(
-            item if isinstance(item, str) else item[1]
-            for _, items, _ in screen.help_blocks() for item in items)
+        assert "Z: vsync" in "  ".join(screen.help_lines())
 
     def test_the_log_says_which_pacing_a_reading_came_from(self):
         """Two logs differing in the one thing under test are worth nothing
@@ -4929,9 +4921,7 @@ class TestWaitingForTheFrameExactly:
 
     def test_the_help_names_it(self):
         screen = PlayingScreen(_make_timeline(), config=Config())
-        assert "Shift+Z: steady frame pacing" in "  ".join(
-            item if isinstance(item, str) else item[1]
-            for _, items, _ in screen.help_blocks() for item in items)
+        assert "Shift+Z: steady frame pacing" in "  ".join(screen.help_lines())
 
 
 class TestTheSettingUnderTestIsOnScreen:
