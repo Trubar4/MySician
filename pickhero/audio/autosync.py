@@ -26,6 +26,7 @@ that reproduce the measurement, not a model of it.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -120,6 +121,11 @@ MIN_USABLE_SHARE = 1.0 / 3.0
 # per cent is far outside the 5 % the drift model allows, so nothing this
 # rejects could have been fitted anyway.
 MAX_LENGTH_MISMATCH = 0.10
+# How far a window may sit from the constant before it is not agreeing with a
+# made per-bar map. Wider than the map's own error -- measured at 80 to 92 ms
+# median against the player's Thunder recording -- and far narrower than a
+# wrong chorus, which is tens of seconds.
+BAR_MAP_AGREE_S = 3.0
 
 
 def decode(path: str | Path, samplerate: int = 44100) -> tuple[np.ndarray, int]:
@@ -572,6 +578,142 @@ def points_from_rows(rows: Iterable[tuple[float, float, float]],
     thinned = simplify([(a * 1000.0, -b * 1000.0) for a, b in middle],
                        tolerance_ms)
     return [(round(a, 1), round(b, 1)) for a, b in thinned]
+
+
+def bar_lag(song_ms: float, bar_starts: Sequence[float],
+            bar_times: Sequence[float]) -> float:
+    """Where a made map says this moment is, in seconds, before the constant.
+
+    Piecewise linear between bar lines, which is what a per-bar map IS: the
+    map knows where bar 34 begins and says nothing about the middle of it.
+    """
+    if not bar_starts or not bar_times:
+        return 0.0
+    last = min(len(bar_starts), len(bar_times)) - 1
+    if last < 1:
+        return float(bar_times[0]) - song_ms / 1000.0
+    at = song_ms / 1000.0
+    i = max(0, min(last - 1, bisect_left(bar_starts, song_ms) - 1))
+    run = bar_starts[i + 1] - bar_starts[i]
+    share = 0.0 if run <= 0 else (song_ms - bar_starts[i]) / run
+    where = bar_times[i] + (bar_times[i + 1] - bar_times[i]) * share
+    return where - at
+
+
+def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
+                       bar_times: Sequence[float],
+                       progress: Callable[[float, str], bool] | None = None,
+                       tolerance_ms: float = SIMPLIFY_MS) -> dict:
+    """Fit a made per-bar map to the recording the player actually has.
+
+    The points are times in a VIDEO. If that video and this file are the same
+    master they differ by ONE constant, so the whole job is to find a single
+    number -- and the way the windows agree about it is a free check on
+    whether the map belongs to this recording at all.
+
+    Done by warping the tab through the map and then measuring what is left,
+    which reuses the listening rather than inventing a second way to compare
+    two things.
+    """
+    bar_starts = [m.start_ms for m in timeline.measures]
+    report: dict = {
+        "source": "songsterr", "bars": len(bar_times),
+        "measures": len(bar_starts), "points": [],
+        "readable": False, "windows": 0, "usable": 0, "ambiguous": 0,
+        "breaks": [], "covered": None, "song_s": 0.0, "wrong_length": False,
+        "sections": 0, "sections_used": 0, "unreadable": [], "share": 0.0,
+    }
+    if len(bar_times) < 2 or len(bar_starts) < 2:
+        return report
+    # A map with a different number of bars is a map of a different tab --
+    # the repeats expanded differently, or a revision that moved on. Said
+    # rather than stretched over, because stretching it would be silent and
+    # wrong everywhere after the first difference.
+    if len(bar_times) != len(bar_starts):
+        report["wrong_bars"] = True
+        return report
+    report["wrong_bars"] = False
+
+    warped = replace_times(timeline, bar_starts, bar_times)
+    samples, rate = decode(audio_path)
+    if progress is not None and progress(0.05, "listening") is False:
+        raise Cancelled()
+    rec, fps = chroma_of_audio(
+        samples, rate,
+        (lambda f: progress(0.05 + 0.45 * f, "listening"))
+        if progress else None)
+    tab = chroma_of_timeline(warped, fps)
+    if len(tab) == 0 or len(rec) == 0:
+        return report
+    rows = drift_curve(tab, rec, fps,
+                       (lambda f: progress(0.5 + 0.5 * f, "comparing"))
+                       if progress else None)
+    good = [(at, lag) for at, lag, margin in rows if margin >= MIN_MARGIN]
+    report["windows"] = len(rows)
+    report["ambiguous"] = len(rows) - len(good)
+    report["song_s"] = (rows[-1][0] + WINDOW_S) if rows else 0.0
+    if len(good) < MIN_WINDOWS:
+        return report
+
+    # The constant every window should agree on, and how many actually do.
+    lags = sorted(lag for _, lag in good)
+    constant = lags[len(lags) // 2]
+    agreed = [(at, lag) for at, lag in good
+              if abs(lag - constant) <= BAR_MAP_AGREE_S]
+    report["usable"] = len(agreed)
+    report["share"] = len(agreed) / max(1, len(rows))
+    report["constant_s"] = constant
+    report["scatter_ms"] = (
+        1000.0 * float(np.median([abs(lag - constant) for _, lag in agreed]))
+        if agreed else 0.0)
+    report["readable"] = (len(agreed) >= MIN_WINDOWS
+                          and report["share"] >= MIN_USABLE_SHARE)
+    if agreed:
+        report["covered"] = (agreed[0][0], agreed[-1][0] + WINDOW_S)
+    if not report["readable"]:
+        return report
+
+    # The stored points are the MAP's own bar lines, corrected by the one
+    # constant -- so what is kept is Songsterr's measurement, not a smoothing
+    # of ours. Thinned the same way, because a bar the line between its
+    # neighbours already predicts is not worth a point.
+    # A point is (song ms, offset ms) with the app's usual sign: the
+    # recording is at song_ms - offset_ms. The map puts bar i at `time` in
+    # the VIDEO and the video is at `time + constant` in this file, so the
+    # offset is the song's own bar line minus that. Getting the constant's
+    # sign wrong here reads as a map that is twice the constant out --
+    # measured at 324 ms against readings the report claimed 76 ms of.
+    raw = [(float(start), start - (time + constant) * 1000.0)
+           for start, time in zip(bar_starts, bar_times)]
+    report["points"] = [(round(a, 1), round(b, 1))
+                        for a, b in simplify(raw, tolerance_ms)]
+    return report
+
+
+def replace_times(timeline: Timeline, bar_starts: Sequence[float],
+                  bar_times: Sequence[float]) -> Timeline:
+    """The same music with every note moved to where the map says it is."""
+    from pickhero.tabs.timeline import MeasureInfo, NoteEvent
+
+    def moved(ms: float) -> float:
+        return ms + bar_lag(ms, bar_starts, bar_times) * 1000.0
+
+    notes = []
+    for note in timeline.notes:
+        when = moved(note.timestamp_ms)
+        ends = moved(note.timestamp_ms + note.duration_ms)
+        notes.append(NoteEvent(
+            timestamp_ms=when, duration_ms=max(20.0, ends - when),
+            midi_note=note.midi_note, string=note.string, fret=note.fret,
+            measure=note.measure))
+    last = bar_times[-1] + (bar_times[-1] - bar_times[-2]
+                            if len(bar_times) > 1 else 3.0)
+    measures = [
+        MeasureInfo(index=i, start_ms=bar_times[i] * 1000.0,
+                    end_ms=(bar_times[i + 1] if i + 1 < len(bar_times)
+                            else last) * 1000.0)
+        for i in range(len(bar_times))]
+    return Timeline(notes, timeline.metadata, measures=measures)
 
 
 def measure(timeline: Timeline | str | Path, audio_path: str | Path,

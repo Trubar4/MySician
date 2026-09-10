@@ -1769,7 +1769,9 @@ class PlayingScreen:
         elif event.key in (pygame.K_n, pygame.K_m):
             self._nudge_backing(1 if event.key == pygame.K_m else -1, event.mod)
         elif event.key == pygame.K_u:
-            if shift_held(event):
+            if event.mod & pygame.KMOD_CTRL:
+                self._paste_songsterr_link()
+            elif shift_held(event):
                 self._choose_mp3_backing()
             else:
                 self._toggle_mp3_backing()
@@ -5613,6 +5615,9 @@ class PlayingScreen:
                 ("Shift+B: your own part, as a guide",
                  "—" if self._guide_player is None
                  else "off" if self._guide_muted else "on"),
+                ("Ctrl+U: paste a Songsterr link, so Ctrl+S can fall back",
+                 f"song {self._songsterr_id()}" if self._songsterr_id()
+                 else "none pasted"),
                 ("U: recorded backing on/off     Shift+U: pick the file",
                  "—" if self._mp3_player is None
                  else "off" if self._mp3_muted else "on"),
@@ -6797,6 +6802,7 @@ class PlayingScreen:
         # practised. A recording is the whole arrangement, and one track of
         # it is most of the evidence thrown away.
         source = Path(self._song_path) if self._song_path else self._timeline
+        song_id = self._songsterr_id()
 
         def report(fraction: float, what: str) -> bool:
             self._auto_sync_progress = (fraction, what)
@@ -6806,6 +6812,15 @@ class PlayingScreen:
             from pickhero.audio import autosync
             try:
                 found = autosync.find(source, path, report)
+                if not found["readable"] and song_id:
+                    # The listening produced nothing. A made per-bar map does
+                    # not care that a song repeats itself, which is the one
+                    # thing that defeats a windowed search -- so it is the
+                    # fallback, not the first answer. Measured on Thunder,
+                    # on readings neither was fitted to: the listening is 8
+                    # to 16 ms where it works and this is 80 to 92, so it is
+                    # asked second and only when the first has nothing.
+                    found = self._ask_songsterr(song_id, path, report, found)
                 self._auto_sync_result = ("ok", found["points"], found)
             except Exception as exc:
                 # Named rather than swallowed: "the file cannot be decoded"
@@ -6853,6 +6868,99 @@ class PlayingScreen:
         self._describe_sync()
         self._sync_lines = described + self._sync_lines
 
+    def _songsterr_id(self) -> int:
+        getter = getattr(self._config, "songsterr_for", None)
+        return getter(self._song_key) if getter else 0
+
+    def _ask_songsterr(self, song_id: int, audio_path, report, failed) -> dict:
+        """Fit Songsterr's own per-bar map to this recording.
+
+        Kept whole rather than merged into the listening's answer: the two
+        are different measurements and a map half from each would be neither.
+        The one that could not read the song hands over completely.
+        """
+        from pickhero.audio import autosync
+        from pickhero.tabs import songsterr
+        try:
+            bars, meta = songsterr.fetch_bar_times(song_id)
+        except songsterr.NotFound as exc:
+            # Marked as Songsterr's answer, not left wearing the listening's.
+            # "could not read this recording" would send the player looking
+            # for a better recording when the fault is a 404.
+            out = dict(failed)
+            out["source"] = "songsterr"
+            out["songsterr_error"] = str(exc)
+            return out
+        found = autosync.align_to_bar_times(
+            self._whole_song_timeline(), audio_path, bars, report)
+        found["songsterr_title"] = str(meta.get("title") or "")
+        found["listening"] = failed
+        return found
+
+    def _whole_song_timeline(self):
+        """Every pitched track of the file as one timeline.
+
+        A recording is the whole band, and matching one guitar track against
+        it throws most of the evidence away -- the same reason the listening
+        reads the FILE rather than the track being practised.
+        """
+        from pickhero.tabs.timeline import Timeline
+        if not self._song_path:
+            return self._timeline
+        from pickhero.tabs.loader import list_tracks, load_gp_file
+        merged = []
+        for info in list_tracks(Path(self._song_path)):
+            if info.get("is_percussion"):
+                continue
+            try:
+                merged.append(load_gp_file(Path(self._song_path),
+                                           track_index=info["index"]))
+            except Exception:
+                continue
+        if not merged:
+            return self._timeline
+        return Timeline([n for t in merged for n in t.notes],
+                        merged[0].metadata, measures=merged[0].measures)
+
+    @staticmethod
+    def _clipboard_text() -> str:
+        """Whatever is on the clipboard, or "" when there is no way to ask.
+
+        Its own seam because it is the one part of pasting a link that
+        cannot run without a desktop -- no tkinter and an empty clipboard
+        look the same from here, and the advice is the same either way.
+        """
+        try:
+            import tkinter
+            root = tkinter.Tk()
+            root.withdraw()
+            try:
+                return str(root.clipboard_get())
+            finally:
+                root.destroy()
+        except Exception:
+            return ""
+
+    def _paste_songsterr_link(self) -> None:
+        """Ctrl+U: take a Songsterr link off the clipboard.
+
+        The clipboard because the app has no text field and building one for
+        a URL somebody has just copied out of their browser is a screen
+        nobody wants. The same tkinter the file chooser already uses.
+        """
+        from pickhero.tabs import songsterr
+        song_id = songsterr.song_id_of(self._clipboard_text())
+        if not song_id:
+            self._say("Copy a Songsterr link first, then press Ctrl+U")
+            return
+        setter = getattr(self._config, "set_songsterr_for", None)
+        if setter is None:
+            return
+        setter(self._song_key, song_id)
+        self._config.save()
+        self._say(f"Songsterr {song_id} — Ctrl+S will use its bar map if the "
+                  f"listening cannot read this song")
+
     def _auto_sync_report_lines(self, points, report) -> list[str]:
         """What the listening found, in words a player can act on.
 
@@ -6862,6 +6970,12 @@ class PlayingScreen:
         thing the old line never said -- it stored a map either way and the
         player found out four minutes later.
         """
+        # Routed FIRST, not after the failure branches. A Songsterr answer
+        # that failed used to come out wearing the listening's words -- "4 of
+        # 40 windows agreed" when the truth was a 404 -- which sends the
+        # player looking for a better recording over a broken link.
+        if report.get("source") == "songsterr":
+            return self._songsterr_report_lines(points, report)
         if report.get("wrong_length"):
             # Said before anything else and in different words, because it is
             # the one finding here that means "go and get another file"
@@ -6903,6 +7017,41 @@ class PlayingScreen:
                 f"SYNC   the tab and the recording part company at {where}"
                 " — check those places by ear")
         return lines
+
+    def _songsterr_report_lines(self, points, report) -> list[str]:
+        """What Songsterr's bar map did, said as its own answer.
+
+        Never dressed up as the listening: it is a different measurement,
+        five to ten times coarser where the listening works, and the player
+        has to know which one is under his song.
+        """
+        if report.get("songsterr_error"):
+            return [f"SYNC   Songsterr had nothing for this song — "
+                    f"{report['songsterr_error']}",
+                    "SYNC   nothing was stored. Shift+N/M to line it up by "
+                    "hand, Shift+S to pin it there"]
+        if report.get("wrong_bars"):
+            return [
+                f"SYNC   Songsterr times {report['bars']} bars and this tab "
+                f"has {report['measures']} — a different revision, or the "
+                f"repeats written out differently",
+                "SYNC   nothing was stored. Shift+N/M to line it up by hand, "
+                "Shift+S to pin it there"]
+        if not report["readable"] or len(points) < 2:
+            return [
+                f"SYNC   Songsterr's bar map does not fit this recording — "
+                f"{report['usable']} of {report['windows']} windows agreed "
+                f"with it",
+                "SYNC   nothing was stored. Is this the same recording the "
+                "tab was made from?"]
+        return [
+            f"SYNC   from Songsterr's {report['bars']} bar times, lined up "
+            f"here at {report['constant_s']:+.2f} s — {report['usable']} of "
+            f"{report['windows']} windows agree to "
+            f"{report['scatter_ms']:.0f} ms",
+            "SYNC   coarser than listening (80–90 ms against 10) but it does "
+            "not care that a song repeats itself. Shift+S refines it",
+        ]
 
     def _auto_sync_line(self) -> str:
         """What the panel says while the listening is running."""

@@ -201,6 +201,11 @@ class Config:
     # at two places and letting the app fit the line between them. 1.0 means
     # untouched, which is what every song starts at.
     song_mp3_rates: dict = field(default_factory=dict)
+    # {song key: Songsterr song id}. Songsterr stores a timestamp per BAR
+    # into a YouTube video, and a made map never fails on a song that
+    # repeats itself -- which is exactly where listening does. Kept per song
+    # because it belongs to the tab, not to the app.
+    song_songsterr: dict = field(default_factory=dict)
     # Where the player lined the recording up, per song, as
     # [[song ms, offset ms], ...]. A LIST because two points are a straight
     # line and a band that played without a click does not follow one:
@@ -306,6 +311,22 @@ class Config:
         name = stored.replace("\\", "/").rsplit("/", 1)[-1]
         beside = Path(self.songs_dir) / name
         return str(beside) if name and beside.exists() else stored
+
+    def songsterr_for(self, song_key: str) -> int:
+        """This song's Songsterr id, or 0 if none was ever pasted."""
+        try:
+            return int(self.song_songsterr.get(song_key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def set_songsterr_for(self, song_key: str, song_id: int) -> None:
+        """Remember (or, with 0, forget) where this tab came from."""
+        if not song_key:
+            return
+        if song_id:
+            self.song_songsterr[song_key] = int(song_id)
+        else:
+            self.song_songsterr.pop(song_key, None)
 
     def set_mp3_path_for(self, song_key: str, path: str) -> None:
         """Remember (or, with an empty path, forget) this song's recording."""

@@ -2514,6 +2514,41 @@ match at its edge: Thunder's first 36 s hold six readings, two at +1.2 s and fou
 24.9 s break that the stored points do not contain, and **a break the map does not have is a line that lies**. Breaks are read off the
 readings the map is built from.
 
+### Taking Songsterr's own map — and what it turned out to be worth
+
+The player gets almost all his tabs from Songsterr, so the obvious move was to take their per-bar map instead of measuring one. Their meta
+and video-points replies for Thunder, read for real:
+
+- `api/meta/2333598` → `revisionId`, and `aiGenerated: true` — this tab was transcribed FROM the audio, which is why it fits it.
+- `api/video-points/2333598/3088787/list` → three entries, **91 points each**, against a tab of **91 bars**. Bar lengths run 3.02 to 3.18 s
+  against a written 3.077, so it is real per-bar timing and not a tempo restated.
+- The three videos carry **the same curve shifted by a constant** — exactly −25.15 and −23.25 s on all 91 points, to the last decimal. So
+  the shape is the data and the video is irrelevant; the constant belongs to whatever recording the player actually has, and is found by
+  warping the tab through the map and measuring what is left (`align_to_bar_times`), which reuses the listening rather than inventing a
+  second way to compare two things.
+
+**And then it lost.** Measured on the player's own Thunder recording, scored only on readings each map had NOT been fitted to — our own
+map is built from these windows, so an in-sample number would have flattered it by a factor of five:
+
+| | held-out half 0 | held-out half 1 |
+|---|---|---|
+| one offset, no map | 192 ms | 200 ms |
+| **Songsterr, 91 bar times** | **80 ms** | **92 ms** |
+| **our own listening** | **16 ms** | **8 ms** |
+
+The prediction going in was that Songsterr's map would beat the measurement and make the DTW work unnecessary. **It is five to ten times
+coarser.** Their points are timestamps into a YouTube re-upload, and their own transcription pipeline carries its own error; our chroma
+correlation against the actual file has neither problem.
+
+**What it is for is the songs the listening cannot read at all.** What's Up is four chords repeated for four minutes and its windows match
++9.9, −34.4, −6.2 and +21.1 s — a made map does not care that a song repeats itself, and a windowed search can do nothing else. So the
+listening is asked first and Songsterr only when it comes back empty, and the panel never dresses one up as the other: it says which
+measurement is under the song, and that this one is the coarser.
+
+`Ctrl+U` takes the link off the clipboard — the app has no text field and building one for a URL somebody just copied out of their browser
+is a screen nobody wants. A map whose bar count differs from the tab's is refused rather than stretched: it is a different revision, or the
+repeats written out differently, and stretching it would be silent and wrong everywhere after the first difference.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus
