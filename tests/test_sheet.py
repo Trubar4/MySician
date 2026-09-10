@@ -192,3 +192,44 @@ class TestFindingTheRow:
         song = Timeline([], SongMetadata(title="t", tempo=120))
         rows = lay_out(song, WIDTH, HEAD)
         assert len(rows) == 1 and rows[0].notes == ()
+
+
+class TestHowTheRowsStack:
+    """The head size decides everything the eye gets: how big a note is
+    drawn, how far two of them have to sit apart, and therefore how many
+    bars a row holds. One number, which is why +/- is one control."""
+
+    def test_two_rows_fit_the_room_they_were_sized_for(self):
+        from pickhero.ui.sheet import ROWS_SHOWN, head_for_room, rows_that_fit
+        for room in (400.0, 620.0, 780.0, 1000.0):
+            head = head_for_room(room)
+            assert rows_that_fit(room, head) >= ROWS_SHOWN, f"room {room}"
+
+    def test_a_cramped_window_never_shrinks_the_head_past_reading(self):
+        """Below the floor the fret number inside the head stops being a
+        number, which is the fault the scrolling view spent a session on."""
+        from pickhero.ui.sheet import MIN_HEAD_PX, head_for_room
+        assert head_for_room(120.0) == MIN_HEAD_PX
+
+    def test_bigger_heads_mean_fewer_rows_in_the_same_room(self):
+        from pickhero.ui.sheet import head_for_room, rows_that_fit
+        room = 780.0
+        base = head_for_room(room)
+        assert rows_that_fit(room, base * 1.75) < rows_that_fit(room, base)
+
+    def test_there_is_always_at_least_one_row(self):
+        from pickhero.ui.sheet import rows_that_fit
+        assert rows_that_fit(50.0, 80.0) == 1
+
+    def test_a_row_is_six_lanes_and_the_numbers_above_them(self):
+        from pickhero.ui.sheet import LANE_HEADS, NUMBER_STRIP, row_height
+        assert row_height(40.0) == 6 * LANE_HEADS * 40.0 + NUMBER_STRIP
+
+    def test_bigger_heads_mean_fewer_bars_on_a_row(self):
+        """The trade the player asked to be able to hold himself."""
+        song = _song([[i * 125.0 for i in range(16)] for _ in range(24)])
+        small = lay_out(song, WIDTH, 30.0)
+        large = lay_out(song, WIDTH, 60.0)
+        assert len(large) > len(small)
+        assert (large[0].last_bar - large[0].first_bar
+                <= small[0].last_bar - small[0].first_bar)

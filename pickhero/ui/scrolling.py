@@ -46,6 +46,7 @@ from pickhero.ui.colors import (
     lightened,
 )
 from pickhero.ui.feedback import FeedbackRenderer
+from pickhero.ui import sheet
 
 # Layout constants
 LANE_TOP_MARGIN = 80
@@ -426,6 +427,23 @@ TAB_GLIDE_SNAP_PX = 1200.0
 # Below the HUD's block of lines, which is text with no ground of its own.
 TAB_TOP_MARGIN = 150
 
+# The three ways this screen can draw one song. Not three screens: the clock,
+# the keys, the matcher and the offsets are the same in all of them, and this
+# project has already paid for four readers of one plan.
+VIEWS = ("standard", "hybrid", "tab")
+VIEW_NAMES = {
+    "standard": "Standard — the board scrolls",
+    "hybrid": "Hybrid — the sheet holds still",
+    "tab": "Tab page — engraved",
+}
+# Room either side of the sheet, so the first and last note of a row are not
+# against the window edge.
+SHEET_SIDE_PAD = 24
+# A move longer than this many rows is a seek, not a page turn, and arrives
+# rather than sliding. In ROWS because a row is whatever the head size makes
+# it -- see _slide_sheet.
+SHEET_SNAP_ROWS = 3.0
+
 # How a note's verdict is shown on an engraved page. PENDING is absent on
 # purpose: a dot under every note not yet reached would bury the music under
 # its own labelling, the same reason a palm mute is badged once per run.
@@ -551,6 +569,27 @@ def _chord_block_surface(width: int, height: int, colour) -> pygame.Surface:
     pygame.draw.rect(block, colour, block.get_rect(), 2, border_radius=8)
     _BLOCK_CACHE[key] = block
     return block
+
+
+def _glide_step(target: float, value: float, frm: float, to: float,
+                at: float, now: float,
+                snap_px: float) -> tuple[float, float, float, float]:
+    """One frame of a slide towards `target`. Returns (value, from, to, at).
+
+    Pure arithmetic so both views that slide can share it and neither can
+    drift from the other -- and so it can be tested by winding `now` rather
+    than by waiting a quarter of a second per assertion.
+    """
+    if target != to:
+        far = abs(target - to) > snap_px
+        frm = target if far else value
+        to = target
+        at = now
+    share = (now - at) / TAB_GLIDE_S
+    if share >= 1.0:
+        return to, frm, to, at
+    eased = share * share * (3.0 - 2.0 * share)
+    return frm + (to - frm) * eased, frm, to, at
 
 
 def _head_surface(width: int, height: int, colour, border) -> pygame.Surface:
@@ -962,7 +1001,12 @@ class PlayingScreen:
         # work begins -- and the work itself runs on a thread, because
         # rasterising a whole song is seconds and seconds in the game loop
         # is a frozen app.
-        self._tab_mode: bool = False
+        # Which of the three views is up. A string rather than a pair of
+        # flags: two booleans have four states and only three of them mean
+        # anything, and the fourth is the bug that gets shipped.
+        self._view: str = (getattr(config, "default_view", "standard")
+                           if getattr(config, "default_view", "standard")
+                           in VIEWS else "standard")
         # The chord extension: the two grip cards AND the blocks that say
         # which notes are one chord. ONE switch, because it is one idea --
         # "show me the chords" -- and two keys for two halves of an answer
@@ -976,7 +1020,7 @@ class PlayingScreen:
         # twice by work that looked cheap until it ran once a frame.
         self._rests: list[tuple[float, float]] = []
         self._tab_engraving = None
-        self._tab_due: bool = False
+        self._tab_due: bool = self._view == "tab"
         self._tab_error: str = ""
         self._tab_zoom: int = 2
         self._tab_thread: threading.Thread | None = None
@@ -994,6 +1038,18 @@ class PlayingScreen:
         self._tab_glide_from: float = 0.0
         self._tab_glide_to: float = 0.0
         self._tab_glide_at: float = 0.0
+        # The sheet view: the rows as laid out, what they were laid out
+        # FOR, and where the paper has slid to. Laid out once per song and
+        # size rather than per frame -- it walks every bar of the song, which
+        # is exactly the loop this display has had to move out of a frame
+        # three times.
+        self._sheet_rows: list = []
+        self._sheet_key: tuple = ()
+        self._sheet_zoom: int = sheet.ZOOM_DEFAULT
+        self._sheet_scroll: float = 0.0
+        self._sheet_glide_from: float = 0.0
+        self._sheet_glide_to: float = 0.0
+        self._sheet_glide_at: float = 0.0
         if backing_track is not None and len(backing_track) > 0:
             self._init_midi_player(backing_track)
         if guide_track is not None and len(guide_track) > 0:
@@ -1618,7 +1674,7 @@ class PlayingScreen:
             self.set_noise_gate_db(self._noise_gate_db + 5)
         elif event.key == pygame.K_t:
             if shift_held(event):
-                self._toggle_tab_mode()
+                self._cycle_view()
             else:
                 self._cycle_theme()
         elif event.key == pygame.K_f:
@@ -1665,12 +1721,16 @@ class PlayingScreen:
             if self._step_key_ready(event.key):
                 if self._tab_mode:
                     self._zoom_tab(+1)
+                elif self._view == "hybrid":
+                    self._size_sheet(+1)
                 else:
                     self._adjust_scroll_factor(SCROLL_FACTOR_STEP)
         elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
             if self._step_key_ready(event.key):
                 if self._tab_mode:
                     self._zoom_tab(-1)
+                elif self._view == "hybrid":
+                    self._size_sheet(-1)
                 else:
                     self._adjust_scroll_factor(-SCROLL_FACTOR_STEP)
         elif event.key == pygame.K_l:
@@ -1724,6 +1784,21 @@ class PlayingScreen:
             if self._show_help:
                 self._draw_help_overlay(surface, layout)
             return
+        if self._view == "hybrid":
+            # The same notes the board draws, in the same colours, on a page
+            # that does not move. Nothing here is a second copy of anything:
+            # the chord cards, the HUD and the help are the ones the board
+            # uses, because they never depended on the scrolling.
+            self._draw_sheet(surface, layout)
+            self._draw_chord_cards(surface, layout)
+            self._draw_hud(surface, layout)
+            if self._show_timing:
+                self._draw_timing_overlay(surface, layout)
+            if self._show_help:
+                self._draw_help_overlay(surface, layout)
+            if self._track_menu_open:
+                self._draw_track_menu(surface)
+            return
         self._draw_lanes(surface, layout)
         self._draw_loop_region(surface, layout)
         self._draw_hit_zone(surface, layout)
@@ -1744,13 +1819,40 @@ class PlayingScreen:
 
     # -- Pure math helpers (testable without display) --
 
+    @property
+    def _tab_mode(self) -> bool:
+        """Kept as a name because half this file asks the question that way.
+
+        There are three views now, and "the page or not the page" is still a
+        real question for the keys that mean something different on paper.
+        """
+        return self._view == "tab"
+
+    @_tab_mode.setter
+    def _tab_mode(self, on: bool) -> None:
+        self._set_view("tab" if on else "standard")
+
+    def _cycle_view(self) -> None:
+        """Shift+T walks all three, in the order they cost the eye.
+
+        The scrolling board, the sheet that holds still, the engraved page.
+        One key rather than three: a view is chosen by looking at it, so what
+        it needs is a way to keep pressing until the right one is up.
+        """
+        self._set_view(VIEWS[(VIEWS.index(self._view) + 1) % len(VIEWS)])
+
     def _toggle_tab_mode(self) -> None:
-        """Scrolling board <-> engraved page."""
-        self._tab_mode = not self._tab_mode
-        if self._tab_mode and self._tab_engraving is None and not self._tab_error:
+        """Straight to the engraved page and straight back."""
+        self._set_view("standard" if self._view == "tab" else "tab")
+
+    def _set_view(self, view: str) -> None:
+        self._view = view
+        if view == "tab" and self._tab_engraving is None and not self._tab_error:
             # Not built here: the note below has to reach the screen first.
             self._tab_due = True
             self._say("Engraving the tab…")
+        else:
+            self._say(VIEW_NAMES[view])
 
     def _build_tab_engraving(self) -> None:
         """The one slow thing, on a thread.
@@ -1934,21 +2036,255 @@ class PlayingScreen:
         song would otherwise crawl across the page for a quarter of a second
         while the music is already somewhere else.
         """
-        now = time.monotonic()
-        if target != self._tab_glide_to:
-            far = abs(target - self._tab_glide_to) > TAB_GLIDE_SNAP_PX
-            self._tab_glide_from = target if far else self._tab_scroll
-            self._tab_glide_to = target
-            self._tab_glide_at = now
-        share = (now - self._tab_glide_at) / TAB_GLIDE_S
-        if share >= 1.0:
-            self._tab_scroll = self._tab_glide_to
-        else:
-            eased = share * share * (3.0 - 2.0 * share)
-            self._tab_scroll = (self._tab_glide_from
-                                + (self._tab_glide_to - self._tab_glide_from)
-                                * eased)
+        (self._tab_scroll, self._tab_glide_from, self._tab_glide_to,
+         self._tab_glide_at) = _glide_step(
+            target, self._tab_scroll, self._tab_glide_from,
+            self._tab_glide_to, self._tab_glide_at, time.monotonic(),
+            TAB_GLIDE_SNAP_PX)
         return self._tab_scroll
+
+    def _slide_sheet(self, target: float, snap_px: float) -> float:
+        """The same slide, for the sheet -- and its own four numbers.
+
+        Two views glide at once (switching between them must not make the
+        other jump), so the state cannot be shared. The ARITHMETIC is, which
+        is the half that could disagree.
+
+        The snap distance is passed in rather than fixed: a row of the sheet
+        is whatever the head size makes it, so "a move too long to be a page
+        turn" has to be measured in rows, not in pixels.
+        """
+        (self._sheet_scroll, self._sheet_glide_from, self._sheet_glide_to,
+         self._sheet_glide_at) = _glide_step(
+            target, self._sheet_scroll, self._sheet_glide_from,
+            self._sheet_glide_to, self._sheet_glide_at, time.monotonic(),
+            snap_px)
+        return self._sheet_scroll
+
+    # -- The hybrid view: the board's notes on a page that holds still ----
+
+    def _sheet_head_px(self, room: int) -> float:
+        """How big a note head is drawn here, and so how much room it needs.
+
+        One number decides both, which is the point: on the scrolling board
+        the only way to part two notes was to make everything move faster,
+        and here it is the head size and nothing else. Starting from the room
+        there actually is, so two rows fit on any window before anybody
+        touches +/-.
+        """
+        return max(sheet.MIN_HEAD_PX,
+                   sheet.head_for_room(float(room))
+                   * sheet.ZOOM_STEPS[self._sheet_zoom])
+
+    def _sheet_layout(self, width: int, head_px: float) -> list:
+        """The song as rows, laid out once per song, size and filter.
+
+        Never per frame: this walks every bar of the song. A loop that looks
+        cheap until it runs sixty times a second is the fault this display
+        has had to fix three times.
+        """
+        key = (width, round(head_px, 1), self._filter_signature(),
+               id(self._timeline))
+        if key != self._sheet_key:
+            self._sheet_rows = sheet.lay_out(
+                self._timeline, float(width), head_px,
+                passes=self._note_passes_filter)
+            self._sheet_key = key
+        return self._sheet_rows
+
+    def _size_sheet(self, step: int) -> None:
+        """+/- in the hybrid view: bigger notes, fewer bars in sight."""
+        wanted = max(0, min(len(sheet.ZOOM_STEPS) - 1,
+                            self._sheet_zoom + step))
+        if wanted == self._sheet_zoom:
+            self._say("Sheet notes — that is as "
+                      + ("big" if step > 0 else "small") + " as they go")
+            return
+        self._sheet_zoom = wanted
+        # Laid out again at the new size, on the next frame that draws.
+        self._sheet_key = ()
+        self._say(f"Sheet notes {sheet.ZOOM_STEPS[wanted]:.2f}x — "
+                  "bigger notes mean fewer bars on a row")
+
+    def _draw_sheet(self, surface: pygame.Surface, layout: _Layout) -> None:
+        """Two rows of music that do not move, and a playhead that does.
+
+        The whole reason this view exists: with no hit line, a note's x owes
+        nothing to the clock, so it can have the room it needs to be read at
+        no cost in speed -- because there is no speed. What moves is the
+        playhead, quickly through a sparse bar and slowly through a dense
+        one, exactly as an engraved score has always been read.
+        """
+        t = get_theme()
+        w, _ = surface.get_size()
+        top, room = self._tab_room(layout)
+        head = self._sheet_head_px(room)
+        content_w = max(1, w - 2 * SHEET_SIDE_PAD)
+        rows = self._sheet_layout(content_w, head)
+        if not rows:
+            return
+
+        current = sheet.row_at(rows, self._playback_ms)
+        pitch = sheet.row_height(head) + sheet.ROW_GAP
+        # The row being played is the TOP one, so the row after it is always
+        # underneath -- the page view had to learn this the hard way, where
+        # "hold while it is anywhere on screen" showed rows in pairs and half
+        # the song was played with no sight of what was coming.
+        scroll = self._slide_sheet(current * pitch,
+                                      SHEET_SNAP_ROWS * pitch)
+
+        was = surface.get_clip()
+        surface.set_clip(pygame.Rect(0, top, w, room))
+        showing = sheet.rows_that_fit(room, head) + 1
+        for index in range(current, min(len(rows), current + showing)):
+            self._draw_sheet_row(surface, rows[index], SHEET_SIDE_PAD,
+                                 top + index * pitch - scroll, head,
+                                 content_w, index == current)
+        surface.set_clip(was)
+
+        crowded = any(rows[i].crowded
+                      for i in range(current, min(len(rows),
+                                                  current + showing)))
+        font = _get_font("arial", 18)
+        bars = (rows[current].last_bar - rows[current].first_bar + 1)
+        label = font.render(
+            f"Hybrid   |   {bars} bars a row, "
+            f"{sheet.rows_that_fit(room, head)} in sight   |   "
+            "+/- note size   |   Shift+T: next view"
+            + ("   |   this bar is too dense to part at this size"
+               if crowded else ""),
+            True, t.feedback_close if crowded else t.hud_text)
+        surface.blit(label, (w // 2 - label.get_width() // 2, 48))
+
+    def _draw_sheet_row(self, surface: pygame.Surface, row, x0: int,
+                        y: float, head: float, content_w: int,
+                        active: bool) -> None:
+        """One line of music: lanes, bar lines and numbers, notes, playhead."""
+        t = get_theme()
+        lane_h = sheet.LANE_HEADS * head
+        lanes_top = y + sheet.NUMBER_STRIP
+        band_h = 6 * lane_h
+
+        for string in range(6):
+            pygame.draw.rect(
+                surface,
+                t.lane_bg_even if string % 2 == 0 else t.lane_bg_odd,
+                pygame.Rect(x0, int(lanes_top + string * lane_h),
+                            content_w, int(lane_h) + 1))
+
+        # Bar lines and their numbers. A sheet with no bar numbers is a sheet
+        # you cannot talk about -- "the run in bar 34" is how a player finds
+        # the passage again, and how a loop gets set.
+        number_font = _get_font("arial", 13)
+        for step, bar_x in enumerate(row.bar_lines):
+            x = int(x0 + bar_x)
+            pygame.draw.line(surface, t.lane_line, (x, int(lanes_top)),
+                             (x, int(lanes_top + band_h)), 1)
+            number = number_font.render(str(row.first_bar + step + 1), True,
+                                        t.hud_text)
+            surface.blit(number, (x + 3, int(y + 2)))
+        pygame.draw.line(surface, t.lane_line, (x0 + content_w, int(lanes_top)),
+                         (x0 + content_w, int(lanes_top + band_h)), 1)
+
+        if self._chord_mode:
+            self._draw_sheet_chords(surface, row, x0, lanes_top, lane_h)
+
+        # Every head first, every number second -- the same two passes the
+        # board needs, and for the same reason: a head drawn after its
+        # neighbour's number covers it, and in a fast run that is every
+        # number but the last.
+        marks = []
+        for placed in row.notes:
+            note = placed.note
+            base = (OPEN_STRING_COLOR if note.fret == 0 and not note.dead
+                    else STRING_COLORS.get(note.string, (180, 180, 180)))
+            # A note lights up when the playhead crosses it and KEEPS the
+            # colour, which is what the player asked for: on a page that
+            # holds still, the row behind the playhead is a record of how
+            # the run just went, and it can be looked back at.
+            if self._audio_enabled and self._matcher is not None:
+                judged = (self._matcher.get_note_state(note)
+                          is not MatchType.PENDING)
+            else:
+                judged = note.timestamp_ms < self._playback_ms
+            if self._audio_enabled:
+                colour = self._feedback.get_note_color(
+                    note, base, self._playback_ms, judged)
+            else:
+                colour = dimmed(base) if judged else base
+            cy = lanes_top + (note.string - 0.5) * lane_h
+            surface.blit(
+                _head_surface(max(1, int(placed.width)), max(1, int(head)),
+                              colour, t.note_border),
+                (int(x0 + placed.x), int(cy - head / 2)))
+            marks.append((note, x0 + placed.x, cy))
+
+        radius = head / 2
+        fret_font = self._fret_font(radius, radius, self._fret_digits)
+        for note, x, cy in marks:
+            text = "X" if note.dead else str(note.fret)
+            drawn = fret_font.render(text, True, t.note_text)
+            if drawn.get_width() > 2 * radius:
+                continue
+            tx = int(x + radius) - drawn.get_width() // 2
+            ty = int(cy) - drawn.get_height() // 2
+            outline = fret_font.render(text, True, (0, 0, 0))
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                surface.blit(outline, (tx + dx, ty + dy))
+            surface.blit(drawn, (tx, ty))
+
+        if active:
+            # Its own colour and the full height of the row, the two things
+            # the page view had to be told twice: a thin mark takes hunting
+            # for, and one run down both rows says nothing about which row
+            # the hand is on.
+            x = int(x0 + row.x_at(self._playback_ms))
+            pygame.draw.line(surface, t.tab_playhead, (x, int(y)),
+                             (x, int(lanes_top + band_h)), TAB_PLAYHEAD_PX)
+
+    def _draw_sheet_chords(self, surface: pygame.Surface, row, x0: int,
+                           lanes_top: float, lane_h: float) -> None:
+        """The chord blocks and names, on the sheet (Shift+C).
+
+        The grip CARDS need nothing from this view -- they are drawn by the
+        board's own method, because "which grip is the hand on" never
+        depended on the scrolling. Only the block, which is a rectangle round
+        notes that share a moment, has to be told where the notes ended up.
+        """
+        from pickhero.tabs.chord_shapes import shape_of
+        t = get_theme()
+        font = _get_font("arial", 20)
+
+        groups: dict[int, list] = {}
+        for placed in row.notes:
+            groups.setdefault(int(round(placed.note.timestamp_ms)),
+                              []).append(placed)
+        for when in sorted(groups):
+            group = groups[when]
+            if len(group) < 2:
+                continue
+            shape = shape_of([p.note for p in group])
+            if shape is None:
+                continue
+            strings = [p.note.string for p in group]
+            left = min(p.x for p in group)
+            right = max(p.x + p.width for p in group)
+            rect = pygame.Rect(
+                int(x0 + left), int(lanes_top + (min(strings) - 1) * lane_h),
+                max(1, int(right - left)),
+                max(1, int((max(strings) - min(strings) + 1) * lane_h)))
+            surface.blit(
+                _chord_block_surface(rect.width, rect.height,
+                                     self._chord_block_colour(
+                                         [p.note for p in group])),
+                rect.topleft)
+            label = font.render(shape.name, True, t.note_text)
+            shadow = font.render(shape.name, True, (0, 0, 0))
+            ly = rect.top - label.get_height() - 2
+            if ly < lanes_top:
+                ly = rect.top + 2
+            surface.blit(shadow, (rect.left + 5, ly + 1))
+            surface.blit(label, (rect.left + 4, ly))
 
     def _draw_tab_page(self, surface: pygame.Surface, layout: _Layout) -> None:
         """The engraved page, the playhead, and how each note went."""
@@ -2039,7 +2375,7 @@ class PlayingScreen:
         label = font.render(
             f"Page {page.number} of {len(engraving.pages)}   |   "
             f"Zoom {self._tab_zoom + 1}   |   +/- zoom   |   "
-            f"Shift+T: back to the scrolling tab", True, t.hud_text)
+            f"Shift+T: next view", True, t.hud_text)
         # Below the tempo, not on top of it. Both wanted the centre of the
         # top edge and the HUD is drawn second, so the two read as one
         # illegible line -- which is the same complaint as the page over the
@@ -3425,7 +3761,7 @@ class PlayingScreen:
             "|  Ctrl+S: sync to the recording automatically  "
             "|  Shift+S: sync point here (Ctrl+Shift+S: clear)  "
             "|  Shift+A: reopen audio output (if the sound goes bad)  "
-            "|  Shift+T: tab page view  "
+            "|  Shift+T: view (standard / hybrid sheet / tab page)  "
             "|  E: skip a rest  |  TAB: track  |  V: chords  |  J: strings  |  F: frets  "
             "|  F1-F6: mute string  |  L: weakest part  |  T: theme  "
             "|  Y: timing report  |  D: run log  "

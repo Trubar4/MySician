@@ -2182,7 +2182,7 @@ the board's white hit-zone colour onto a paper ground and could not be found; it
 page view has no persistence blur by construction and no crowding either. On the passage the player could not read while it scrolled,
 the page view was fine. That is the answer for a fast song until the frame question above is settled.
 
-## A Sheet Has No Hit Line — HALF BUILT
+## A Sheet Has No Hit Line
 
 The scrolling view has one rule it cannot escape, and two days of this session were spent finding out that it cannot. **A note's x is its
 time multiplied by a speed**, because the note has to arrive at the hit line at the moment it is played. So the distance between two notes
@@ -2205,22 +2205,69 @@ answer.
   a silent overlap is the fault this view exists to end.
 - **A note that is filtered out takes no room**, or a song with a fret limit is spaced for notes nobody can see.
 
-**Measured on the two songs this session is about, at 1200 px and a 44 px head:**
+The numbers this produces on the player's own songs are in the next section, measured on the real screens rather than on a
+hypothetical 1200 px one.
 
-| | rows | bars per row | row lasts | pairs on one string closer than a head | tightest |
-|---|---|---|---|---|---|
-| **Thunder lead** | 125 | 2 | 3.1 s | **0 of 1372** | 56 px |
-| **Bon Jovi distortion** | 77 | 2 | 3.6 s | **0 of 528** | 53 px |
+### The view itself
 
-**Thunder's solo had 47 such pairs in the scrolling view and 30 of them inside five seconds. It has none here**, at full note size, with no
-speed spent — and the two songs the player named are laid out with nothing crowded at all.
+Built. Two rows of music that do not move, the board's own coloured heads on them, and a playhead that runs unevenly across a line that
+does not. Nothing in it is a second copy of anything: the clock, the keys, the matcher, the offsets, the chord cards, the HUD and the help
+overlay are the ones the scrolling board uses, because none of them ever depended on the scrolling. Only the three things that need to know
+where a note LANDED are new — the heads, the chord blocks, and the playhead.
 
-**What this costs is a page turn every three seconds**, against every four in the tab view. Whether that is worth it is the one thing the
-arithmetic cannot answer.
+- **The row in the hand is the top one**, so the row after it is always underneath and a line break is never a surprise. This is the rule
+  the page view had to learn the hard way, one chapter down, and it was written here from the start rather than rediscovered.
+- **It slides rather than jumps** (a quarter of a second, eased at both ends) — the same arithmetic the page view uses, extracted into
+  `_glide_step` so the two cannot drift apart. The state is NOT shared: two views glide at once and switching between them must not make
+  the other one jump. The snap distance is passed in, because a row of the sheet is whatever the head size makes it, so "too far to be a
+  page turn" has to be counted in rows and not in pixels.
+- **A note keeps the colour it lit up in.** "Damit kann ich sogar super zurückschauen, wo Fehler waren." This is the thing a scrolling
+  view can never offer: the row you just played is still on the screen with your mistakes still on it. It costs nothing to build — the
+  matcher's verdict was already permanent and the feedback renderer already dims an expired effect rather than dropping it. The scrolling
+  board simply carried the evidence off the left edge before it could be read.
+- **Bar numbers and bar lines.** A sheet without them is a sheet you cannot talk about: "the run in bar 34" is how a passage gets found
+  again and how a loop gets set.
+- **The chords came along.** The grip cards are the board's own method, called unchanged. Only the BLOCK — the tint that says "these five
+  notes are one grip" — had to be told where the notes ended up.
 
-**Not built yet: the drawing.** The layout exists and is tested; the view that uses it does not. Also still to do — the key that opens it,
-the setting that makes it the default, and the verdict colours, which in a sheet can STAY on the note after the playhead has passed. That
-last one is the thing a scrolling view can never offer: the row you just played is still on screen, with your mistakes still on it.
+**The size is the one control, and +/- is it.** The head sets both how big a note is drawn AND how far apart two of them have to sit, so
+one key moves legibility and bars-per-row together. The view OPENS at the size where two rows exactly fill the room there is
+(`head_for_room`), which on the player's own machines is a **58 px head against 26 to 44 on the scrolling board** — so the steps are
+weighted downward, towards more music per row, with two going the other way where the second row is cut off rather than gone.
+
+**Measured on the two songs this session is about, on the player's own screens, at the size the view opens at:**
+
+| | head | rows | bars per row | row lasts | pairs on one string closer than a head | crowded rows |
+|---|---|---|---|---|---|---|
+| **Thunder lead**, 1920x1080 | 50 px | 84 | 3 | 4.5 s | **0 of 1486** | 0 |
+| **Thunder lead**, 1920x1200 | 58 px | 86 | 3 | 4.4 s | **0 of 1472** | 0 |
+| **Bon Jovi lead**, 1920x1080 | 50 px | 49 | 3 | 5.5 s | **0 of 1452** | 0 |
+| **Bon Jovi lead**, 1920x1200 | 58 px | 49 | 3 | 5.5 s | **0 of 1452** | 0 |
+
+**Thunder's solo had 47 overlapping pairs in the scrolling view, 30 of them inside five seconds. It has none here**, at a head bigger than
+the scrolling view has ever drawn, with no speed spent — because there is no speed.
+
+**And the frame is cheaper and steadier than the board's**, measured over 300 frames on Thunder's lead at 1920x1200 with a matcher
+running:
+
+| | median | worst tenth | worst |
+|---|---|---|---|
+| standard | 5.22 ms | 5.97 ms | **19.81 ms** |
+| hybrid | 6.25 ms | 6.77 ms | **7.58 ms** |
+
+The median is a millisecond worse and the WORST frame is two and a half times better — which is the whole point restated in the one unit
+the player has been complaining in. The layout is built once per song, size and filter, never per frame; the drawing touches only the rows
+on screen. Both are held by tests, because this display has had to move a loop out of the frame three times already.
+
+**What it costs is a page turn every four to five seconds.** That is the trade, and it is the same one the tab view makes.
+
+### Three views, one key, one default
+
+`Shift+T` walks all three — standard, hybrid, tab — because a view is chosen by LOOKING at it, so what the key has to do is keep going
+until the right one is up. `O` → **View** sets which one a song opens in.
+
+`_tab_mode` is a property over `_view` rather than a flag of its own. Two booleans have four states, three of them mean something, and the
+fourth is the bug that gets shipped.
 
 ## Two Rows Of Music And Nothing Else
 

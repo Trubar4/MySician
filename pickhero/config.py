@@ -141,6 +141,13 @@ class Config:
     # the settings screen -- which is the right place for anything set once
     # and then living on invisibly.
     chord_view: bool = False
+    # Which of the three ways of drawing a song opens first: "standard"
+    # (the scrolling board), "hybrid" (two rows that hold still while the
+    # playhead moves) or "tab" (the engraved page). A setting rather than
+    # screen state for the same reason the chord view is one: it is chosen
+    # once and then lives on, and the place to change it is the screen that
+    # SHOWS what is set.
+    default_view: str = "standard"
     timing_window_ms: float = 150.0
     audio_latency_offset_ms: float = 0.0
     chord_threshold_ms: float = 50.0

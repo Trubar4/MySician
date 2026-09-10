@@ -161,11 +161,27 @@ class TestTheViewInsideThePlayingScreen:
         from pickhero.config import Config
         return PlayingScreen(_song(bars=6), config=Config())
 
-    def test_shift_t_switches_and_plain_t_still_themes(self):
-        screen = self._screen()
-        theme_before = screen._config.theme
+    def _shift_t(self, screen):
         screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_t, mod=pygame.KMOD_SHIFT))
+
+    def test_shift_t_walks_all_three_views(self):
+        """There are three ways of drawing one song now, and one key that
+        reaches them. A view is chosen by LOOKING at it, so what the key has
+        to do is keep going until the right one is up."""
+        from pickhero.ui.scrolling import VIEWS
+        screen = self._screen()
+        seen = [screen._view]
+        for _ in VIEWS:
+            self._shift_t(screen)
+            seen.append(screen._view)
+        assert seen == ["standard", "hybrid", "tab", "standard"]
+
+    def test_and_plain_t_still_themes(self):
+        screen = self._screen()
+        theme_before = screen._config.theme
+        self._shift_t(screen)
+        self._shift_t(screen)
         assert screen._tab_mode
         assert screen._config.theme == theme_before
         screen.handle_event(pygame.event.Event(

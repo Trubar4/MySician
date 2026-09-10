@@ -30,7 +30,7 @@ import pygame
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
                              MIN_GATE_DB, Config)
-from pickhero.ui.scrolling import MAX_BACKING_OFFSET_MS
+from pickhero.ui.scrolling import MAX_BACKING_OFFSET_MS, VIEWS, VIEW_NAMES
 from pickhero.ui.colors import cycle_theme, get_theme
 
 VISIBLE_ROWS = 14
@@ -99,6 +99,10 @@ class SettingsMenuScreen:
             except Exception:
                 pass
             return f"device #{index}"
+
+        def cycle_view(step: int) -> None:
+            here = VIEWS.index(c.default_view) if c.default_view in VIEWS else 0
+            c.default_view = VIEWS[(here + step) % len(VIEWS)]
 
         def toggle_chord_view() -> None:
             c.chord_view = not c.chord_view
@@ -192,6 +196,14 @@ class SettingsMenuScreen:
                          "the grip you are on beside the one coming next. "
                          "Shift+C in the song.",
                     is_default=lambda: c.chord_view == default.chord_view),
+            Setting("view", "View (Shift+T)",
+                    lambda: VIEW_NAMES.get(c.default_view, c.default_view),
+                    cycle_view,
+                    note="Which view a song opens in. The board scrolls; the "
+                         "hybrid sheet holds still and only the playhead "
+                         "moves, which is the one to try when fast notes "
+                         "smear; the tab page is the engraved score.",
+                    is_default=lambda: c.default_view == default.default_view),
             Setting("window", "Hit window",
                     lambda: f"{c.timing_window_ms:.0f} ms", adjust_window,
                     note="How far off the beat a note still counts. Wider is "

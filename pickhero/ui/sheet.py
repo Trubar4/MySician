@@ -49,6 +49,77 @@ MIN_GAP_HEADS = 1.18
 CROWDED = 1.0
 
 
+# --- How the sheet is STACKED on screen -------------------------------------
+# The arithmetic above says where a note sits inside its row. These say how
+# tall a row is and how many of them there is room for, and they live here
+# rather than in the drawing because the answer decides the layout: the head
+# size is what sets both how big a note is drawn AND how far apart two of
+# them have to sit, so it is the one number that moves legibility and bars
+# per row together.
+
+# Two rows, the same count the page view settled on: the one under the hand
+# and the one arriving. Everything past that was spending the room the HUD
+# needs, and a reader is not using it.
+ROWS_SHOWN = 2
+# A string lane's height as a multiple of the head. Just over one, so heads
+# on neighbouring strings never touch either -- the same reason MIN_GAP_HEADS
+# is above one along the row.
+LANE_HEADS = 1.18
+# Room above a row for its bar numbers.
+NUMBER_STRIP = 20
+# Air between one row and the next, so the eye can tell them apart.
+ROW_GAP = 18
+# Never smaller than this, whatever the window does: below it the fret number
+# inside the head stops being a number.
+MIN_HEAD_PX = 22.0
+
+# What +/- does in this view. Bigger heads need more room along the row, so
+# fewer bars fit on one -- which is the trade the player asked to be able to
+# hold himself: more readable notes, or more music in sight at once.
+# Weighted DOWNWARD on purpose. The view opens at the size where two rows
+# exactly fill the room there is, which is already the biggest a note can be
+# drawn without losing the row that shows what is coming -- measured on the
+# player's own machines: a 58 px head on the 1200 px screen, against 26 to 44
+# on the scrolling board. So the useful room to move is towards more music
+# per row, and only two steps go the other way, where the second row is cut
+# off rather than gone.
+ZOOM_STEPS = (0.60, 0.70, 0.85, 1.00, 1.20, 1.45)
+ZOOM_DEFAULT = 3
+
+
+def row_height(head_px: float) -> float:
+    """How tall one row of music is, bar numbers included."""
+    return 6 * LANE_HEADS * head_px + NUMBER_STRIP
+
+
+def head_for_room(room: float, rows: int = ROWS_SHOWN) -> float:
+    """The head size at which `rows` rows exactly fill the space there is.
+
+    The starting point, not a cap: this is what makes two rows fit on any
+    window without anybody typing a pixel count, and ZOOM_STEPS moves off it
+    in both directions.
+    """
+    each = (room - ROW_GAP * (rows - 1)) / max(1, rows)
+    return max(MIN_HEAD_PX, (each - NUMBER_STRIP) / (6 * LANE_HEADS))
+
+
+def rows_that_fit(room: float, head_px: float) -> int:
+    """How many whole rows the space holds at this head size.
+
+    At least one. Zoomed all the way in a row is taller than half the window
+    and the second one is a sliver at the bottom -- which is honest about
+    what was traded rather than hiding the row that no longer fits.
+    """
+    pitch = row_height(head_px) + ROW_GAP
+    if pitch <= 0:
+        return 1
+    # The half-pixel is not slack, it is arithmetic: head_for_room divides
+    # the room and this multiplies it back, and a row that came out
+    # 491.0000000000001 px tall counted as not fitting a window sized for
+    # exactly two of it.
+    return max(1, int((room + ROW_GAP + 0.5) // pitch))
+
+
 @dataclass(frozen=True)
 class Placed:
     """One note, and where it sits in its row."""
