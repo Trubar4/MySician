@@ -1,7 +1,9 @@
 
 
-https://www.youtube.com/watch?v=-IWAOPi4VCc&t=275s
-https://www.songsterr.com/a/wsa/thunder-love-walked-in-v4-tab-s2333598t1
+[https://www.youtube.com/watch?v=-IWAOPi4VCc&t=275s
+https://www.songsterr.com/a/wsa/thunder-love-walked-in-v4-tab-s2333598t1](https://www.songsterr.com/api/meta/2407981          → {"revisionId": …}
+https://www.songsterr.com/api/video-points/2333598/3970450/list
+)
 
 #Üben von Kid Rock - Rock on
 Takt 181–200 — der einzige Abschnitt ohne jeden Fortschritt: 75 % → 75 %. Alles andere hast du verbessert. Fang hier an.
