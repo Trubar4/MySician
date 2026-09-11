@@ -11,7 +11,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 SONGSTERR_API_URL = "https://www.songsterr.com/api/songs"
@@ -144,3 +144,112 @@ def download_gp5(song_id: int, output_path: str | Path) -> bool:
 def sanitize_filename(name: str) -> str:
     """Remove characters that are invalid in filenames."""
     return re.sub(r'[<>:"/\\|?*]', "", name).strip()
+
+
+# ── One song, everything it needs ───────────────────────────────────────────
+#
+# Downloading a tab used to be the first of four jobs. The other three were
+# the player's: find the recording, paste the Songsterr link back into the
+# app with Ctrl+U, then press Ctrl+S and hope the listening reads a song that
+# repeats itself. Every one of them is answered by the same reply the tab
+# came in, so all four happen here now, on one ENTER.
+
+
+@dataclass
+class Grab:
+    """What came down for one song, and what did not."""
+
+    song_id: int
+    tab_path: Path | None = None
+    video_id: str = ""
+    bars: int = 0
+    audio_path: Path | None = None
+    #: In the player's words, one line per thing that happened. Shown on the
+    #: download screen, because a step that fails silently is a step the
+    #: player will spend an evening looking for.
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        """The tab arrived. The rest is a bonus, not a requirement.
+
+        A song with no video on Songsterr, or a machine with no ffmpeg, is
+        still a song to practise -- it just syncs the way it did before.
+        """
+        return self.tab_path is not None
+
+
+def grab_song(song_id: int, output_path: str | Path,
+              want_audio: bool = True, on_progress=None) -> Grab:
+    """Fetch a tab and everything Songsterr knows about its timing.
+
+    Args:
+        song_id: Songsterr song id.
+        output_path: where the tab file should be written.
+        want_audio: also pull the video's audio with yt-dlp.
+        on_progress: called with (fraction 0..1, what it is doing).
+
+    Returns:
+        A `Grab`. Check `.ok` for the tab; `.notes` says what else happened.
+
+    Never raises for a missing piece. The tab is the thing being asked for
+    and the rest is best-effort, so a dead video or an absent ffmpeg reports
+    itself in `notes` rather than taking the download down with it.
+    """
+    from pickhero.tabs import songsterr, youtube
+
+    def step(fraction: float, what: str) -> None:
+        if on_progress is not None:
+            on_progress(fraction, what)
+
+    grab = Grab(song_id=int(song_id))
+    out = Path(output_path)
+
+    step(0.05, "downloading the tab")
+    if not download_gp5(song_id, out):
+        grab.notes.append("The tab could not be downloaded.")
+        return grab
+    grab.tab_path = out
+
+    # The bar map, cached BESIDE THE TAB. Asked for here rather than the
+    # first time the player presses Ctrl+S, so the song works on a machine
+    # with no network -- which is what "I use it locally, offline" means.
+    step(0.35, "asking Songsterr for its bar map")
+    try:
+        meta = songsterr.fetch_meta(song_id)
+        entries = songsterr.fetch_entries(song_id, int(meta["revisionId"]))
+        songsterr.save_cache(out, song_id, meta, entries)
+    except songsterr.NotFound as exc:
+        grab.notes.append(f"No bar map: {exc}")
+        return grab
+    except OSError as exc:
+        grab.notes.append(f"The bar map could not be saved: {exc}")
+        return grab
+
+    chosen = songsterr.main_entry(entries)
+    if chosen is None:
+        grab.notes.append("Songsterr has no timing for this tab.")
+        return grab
+    grab.video_id = songsterr.video_id_of(chosen)
+    grab.bars = len(songsterr.bar_times_of_entry(chosen))
+    grab.notes.append(f"Bar map: {grab.bars} bars.")
+
+    if not want_audio:
+        return grab
+    if not grab.video_id:
+        grab.notes.append("Its bar map names no video, so no audio.")
+        return grab
+
+    step(0.5, "downloading the audio")
+    try:
+        grab.audio_path = youtube.fetch_audio(
+            grab.video_id,
+            youtube.audio_path_for(out),
+            lambda f, what: step(0.5 + 0.5 * f, what),
+        )
+        grab.notes.append(f"Audio: {grab.audio_path.name}")
+    except youtube.NotAvailable as exc:
+        # Named, not swallowed. "ffmpeg was not found" and "this video is
+        # private" send the player to completely different places.
+        grab.notes.append(f"No audio: {exc}")
+    return grab

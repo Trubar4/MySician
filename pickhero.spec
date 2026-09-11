@@ -39,6 +39,14 @@ if os.path.exists(os.path.join("pickhero", "_build_stamp.txt")):
 # it is resvg rather than cairosvg because cairosvg needs a cairo the Windows
 # build has not got. It is one self-contained extension with no data files.
 
+# ffmpeg, fetched by build.bat into tools/. yt-dlp downloads what YouTube
+# serves -- m4a or webm -- and SDL_mixer decodes neither, so without this in
+# the bundle the audio lands on disk and silently will not play. Bundled
+# rather than looked for on the machine: the whole point of the .exe is that
+# the second laptop needs nothing installed on it.
+for _ffmpeg in glob.glob(os.path.join("tools", "ffmpeg*")):
+    binaries.append((_ffmpeg, "."))
+
 # ── Native binaries / C extensions ──────────────────────────────────────────
 # aubio  — C pitch/onset detection library
 # pygame — SDL2 + mixer + image + font shared libraries
@@ -80,6 +88,10 @@ a = Analysis(
         "guitarpro",
         # SSL certs for urllib HTTPS requests (Songsterr downloader)
         "certifi",
+        # The audio half of the Songsterr download. Imported inside the
+        # function that uses it, so nothing in the static graph reaches it --
+        # the same way verovio came to be missing from a build that passed.
+        "yt_dlp",
         # Engraving. Imported lazily everywhere it is used, so nothing in the
         # static import graph reaches it.
         "verovio",

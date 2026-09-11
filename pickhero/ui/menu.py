@@ -629,7 +629,7 @@ class MenuScreen:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"
             fav = "on" if self._favourites_only else "off"
-            hint = f"F or /: search  |  M: favourite (Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+            hint = f"F or /: search  |  M: favourite (Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
         # The build, bottom right and out of the way. It is asked for
         # exactly once per report -- "which version are you running" --
         # and answering it has cost several rounds.

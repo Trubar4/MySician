@@ -255,6 +255,28 @@ class TestInsideTheApp:
             screen._auto_sync_thread.join(30)
         screen._take_auto_sync()
 
+    def _bar_map(self, monkeypatch, points, title="t", asked=None,
+                 raises=None):
+        """Stand in for the network, at the two calls the app actually makes.
+
+        `fetch_bar_times` is not one of them any more: the app asks the disk
+        first and the network second (`_songsterr_bar_times`), so patching
+        the old one-shot helper patched something nothing called -- and every
+        one of these tests still passed while measuring nothing.
+        """
+        def meta(song_id):
+            if asked is not None:
+                asked.append(song_id)
+            if raises is not None:
+                raise raises
+            return {"songId": song_id, "revisionId": 1, "title": title}
+
+        monkeypatch.setattr(songsterr, "fetch_meta", meta)
+        monkeypatch.setattr(
+            songsterr, "fetch_entries",
+            lambda sid, rev: [{"id": 1, "videoId": "v", "feature": None,
+                               "points": list(points)}] if points else [])
+
     def _listening(self, monkeypatch, readable):
         monkeypatch.setattr(autosync, "find", lambda *a, **k: {
             "points": [(0.0, -100.0), (60_000.0, -120.0)] if readable else [],
@@ -270,8 +292,7 @@ class TestInsideTheApp:
         """It is five to ten times finer than the bar map where it works."""
         asked = []
         self._listening(monkeypatch, readable=True)
-        monkeypatch.setattr(songsterr, "fetch_bar_times",
-                            lambda song_id: asked.append(song_id) or ([], {}))
+        self._bar_map(monkeypatch, [0.94, 4.04], asked=asked)
         screen = self._screen(tmp_path, monkeypatch, song_id=2333598)
         screen._start_auto_sync()
         self._run(screen)
@@ -281,14 +302,13 @@ class TestInsideTheApp:
     def test_and_the_bar_map_takes_over_when_it_does_not(self, tmp_path,
                                                           monkeypatch):
         self._listening(monkeypatch, readable=False)
-        monkeypatch.setattr(
-            songsterr, "fetch_bar_times",
-            lambda song_id: ([0.94, 4.04, 7.11, 10.2, 13.27, 16.42, 19.53,
-                              22.62], {"title": "Love Walked In v4"}))
+        self._bar_map(monkeypatch,
+                      [0.94, 4.04, 7.11, 10.2, 13.27, 16.42, 19.53, 22.62],
+                      title="Love Walked In v4")
         monkeypatch.setattr(autosync, "align_to_bar_times",
                             lambda tl, path, bars, progress=None: {
-                                "source": "songsterr", "bars": len(bars),
-                                "measures": len(bars), "readable": True,
+                                "source": "songsterr", "bars": len(bars[0]),
+                                "measures": len(bars[0]), "readable": True,
                                 "points": [(0.0, -2150.0), (21539.0, -2160.0)],
                                 "windows": 40, "usable": 38, "ambiguous": 1,
                                 "constant_s": 1.21, "scatter_ms": 76.0,
@@ -307,8 +327,7 @@ class TestInsideTheApp:
     def test_with_no_link_pasted_it_is_never_asked(self, tmp_path, monkeypatch):
         asked = []
         self._listening(monkeypatch, readable=False)
-        monkeypatch.setattr(songsterr, "fetch_bar_times",
-                            lambda song_id: asked.append(song_id) or ([], {}))
+        self._bar_map(monkeypatch, [0.94, 4.04], asked=asked)
         screen = self._screen(tmp_path, monkeypatch)
         screen._start_auto_sync()
         self._run(screen)
@@ -319,10 +338,8 @@ class TestInsideTheApp:
             self, tmp_path, monkeypatch):
         self._listening(monkeypatch, readable=False)
 
-        def missing(song_id):
-            raise songsterr.NotFound("Songsterr answered 404")
-
-        monkeypatch.setattr(songsterr, "fetch_bar_times", missing)
+        self._bar_map(monkeypatch, [],
+                      raises=songsterr.NotFound("Songsterr answered 404"))
         screen = self._screen(tmp_path, monkeypatch, song_id=999)
         screen._start_auto_sync()
         self._run(screen)
@@ -357,9 +374,7 @@ class TestTheChoiceIsThePlayersNotTheApps:
             "sections_used": 1, "unreadable": [], "covered": (0.0, 240.0),
             "song_s": 260.0, "tab_s": 260.0, "recording_s": 260.0,
             "length_gap": 0.0, "wrong_length": False})
-        monkeypatch.setattr(songsterr, "fetch_bar_times",
-                            lambda song_id: ([0.94, 4.04, 7.11, 10.2],
-                                             {"title": "t"}))
+        TestInsideTheApp()._bar_map(monkeypatch, [0.94, 4.04, 7.11, 10.2])
         monkeypatch.setattr(autosync, "align_to_bar_times",
                             lambda tl, path, bars, progress=None: asked.append(
                                 "songsterr") or {

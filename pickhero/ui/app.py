@@ -368,7 +368,8 @@ class App:
                 return
             if event.key == pygame.K_s:
                 songs_dir = self._config.songs_path()
-                self._download_menu = DownloadMenuScreen(songs_dir)
+                self._download_menu = DownloadMenuScreen(
+                    songs_dir, config=self._config)
                 self._state = "download"
                 return
             if event.key == pygame.K_g:

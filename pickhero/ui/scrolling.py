@@ -7072,7 +7072,7 @@ class PlayingScreen:
         from pickhero.audio import autosync
         from pickhero.tabs import songsterr
         try:
-            bars, meta = songsterr.fetch_bar_times(song_id)
+            bars, meta = self._songsterr_bar_times(song_id)
         except songsterr.NotFound as exc:
             # Marked as Songsterr's answer, not left wearing the listening's.
             # "could not read this recording" would send the player looking
@@ -7087,6 +7087,39 @@ class PlayingScreen:
         if failed is not None:
             found["listening"] = failed
         return found
+
+    def _songsterr_bar_times(self, song_id: int):
+        """(timelines, metadata) for this song, from disk if it is there.
+
+        The download screen writes the whole reply beside the tab, so a song
+        fetched in the app syncs on a machine with no network at all -- and
+        pressing Ctrl+S twice does not ask Songsterr twice. The network is
+        still there for a song whose link was pasted in by hand, and what it
+        answers is written to the same place, so that song is offline from
+        the second press on.
+
+        Main video first either way: it is the recording the tab was written
+        from, and after an in-app download it is also the recording on disk.
+        """
+        from pickhero.tabs import songsterr
+        if self._song_path:
+            cached = songsterr.bar_times_from_cache(self._song_path)
+            if cached is not None:
+                return cached
+        meta = songsterr.fetch_meta(song_id)
+        entries = songsterr.fetch_entries(song_id, int(meta["revisionId"]))
+        bars = songsterr.preferred_bar_times(entries)
+        if not bars:
+            raise songsterr.NotFound(
+                f"song {song_id} has video points but none usable")
+        if self._song_path:
+            try:
+                songsterr.save_cache(self._song_path, song_id, meta, entries)
+            except OSError:
+                # A read-only songs folder is a slower song, not a broken
+                # one. The map is in hand; only the keeping of it failed.
+                pass
+        return bars, meta
 
     def _whole_song_timeline(self):
         """Every pitched track of the file as one timeline.

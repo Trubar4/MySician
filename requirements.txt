@@ -5,3 +5,4 @@ pyguitarpro>=0.9
 pygame>=2.5.0
 verovio>=5.0
 resvg-py>=0.5
+yt-dlp>=2024.8.6

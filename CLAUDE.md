@@ -2702,6 +2702,62 @@ is a judgement the listening makes about itself, and that is not the last word. 
 is a screen nobody wants. A map whose bar count differs from the tab's is refused rather than stretched: it is a different revision, or the
 repeats written out differently, and stretching it would be silent and wrong everywhere after the first difference.
 
+### One ENTER Fetches The Song, Not The Tab
+
+*"Wenn wir beim Downloader explizit Songsterr nutzen (keine anderen Dienste) und dort das GP holen und die Youtube-ID und die Sync-Infos,
+dann würde mir das einen Haufen Arbeit sparen. yt-dlp fände ich praktischer. Ich gebe die Daten nicht weiter und nutze sie nur lokal
+offline."*
+
+**Learning a new song was four jobs, and Songsterr answers all four with one reply.** The download screen fetched the tab and stopped;
+the player then found an MP3 somewhere, pasted the Songsterr link back into the app with `Ctrl+U`, and pressed `Ctrl+S` hoping the
+listening would read a song that repeats itself. On What's Up it does not — its windows read +9.9, −34.4, −6.2 and +21.1 s and mean none
+of it. But `api/video-points` had been carrying the answer the whole time: a timestamp per measure **and the YouTube id of the recording
+those timestamps were made against**. Three of the four jobs were being done by hand next to a reply that already contained them.
+
+So `ENTER` on the download screen now fetches:
+
+| what | where it lands | why there |
+|---|---|---|
+| the tab | `songs/<name>.gp5` | unchanged |
+| every video's bar map | `songs/<name>.songsterr.json` | **beside the tab**, so copying the songs folder to the second laptop carries the sync with it — the same rule `mp3_path_for` already follows for the recording |
+| the Songsterr id | settings, against the tab's stem | which is what `song_key` is, so `Ctrl+U` is not needed |
+| the audio | `songs/<name>.mp3` | same stem, so `mp3_path_for` finds it after a move |
+
+**The video is chosen by `feature: null`, not by length.** Songsterr marks the recording the tab was written from with a null feature;
+everything else is a backing track, a live cut or somebody's cover, and those are *different recordings of the song* rather than the same
+one shifted. Thunder hides this — its three videos carry one curve shifted by exactly −25.15 and −23.25 s, so any entry would do. What's
+Up does not: **72 points over 253 s in the main video against 78 over 278 s in the backing ones**. The first build took the longest and
+handed that song the backing track. `main_entry` takes the marked one; `candidates_for` puts it first and keeps the rest, because the
+recording on disk is not always the video it was pulled from and the fit is what decides.
+
+**And pulling the audio from that video collapses the hard part of the sync.** The bar map is in video time. Up to now the app had to
+find the constant between video time and whatever MP3 the player owned, by listening — which is the step that fails on a repetitive song.
+Take the audio from the video the points were made against and there is no constant to find; there is an MP3 encoder delay of about
+26 ms, well inside what the fit reads anyway. The fit still runs rather than the offset being assumed to be zero, because the player may
+already have had a recording or replaced the one that came down.
+
+**ffmpeg is bundled, and that is not optional.** yt-dlp downloads what YouTube serves — m4a (AAC) or webm (Opus). The app plays through
+SDL_mixer, which decodes MP3, OGG, FLAC and WAV, and *neither of YouTube's two formats is on that list*. Without ffmpeg the audio lands on
+disk and silently will not play, which is this project's oldest failure mode wearing a new hat. `tools/fetch_ffmpeg.py` puts one in
+`tools/` at build time and the spec bundles it; the second laptop gets the .exe and needs nothing installed. When the fetch fails the
+build still succeeds and the download screen says **"ffmpeg was not found"** in words — `missing()` returns which half is absent, because
+"ffmpeg was not found" and "this video is private" send the player to completely different places.
+
+**Every step reports itself, and only the tab is required.** A song with no video on Songsterr is still a song to practise; it just syncs
+the way it did before. So `grab_song` never raises for a missing piece — it returns a `Grab` whose `notes` say what came and what did
+not, and the screen holds those lines until a key is pressed. A song that quietly arrived without its recording looks exactly like one
+that arrived with it, until the player is standing in front of it with a guitar.
+
+Two smaller things that were bugs waiting to be reported:
+
+- **The finished download nudges the event loop.** Every state change on that screen is read inside `handle_event`, and `handle_event`
+  only runs when pygame has an event. A player who takes his hands off the keyboard while a song downloads generates none, so the
+  finished download would sit there until something was touched — indistinguishable from a hang. A posted `USEREVENT` closes it.
+- **The bar map is read from disk before the network.** `_songsterr_bar_times` asks the cache first, so a song fetched in the app syncs
+  with no network at all and pressing `Ctrl+S` twice does not ask Songsterr twice. A link pasted by hand still goes out — and what comes
+  back is written to the same place, so that song is offline from the second press on.
+
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus
@@ -3448,7 +3504,12 @@ pyinstaller pickhero.spec --noconfirm
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
 - Don't create a web UI or Electron wrapper. This is a desktop app.
-- Don't add online features, accounts, or cloud sync. Offline-first, local files only.
+- Don't add accounts, cloud sync, or anything that sends the player's playing anywhere. Offline-first, local files only.
+  **Songsterr is the one exception and it is one-way**: the download screen fetches a tab, its bar map and the audio of the recording
+  that map was made against, and everything it fetches is written to disk beside the tab so the song works on a machine with no
+  network from then on. Nothing is uploaded, nothing is accounted for, nothing is remembered anywhere but the player's own folder.
+  Asked for by name: *"Wenn wir beim Downloader explizit Songsterr nutzen (keine anderen Dienste) ... Ich gebe die Daten nicht weiter
+  und nutze sie nur lokal offline."* **Songsterr only** -- no second service, no search across the web.
 - Don't over-abstract. Simple classes, no deep inheritance hierarchies. This is a ~3K LOC app, not a framework.
 - Don't add **blind** polyphonic transcription ("here is audio, name every note") and don't add ML. aubio YIN is monophonic and stays the note detector.
   Verifying the notes the tab already predicts is a different problem and is allowed: `audio/chord_verify.py` checks each expected string against

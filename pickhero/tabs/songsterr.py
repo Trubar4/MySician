@@ -32,6 +32,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 # .../thunder-love-walked-in-v4-tab-s2333598 -- the id is the tail, and the
 # rest of the slug is decoration that changes when a tab is renamed.
@@ -110,16 +111,8 @@ def all_bar_times(entries) -> list[list[float]]:
     """
     out: list[list[float]] = []
     for entry in entries or []:
-        points = entry.get("points") if isinstance(entry, dict) else None
-        if not isinstance(points, list) or len(points) < 2:
-            continue
-        try:
-            numbers = [float(p) for p in points]
-        except (TypeError, ValueError):
-            continue
-        if any(b <= a for a, b in zip(numbers, numbers[1:])):
-            continue                    # not a timeline, whatever it is
-        if numbers not in out:
+        numbers = bar_times_of_entry(entry)
+        if numbers and numbers not in out:
             out.append(numbers)
     return sorted(out, key=len, reverse=True)
 
@@ -142,3 +135,150 @@ def fetch_bar_times(song_id: int) -> tuple[list[list[float]], dict]:
     if not times:
         raise NotFound(f"song {song_id} has video points but none usable")
     return times, meta
+
+
+# ── Which video, and keeping it ─────────────────────────────────────────────
+
+def main_entry(entries) -> dict | None:
+    """The entry for the recording the tab was written from, or None.
+
+    Songsterr marks that one with `feature: null`; everything else is a
+    backing track, a live cut, a solo-only upload or somebody's cover, and
+    those are DIFFERENT RECORDINGS of the song rather than the same one
+    shifted. What's Up is the proof: its main video carries 72 points over
+    253 s and its backing videos carry 78 over 278 s. Taking the longest --
+    which the first build did -- handed that song the backing track and
+    called the answer measured.
+
+    So when the player downloads the audio, this is the video to take: the
+    points were made against it, which leaves the fit with almost nothing
+    to find.
+    """
+    usable = [e for e in entries or []
+              if isinstance(e, dict) and bar_times_of_entry(e)]
+    if not usable:
+        return None
+    for entry in usable:
+        if not entry.get("feature"):
+            return entry
+    return usable[0]
+
+
+def video_id_of(entry) -> str:
+    """The YouTube id in an entry, or "" when there is not one."""
+    if not isinstance(entry, dict):
+        return ""
+    found = entry.get("videoId")
+    return found.strip() if isinstance(found, str) else ""
+
+
+def bar_times_of_entry(entry) -> list[float]:
+    """One entry's per-bar timeline, or [] if it is not one.
+
+    Same rules as `all_bar_times` applies to the whole reply -- at least two
+    points, all numbers, strictly rising -- said once so both callers agree
+    on what counts as a timeline.
+    """
+    if not isinstance(entry, dict):
+        return []
+    points = entry.get("points")
+    if not isinstance(points, list) or len(points) < 2:
+        return []
+    try:
+        numbers = [float(p) for p in points]
+    except (TypeError, ValueError):
+        return []
+    if any(b <= a for a, b in zip(numbers, numbers[1:])):
+        return []
+    return numbers
+
+
+def candidates_for(entries, video_id: str) -> list[list[float]]:
+    """Every timeline, with the named video's first.
+
+    First rather than only: the recording on disk is not always the video it
+    was pulled from -- the player may have had an MP3 already, or replaced
+    the one that came down -- and the fit is what decides. Putting the known
+    video in front means the usual case is settled by the first try instead
+    of by luck.
+    """
+    every = all_bar_times(entries)
+    if not video_id:
+        return every
+    for entry in entries or []:
+        if video_id_of(entry) != video_id:
+            continue
+        mine = bar_times_of_entry(entry)
+        if mine:
+            return [mine] + [t for t in every if t != mine]
+    return every
+
+
+#: Beside the tab, not in a cache folder keyed by id. The tab and its bar map
+#: are one song: copy the songs folder to the second laptop and the map goes
+#: with it, which is the same rule `mp3_path_for` already follows for the
+#: recording. A cache the player cannot see is a cache the player cannot
+#: carry.
+CACHE_SUFFIX = ".songsterr.json"
+
+
+def cache_path(tab_path) -> Path:
+    """Where this tab's downloaded bar map lives."""
+    tab = Path(tab_path)
+    return tab.with_name(tab.stem + CACHE_SUFFIX)
+
+
+def save_cache(tab_path, song_id: int, meta: dict, entries: list) -> Path:
+    """Write the reply beside the tab. Returns the file it wrote.
+
+    The WHOLE reply, every video, not just the one chosen: which entry fits
+    is a question the recording answers, and a cache that has already
+    answered it cannot be re-asked when the player swaps the MP3.
+    """
+    out = cache_path(tab_path)
+    out.write_text(json.dumps({
+        "songId": int(song_id),
+        "revisionId": meta.get("revisionId"),
+        "title": meta.get("title") or "",
+        "artist": meta.get("artist") or "",
+        "entries": entries,
+    }, ensure_ascii=False), encoding="utf-8")
+    return out
+
+
+def load_cache(tab_path) -> dict | None:
+    """The stored reply for this tab, or None if there is not a usable one.
+
+    None rather than a raise: a missing or half-written cache means ask the
+    network, which is what the app did before this existed.
+    """
+    try:
+        raw = json.loads(cache_path(tab_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("entries"), list):
+        return None
+    return raw if all_bar_times(raw["entries"]) else None
+
+
+def preferred_bar_times(entries) -> list[list[float]]:
+    """Every timeline, with the main video's first.
+
+    The order the fit should try them in when nobody has said which video
+    the recording is. `main_entry` names the one the tab was written from,
+    and after an in-app download that is also the one the audio was pulled
+    from -- so the first try is usually the last one.
+    """
+    return candidates_for(entries, video_id_of(main_entry(entries)))
+
+
+def bar_times_from_cache(tab_path) -> tuple[list[list[float]], dict] | None:
+    """(timelines, metadata) stored beside this tab, or None.
+
+    The same shape `fetch_bar_times` returns, so the caller asks the disk and
+    the network the same way and the offline case is not a second code path.
+    """
+    raw = load_cache(tab_path)
+    if raw is None:
+        return None
+    return preferred_bar_times(raw["entries"]), raw
