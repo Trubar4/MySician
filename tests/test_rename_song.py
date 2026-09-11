@@ -233,3 +233,98 @@ class TestTheKey:
         screen = self._menu(tmp_path)
         self._press(screen, pygame.K_r, unicode="r")
         assert "Nothing selected" in screen._reload_note
+
+
+class TestTheEditorOwnsTheKeyboardEverywhere:
+    """*"Während ich im Rename bin, darf ich gewisse Buchstaben nicht
+    drücken. Mit O komme ich direkt in Settings."*
+
+    The song list's own handler already gave the editor every key. The App
+    never got that far: it consumes D, O, S, G and U BEFORE handing the
+    event on, guarded by `is_searching` -- a test written when the search
+    box was the only text field there was.
+    """
+
+    def _app(self, tmp_path):
+        """An App wired to a real menu, without a window.
+
+        `App.__init__` does not build the menu -- `run()` does -- so it is
+        assembled the way `test_song_list` already assembles one.
+        """
+        from pickhero.config import Config
+        from pickhero.ui.app import App
+        from pickhero.ui.menu import MenuScreen
+        config = _config()
+        config.songs_dir = str(tmp_path)
+        app = App.__new__(App)
+        app._config = config
+        app._menu = MenuScreen(tmp_path, config=config)
+        app._state = "menu"
+        app._return_to = "menu"
+        app._tuner_menu = None
+        app._settings_menu = None
+        app._download_menu = None
+        app._device_menu = None
+        app._quit_armed = False
+        app._held = set()
+        app._open_tuner = lambda came_from: setattr(app, "_state", "tuner")
+        app._open_device_menu = lambda came_from: setattr(app, "_state",
+                                                          "device")
+        app._open_calibration = lambda came_from: setattr(app, "_state",
+                                                          "calibrate")
+        return app
+
+    def _press(self, app, key, mod=0, unicode=""):
+        app._handle_menu_event(pygame.event.Event(
+            pygame.KEYDOWN, key=key, mod=mod, unicode=unicode))
+
+    @pytest.mark.parametrize("key,letter", [
+        (pygame.K_o, "o"), (pygame.K_s, "s"), (pygame.K_d, "d"),
+        (pygame.K_g, "g"), (pygame.K_u, "u"),
+    ])
+    def test_every_shortcut_letter_is_just_a_letter(self, tmp_path, key,
+                                                    letter):
+        _song(tmp_path)
+        app = self._app(tmp_path)
+        self._press(app, pygame.K_r, unicode="r")
+        app._menu._rename_text = ""
+        self._press(app, key, unicode=letter)
+        assert app._state == "menu", f"{letter} left the song list"
+        assert app._menu._rename_text == letter
+
+    def test_shift_u_is_a_capital_u_and_not_the_tuner(self, tmp_path):
+        """U2 is a band. A text box that swallows a character is one the
+        player cannot finish a name in."""
+        _song(tmp_path)
+        app = self._app(tmp_path)
+        self._press(app, pygame.K_r, unicode="r")
+        app._menu._rename_text = ""
+        self._press(app, pygame.K_u, mod=pygame.KMOD_LSHIFT, unicode="U")
+        assert app._state == "menu"
+        assert app._menu._rename_text == "U"
+
+    def test_but_shift_u_still_reaches_the_tuner_while_searching(self,
+                                                                 tmp_path):
+        """That exception was asked for and it keeps working: tuning up in
+        the middle of hunting for a song is exactly when it is wanted."""
+        _song(tmp_path)
+        app = self._app(tmp_path)
+        self._press(app, pygame.K_f, unicode="f")
+        self._press(app, pygame.K_u, mod=pygame.KMOD_LSHIFT, unicode="U")
+        assert app._state == "tuner"
+
+    def test_and_o_still_opens_the_settings_when_nothing_is_being_typed(
+            self, tmp_path):
+        _song(tmp_path)
+        app = self._app(tmp_path)
+        self._press(app, pygame.K_o, unicode="o")
+        assert app._state == "settings"
+
+    def test_is_typing_covers_both_boxes(self, tmp_path):
+        _song(tmp_path)
+        app = self._app(tmp_path)
+        assert not app._menu.is_typing
+        self._press(app, pygame.K_r, unicode="r")
+        assert app._menu.is_typing and app._menu.is_renaming
+        self._press(app, pygame.K_ESCAPE)
+        assert not app._menu.is_typing

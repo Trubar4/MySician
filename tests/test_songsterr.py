@@ -753,3 +753,115 @@ class TestPickingARecordingLinesItUp:
         view = types.SimpleNamespace(_song_path=str(tab))
         bars, meta = PlayingScreen._songsterr_bar_times(view, 2333598)
         assert bars[0] == [0.94, 4.04, 7.11]
+
+
+class TestOpeningTheSongIsEnough:
+    """*"Ich hätte gerne, dass das beim ersten Öffnen automatisch passiert.
+    MP3 wird verknüpft, Barmap wird gelesen und gesynct."*
+
+    Two halves had to be joined. The download writes a settings entry
+    pointing at the audio -- and an entry written under a name that later
+    changed points nowhere while the file sits right beside the tab. And
+    even with the recording found, the measurement waited for Ctrl+S.
+    """
+
+    def _screen(self, tmp_path, monkeypatch, with_entry=True, audio=True,
+                stem="song"):
+        import pygame
+        from pickhero.audio.mp3_playback import Mp3Player
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        tab = tmp_path / f"{stem}.gp5"
+        tab.write_bytes(b"gp")
+        if audio:
+            (tmp_path / f"{stem}.mp3").write_bytes(b"x")
+        config = Config()
+        if with_entry and audio:
+            config.set_mp3_path_for(stem, str(tmp_path / f"{stem}.mp3"))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        return PlayingScreen(_song(), config=config, song_key=stem,
+                             song_path=str(tab))
+
+    def test_the_recording_beside_the_tab_is_adopted(self, tmp_path,
+                                                     monkeypatch):
+        """The FILE outranks the note about it. Same folder, same stem."""
+        screen = self._screen(tmp_path, monkeypatch, with_entry=False)
+        assert screen._mp3_path() == str(tmp_path / "song.mp3")
+        assert screen._config.song_mp3_paths["song"] == str(
+            tmp_path / "song.mp3")
+
+    def test_a_recording_the_player_chose_is_never_replaced(self, tmp_path,
+                                                            monkeypatch):
+        mine = tmp_path / "my own take.mp3"
+        mine.write_bytes(b"x")
+        screen = self._screen(tmp_path, monkeypatch, with_entry=False)
+        screen._config.set_mp3_path_for("song", str(mine))
+        assert screen._adopt_audio_beside_tab() == ""
+        assert screen._mp3_path() == str(mine)
+
+    def test_no_file_beside_the_tab_adopts_nothing(self, tmp_path,
+                                                   monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, with_entry=False,
+                              audio=False)
+        assert screen._mp3_path() == ""
+
+    def test_opening_it_measures_it(self, tmp_path, monkeypatch):
+        from pickhero.ui.scrolling import PlayingScreen
+        runs = []
+        monkeypatch.setattr(PlayingScreen, "_start_auto_sync",
+                            lambda self: runs.append(self._song_key))
+        screen = self._screen(tmp_path, monkeypatch, with_entry=False)
+        assert runs == [], "measured from inside __init__, before a frame"
+        screen.update()
+        assert runs == ["song"]
+
+    def test_and_only_once(self, tmp_path, monkeypatch):
+        """A measurement that finds nothing leaves the points empty, and
+        re-arming would measure again every frame for the rest of the
+        song."""
+        from pickhero.ui.scrolling import PlayingScreen
+        runs = []
+        monkeypatch.setattr(PlayingScreen, "_start_auto_sync",
+                            lambda self: runs.append(1))
+        screen = self._screen(tmp_path, monkeypatch, with_entry=False)
+        for _ in range(5):
+            screen.update()
+        assert runs == [1]
+
+    def test_a_song_that_is_already_lined_up_is_left_alone(self, tmp_path,
+                                                           monkeypatch):
+        from pickhero.ui.scrolling import PlayingScreen
+        runs = []
+        monkeypatch.setattr(PlayingScreen, "_start_auto_sync",
+                            lambda self: runs.append(1))
+        tab = tmp_path / "song.gp5"
+        tab.write_bytes(b"gp")
+        (tmp_path / "song.mp3").write_bytes(b"x")
+        from pickhero.config import Config
+        config = Config()
+        config.set_mp3_anchors_for("song", [(0.0, -120.0)])
+        from pickhero.audio.mp3_playback import Mp3Player
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        screen = PlayingScreen(_song(), config=config, song_key="song",
+                               song_path=str(tab))
+        screen.update()
+        assert runs == []
+
+    def test_ctrl_s_disarms_the_one_waiting_for_the_first_frame(
+            self, tmp_path, monkeypatch):
+        """Otherwise the whole measurement runs a second time on the next
+        frame -- the first thread has finished by then, so the
+        already-running guard does not catch it."""
+        screen = self._screen(tmp_path, monkeypatch, with_entry=False)
+        assert screen._sync_on_open
+        monkeypatch.setattr(autosync, "find", lambda *a, **k: {
+            "points": [], "readable": False, "share": 0.1, "windows": 4,
+            "ambiguous": 0, "usable": 0, "breaks": [], "sections": 1,
+            "sections_used": 0, "unreadable": [], "covered": (0.0, 1.0),
+            "song_s": 1.0, "tab_s": 1.0, "recording_s": 1.0,
+            "length_gap": 0.0, "wrong_length": False})
+        screen._start_auto_sync()
+        assert not screen._sync_on_open

@@ -111,6 +111,24 @@ class MenuScreen:
         """True when search mode is active."""
         return self._search_active
 
+    @property
+    def is_renaming(self) -> bool:
+        """True while a song's name is being typed."""
+        return self._renaming is not None
+
+    @property
+    def is_typing(self) -> bool:
+        """True when a letter belongs to a text box and not to a shortcut.
+
+        `is_searching` used to be that test, and then the rename editor
+        arrived and was not part of it -- so `o` in the middle of typing a
+        name opened the settings screen, `s` the downloader and `d` the
+        device list. The App asks this now, so a text box added later is
+        covered by being a text box rather than by somebody remembering to
+        come back here.
+        """
+        return self._search_active or self.is_renaming
+
     def _apply_filter(self) -> None:
         """Filter _files by search text and tuning, sort, reset selection."""
         if self._search_text:

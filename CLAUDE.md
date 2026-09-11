@@ -2908,6 +2908,51 @@ Three things it refuses to get wrong:
 
 Afterwards the list is re-read from the disk and the cursor follows the song to its new name.
 
+### A Text Box Is A Text Box, Wherever It Is Asked About
+
+*"Während ich im Rename bin, darf ich gewisse Buchstaben nicht drücken. Mit O komme ich direkt in Settings."*
+
+The song list's own handler gave the rename editor every key. **The App never got that far.** It consumes `D`, `O`, `S`, `G` and `U` before
+handing the event on, guarded by `not self._menu.is_searching` — a test written when the search box was the only text field that existed. A second
+text box arrived and was not part of it, so `o` in the middle of typing a name opened the settings screen.
+
+The fix is not a longer condition, it is a better question: `is_typing` is true for **any** box that owns the letters, and the App asks that. A text
+field added later is covered by being a text field rather than by somebody remembering to come back here.
+
+One deliberate difference between the two boxes: **Shift+U reaches the tuner while searching and types a capital U while renaming.** Tuning up in
+the middle of hunting for a song is exactly when that shortcut is wanted, and it was asked for. In a name it is a letter — **U2 is a band**, and a
+box that swallows a character is one the player cannot finish a name in.
+
+### Opening The Song Is The Whole Setup
+
+*"Beim jetzigen Versuch wurden MP3, Barmap und GP geladen. Im Song hat das MP3 gefehlt und ich habe es von Hand zugewiesen. Danach hat der Sync
+automatisch funktioniert. Ich hätte gerne, dass das beim ersten Öffnen automatisch passiert."*
+
+Two halves had to be joined, and the first one is the more interesting failure.
+
+**The download writes a settings entry pointing at the audio — and an entry is a NOTE ABOUT a file, not the file.** Rename the tab, re-download it
+under a different suffix, carry the settings to a second machine: the entry now points at nothing while the recording sits right beside the tab
+under the tab's own name. So `_adopt_audio_beside_tab` looks there when no recording is assigned. **Same folder, same stem** is the rule everything
+else here already follows — it is what the download screen writes, and what `mp3_path_for` already falls back to after a move — and it needs no
+settings to be correct. A recording the player chose himself is never replaced.
+
+**And then it measures itself**, on the first `update()` rather than inside `__init__`: the screen has not been drawn yet, so a measurement started
+from the constructor says *"listening to the recording…"* into a frame nobody has seen. Same pattern as the file chooser, same reason.
+
+Two guards, both of which are bugs if they are missing:
+
+- **Once.** A measurement that finds nothing leaves the points empty, and re-arming on that would measure again every single frame for the rest of
+  the song.
+- **`Ctrl+S` disarms it.** The first thread has finished by the time the next frame runs, so the already-running guard does not catch it, and the
+  whole measurement runs a second time.
+
+### A Bar Map That Is Consistently Early Is A Constant
+
+Songsterr's map is 80–92 ms against this player's own recording where the listening is 8–16, and that error is **mostly a constant** — the map's
+shape is right and its zero is not. `SyncMap` keeps `base_offset_ms` as a separate term on top of the points for exactly this: `Shift+M` moves the
+recording 10 ms later, it is stored per song, and it survives the map being measured again. Seven presses is the answer to "70 ms too early", and
+the reason it is the right answer rather than a workaround is that a constant error has a constant correction.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

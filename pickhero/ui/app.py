@@ -354,11 +354,18 @@ class App:
         # a capital U is the request however the layout produced it. With
         # caps lock on the two swap over, which is the price and is small:
         # the letter is still typeable, with shift held.
+        # ...but NOT while a song is being renamed. There the capital U is
+        # a letter: U2 is a band, and a text box that swallows a character
+        # is a text box the player cannot finish a name in. Searching is the
+        # case this exception was built for and it keeps it.
         if (event.type == pygame.KEYDOWN and event.key == pygame.K_u
-                and shift_held(event)):
+                and shift_held(event) and not self._menu.is_renaming):
             self._open_tuner("menu")
             return
-        if event.type == pygame.KEYDOWN and not self._menu.is_searching:
+        # `is_typing`, not `is_searching`: the rename editor is a text box
+        # too, and while it was not part of this test, `o` in the middle of
+        # a name opened the settings screen.
+        if event.type == pygame.KEYDOWN and not self._menu.is_typing:
             if event.key == pygame.K_d:
                 self._open_device_menu("menu")
                 return

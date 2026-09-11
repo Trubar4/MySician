@@ -953,6 +953,9 @@ class PlayingScreen:
         # The file chooser blocks for seconds, so it is opened one frame
         # AFTER the key, once the note saying so has been drawn.
         self._mp3_dialog_due = False
+        #: Measure this song's sync once the first frame is up. Set when the
+        #: song opens with a recording and no sync points of its own.
+        self._sync_on_open = False
         self._mp3_dialog_armed = False
         self._mp3_pending_seek_ms: float | None = None
         self._mp3_last_seek_at = float("-inf")
@@ -1122,6 +1125,7 @@ class PlayingScreen:
             self._init_midi_player(backing_track)
         if guide_track is not None and len(guide_track) > 0:
             self._init_guide_player(guide_track)
+        self._adopt_audio_beside_tab()
         self._load_mp3_for_song()
         # A song opened with sync points already measured has to SHOW them.
         # They were stored and used all along -- the panel simply started
@@ -1130,6 +1134,18 @@ class PlayingScreen:
         # seen working" fault, applied to the most expensive setting there is.
         if self._mp3_anchors():
             self._describe_sync()
+        else:
+            # *"Ich hätte gerne, dass das beim ersten Öffnen automatisch
+            # passiert. MP3 wird verknüpft, Barmap wird gelesen und
+            # gesynct."* Opening it IS the first thing he does, and the
+            # measurement needs nothing from him.
+            #
+            # Armed here, started on the first `update()` -- the same
+            # pattern as the file chooser, and for the same reason: the
+            # screen has not been drawn yet, so a measurement kicked off
+            # from inside `__init__` says "listening to the recording…"
+            # into a frame nobody has seen.
+            self._sync_on_open = True
 
         # Difficulty filter
         self._max_fret: int = self._config.max_fret
@@ -1416,6 +1432,13 @@ class PlayingScreen:
 
     def update(self) -> None:
         """Advance playback clock by real elapsed time."""
+        if self._sync_on_open:
+            # Once, and only once: a measurement that finds nothing leaves
+            # the points empty, and re-arming here would measure again every
+            # frame for the rest of the song.
+            self._sync_on_open = False
+            self._sync_after_new_recording()
+
         if self._mp3_dialog_armed:
             # The note has been on screen for a frame; now we may block.
             self._mp3_dialog_due = False
@@ -6865,6 +6888,50 @@ class PlayingScreen:
             self._mp3_note = ""
             self._sync_after_new_recording()
 
+    #: What SDL_mixer can decode, in the order worth trying. A file beside
+    #: the tab under the tab's own name is this app's -- it is what the
+    #: download screen writes and what `mp3_path_for` already falls back to
+    #: after a move.
+    AUDIO_BESIDE = (".mp3", ".ogg", ".flac", ".wav")
+
+    def _adopt_audio_beside_tab(self) -> str:
+        """Take the recording sitting next to the tab, if none is assigned.
+
+        *"Beim jetzigen Versuch wurden MP3, Barmap und GP geladen. Im Song
+        hat das MP3 gefehlt und ich habe es von Hand zugewiesen."*
+
+        The download screen writes the settings entry, and an entry written
+        under a name that later changed -- a rename, a re-download that
+        picked a different suffix -- is an entry that points nowhere while
+        the file sits right there. **The file on disk outranks the note
+        about it.** Same folder, same stem: that is the rule everything else
+        here already follows, and it needs no settings to be correct.
+
+        Returns the path it adopted, or "".
+        """
+        if not self._song_key or not self._song_path:
+            return ""
+        if self._mp3_path():
+            return ""                      # the player's choice stands
+        tab = Path(self._song_path)
+        for suffix in self.AUDIO_BESIDE:
+            beside = tab.with_name(tab.stem + suffix)
+            if not beside.is_file():
+                continue
+            setter = getattr(self._config, "set_mp3_path_for", None)
+            if setter is None:
+                return ""
+            setter(self._song_key, str(beside))
+            try:
+                self._config.save()
+            except OSError:
+                # The recording still loads this session; only the
+                # remembering failed, and a song that plays beats a note
+                # about why it could not.
+                pass
+            return str(beside)
+        return ""
+
     def _sync_after_new_recording(self) -> None:
         """Line the new recording up, without being asked.
 
@@ -6975,6 +7042,11 @@ class PlayingScreen:
         tab's pitch classes against the recording's, window by window --
         with its answer handed to the map instead of printed.
         """
+        # Whoever asked first, the song has now been measured on purpose.
+        # Leaving this armed runs the whole measurement a SECOND time on the
+        # next frame -- the thread from the first one has finished by then,
+        # so the guard below does not catch it.
+        self._sync_on_open = False
         if self._auto_sync_thread is not None and self._auto_sync_thread.is_alive():
             self._say("Already listening to the recording…")
             return
