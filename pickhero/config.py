@@ -4,7 +4,7 @@ Settings stored as JSON in the user's home directory.
 """
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".pickhero"
@@ -238,6 +238,36 @@ class Config:
 
     def is_favourite(self, song_key: str) -> bool:
         return song_key in (self.favourites or [])
+
+    def forget_song(self, song_key: str) -> list[str]:
+        """Drop every setting held against one song. Returns what it dropped.
+
+        **Found rather than listed.** Every per-song setting in this class is
+        a dict named `song_something`, and there are nine of them -- speed,
+        recording, offset, rate, Songsterr id, sync source, anchors,
+        transpose, backing offset. A hand-written list here would be correct
+        on the day it was written and quietly wrong the first time a tenth
+        was added, leaving a deleted song's settings to land on the next song
+        that happens to take its name. So the fields are walked.
+
+        The practice history is NOT touched. It lives in its own files
+        (`progress.py`, `practice_log.py`) and it is a record of what the
+        player DID, which deleting a file does not undo.
+        """
+        dropped: list[str] = []
+        if not song_key:
+            return dropped
+        for entry in fields(self):
+            if not entry.name.startswith("song_"):
+                continue
+            held = getattr(self, entry.name, None)
+            if isinstance(held, dict) and song_key in held:
+                held.pop(song_key, None)
+                dropped.append(entry.name)
+        if song_key in (self.favourites or []):
+            self.favourites.remove(song_key)
+            dropped.append("favourites")
+        return dropped
 
     def set_favourite(self, song_key: str, favourite: bool) -> None:
         """Star a song, or take the star off. Idempotent either way."""

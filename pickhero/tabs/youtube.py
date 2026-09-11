@@ -78,17 +78,30 @@ def ffmpeg_path() -> Path | None:
 
 
 def missing() -> str:
-    """"" when the audio can be fetched, otherwise what is missing.
+    """"" when the audio can be fetched, otherwise what is missing AND how.
 
     A string rather than a bool because the two halves fail differently and
-    the player can only act on the one that is actually absent.
+    the player can only act on the one that is actually absent -- and the
+    player is not a developer, so naming the missing thing without naming
+    the fix is a sentence he can do nothing with. It reported "ffmpeg was
+    not found" once and that is exactly what came back.
+
+    The fix depends on what he is running. Inside the .exe there is no
+    source tree to run a script from, but `_search_folders` looks BESIDE the
+    executable -- so dropping `ffmpeg.exe` next to `MySician.exe` works
+    without rebuilding anything.
     """
+    frozen = bool(getattr(sys, "frozen", False))
     try:
         import yt_dlp                                  # noqa: F401
     except ImportError:
-        return "yt-dlp is not installed"
+        return ("yt-dlp is not in this build — rebuild with build.bat"
+                if frozen else
+                "yt-dlp is not installed — run: pip install -U yt-dlp")
     if ffmpeg_path() is None:
-        return "ffmpeg was not found"
+        return ("ffmpeg was not found — put ffmpeg.exe next to MySician.exe"
+                if frozen else
+                "ffmpeg was not found — run: python tools/fetch_ffmpeg.py")
     return ""
 
 

@@ -12,12 +12,14 @@ import pygame
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import Config
 from pickhero.progress import ProgressTracker
+# .gpx is Guitar Pro 6. It was missing from this set for as long as the
+# app had existed, so those files never appeared in the list to be
+# opened. It lives with the loader now: what the app can READ is a
+# property of the reader, and the downloader needs the same answer.
+from pickhero.tabs.loader import GP_EXTENSIONS
 from pickhero.tabs.song_index import SongIndex
 from pickhero.ui.colors import cycle_theme, get_theme
 
-# .gpx is Guitar Pro 6. It was missing here for as long as the app has
-# existed, so those files never even appeared in the list to be opened.
-GP_EXTENSIONS = {".gp3", ".gp4", ".gp5", ".gp", ".gp7", ".gp8", ".gpx"}
 
 # How many items visible at once before scrolling
 VISIBLE_ITEMS = 18
@@ -54,6 +56,11 @@ class MenuScreen:
         # that looks like nothing happened is indistinguishable from a dead
         # key, and this one usually finds exactly one new file.
         self._reload_note: str = ""
+        #: The song DEL is waiting for a second press on, or None. Deleting
+        #: is the one thing on this screen that cannot be undone, and DEL
+        #: sits one row from the arrow keys -- so it asks first, and the
+        #: question names the song and counts the files.
+        self._delete_armed = None
         # How many instruments each song holds and how each is tuned, read on
         # a thread and remembered between sessions. See tabs/song_index.py.
         self._index = SongIndex()
@@ -322,6 +329,37 @@ class MenuScreen:
         """
         self._reload_note = text
 
+    def _delete_selected(self) -> None:
+        """First DEL asks, second DEL does it.
+
+        The question names the song and counts the files, because a tab is
+        not one file any more -- the download screen writes a bar map and an
+        MP3 beside it, and "delete Thunder" meaning three files is worth
+        seeing before it happens rather than after.
+        """
+        from pickhero.tabs.remove import belongings, delete_song
+        path = self._selected_path()
+        if path is None:
+            self.say("Nothing selected")
+            return
+
+        if self._delete_armed != path:
+            self._delete_armed = path
+            count = len(belongings(path))
+            what = f"{count} file" + ("s" if count != 1 else "")
+            self.say(f"Delete {path.stem} and {what}? "
+                     f"DEL again to confirm, any other key cancels. "
+                     f"Your practice history is kept.")
+            return
+
+        self._delete_armed = None
+        report = delete_song(path, self._config)
+        # From the DISK, not from the list in memory. A file that would not
+        # delete is still there, and a list that quietly dropped it would be
+        # claiming a delete that did not happen.
+        self.reload_files()
+        self.say(report.summary())
+
     def handle_event(self, event: pygame.event.Event) -> Path | str | None:
         """Process input. Returns Path (file selected), "escape" (quit), or None."""
         files = self._display_files
@@ -331,6 +369,12 @@ class MenuScreen:
                 # A note is for what just happened, not for the rest of the
                 # session. Any other key means the player has moved on.
                 self._reload_note = ""
+            if event.key != pygame.K_DELETE:
+                # Moving the cursor, searching, or anything else at all
+                # answers "no". An armed delete must never outlive the
+                # question that armed it, or the second DEL lands on a
+                # different song than the one that was named.
+                self._delete_armed = None
             if event.key == pygame.K_ESCAPE:
                 if self._search_active:
                     self._search_text = ""
@@ -373,6 +417,12 @@ class MenuScreen:
             # letter: the search box takes those the moment it is open.
             if event.key == pygame.K_F5:
                 self._reload_note = self.reload_files()
+                return None
+
+            # DEL, twice. Not while typing in the search box: there DEL is
+            # what somebody reaches for to fix a typo.
+            if event.key == pygame.K_DELETE and not self._search_active:
+                self._delete_selected()
                 return None
 
             if event.key == pygame.K_BACKSPACE:
@@ -624,7 +674,7 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  DEL: delete song  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"

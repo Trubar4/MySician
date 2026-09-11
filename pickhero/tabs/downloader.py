@@ -14,6 +14,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pickhero.tabs.loader import GP_EXTENSIONS
+
 SONGSTERR_API_URL = "https://www.songsterr.com/api/songs"
 SONGSTERR_META_URL = "https://www.songsterr.com/api/meta"
 SONGSTERR_REVISION_URL = "https://www.songsterr.com/api/revision"
@@ -84,36 +86,98 @@ def search(query: str, max_results: int = 10) -> list[SongsterrResult]:
     return results
 
 
-def _get_source_url(song_id: int) -> str | None:
-    """Get the GP file download URL via Songsterr's API.
+def _source_of(song_id: int) -> tuple[str, str]:
+    """(the GP file's URL, why there is not one). Exactly one is filled in.
 
     Two API calls:
         1. /api/meta/{songId} → revisionId
         2. /api/revision/{revisionId} → source URL
 
-    Returns None if the source URL can't be resolved.
+    **The reason is returned, not swallowed.** "Songsterr has no file for
+    this tab" and "the network is down" are the same empty result and
+    completely different problems, and the first build reported both by
+    opening a browser at a page that did not load. Not every tab on
+    Songsterr has a source file behind it -- some exist only in their own
+    format -- and a player who is told that stops trying.
     """
     meta = _fetch_json(f"{SONGSTERR_META_URL}/{song_id}")
     if not isinstance(meta, dict):
-        return None
+        return "", "Songsterr did not answer for this song"
 
     revision_id = meta.get("revisionId")
     if not revision_id:
-        return None
+        return "", "Songsterr has no revision for this tab"
 
     revision = _fetch_json(f"{SONGSTERR_REVISION_URL}/{revision_id}")
     if not isinstance(revision, dict):
-        return None
+        return "", f"Songsterr did not answer for revision {revision_id}"
 
     source = revision.get("source")
     if isinstance(source, str) and source.startswith("http"):
-        return source
-    return None
+        return source, ""
+    return "", "Songsterr holds no Guitar Pro file for this tab"
 
 
-def get_songsterr_url(song_id: int) -> str:
-    """Return the Songsterr browser URL for a given song ID."""
-    return f"{SONGSTERR_TAB_URL}/{song_id}"
+def _get_source_url(song_id: int) -> str | None:
+    """The GP file's URL, or None. Kept for callers that want just the URL."""
+    return _source_of(song_id)[0] or None
+
+
+def _slug(text: str) -> str:
+    """Songsterr's own URL shape for a name: lower case, words joined by -."""
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", text.lower())).strip("-")
+
+
+def get_songsterr_url(song_id: int, title: str = "", artist: str = "") -> str:
+    """The Songsterr browser URL for a song.
+
+    A real page, not `/a/wsa/{id}`. Songsterr's URLs are
+    `<artist>-<title>-tab-s<id>` and it redirects any slug with the right
+    `-s<id>` tail to the right page -- but a BARE id is not that shape and
+    the page does not load, which is what the player saw when a download
+    failed and the browser opened on nothing.
+    """
+    name = _slug(f"{artist} {title}".strip()) or "tab"
+    return f"{SONGSTERR_TAB_URL}/{name}-tab-s{song_id}"
+
+
+def suffix_for(source_url: str) -> str:
+    """The extension the downloaded file should carry.
+
+    *"Why does it download a gp5 and when I use songsterr-downloader.com I
+    get a gp?"* -- because this used to name every file `.gp5` whatever it
+    was. The loader dispatches on the file's CONTENT, so a Guitar Pro 7 file
+    called `.gp5` still opened; but it is a lie on disk, and it is the wrong
+    file to hand to Guitar Pro itself.
+    """
+    from urllib.parse import urlparse
+    found = Path(urlparse(source_url).path).suffix.lower()
+    return found if found in GP_EXTENSIONS else ".gp5"
+
+
+def download_tab(song_id: int, output_path: str | Path) -> tuple[Path | None,
+                                                                 str]:
+    """Download a tab. Returns (what was written, why nothing was).
+
+    `output_path`'s SUFFIX IS REPLACED by whatever Songsterr actually holds
+    -- the caller knows the name, not the format.
+    """
+    source_url, why = _source_of(song_id)
+    if not source_url:
+        return None, why
+
+    try:
+        file_data = _urlopen(source_url)
+    except (urllib.error.URLError, OSError) as exc:
+        return None, f"The file could not be fetched: {exc}"
+
+    output = Path(output_path).with_suffix(suffix_for(source_url))
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(file_data)
+    except OSError as exc:
+        return None, f"It could not be saved: {exc}"
+    return output, ""
 
 
 def download_gp5(song_id: int, output_path: str | Path) -> bool:
@@ -125,20 +189,11 @@ def download_gp5(song_id: int, output_path: str | Path) -> bool:
 
     Returns:
         True if download succeeded, False otherwise.
+
+    The suffix of what lands is Songsterr's, not `output_path`'s -- see
+    `download_tab`, which this is now a yes/no view of.
     """
-    source_url = _get_source_url(song_id)
-    if not source_url:
-        return False
-
-    try:
-        file_data = _urlopen(source_url)
-    except (urllib.error.URLError, OSError):
-        return False
-
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(file_data)
-    return True
+    return download_tab(song_id, output_path)[0] is not None
 
 
 def sanitize_filename(name: str) -> str:
@@ -206,8 +261,13 @@ def grab_song(song_id: int, output_path: str | Path,
     out = Path(output_path)
 
     step(0.05, "downloading the tab")
-    if not download_gp5(song_id, out):
-        grab.notes.append("The tab could not be downloaded.")
+    # The suffix is Songsterr's: a Guitar Pro 7 file is a `.gp`, and calling
+    # it `.gp5` was a lie on disk that only did not break the app because the
+    # loader reads the CONTENT. Everything after this point takes its names
+    # from what was actually written.
+    out, why = download_tab(song_id, out)
+    if out is None:
+        grab.notes.append(why or "The tab could not be downloaded.")
         return grab
     grab.tab_path = out
 

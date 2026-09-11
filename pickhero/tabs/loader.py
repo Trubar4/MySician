@@ -447,6 +447,13 @@ def _list_gpif_tracks(path: str | Path) -> list[dict]:
     return tracks
 
 
+#: Every Guitar Pro extension this loader can open. Here rather than in the
+#: song list, because what the app can READ is a property of the reader --
+#: the downloader needs the same set to name a file it did not choose the
+#: format of.
+GP_EXTENSIONS = {".gp3", ".gp4", ".gp5", ".gp", ".gp7", ".gp8", ".gpx"}
+
+
 def _is_gp7_file(path: str | Path) -> bool:
     """Check if a file is GP7/GP8 format (ZIP with Content/score.gpif)."""
     try:

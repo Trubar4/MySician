@@ -154,7 +154,6 @@ class DownloadMenuScreen:
 
         if self._download_result == "failed":
             self._download_result = None
-            # Already opened browser as fallback; go back to results
             self._state = "results"
             return None
 
@@ -227,14 +226,27 @@ class DownloadMenuScreen:
         self._downloading = False
         self._progress = (1.0, "")
         if not grab.ok:
-            self._status_msg = "Download failed — opening Songsterr in browser..."
-            webbrowser.open(get_songsterr_url(result.song_id))
-            self._download_result = "failed"
+            # WHY, then the browser. "Songsterr holds no Guitar Pro file for
+            # this tab" is a dead end the player should stop pushing on;
+            # "Songsterr did not answer" is worth another go in a minute.
+            # The first build showed neither and opened a page built from a
+            # bare id, which does not load -- so the one thing on screen was
+            # a browser saying nothing.
+            self._notes = [grab.notes[0] if grab.notes
+                           else "The tab could not be downloaded.",
+                           "Songsterr is open in your browser."]
+            self._status_msg = f"{name} — not downloaded"
+            webbrowser.open(get_songsterr_url(result.song_id, result.title,
+                                              result.artist))
+            self._state = "done"
+            self._download_result = None
             self._wake()
             return
 
-        self._notes = [f"Tab: {output_path.name}"] + list(grab.notes)
-        self._remember(name, grab)
+        # The tab's REAL name: `grab.tab_path`, not the name it was asked
+        # for. Songsterr decides the format and the suffix follows it.
+        self._notes = [f"Tab: {grab.tab_path.name}"] + list(grab.notes)
+        self._remember(grab.tab_path.stem, grab)
         self._status_msg = f"Downloaded: {name}"
         self._download_result = "downloaded"
         self._wake()

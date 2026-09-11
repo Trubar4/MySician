@@ -2758,6 +2758,56 @@ Two smaller things that were bugs waiting to be reported:
   back is written to the same place, so that song is offline from the second press on.
 
 
+### Three Things The First Download Round Got Wrong
+
+The player ran it on three songs the day it shipped, and each one found something.
+
+**1. `.gp5` was a lie on disk.** *"Why does it download a gp5 and when I use songsterr-downloader.com I get a gp?"* — because `download_gp5`
+named every file `.gp5` whatever Songsterr actually held. It never broke anything, which is why it survived: the loader dispatches on the
+file's **content** (`zipfile.is_zipfile`, then the GPX magic), so a Guitar Pro 7 file called `.gp5` opened perfectly. But it is the wrong
+file to hand to Guitar Pro itself, and the extension is now taken from the source URL. The old test asserted the bug — it mocked a source
+ending in `.gp` and then asserted the output was `test.gp5`.
+
+**2. A failed download opened a browser at a page that does not exist.** `https://www.songsterr.com/a/wsa/{id}` is not a Songsterr URL.
+Theirs are `<artist>-<title>-tab-s<id>`, and they redirect any slug with the right `-s<id>` tail to the right page — so the slug is built
+from the search result, which already carries both names. And the reason is now **returned rather than swallowed**: `_source_of` says
+whether Songsterr did not answer, has no revision, or **holds no Guitar Pro file for this tab at all** — not every tab on Songsterr has a
+source file behind it. Those are the same empty result and completely different problems, and the first build reported all of them by
+opening a window with nothing in it.
+
+**3. "No audio: ffmpeg was not found" is half a message.** It names the missing thing and not the fix, to a player who is not a developer,
+and it came straight back. What the fix IS depends on what he is running, and the .exe is the case that matters: there is no source tree in
+it to run a script from — but `_search_folders` looks **beside the executable**, so `ffmpeg.exe` dropped next to `MySician.exe` works with
+no rebuild at all. `missing()` says that sentence when frozen and `python tools/fetch_ffmpeg.py` when not. Telling somebody to `pip
+install` inside an .exe is advice they cannot act on.
+
+### DEL Deletes The Song, Not The File
+
+*"Ich brauche eine Möglichkeit Tabs inkl. allem (außer History) zu löschen."*
+
+A tab stopped being one file the day the download screen started writing a bar map and an MP3 beside it. Deleting it in Explorer leaves
+both behind **and nine settings** — speed, recording path, offset, rate, Songsterr id, sync source, anchors, transpose, backing offset —
+and `song_key` is the tab's STEM and nothing else, so the next song that takes the same name inherits all of it.
+
+Two rules make it safe rather than merely thorough:
+
+- **Only what sits beside the tab, under the tab's own name.** The recording the player picked out of his Downloads folder is his. The one
+  this app downloaded is next to the tab and named after it. Same folder **and** same stem, or it is not touched — so `whatsup_original.mp3`
+  and `AC-DC - Thunder (live).mp3` both survive a delete of `AC-DC - Thunder`.
+- **The practice history stays.** `progress.py` and `practice_log.py` are a record of what he DID, and deleting a file does not undo an
+  evening of playing it. He asked for that by name.
+
+**The settings are found, not listed.** Every per-song setting is a dict named `song_something`, so `forget_song` walks the dataclass
+fields. A hand-written list would be correct on the day it was written and silently wrong the first time a tenth was added — and the way
+that failure shows up is a deleted song's sync landing on a different song months later, which nobody would trace back to here.
+
+**DEL asks first, and the question counts the files.** It sits one row from the arrow keys and it cannot be undone, so the first press
+names the song, says how many files will go, and says the history is kept; the second does it. **Any other key cancels** — and the armed
+song is dropped on every keypress that is not DEL, so arming on one song, moving down, and pressing again asks about the new song rather
+than deleting the old one. Not while the search box is open: there DEL is what somebody reaches for to fix a typo. Afterwards the list is
+re-read **from the disk**, because a file that would not delete is still there and a list that quietly dropped it would be claiming a
+delete that did not happen.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

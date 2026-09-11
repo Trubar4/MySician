@@ -144,17 +144,57 @@ class TestNamingTheRecording:
         assert (youtube.audio_path_for("/songs/AC-DC - Thunder.gp5").name
                 == "AC-DC - Thunder.mp3")
 
-    def test_missing_names_the_half_that_is_missing(self, monkeypatch):
+    def test_missing_names_the_half_that_is_missing_and_the_fix(
+            self, monkeypatch):
+        """*"No audio: ffmpeg was not found"* came back from the player as a
+        sentence he could do nothing with. Naming the missing thing without
+        naming the fix is half a message."""
         monkeypatch.setattr(youtube, "ffmpeg_path", lambda: None)
-        assert youtube.missing() in ("yt-dlp is not installed",
-                                     "ffmpeg was not found")
+        said = youtube.missing()
         assert not youtube.available()
+        assert ("ffmpeg" in said) or ("yt-dlp" in said)
+        assert "—" in said, "it says what is wrong and not what to do"
+
+    def test_inside_the_exe_the_fix_is_one_a_player_can_do(self,
+                                                            monkeypatch):
+        """There is no source tree in the .exe to run a script from -- but
+        `_search_folders` looks beside the executable, so dropping the file
+        there works with no rebuild."""
+        monkeypatch.setattr(youtube.sys, "frozen", True, raising=False)
+        monkeypatch.setitem(sys.modules, "yt_dlp", types.ModuleType("yt_dlp"))
+        monkeypatch.setattr(youtube, "ffmpeg_path", lambda: None)
+        assert "next to MySician.exe" in youtube.missing()
+
+    def test_and_a_build_without_yt_dlp_says_rebuild_not_pip(self,
+                                                              monkeypatch):
+        """`pip install` is not advice you can act on inside an .exe."""
+        monkeypatch.setattr(youtube.sys, "frozen", True, raising=False)
+        monkeypatch.setitem(sys.modules, "yt_dlp", None)
+        monkeypatch.setattr(youtube, "ffmpeg_path", lambda: None)
+        said = youtube.missing()
+        assert "rebuild" in said and "pip" not in said
+
+    def test_the_exe_looks_beside_itself_for_ffmpeg(self, tmp_path,
+                                                     monkeypatch):
+        monkeypatch.setattr(youtube.sys, "frozen", True, raising=False)
+        monkeypatch.setattr(youtube.sys, "executable",
+                            str(tmp_path / "MySician.exe"), raising=False)
+        assert tmp_path in list(youtube._search_folders())
 
     def test_no_video_id_is_refused_before_anything_is_fetched(self,
                                                               monkeypatch):
         monkeypatch.setattr(youtube, "missing", lambda: "")
         with pytest.raises(youtube.NotAvailable):
             youtube.fetch_audio("", "/tmp/x.mp3")
+
+
+def _writes_a_tab(song_id, out):
+    """Stand in for the network. Writes the file and answers like the real
+    one: (what was written, why nothing was)."""
+    from pathlib import Path
+    written = Path(out).with_suffix(".gp5")
+    written.write_bytes(b"gp")
+    return written, ""
 
 
 def _fake_songsterr(monkeypatch, entries=ENTRIES, raises=None):
@@ -172,8 +212,7 @@ class TestOneEnterFetchesTheSong:
 
     def test_everything_comes_down_together(self, tmp_path, monkeypatch):
         tab = tmp_path / "AC-DC - Thunder.gp5"
-        monkeypatch.setattr(downloader, "download_gp5",
-                            lambda sid, out: (out.write_bytes(b"gp"), True)[1])
+        monkeypatch.setattr(downloader, "download_tab", _writes_a_tab)
         _fake_songsterr(monkeypatch)
         pulled = []
         monkeypatch.setattr(youtube, "fetch_audio",
@@ -192,8 +231,7 @@ class TestOneEnterFetchesTheSong:
     def test_the_progress_reaches_the_end(self, tmp_path, monkeypatch):
         """Four network steps, one of them a whole song's audio. Without this
         the screen looks frozen and the player kills the app."""
-        monkeypatch.setattr(downloader, "download_gp5",
-                            lambda sid, out: (out.write_bytes(b"gp"), True)[1])
+        monkeypatch.setattr(downloader, "download_tab", _writes_a_tab)
         _fake_songsterr(monkeypatch)
         monkeypatch.setattr(
             youtube, "fetch_audio",
@@ -208,15 +246,18 @@ class TestOneEnterFetchesTheSong:
 
     def test_a_tab_that_will_not_download_is_not_ok(self, tmp_path,
                                                    monkeypatch):
-        monkeypatch.setattr(downloader, "download_gp5", lambda sid, out: False)
+        monkeypatch.setattr(
+            downloader, "download_tab",
+            lambda sid, out: (None, "Songsterr holds no Guitar Pro file "
+                                    "for this tab"))
         grab = downloader.grab_song(1, tmp_path / "s.gp5")
         assert not grab.ok
-        assert "could not be downloaded" in grab.notes[0]
+        assert "holds no Guitar Pro file" in grab.notes[0], \
+            "the player is told to keep trying at a dead end"
 
     def test_no_bar_map_still_leaves_a_song_to_practise(self, tmp_path,
                                                        monkeypatch):
-        monkeypatch.setattr(downloader, "download_gp5",
-                            lambda sid, out: (out.write_bytes(b"gp"), True)[1])
+        monkeypatch.setattr(downloader, "download_tab", _writes_a_tab)
         _fake_songsterr(monkeypatch, raises=songsterr.NotFound("404"))
         grab = downloader.grab_song(1, tmp_path / "s.gp5")
         assert grab.ok                       # the tab is the thing asked for
@@ -227,8 +268,7 @@ class TestOneEnterFetchesTheSong:
                                                      monkeypatch):
         """'ffmpeg was not found' and 'this video is private' send the player
         to completely different places."""
-        monkeypatch.setattr(downloader, "download_gp5",
-                            lambda sid, out: (out.write_bytes(b"gp"), True)[1])
+        monkeypatch.setattr(downloader, "download_tab", _writes_a_tab)
         _fake_songsterr(monkeypatch)
 
         def refuse(vid, out, cb=None):
@@ -243,8 +283,7 @@ class TestOneEnterFetchesTheSong:
 
     def test_want_audio_false_stops_before_youtube(self, tmp_path,
                                                   monkeypatch):
-        monkeypatch.setattr(downloader, "download_gp5",
-                            lambda sid, out: (out.write_bytes(b"gp"), True)[1])
+        monkeypatch.setattr(downloader, "download_tab", _writes_a_tab)
         _fake_songsterr(monkeypatch)
 
         def never(*a, **k):

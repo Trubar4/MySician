@@ -147,7 +147,15 @@ class TestDownloadGp5:
             result = download_gp5(42, output)
 
         assert result is True
-        assert output.read_bytes() == file_bytes
+        # The SOURCE decides the suffix, not the name it was asked for. This
+        # test used to assert `test.gp5` while the source it mocked ends in
+        # `.gp` -- so it asserted the bug the player reported: *"Why does it
+        # download a gp5 and when I use songsterr-downloader.com I get a
+        # gp?"*. The loader dispatches on content, so both opened; but a
+        # Guitar Pro 7 file called .gp5 is the wrong file to hand to Guitar
+        # Pro itself.
+        assert not output.exists()
+        assert (tmp_path / "test.gp").read_bytes() == file_bytes
 
     def test_source_url_not_found(self, tmp_path):
         with patch("pickhero.tabs.downloader._urlopen",
@@ -189,15 +197,30 @@ class TestDownloadGp5:
             result = download_gp5(42, output)
 
         assert result is True
-        assert output.exists()
+        assert (tmp_path / "sub" / "dir" / "test.gp").exists()
 
 
 class TestGetSongsterrUrl:
-    def test_format(self):
-        assert get_songsterr_url(123) == "https://www.songsterr.com/a/wsa/123"
+    """A page that loads.
 
-    def test_different_id(self):
-        assert get_songsterr_url(999) == "https://www.songsterr.com/a/wsa/999"
+    `/a/wsa/{id}` is not a Songsterr URL and does not open -- which is what
+    the player saw when a download failed and the browser opened on nothing.
+    Songsterr's shape is `<artist>-<title>-tab-s<id>`, and it redirects any
+    slug with the right `-s<id>` tail to the right page.
+    """
+
+    def test_it_is_the_shape_songsterr_actually_uses(self):
+        assert (get_songsterr_url(2333598, "Love Walked In v4", "Thunder")
+                == "https://www.songsterr.com/a/wsa/"
+                   "thunder-love-walked-in-v4-tab-s2333598")
+
+    def test_the_id_is_always_on_the_end(self):
+        assert get_songsterr_url(999, "What's Up", "4 Non Blondes").endswith(
+            "-tab-s999")
+
+    def test_a_name_of_nothing_still_gives_a_page(self):
+        assert get_songsterr_url(123) == (
+            "https://www.songsterr.com/a/wsa/tab-tab-s123")
 
 
 class TestSanitizeFilename:
