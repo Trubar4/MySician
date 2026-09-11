@@ -236,7 +236,7 @@ class TestReachingTheTunerWhileSearching:
         app._return_to = "menu"
         app._tuner_menu = None
         app._quit_armed = False
-        app._escape_held = False
+        app._held = set()
         opened = []
         app._open_tuner = lambda came_from: opened.append(came_from)
         return app, opened, pygame
@@ -326,7 +326,7 @@ class TestEscapeIsNotOneKeystrokeFromGone:
         app._tuner_menu = None
         app._running = True
         app._quit_armed = False
-        app._escape_held = False
+        app._held = set()
         return app, pygame
 
     def _press(self, app, pygame, key=None, mod=0):
@@ -382,7 +382,7 @@ class TestOneHoldOfEscapeIsOnePress:
         app._menu = None
         app._state = "nowhere"
         app._running = True
-        app._escape_held = False
+        app._held = set()
         app._quit_armed = False
         seen = []
         app._handle_menu_event = lambda e: seen.append(e)
@@ -411,9 +411,23 @@ class TestOneHoldOfEscapeIsOnePress:
         app._process_events(pygame.display.get_surface())
         assert len([e for e in seen if e.type == pygame.KEYDOWN]) == 2
 
+    def test_space_does_not_repeat_either(self, tmp_path, monkeypatch):
+        """The worst of the three: the repeats arrive while the frame is
+        stalled on loading the recording and are then drained together, so
+        an even number of them leaves the song paused with no sign of why.
+        "Ich klicke space, es zählt von 2 auf 1 und stoppt." """
+        import pygame
+        pygame.init()
+        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE,
+                                  unicode=" ", mod=0)
+        app, seen, pygame = self._app(tmp_path, monkeypatch, [down] * 5)
+        app._state = "menu"
+        app._process_events(pygame.display.get_surface())
+        assert len(seen) == 1, f"{len(seen)} spaces reached the screen"
+
     def test_other_keys_still_repeat(self, tmp_path, monkeypatch):
-        """Only escape is guarded. The arrows and the tempo keys want their
-        repeats, and taking them would be a different bug."""
+        """Only the toggles are guarded. The arrows and the tempo keys want
+        their repeats, and taking them would be a different bug."""
         import pygame
         pygame.init()
         down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_DOWN,

@@ -7118,6 +7118,7 @@ class PlayingScreen:
                   f"listening cannot read this song")
 
     def _auto_sync_report_lines(self, points, report) -> list[str]:
+        from pickhero.audio import autosync
         """What the listening found, in words a player can act on.
 
         "28 of 51 windows usable" is a number nobody can do anything with.
@@ -7133,6 +7134,24 @@ class PlayingScreen:
         if report.get("source") == "songsterr":
             return self._songsterr_report_lines(points, report)
         if report.get("wrong_length"):
+            tempo = autosync.written_tempo_gap(
+                self._timeline, report.get("recording_s", 0.0))
+            if tempo is not None and abs(tempo["ratio"] - 1.0) > 0.02:
+                # The tab's bars are all one length, so its tempo is the one
+                # thing wrong with it -- and the right tempo is a number to
+                # act on, where "16 % apart" is not. No offset can repair a
+                # rate, which is why one sync point fixes the start and the
+                # two walk apart again immediately after it.
+                slow = "slow" if tempo["ratio"] > 1 else "fast"
+                return [
+                    f"SYNC   this tab is written at {tempo['written']:.0f} BPM "
+                    f"and this recording runs at about "
+                    f"{tempo['wanted']:.0f} — the tab is "
+                    f"{abs(tempo['ratio'] - 1) * 100:.0f} % too {slow}",
+                    "SYNC   no offset or rate can repair a tempo, so nothing "
+                    "was stored. Songsterr's bar map can (Ctrl+U, then "
+                    "Alt+S), or fix the tempo in the tab",
+                ]
             # Said before anything else and in different words, because it is
             # the one finding here that means "go and get another file"
             # rather than "place a point". The player spent a session on

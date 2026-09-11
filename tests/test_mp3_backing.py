@@ -1751,3 +1751,83 @@ class TestTheRecordingFollowsTheTuning:
         screen._mp3_stretch_thread.join(timeout=5)
         assert asked["semitones"] == -2
         assert screen._mp3_stretch_done[3] == -2
+
+
+class TestSayingItIsTheTempo:
+    """"Mit einmaligem Anpassen klappt es nur am Anfang. Danach läuft es
+    wieder auseinander." An offset moves the song by a constant and cannot
+    repair a rate -- and the panel used to answer that with "27 % apart",
+    which is true and useless."""
+
+    def _screen(self, tmp_path, monkeypatch, bars=80, bar_ms=3692.3):
+        from pickhero.tabs.timeline import (MeasureInfo, NoteEvent,
+                                            SongMetadata, Timeline)
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        notes = [NoteEvent(timestamp_ms=i * bar_ms, duration_ms=400.0,
+                           midi_note=40, string=6, fret=3, measure=i)
+                 for i in range(bars)]
+        measures = [MeasureInfo(index=i, start_ms=i * bar_ms,
+                                end_ms=(i + 1) * bar_ms) for i in range(bars)]
+        timeline = Timeline(notes, SongMetadata(title="t", tempo=65),
+                            measures=measures)
+        return PlayingScreen(timeline, config=config, song_key="song")
+
+    def _report(self, tab_s, rec_s):
+        return {
+            "points": [], "readable": False, "share": 0.9, "windows": 40,
+            "ambiguous": 1, "usable": 36, "breaks": [], "sections": 1,
+            "sections_used": 1, "unreadable": [], "covered": (0.0, 240.0),
+            "song_s": tab_s, "tab_s": tab_s, "recording_s": rec_s,
+            "length_gap": abs(tab_s - rec_s) / max(tab_s, rec_s),
+            "wrong_length": True,
+        }
+
+    def test_it_names_both_tempos_and_which_way(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [], self._report(295.4, 253.9)))
+        assert "65 BPM" in lines
+        assert "76" in lines
+        assert "too slow" in lines
+        assert "16 %" in lines
+
+    def test_and_says_what_can_actually_repair_it(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [], self._report(295.4, 253.9)))
+        assert "Ctrl+U" in lines and "Alt+S" in lines
+        assert "nothing was stored" in lines
+
+    def test_a_recording_that_is_faster_says_too_fast(self, tmp_path,
+                                                      monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        # The tab is 4:55; a 6:40 recording makes the written tempo too
+        # FAST. The ratio comes from the open timeline, never from the
+        # report's own tab_s -- the bar grid is what the question is about.
+        lines = " ".join(screen._auto_sync_report_lines(
+            [], self._report(295.4, 400.0)))
+        assert "too fast" in lines
+
+    def test_a_tab_with_tempo_changes_falls_back_to_the_length_line(
+            self, tmp_path, monkeypatch):
+        """One number cannot describe a file that changes tempo, and naming
+        a wrong one would send the player to fix something that is right."""
+        from pickhero.tabs.timeline import MeasureInfo, SongMetadata, Timeline
+        screen = self._screen(tmp_path, monkeypatch)
+        measures, at = [], 0.0
+        for i in range(80):
+            length = 3692.3 if i < 40 else 1846.0
+            measures.append(MeasureInfo(index=i, start_ms=at,
+                                        end_ms=at + length))
+            at += length
+        screen._timeline = Timeline([], SongMetadata(title="t", tempo=65),
+                                    measures=measures)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [], self._report(295.4, 253.9)))
+        assert "BPM" not in lines
+        assert "not the same transcription" in lines

@@ -2463,19 +2463,57 @@ Same measurement after: `OBEN` seven times out of seven. `_tab_scroll_for` went 
 against every eight. That is the trade the player asked for — a preview at every line break costs a page turn at every line break.
 
 
+## No Offset Can Repair A Tempo
+
+"Es ist schon am Start um ca. 3 Sekunden daneben. Mit einmaligem Anpassen und Syncpoint ergänzen, klappt es nur am Anfang. Danach läuft es
+wieder auseinander. Der Song dauert bei YouTube 4:13 und das ist genau mein MP3. In der App zeigt es mir 4:55 an."
+
+That last sentence is the whole diagnosis, and it is a subtraction. Measured on the file:
+
+    80 bars, every one of them 3.692 s long, written tempo 65 BPM
+    4:55 of tab against a 4:13 recording
+    ratio 1.163 -- the tab is 16.3 % slow, and the record is really at 75.6 BPM
+
+**An offset moves the whole song by a constant; it cannot repair a rate.** That is exactly what he described: one sync point lines the
+start up, and forty-one seconds of error accumulate over the rest.
+
+**And nothing in this app could fix it either.** Every bound here was fitted for a recording of the SAME performance:
+
+| | bound | needed |
+|---|---|---|
+| `autosync.MAX_DRIFT_RATE` | 5 % | 16.3 % |
+| `syncmap.MIN_RATE` / `MAX_RATE` | 10 % | 16.3 % |
+| `config.MIN_MP3_RATE` / `MAX_MP3_RATE` | 10 % | 16.3 % |
+
+A tab written at the wrong tempo is a different fault from a band drifting, and widening the bounds to swallow it would let back in the
+thing they were fitted to reject -- Godsmack's staircase of wrong-chorus matches fits a straight line at −12 %.
+
+**So it is said rather than corrected**, and said as the number to act on. `written_tempo_gap` reads the bar grid: when every bar is the
+same length the file is written at one tempo, and the ratio against the recording says what that tempo should have been. "This tab is
+written at 65 BPM and this recording runs at about 76 — the tab is 16 % too slow." A file that carries tempo CHANGES gets no answer at
+all, because one number cannot describe it and a wrong one would send the player to fix something that is right.
+
+**What can repair it is Songsterr's bar map**, which is per bar and absorbs any tempo error by construction — the panel says so, with the
+two keys. This is the song that feature exists for.
+
 ## One Hold Of Escape Was One Press Too Many
 
 "ESC reagiert oft zu sensibel und ich fliege aus dem Song und die App schließt sich sofort."
 
-`pygame.key.set_repeat(300, 40)` is one **global** setting for every key — the same line that has already cost this project a practice
-speed that jumped from 100 % to 50 % on a short press. Escape crosses two screens that do different things: in the song it goes back to
-the list, on the list it closes the app. So holding escape for **340 milliseconds** does both, and the player is out of the program.
+`pygame.key.set_repeat(300, 40)` is one **global** setting for every key, and this file has now paid for it three times: a short press on
+PgDn walking the practice speed from 100 % to 50 %, escape leaving the song AND closing the app on one hold, and — reported later —
+**space**: "Ich klicke space, es zählt von 2 auf 1 und stoppt. Ich drücke nochmals space und es läuft."
+
+Space is the worst of the three, because the repeats arrive while the frame is STALLED on loading the recording and are then drained
+together: an even number of them and the song is paused with no sign of why. Escape crosses two screens that do different things — in the
+song it goes back to the list, on the list it closes the app — so holding it for **340 milliseconds** does both.
 
 Two guards, and they fix different halves:
 
-- **Escape never repeats**, guarded in `App._process_events` rather than on each screen — it is the one door every screen's events come
+- **A toggle never repeats** (`NEVER_REPEAT`: escape and space), guarded in `App._process_events` rather than on each screen — it is the one door every screen's events come
   through, and a screen added later would otherwise have to remember. A KEYDOWN that arrives while escape is still physically down is
-  dropped; the KEYUP re-arms it. Only escape: the arrows and the tempo keys want their repeats, and taking those would be a different bug.
+  dropped; the KEYUP re-arms it. Only the toggles: the arrows, the tempo and the size keys want their repeats, and taking those would be a
+  different bug.
 - **The song list does not close on the first press.** It says "Press ESC again to close MySician" and waits for a second, deliberate one.
   Anything else in between disarms it, because a screen that stays armed is a trap set an hour ago. Escape is the way back out of the
   song, the settings, the tuner and the device list, so the player arrives on that screen with it already under their finger.

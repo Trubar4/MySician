@@ -27,6 +27,12 @@ from pickhero.ui import scrolling
 from pickhero.ui.scrolling import PlayingScreen
 
 
+# Keys that must never fire twice from one hold. See _process_events: the
+# global repeat is 300 ms then every 40 ms, and both of these cross screens
+# that do different things with them.
+NEVER_REPEAT = frozenset({pygame.K_ESCAPE, pygame.K_SPACE})
+
+
 class App:
     """Main application with game loop."""
 
@@ -62,8 +68,8 @@ class App:
         # dropping the player somewhere they did not come from is how a menu
         # starts to feel like a maze.
         self._return_to = "menu"
-        # Whether escape is physically down. See _process_events.
-        self._escape_held = False
+        # Which no-repeat keys are physically down. See _process_events.
+        self._held: set[int] = set()
         # And whether the NEXT escape on the song list closes the app. One
         # keystroke away from gone is too close for a key that is also the
         # way out of every other screen.
@@ -283,24 +289,30 @@ class App:
                 self._running = False
                 return
 
-            # ESCAPE NEVER REPEATS. `set_repeat(300, 40)` is one global
-            # setting for every key, so holding escape for a third of a
-            # second fires it twice -- and the two screens escape crosses do
-            # different things: the first leaves the song, the second closes
-            # the app. One hold, and the player is out of the program.
-            # Reported as "ESC reagiert oft zu sensibel und ich fliege aus
-            # dem Song und die App schließt sich sofort", which is exactly
-            # 300 ms plus 40.
+            # A TOGGLE NEVER REPEATS. `set_repeat(300, 40)` is one global
+            # setting for every key, and this file has now paid for it three
+            # times: a short press on PgDn walking the practice speed from
+            # 100 % to 50 %, escape leaving the song AND closing the app on
+            # one hold, and space starting the count-in and then stopping it
+            # again -- "es zählt von 2 auf 1 und stoppt. Ich drücke nochmals
+            # space und es läuft."
             #
-            # Guarded here rather than on each screen, because it is the one
-            # door every screen's events come through, and a screen added
-            # later would otherwise have to remember.
-            if event.type == pygame.KEYUP and event.key == pygame.K_ESCAPE:
-                self._escape_held = False
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                if self._escape_held:
+            # Space is the worst of the three, because the repeats arrive
+            # while the frame is STALLED on loading the recording and are
+            # then drained together: an even number of them and the song is
+            # paused with no sign of why.
+            #
+            # Only the keys that toggle. The arrows, the tempo and the size
+            # keys want their repeats, and taking those would be a different
+            # bug. Guarded here rather than on each screen, because this is
+            # the one door every screen's events come through and a screen
+            # added later would otherwise have to remember.
+            if event.type == pygame.KEYUP and event.key in NEVER_REPEAT:
+                self._held.discard(event.key)
+            if event.type == pygame.KEYDOWN and event.key in NEVER_REPEAT:
+                if event.key in self._held:
                     continue                  # the same press, still down
-                self._escape_held = True
+                self._held.add(event.key)
 
             if event.type == pygame.VIDEORESIZE:
                 # Through the one door, so a resize cannot quietly drop

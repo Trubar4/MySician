@@ -778,10 +778,47 @@ def find(timeline: Timeline | str | Path, audio_path: str | Path,
     # A tab of a different length is not a sync problem and no map can fix
     # it. Said before anything else, because it is the only finding here that
     # tells the player to go and get a different file.
-    if report["length_gap"] > MAX_LENGTH_MISMATCH:
+    report["wrong_length"] = report["length_gap"] > MAX_LENGTH_MISMATCH
+    if report["wrong_length"]:
         report["readable"] = False
-        report["wrong_length"] = True
-    else:
-        report["wrong_length"] = False
+    # The RATIO, which is the number that says what to do about it. A tab
+    # whose bars are all the same length is written at one tempo, so a
+    # uniform difference in length is that tempo being wrong -- and the
+    # right tempo is a number the player can act on, where "27 % apart" is
+    # not. Measured on What's Up: 80 bars of 3.692 s (65 BPM) against a 4:13
+    # recording, so the tab is 16.3 % slow and the record is at 75.6.
+    report["length_ratio"] = tab_s / rec_s if rec_s > 0 else 1.0
     report["points"] = points if report["readable"] else []
+    # The tempo reading is left to the caller: `timeline` here is usually the
+    # FILE, so every track of the band is matched, and the bar grid the
+    # question is about belongs to the one timeline the app has open.
     return report
+
+
+def written_tempo_gap(timeline: Timeline, recording_s: float) -> dict | None:
+    """What this tab's written tempo would have to be to fit the recording.
+
+    None when the tab's bars are NOT all the same length: then the file
+    carries tempo changes and one number cannot describe the difference.
+
+    This is the fault no offset and no rate can repair. An offset moves the
+    whole song by a constant; a sync map bends it by at most a tenth (see
+    syncmap.MIN_RATE) and the listening refuses to read past a twentieth
+    (MAX_DRIFT_RATE). All three bounds were fitted for a recording of the
+    same performance, and a tab written at the wrong tempo is a different
+    thing entirely -- which is why one sync point fixes the start and the
+    two walk apart again immediately afterwards.
+    """
+    bars = list(timeline.measures)
+    if len(bars) < 3 or recording_s <= 0 or timeline.duration_ms <= 0:
+        return None
+    lengths = [b.start_ms - a.start_ms for a, b in zip(bars, bars[1:])]
+    if max(lengths) - min(lengths) > 1.0:      # a millisecond of rounding
+        return None
+    ratio = (timeline.duration_ms / 1000.0) / recording_s
+    return {
+        "written": timeline.metadata.tempo,
+        "wanted": timeline.metadata.tempo * ratio,
+        "ratio": ratio,
+        "bar_s": lengths[0] / 1000.0,
+    }

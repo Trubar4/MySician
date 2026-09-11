@@ -503,3 +503,66 @@ class TestTheBreaksAreTheOnesTheMapHas:
             near = [offset for song_ms, offset in points
                     if abs(song_ms / 1000.0 - (at + autosync.WINDOW_S / 2)) < 10]
             assert near, f"the map has nothing at {at}"
+
+
+class TestATabWrittenAtTheWrongTempo:
+    """"Es ist schon am Start um ca. 3 Sekunden daneben... Mit einmaligem
+    Anpassen klappt es nur am Anfang. Danach läuft es wieder auseinander."
+
+    That sentence is the diagnosis. An offset moves the whole song by a
+    constant; it cannot repair a RATE. What's Up is 80 bars of 3.692 s at a
+    written 65 BPM -- 4:55 -- against a 4:13 recording, so the tab runs 16.3 %
+    slow and the record is really at 75.6. Every bound in this file was
+    fitted for a recording of the same performance: the listening refuses to
+    read past 5 %, the map bends by at most 10 %, and the stored rate is
+    clamped to the same. None of them can express sixteen.
+    """
+
+    def _tab(self, bars=80, bar_ms=3692.3, tempo=65):
+        notes = [NoteEvent(timestamp_ms=i * bar_ms, duration_ms=400.0,
+                           midi_note=40, string=6, fret=3, measure=i)
+                 for i in range(bars)]
+        measures = [MeasureInfo(index=i, start_ms=i * bar_ms,
+                                end_ms=(i + 1) * bar_ms) for i in range(bars)]
+        return Timeline(notes, SongMetadata(title="t", tempo=tempo),
+                        measures=measures)
+
+    def test_it_names_the_tempo_the_recording_is_really_at(self):
+        found = autosync.written_tempo_gap(self._tab(), 253.9)
+        assert found["written"] == 65
+        assert found["wanted"] == pytest.approx(75.6, abs=0.2)
+        assert found["ratio"] == pytest.approx(1.163, abs=0.005)
+
+    def test_a_tab_that_already_fits_says_nothing_worth_acting_on(self):
+        found = autosync.written_tempo_gap(self._tab(), 295.4)
+        assert abs(found["ratio"] - 1.0) < 0.01
+
+    def test_a_tab_with_tempo_changes_gets_no_single_answer(self):
+        """One number cannot describe a file that changes tempo, and a wrong
+        number here would send the player to fix something that is right."""
+        # Half the song at half the speed, which is what a tempo change in
+        # the file looks like from here. Built rather than patched: Timeline
+        # hands out a COPY of its measures, so poking at that list changes
+        # nothing and the test would pass on a broken reading.
+        measures, at = [], 0.0
+        for i in range(80):
+            length = 3692.3 if i < 40 else 1846.0
+            measures.append(MeasureInfo(index=i, start_ms=at,
+                                        end_ms=at + length))
+            at += length
+        song = Timeline([], SongMetadata(title="t", tempo=65),
+                        measures=measures)
+        assert song.measures[41].start_ms != song.measures[1].start_ms * 41
+        assert autosync.written_tempo_gap(song, 253.9) is None
+
+    def test_and_a_song_too_short_to_have_a_grid(self):
+        assert autosync.written_tempo_gap(self._tab(bars=2), 10.0) is None
+        assert autosync.written_tempo_gap(self._tab(), 0.0) is None
+
+    def test_no_bound_in_this_file_can_express_it(self):
+        """Which is why it has to be SAID rather than corrected."""
+        from pickhero.audio import syncmap
+        needed = 0.163
+        assert needed > autosync.MAX_DRIFT_RATE
+        assert needed > (1.0 - syncmap.MIN_RATE)
+        assert needed > (syncmap.MAX_RATE - 1.0)
