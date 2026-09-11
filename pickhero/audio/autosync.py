@@ -600,6 +600,28 @@ def bar_lag(song_ms: float, bar_starts: Sequence[float],
     return where - at
 
 
+def _covers(timeline: Timeline, bar_starts: Sequence[float],
+            bar_times: Sequence[float]) -> bool:
+    """Whether a map of this many bars describes this tab's whole MUSIC.
+
+    Exactly as many bars is the easy case. Fewer is fine too when every bar
+    past the map is EMPTY -- and that is not a corner case, it is What's Up:
+    the tab is 80 bars of which the last ten carry no note on any pitched
+    track, because the export pads the score out to the end of the sheet.
+    Songsterr times the 72 that have music in them, and refusing on the
+    count alone threw away a map that fits perfectly.
+
+    More bars than the tab has is always wrong: there is nowhere to put
+    them.
+    """
+    if len(bar_times) == len(bar_starts):
+        return True
+    if not bar_times or len(bar_times) > len(bar_starts):
+        return False
+    after = bar_starts[len(bar_times)]
+    return all(note.timestamp_ms < after for note in timeline.notes)
+
+
 def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
                        candidates,
                        progress: Callable[[float, str], bool] | None = None,
@@ -629,7 +651,7 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
         "unreadable": [], "share": 0.0, "wrong_bars": False,
         "offered": [len(c) for c in candidates],
     }
-    fitting = [c for c in candidates if len(c) == len(bar_starts)]
+    fitting = [c for c in candidates if _covers(timeline, bar_starts, c)]
     if not fitting or len(bar_starts) < 2:
         # A map with a different number of bars is a map of a different tab --
         # a newer revision, or the repeats written out differently. Said

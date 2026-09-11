@@ -453,3 +453,56 @@ class TestTheChordsOnTheSheet:
         assert self._names(screen, later), \
             "the row in the hand names no chord at all"
         assert self._names(screen, later)[0][1] == "Em"
+
+
+class TestATabThatEndsInSilence:
+    """"Die Songdauer passt noch immer nicht zusammen. Hab ich noch immer das
+    falsche GP?" No -- a Guitar Pro export is regularly padded out to the end
+    of the sheet. What's Up is 80 bars of which the last ten carry nothing,
+    so the clock reads 4:55 for 4:13 of music, and he compared that against
+    YouTube three times."""
+
+    def _padded(self, music=6, empty=4, bar_ms=3500.0):
+        notes, measures = [], []
+        for bar in range(music + empty):
+            measures.append(MeasureInfo(index=bar, start_ms=bar * bar_ms,
+                                        end_ms=(bar + 1) * bar_ms))
+            if bar < music:
+                notes.append(NoteEvent(timestamp_ms=bar * bar_ms,
+                                       duration_ms=400.0, midi_note=40,
+                                       string=6, fret=3, measure=bar))
+        meta = SongMetadata(title="t", tempo=65)
+        meta.tuning = _named("Standard")
+        return Timeline(notes, meta, measures=measures)
+
+    def _screen(self, song):
+        return PlayingScreen(song, config=Config())
+
+    def test_the_panel_explains_the_clock(self):
+        screen = self._screen(self._padded())
+        panel = " ".join(text for text, _ in screen.sync_block_lines())
+        assert "empty bars at the end" in panel
+        assert "0:35" in panel, "the clock's own number"
+
+    def test_and_says_how_many(self):
+        screen = self._screen(self._padded(music=6, empty=4))
+        panel = " ".join(text for text, _ in screen.sync_block_lines())
+        assert "4 empty bars" in panel
+
+    def test_a_tab_that_ends_on_its_last_note_says_nothing(self):
+        screen = self._screen(self._padded(music=6, empty=0))
+        panel = " ".join(text for text, _ in screen.sync_block_lines())
+        assert "empty bars" not in panel
+
+    def test_nor_does_a_last_chord_ringing_out(self):
+        """Below a few seconds it is music, not padding."""
+        screen = self._screen(self._padded(music=6, empty=1, bar_ms=1000.0))
+        assert screen._silent_tail() is None
+
+    def test_a_song_with_no_notes_at_all_is_not_a_padded_one(self):
+        meta = SongMetadata(title="t", tempo=65)
+        meta.tuning = _named("Standard")
+        song = Timeline([], meta, measures=[
+            MeasureInfo(index=i, start_ms=i * 2000.0, end_ms=(i + 1) * 2000.0)
+            for i in range(4)])
+        assert self._screen(song)._silent_tail() is None

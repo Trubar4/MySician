@@ -469,6 +469,10 @@ CHORD_CARD_SCALE = 0.9
 # Clear space a chord name needs after it on the sheet before the next one
 # may be drawn. Below this the two read as one word.
 SHEET_NAME_GAP = 10
+# How much silence at the END of a tab is worth explaining. Below a few
+# seconds it is the last chord ringing out; above it the export was padded
+# to the end of the sheet and the clock stops matching the recording.
+SILENT_TAIL_MS = 5000.0
 
 # How a note's verdict is shown on an engraved page. PENDING is absent on
 # purpose: a dot under every note not yet reached would bury the music under
@@ -4060,6 +4064,18 @@ class PlayingScreen:
         mp3 = self._mp3_hud_text()
         if mp3:
             out.append((mp3, "hud_accent"))
+        tail = self._silent_tail()
+        if tail is not None:
+            # The number the player keeps comparing against YouTube. A tab
+            # padded out to the end of the sheet runs minutes past its last
+            # note, and the clock says so with no explanation -- "Die
+            # Songdauer passt noch immer nicht zusammen. Hab ich noch immer
+            # das falsche GP?"
+            last, bars = tail
+            out.append((f"SYNC   this tab runs to "
+                        f"{format_time(self._timeline.duration_ms)} but its "
+                        f"last note is at {format_time(last)} — {bars} empty "
+                        f"bars at the end", "hud_text"))
         out.append((f"SYNC   source: {SYNC_SOURCE_WORDS[self._sync_source()]}"
                     + (f"   |   Songsterr {self._songsterr_id()} stored"
                        if self._songsterr_id() else
@@ -6991,6 +7007,25 @@ class PlayingScreen:
         described = list(self._sync_lines)
         self._describe_sync()
         self._sync_lines = described + self._sync_lines
+
+    def _silent_tail(self) -> tuple[float, int] | None:
+        """(last note, empty bars after it), when a tab ends in silence.
+
+        A Guitar Pro export is regularly padded out to the end of the sheet:
+        What's Up is 80 bars of which the last ten carry nothing, so the
+        clock reads 4:55 for four minutes and thirteen seconds of music. The
+        player compared that against YouTube three times and concluded he had
+        the wrong file.
+        """
+        notes = self._timeline.notes
+        bars = self._timeline.measures
+        if not notes or len(bars) < 2:
+            return None
+        last = max(n.timestamp_ms + n.duration_ms for n in notes)
+        empty = sum(1 for bar in bars if bar.start_ms >= last)
+        if empty < 1 or self._timeline.duration_ms - last < SILENT_TAIL_MS:
+            return None
+        return last, empty
 
     def _sync_source(self) -> str:
         """Which measurement this song's sync comes from.

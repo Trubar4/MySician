@@ -2654,10 +2654,24 @@ points over 253 s, the backing tracks 78 over 278 s. They are different cuts of 
 player's recording is 4:13. So every candidate comes back from the fetch now and each is tried against the recording; the one the windows
 agree about wins. Which of them is the right video is a question only the recording can answer.
 
-The second thing it broke it did not fix: **none of the three matches the tab's 80 bars.** The revision that carries these points says
-"removed bar" in its own description, and the player's file is an older one. A map of a different bar count is refused rather than
-stretched — stretching it would be silent and wrong everywhere after the first difference — and the line now names the counts on offer,
-because "Songsterr times 72 or 78 bars and this tab has 80" is a thing to act on and "a different revision" on its own is not.
+**The second thing it broke turned out to be a rule, not a revision.** None of the three timelines matched the tab's 80 bars, and the
+first answer was "your tab is an older revision — download it again". He did, and got the same 80 bars. The tab is not wrong:
+
+    80 bars, of which bar 0 and bars 70-79 carry no note on ANY pitched track
+    the last note is at 4:15, and the clock runs to 4:55
+    Songsterr times the 72 that have music in them
+
+A Guitar Pro export is regularly **padded out to the end of the sheet**. So a map of fewer bars than the tab is accepted when every bar
+past it is empty (`_covers`) — and on What's Up that map fits: it picks the 72-point main video over the 78-point backing one, **21 of 39
+windows agree with it to 17 ms**, and the offsets run −0.1 s to +11.2 s, which is the 3.5 % the recording really runs at. Refusing on the
+count alone threw away a map that was right.
+
+**And the clock now explains itself.** "This tab runs to 4:55 but its last note is at 4:15 — 10 empty bars at the end" is in the sync
+panel, because that number is the one he compared against YouTube three times before concluding he had the wrong file.
+
+**The old finding, for the record:**  a map with MORE bars than the tab, or one that stops inside the music, is still refused rather than stretched — stretching
+it would be silent and wrong everywhere after the first difference — and the line names the counts on offer, because "Songsterr times 72 or
+78 bars and this tab has 80" is a thing to act on and "a different revision" on its own is not.
 
 **What it is for is the songs the listening cannot read at all.** What's Up is four chords repeated for four minutes and its windows match
 +9.9, −34.4, −6.2 and +21.1 s — a made map does not care that a song repeats itself, and a windowed search can do nothing else. So the

@@ -556,3 +556,81 @@ class TestPickingTheRightVideo:
             self._song(9), "audio.mp3", [self.BACKING, self.MAIN])
         assert sorted(report["offered"]) == [8, 10]
         assert report["measures"] == 9
+
+
+class TestAMapMayCoverJustTheMusic:
+    """"Habe das GP neu von Songsterr geladen... Hab ich noch immer das
+    falsche GP?" No. What's Up is 80 bars of which the last TEN carry no
+    note on any pitched track -- a Guitar Pro export padded out to the end
+    of the sheet. Songsterr times the 72 that have music in them, and
+    refusing on the count alone threw away a map that fits perfectly: 21 of
+    39 windows agree with it to 17 ms.
+    """
+
+    def _padded(self, music=6, empty=4, bar_ms=3500.0):
+        notes, measures = [], []
+        for bar in range(music + empty):
+            measures.append(MeasureInfo(index=bar, start_ms=bar * bar_ms,
+                                        end_ms=(bar + 1) * bar_ms))
+            if bar >= music:
+                continue
+            for beat in range(2):
+                notes.append(NoteEvent(
+                    timestamp_ms=bar * bar_ms + beat * bar_ms / 2,
+                    duration_ms=400.0, midi_note=40 + beat, string=6,
+                    fret=beat, measure=bar))
+        return Timeline(notes, SongMetadata(title="t", tempo=65),
+                        measures=measures)
+
+    def _times(self, n, step=3.4):
+        return [round(i * step, 2) for i in range(n)]
+
+    def test_a_map_of_the_musical_bars_is_accepted(self):
+        song = self._padded(music=6, empty=4)
+        starts = [m.start_ms for m in song.measures]
+        assert autosync._covers(song, starts, self._times(6))
+
+    def test_and_so_is_one_that_reaches_a_little_past_the_music(self):
+        song = self._padded(music=6, empty=4)
+        starts = [m.start_ms for m in song.measures]
+        assert autosync._covers(song, starts, self._times(8))
+
+    def test_but_not_one_that_stops_inside_the_music(self):
+        """Those bars have notes, and a map that does not reach them would
+        be silently wrong for every one of them."""
+        song = self._padded(music=6, empty=4)
+        starts = [m.start_ms for m in song.measures]
+        assert not autosync._covers(song, starts, self._times(4))
+
+    def test_nor_one_with_more_bars_than_the_tab_has(self):
+        song = self._padded(music=6, empty=4)
+        starts = [m.start_ms for m in song.measures]
+        assert not autosync._covers(song, starts, self._times(12))
+
+    def test_an_exact_match_is_always_fine(self):
+        song = self._padded(music=6, empty=0)
+        starts = [m.start_ms for m in song.measures]
+        assert autosync._covers(song, starts, self._times(6))
+
+    def test_an_empty_map_covers_nothing(self):
+        song = self._padded()
+        assert not autosync._covers(song, [m.start_ms for m in song.measures], [])
+
+    def test_the_padded_tab_is_no_longer_refused(self, monkeypatch):
+        """The whole point: this is the case that was thrown away."""
+        import numpy as np
+        song = self._padded(music=6, empty=4)
+        monkeypatch.setattr(autosync, "decode",
+                            lambda p, samplerate=44100: (np.zeros(44100), 44100))
+        monkeypatch.setattr(autosync, "chroma_of_audio",
+                            lambda s, r, progress=None: (np.zeros((100, 12)), 21.5))
+        monkeypatch.setattr(autosync, "chroma_of_timeline",
+                            lambda tl, fps: np.zeros((100, 12)))
+        monkeypatch.setattr(autosync, "drift_curve",
+                            lambda tab, rec, fps, progress=None: [
+                                (float(i * 6), lag, 0.9) for i, lag in
+                                enumerate([1.2, 1.25, 1.18, 1.22, 1.21])])
+        report = autosync.align_to_bar_times(song, "audio.mp3",
+                                             [self._times(6)])
+        assert not report["wrong_bars"]
+        assert report["readable"] and report["bars"] == 6
