@@ -284,6 +284,36 @@ class Config:
         else:
             self.backing_offset_ms = float(offset_ms)
 
+    def songs_path(self) -> Path:
+        """A songs folder that exists and can be written to. Never raises.
+
+        `songs_dir` is a RELATIVE path by default, so it resolves against
+        wherever the app was started from -- and a portable .exe is started
+        from wherever it was downloaded to. On the player's machine that was
+        `C:\\Users\\Admin\\Downloads`, which Windows reported as not
+        found; `mkdir(parents=True)` then walked up and tried to create
+        `C:\\Users\\Admin`, which is denied, and the app died before it
+        drew a single frame:
+
+            PermissionError: [WinError 5] Zugriff verweigert: 'C:\\Users\\Admin'
+
+        So the folder is resolved HERE, once, and a folder that cannot be
+        made falls back beside the settings file -- the one directory this
+        app already knows it can write to, because it has been writing
+        settings.json there all along.
+        """
+        wanted = Path(self.songs_dir).expanduser()
+        for candidate in (wanted, CONFIG_DIR / "songs"):
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                return candidate
+            except OSError:
+                continue
+        # Neither could be made. Hand back the one that was asked for and let
+        # the caller report an empty list -- a screen saying "no songs here"
+        # is a screen; a traceback is not.
+        return wanted
+
     def mp3_path_for(self, song_key: str) -> str:
         """The recording chosen for this song, or "" if there is none.
 

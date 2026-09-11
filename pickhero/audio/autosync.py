@@ -601,40 +601,44 @@ def bar_lag(song_ms: float, bar_starts: Sequence[float],
 
 
 def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
-                       bar_times: Sequence[float],
+                       candidates,
                        progress: Callable[[float, str], bool] | None = None,
                        tolerance_ms: float = SIMPLIFY_MS) -> dict:
     """Fit a made per-bar map to the recording the player actually has.
 
+    `candidates` is every per-bar timeline the service offered, because they
+    are not the same song: What's Up's main video carries 72 points over
+    253 s and its backing videos carry 78 over 278 s, and only one of them is
+    the file in the player's folder. **Which one is a question only the
+    recording can answer**, so each is tried and the one the windows agree
+    about wins. A single list is accepted too, and treated as one candidate.
+
     The points are times in a VIDEO. If that video and this file are the same
     master they differ by ONE constant, so the whole job is to find a single
-    number -- and the way the windows agree about it is a free check on
-    whether the map belongs to this recording at all.
-
-    Done by warping the tab through the map and then measuring what is left,
-    which reuses the listening rather than inventing a second way to compare
-    two things.
+    number -- and how well the windows agree about it is a free check on
+    whether this map belongs to this recording at all.
     """
+    if candidates and not isinstance(candidates[0], (list, tuple)):
+        candidates = [candidates]
     bar_starts = [m.start_ms for m in timeline.measures]
     report: dict = {
-        "source": "songsterr", "bars": len(bar_times),
-        "measures": len(bar_starts), "points": [],
-        "readable": False, "windows": 0, "usable": 0, "ambiguous": 0,
-        "breaks": [], "covered": None, "song_s": 0.0, "wrong_length": False,
-        "sections": 0, "sections_used": 0, "unreadable": [], "share": 0.0,
+        "source": "songsterr", "bars": 0, "measures": len(bar_starts),
+        "points": [], "readable": False, "windows": 0, "usable": 0,
+        "ambiguous": 0, "breaks": [], "covered": None, "song_s": 0.0,
+        "wrong_length": False, "sections": 0, "sections_used": 0,
+        "unreadable": [], "share": 0.0, "wrong_bars": False,
+        "offered": [len(c) for c in candidates],
     }
-    if len(bar_times) < 2 or len(bar_starts) < 2:
-        return report
-    # A map with a different number of bars is a map of a different tab --
-    # the repeats expanded differently, or a revision that moved on. Said
-    # rather than stretched over, because stretching it would be silent and
-    # wrong everywhere after the first difference.
-    if len(bar_times) != len(bar_starts):
+    fitting = [c for c in candidates if len(c) == len(bar_starts)]
+    if not fitting or len(bar_starts) < 2:
+        # A map with a different number of bars is a map of a different tab --
+        # a newer revision, or the repeats written out differently. Said
+        # rather than stretched over: stretching it would be silent and wrong
+        # everywhere after the first difference.
         report["wrong_bars"] = True
+        report["bars"] = max(report["offered"], default=0)
         return report
-    report["wrong_bars"] = False
 
-    warped = replace_times(timeline, bar_starts, bar_times)
     samples, rate = decode(audio_path)
     if progress is not None and progress(0.05, "listening") is False:
         raise Cancelled()
@@ -642,12 +646,30 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
         samples, rate,
         (lambda f: progress(0.05 + 0.45 * f, "listening"))
         if progress else None)
-    tab = chroma_of_timeline(warped, fps)
-    if len(tab) == 0 or len(rec) == 0:
+    if len(rec) == 0:
         return report
-    rows = drift_curve(tab, rec, fps,
-                       (lambda f: progress(0.5 + 0.5 * f, "comparing"))
-                       if progress else None)
+
+    best = report
+    for taken, bar_times in enumerate(fitting):
+        tab = chroma_of_timeline(
+            replace_times(timeline, bar_starts, bar_times), fps)
+        if len(tab) == 0:
+            continue
+        share = (taken + 1) / len(fitting)
+        rows = drift_curve(
+            tab, rec, fps,
+            (lambda f, s=share: progress(0.5 + 0.5 * s * f, "comparing"))
+            if progress else None)
+        found = _fit_one(report, bar_starts, bar_times, rows, tolerance_ms)
+        if found["share"] > best["share"]:
+            best = found
+    return best
+
+
+def _fit_one(base: dict, bar_starts, bar_times, rows, tolerance_ms) -> dict:
+    """One candidate map measured against the recording."""
+    report = dict(base)
+    report["bars"] = len(bar_times)
     good = [(at, lag) for at, lag, margin in rows if margin >= MIN_MARGIN]
     report["windows"] = len(rows)
     report["ambiguous"] = len(rows) - len(good)
@@ -677,6 +699,7 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
     # constant -- so what is kept is Songsterr's measurement, not a smoothing
     # of ours. Thinned the same way, because a bar the line between its
     # neighbours already predicts is not worth a point.
+    #
     # A point is (song ms, offset ms) with the app's usual sign: the
     # recording is at song_ms - offset_ms. The map puts bar i at `time` in
     # the VIDEO and the video is at `time + constant` in this file, so the

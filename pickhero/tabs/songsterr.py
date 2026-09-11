@@ -92,16 +92,23 @@ def fetch_entries(song_id: int, revision_id: int) -> list:
     return entries
 
 
-def bar_times_of(entries) -> list[float]:
-    """The per-bar seconds from the entries, longest first.
+def all_bar_times(entries) -> list[list[float]]:
+    """Every usable per-bar timeline in the reply, longest first.
 
-    Any of them will do. Three videos of one song carry the same curve
-    shifted by a constant -- measured on Thunder at exactly -25.15 and
-    -23.25 s, to the last decimal on all 91 points -- and the constant is
-    found against the player's own recording anyway. The longest is taken
-    because a truncated entry is the one failure mode that would matter.
+    **All of them, because they are not the same song.** Thunder's three
+    videos carry one curve shifted by a constant -- exactly -25.15 and
+    -23.25 s on all 91 points -- and for that song any entry would do. What's
+    Up does not behave like that at all: its main video has **72** points
+    over 253 s and its backing videos have **78** over 278 s. They are
+    different cuts of the piece, and only one of them is the recording the
+    player has.
+
+    So the caller tries them and keeps the one that fits (see
+    `autosync.align_to_bar_times`). Taking the longest, which the first build
+    did, would have handed What's Up the 78-point backing track and called
+    the answer measured.
     """
-    best: list[float] = []
+    out: list[list[float]] = []
     for entry in entries or []:
         points = entry.get("points") if isinstance(entry, dict) else None
         if not isinstance(points, list) or len(points) < 2:
@@ -112,16 +119,26 @@ def bar_times_of(entries) -> list[float]:
             continue
         if any(b <= a for a, b in zip(numbers, numbers[1:])):
             continue                    # not a timeline, whatever it is
-        if len(numbers) > len(best):
-            best = numbers
-    return best
+        if numbers not in out:
+            out.append(numbers)
+    return sorted(out, key=len, reverse=True)
 
 
-def fetch_bar_times(song_id: int) -> tuple[list[float], dict]:
-    """(seconds per bar, the metadata it came with)."""
+def bar_times_of(entries) -> list[float]:
+    """The longest usable timeline, for callers that want just one."""
+    found = all_bar_times(entries)
+    return found[0] if found else []
+
+
+def fetch_bar_times(song_id: int) -> tuple[list[list[float]], dict]:
+    """(every usable per-bar timeline, the metadata it came with).
+
+    Every one, not the best one: which of them is the player's recording is
+    a question only the recording can answer.
+    """
     meta = fetch_meta(song_id)
     entries = fetch_entries(song_id, int(meta["revisionId"]))
-    times = bar_times_of(entries)
+    times = all_bar_times(entries)
     if not times:
         raise NotFound(f"song {song_id} has video points but none usable")
     return times, meta

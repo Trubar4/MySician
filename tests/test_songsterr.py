@@ -59,7 +59,19 @@ class TestReadingTheBarTimes:
         gaps = {round(b - a, 6) for a, b in zip(first, second)}
         assert len(gaps) == 1
 
-    def test_the_longest_entry_wins(self):
+    def test_every_usable_timeline_comes_back(self):
+        """They are not the same song. What's Up's main video carries 72
+        points over 253 s and its backing videos 78 over 278 s, and only one
+        of them is the file in the player's folder."""
+        entries = [{"points": [0.0, 1.0]}, {"points": [0.0, 1.0, 2.0, 3.0]}]
+        assert [len(t) for t in songsterr.all_bar_times(entries)] == [4, 2]
+
+    def test_the_same_timeline_twice_counts_once(self):
+        """What's Up offers six entries and three distinct timelines."""
+        entries = [{"points": [0.0, 1.0, 2.0]}] * 3
+        assert len(songsterr.all_bar_times(entries)) == 1
+
+    def test_and_one_of_them_is_still_available_on_its_own(self):
         entries = [{"points": [0.0, 1.0]}, {"points": [0.0, 1.0, 2.0, 3.0]}]
         assert len(songsterr.bar_times_of(entries)) == 4
 
@@ -67,10 +79,12 @@ class TestReadingTheBarTimes:
         entries = [{"points": "nonsense"}, {}, {"points": [1.0]},
                    {"points": [3.0, 2.0, 1.0]}, {"points": [0.0, 1.0, 2.0]}]
         assert songsterr.bar_times_of(entries) == [0.0, 1.0, 2.0]
+        assert songsterr.all_bar_times(entries) == [[0.0, 1.0, 2.0]]
 
     def test_nothing_usable_is_an_empty_answer_not_an_exception(self):
         assert songsterr.bar_times_of([]) == []
         assert songsterr.bar_times_of(None) == []
+        assert songsterr.all_bar_times(None) == []
 
 
 def _song(bars=8, bar_ms=3077.0, per_bar=4):
@@ -469,3 +483,76 @@ class TestTheChoiceIsThePlayersNotTheApps:
         self._alt_s(screen)
         assert screen._config.sync_source_for("song") == "listen"
         assert screen._config.sync_source_for("another") == "auto"
+
+
+class TestPickingTheRightVideo:
+    """"Hast du etwas geändert?" -- yes, twice, and both because of What's
+    Up's reply. Its six entries carry three different timelines: the main
+    video has 72 points over 253 s, the backing tracks 78 over 278 s. Only
+    one of them is the recording in the player's folder, and the first build
+    took the LONGEST, which is the wrong one.
+    """
+
+    MAIN = [0.0, 3.5, 7.0, 10.5, 14.0, 17.5, 21.0, 24.5]
+    BACKING = [9.0, 12.5, 16.0, 19.5, 23.0, 26.5, 30.0, 33.5, 37.0, 40.5]
+
+    def _song(self, bars):
+        return _song(bars=bars, bar_ms=3500.0, per_bar=2)
+
+    def _measured(self, monkeypatch, lags_by_bars):
+        """Give each candidate its own agreement, by how many bars it has."""
+        import numpy as np
+        monkeypatch.setattr(autosync, "decode",
+                            lambda path, samplerate=44100: (np.zeros(44100),
+                                                            44100))
+        monkeypatch.setattr(autosync, "chroma_of_audio",
+                            lambda s, r, progress=None: (np.zeros((100, 12)),
+                                                         21.5))
+        seen = {}
+
+        def warp(timeline, starts, times):
+            seen["bars"] = len(times)
+            return timeline
+
+        monkeypatch.setattr(autosync, "replace_times", warp)
+        monkeypatch.setattr(autosync, "chroma_of_timeline",
+                            lambda tl, fps: np.zeros((100, 12)))
+        monkeypatch.setattr(
+            autosync, "drift_curve",
+            lambda tab, rec, fps, progress=None: [
+                (float(i * 6), lag, 0.9)
+                for i, lag in enumerate(lags_by_bars[seen["bars"]])])
+
+    def test_the_candidate_the_recording_agrees_with_wins(self, monkeypatch):
+        steady = [1.2, 1.25, 1.18, 1.22, 1.21]
+        noise = [1.2, -30.0, 18.0, -6.0, 25.0]
+        self._measured(monkeypatch, {8: steady, 10: noise})
+        report = autosync.align_to_bar_times(
+            self._song(8), "audio.mp3", [self.BACKING, self.MAIN])
+        assert report["readable"]
+        assert report["bars"] == 8, "it took the longer one again"
+
+    def test_a_single_timeline_is_still_accepted(self, monkeypatch):
+        self._measured(monkeypatch, {8: [1.2, 1.25, 1.18, 1.22, 1.21]})
+        report = autosync.align_to_bar_times(
+            self._song(8), "audio.mp3", self.MAIN)
+        assert report["readable"] and report["bars"] == 8
+
+    def test_a_candidate_of_the_wrong_length_is_never_tried(self, monkeypatch):
+        """Stretching it would be silent and wrong everywhere after the
+        first difference."""
+        tried = []
+        monkeypatch.setattr(autosync, "decode",
+                            lambda *a, **k: tried.append(1) or (None, 0))
+        report = autosync.align_to_bar_times(
+            self._song(8), "audio.mp3", [self.BACKING])
+        assert report["wrong_bars"] and not report["readable"]
+        assert tried == [], "it decoded the recording for nothing"
+
+    def test_and_the_counts_it_was_offered_are_reported(self, monkeypatch):
+        """"Songsterr times 72 or 78 bars and this tab has 80" is a thing to
+        act on; "a different revision" on its own is not."""
+        report = autosync.align_to_bar_times(
+            self._song(9), "audio.mp3", [self.BACKING, self.MAIN])
+        assert sorted(report["offered"]) == [8, 10]
+        assert report["measures"] == 9

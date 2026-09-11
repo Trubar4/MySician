@@ -1787,14 +1787,19 @@ class TestSayingItIsTheTempo:
             "wrong_length": True,
         }
 
-    def test_it_names_both_tempos_and_which_way(self, tmp_path, monkeypatch):
+    def test_it_names_both_lengths_and_both_causes(self, tmp_path,
+                                                    monkeypatch):
+        """It cannot tell them apart, so it must not pick one. What's Up
+        looked like 16 % of tempo and turned out to be mostly structure --
+        Songsterr times 72 bars where the tab has 80, so eight of them are
+        not in the recording at all and only about 3 % is really tempo."""
         screen = self._screen(tmp_path, monkeypatch)
         lines = " ".join(screen._auto_sync_report_lines(
             [], self._report(295.4, 253.9)))
-        assert "65 BPM" in lines
-        assert "76" in lines
-        assert "too slow" in lines
-        assert "16 %" in lines
+        assert "4:55" in lines and "4:13" in lines
+        assert "65 BPM" in lines and "76" in lines
+        assert "music the recording does not" in lines
+        assert "either" in lines
 
     def test_and_says_what_can_actually_repair_it(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
@@ -1803,7 +1808,7 @@ class TestSayingItIsTheTempo:
         assert "Ctrl+U" in lines and "Alt+S" in lines
         assert "nothing was stored" in lines
 
-    def test_a_recording_that_is_faster_says_too_fast(self, tmp_path,
+    def test_a_longer_recording_points_the_other_way(self, tmp_path,
                                                       monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
         # The tab is 4:55; a 6:40 recording makes the written tempo too
@@ -1811,7 +1816,8 @@ class TestSayingItIsTheTempo:
         # report's own tab_s -- the bar grid is what the question is about.
         lines = " ".join(screen._auto_sync_report_lines(
             [], self._report(295.4, 400.0)))
-        assert "too fast" in lines
+        assert "6:40" in lines
+        assert "48" in lines, "the tempo it would have to be"
 
     def test_a_tab_with_tempo_changes_falls_back_to_the_length_line(
             self, tmp_path, monkeypatch):

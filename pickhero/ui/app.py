@@ -99,8 +99,9 @@ class App:
         surface = self._apply_display_mode()
         clock = pygame.time.Clock()
 
-        songs_dir = Path(self._config.songs_dir)
-        self._menu = MenuScreen(songs_dir, config=self._config, progress=self._progress)
+        songs_dir = self._config.songs_path()
+        self._menu = MenuScreen(songs_dir, config=self._config,
+                                progress=self._progress)
         self._state = "menu"
         self._running = True
 
@@ -366,7 +367,7 @@ class App:
                 self._state = "settings"
                 return
             if event.key == pygame.K_s:
-                songs_dir = Path(self._config.songs_dir)
+                songs_dir = self._config.songs_path()
                 self._download_menu = DownloadMenuScreen(songs_dir)
                 self._state = "download"
                 return

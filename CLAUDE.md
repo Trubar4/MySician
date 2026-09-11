@@ -2463,6 +2463,23 @@ Same measurement after: `OBEN` seven times out of seven. `_tab_scroll_for` went 
 against every eight. That is the trade the player asked for — a preview at every line break costs a page turn at every line break.
 
 
+## The Songs Folder Killed The App Before It Drew A Frame
+
+```
+FileNotFoundError: 'C:\Users\Admin\Downloads\songs'
+PermissionError: [WinError 5] Zugriff verweigert: 'C:\Users\Admin'
+  pickhero/ui/menu.py line 162, in scan_files
+```
+
+`songs_dir` is **relative** by default, so it resolves against wherever the app was STARTED from — and a portable .exe is started from wherever
+it was downloaded to. Windows reported that folder as not found, and `mkdir(parents=True)` then walked up and tried to create the player's
+own home directory, which is denied. The app died before the first frame, on a machine where it had been running for weeks.
+
+- **The folder is chosen in one place now** (`Config.songs_path`), and one that cannot be made falls back beside the settings file — the
+  one directory this app already knows it can write to, because it has been writing `settings.json` there all along.
+- **And `scan_files` never raises.** A folder it cannot read is an empty list and a line saying which folder and why. A screen saying "no
+  songs here" is a screen; a traceback is not.
+
 ## No Offset Can Repair A Tempo
 
 "Es ist schon am Start um ca. 3 Sekunden daneben. Mit einmaligem Anpassen und Syncpoint ergänzen, klappt es nur am Anfang. Danach läuft es
@@ -2488,10 +2505,18 @@ start up, and forty-one seconds of error accumulate over the rest.
 A tab written at the wrong tempo is a different fault from a band drifting, and widening the bounds to swallow it would let back in the
 thing they were fitted to reject -- Godsmack's staircase of wrong-chorus matches fits a straight line at −12 %.
 
-**So it is said rather than corrected**, and said as the number to act on. `written_tempo_gap` reads the bar grid: when every bar is the
-same length the file is written at one tempo, and the ratio against the recording says what that tempo should have been. "This tab is
-written at 65 BPM and this recording runs at about 76 — the tab is 16 % too slow." A file that carries tempo CHANGES gets no answer at
-all, because one number cannot describe it and a wrong one would send the player to fix something that is right.
+**And the first version of this chapter got the cause wrong**, which is worth keeping. It read the 16.3 % as tempo and said so. Then
+Songsterr's reply for the same song arrived: **it times 72 bars where the tab has 80**. Eight bars of that tab are not in the recording at
+all, and once they are taken out only about 3 % is really the tempo — inside every bound above. Saying "the tab is 16 % too slow" would
+have sent the player to change a tempo that is very nearly right.
+
+Two causes, one number, and no way to tell them apart from lengths alone. **So the line names both** and says what could settle it.
+
+**It is said rather than corrected**, as the numbers to act on. `written_tempo_gap` reads the bar grid: when every bar is the
+same length the file is written at one tempo, and the ratio against the recording says what that tempo would have to be. "This tab is 4:55
+and the recording is 4:13 — either the written 65 BPM should be about 76, or the tab has 16 % of music the recording does not." A file that
+carries tempo CHANGES gets no answer at all, because one number cannot describe it and a wrong one would send the player to fix something
+that is right.
 
 **What can repair it is Songsterr's bar map**, which is per bar and absorbs any tempo error by construction — the panel says so, with the
 two keys. This is the song that feature exists for.
@@ -2622,6 +2647,17 @@ map is built from these windows, so an in-sample number would have flattered it 
 The prediction going in was that Songsterr's map would beat the measurement and make the DTW work unnecessary. **It is five to ten times
 coarser.** Their points are timestamps into a YouTube re-upload, and their own transcription pipeline carries its own error; our chroma
 correlation against the actual file has neither problem.
+
+**And What's Up broke two things in it that Thunder could not have.** Thunder's three videos carry one curve shifted by a constant, so any
+entry would do and the first build took the longest. What's Up's six entries carry **three different timelines**: the main video has 72
+points over 253 s, the backing tracks 78 over 278 s. They are different cuts of the piece, and **the longest is the wrong one** — the
+player's recording is 4:13. So every candidate comes back from the fetch now and each is tried against the recording; the one the windows
+agree about wins. Which of them is the right video is a question only the recording can answer.
+
+The second thing it broke it did not fix: **none of the three matches the tab's 80 bars.** The revision that carries these points says
+"removed bar" in its own description, and the player's file is an older one. A map of a different bar count is refused rather than
+stretched — stretching it would be silent and wrong everywhere after the first difference — and the line now names the counts on offer,
+because "Songsterr times 72 or 78 bars and this tab has 80" is a thing to act on and "a different revision" on its own is not.
 
 **What it is for is the songs the listening cannot read at all.** What's Up is four chords repeated for four minutes and its windows match
 +9.9, −34.4, −6.2 and +21.1 s — a made map does not care that a song repeats itself, and a windowed search can do nothing else. So the

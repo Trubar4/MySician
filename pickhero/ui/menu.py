@@ -158,13 +158,25 @@ class MenuScreen:
             self._config.save()
 
     def scan_files(self) -> None:
-        """Scan songs directory (recursively) for GP files."""
-        self._songs_dir.mkdir(parents=True, exist_ok=True)
-        self._files = sorted(
-            p
-            for p in self._songs_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in GP_EXTENSIONS
-        )
+        """Scan songs directory (recursively) for GP files.
+
+        A folder that cannot be read is an EMPTY LIST and a line saying so,
+        never an exception. This used to call mkdir(parents=True) and die
+        before the first frame when the folder could not be made -- see
+        Config.songs_path, which is where the folder is chosen now.
+        """
+        try:
+            self._songs_dir.mkdir(parents=True, exist_ok=True)
+            found = sorted(
+                p
+                for p in self._songs_dir.rglob("*")
+                if p.is_file() and p.suffix.lower() in GP_EXTENSIONS
+            )
+        except OSError as exc:
+            self._reload_note = (f"Cannot read {self._songs_dir} — "
+                                 f"{exc.strerror or exc}")
+            found = []
+        self._files = found
         self._search_text = ""
         self._search_active = False
         self._index.scan_in_background(self._files)

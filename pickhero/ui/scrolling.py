@@ -7142,15 +7142,25 @@ class PlayingScreen:
                 # act on, where "16 % apart" is not. No offset can repair a
                 # rate, which is why one sync point fixes the start and the
                 # two walk apart again immediately after it.
-                slow = "slow" if tempo["ratio"] > 1 else "fast"
+                # NAMED AS A GUESS, because the length can be off for two
+                # reasons and this cannot tell them apart. What's Up looked
+                # like 16 % of tempo and turned out to be mostly structure:
+                # Songsterr times 72 bars where the tab has 80, so eight
+                # bars of it are not in the recording at all, and only about
+                # 3 % is really the tempo. Saying "the tab is 16 % too slow"
+                # would have sent the player to change a tempo that is very
+                # nearly right.
                 return [
-                    f"SYNC   this tab is written at {tempo['written']:.0f} BPM "
-                    f"and this recording runs at about "
-                    f"{tempo['wanted']:.0f} — the tab is "
-                    f"{abs(tempo['ratio'] - 1) * 100:.0f} % too {slow}",
-                    "SYNC   no offset or rate can repair a tempo, so nothing "
-                    "was stored. Songsterr's bar map can (Ctrl+U, then "
-                    "Alt+S), or fix the tempo in the tab",
+                    f"SYNC   this tab is {format_time(report['tab_s'] * 1000)}"
+                    f" and the recording is "
+                    f"{format_time(report['recording_s'] * 1000)} — either "
+                    f"the written {tempo['written']:.0f} BPM should be about "
+                    f"{tempo['wanted']:.0f}, or the tab has "
+                    f"{abs(tempo['ratio'] - 1) * 100:.0f} % of music the "
+                    f"recording does not",
+                    "SYNC   no offset or rate can repair either, so nothing "
+                    "was stored. Songsterr's bar map can tell them apart "
+                    "(Ctrl+U, then Alt+S)",
                 ]
             # Said before anything else and in different words, because it is
             # the one finding here that means "go and get another file"
@@ -7206,12 +7216,15 @@ class PlayingScreen:
                     "SYNC   nothing was stored. Shift+N/M to line it up by "
                     "hand, Shift+S to pin it there"]
         if report.get("wrong_bars"):
+            offered = report.get("offered") or [report.get("bars", 0)]
+            counts = " or ".join(str(n) for n in sorted(set(offered),
+                                                        reverse=True))
             return [
-                f"SYNC   Songsterr times {report['bars']} bars and this tab "
-                f"has {report['measures']} — a different revision, or the "
-                f"repeats written out differently",
-                "SYNC   nothing was stored. Shift+N/M to line it up by hand, "
-                "Shift+S to pin it there"]
+                f"SYNC   Songsterr times {counts} bars and this tab has "
+                f"{report['measures']} — your tab is a different revision of "
+                f"it, or the repeats are written out differently",
+                "SYNC   nothing was stored. Download the tab from Songsterr "
+                "again, or line it up by hand with Shift+N/M and Shift+S"]
         if not report["readable"] or len(points) < 2:
             return [
                 f"SYNC   Songsterr's bar map does not fit this recording — "

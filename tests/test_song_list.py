@@ -9,6 +9,7 @@ what it found.
 
 import pygame
 import pytest
+from pathlib import Path
 
 from pickhero.config import Config
 from pickhero.ui.menu import MenuScreen
@@ -436,3 +437,81 @@ class TestOneHoldOfEscapeIsOnePress:
         app._state = "menu"
         app._process_events(pygame.display.get_surface())
         assert len(seen) == 3
+
+
+class TestAFolderItCannotMakeIsNotACrash:
+    """The app died before it drew a single frame.
+
+        FileNotFoundError: 'C:\\Users\\Admin\\Downloads\\songs'
+        PermissionError: [WinError 5] Zugriff verweigert: 'C:\\Users\\Admin'
+
+    `songs_dir` is relative by default, so it resolves against wherever the
+    app was STARTED from -- and a portable .exe is started from wherever it
+    was downloaded to. Windows reported that folder as not found, and
+    mkdir(parents=True) then walked up and tried to create the user's own
+    home directory.
+    """
+
+    def test_a_folder_that_can_be_made_is_the_one_that_is_used(self, tmp_path):
+        from pickhero.config import Config
+        config = Config()
+        config.songs_dir = str(tmp_path / "songs")
+        assert config.songs_path() == tmp_path / "songs"
+        assert config.songs_path().is_dir()
+
+    def test_one_that_cannot_falls_back_beside_the_settings(self, tmp_path,
+                                                            monkeypatch):
+        """The one directory this app already knows it can write to, because
+        it has been writing settings.json there all along."""
+        import pickhero.config as config_module
+        from pickhero.config import Config
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "cfg")
+        config = Config()
+        config.songs_dir = "/proc/nonexistent/songs"
+        assert config.songs_path() == tmp_path / "cfg" / "songs"
+        assert config.songs_path().is_dir()
+
+    def test_and_neither_working_still_returns_a_path(self, tmp_path,
+                                                      monkeypatch):
+        """A screen saying "no songs here" is a screen; a traceback is not."""
+        import pickhero.config as config_module
+        from pickhero.config import Config
+        monkeypatch.setattr(config_module, "CONFIG_DIR",
+                            Path("/proc/also-nonexistent"))
+        config = Config()
+        config.songs_dir = "/proc/nonexistent/songs"
+        assert config.songs_path() == Path("/proc/nonexistent/songs")
+
+    def test_it_never_raises_whatever_the_folder_does(self, monkeypatch):
+        from pickhero.config import Config
+
+        def denied(self, *a, **k):
+            raise PermissionError(5, "Zugriff verweigert")
+
+        monkeypatch.setattr(Path, "mkdir", denied)
+        Config().songs_path()          # must not raise
+
+    def test_the_menu_shows_an_empty_list_rather_than_dying(self, monkeypatch,
+                                                            tmp_path):
+        from pickhero.config import Config
+        from pickhero.ui.menu import MenuScreen
+
+        def denied(self, *a, **k):
+            raise PermissionError(5, "Zugriff verweigert")
+
+        monkeypatch.setattr(Path, "mkdir", denied)
+        menu = MenuScreen(tmp_path / "nope", config=Config())
+        assert menu._files == []
+        assert "Cannot read" in menu._reload_note
+
+    def test_and_says_which_folder_and_why(self, monkeypatch, tmp_path):
+        from pickhero.config import Config
+        from pickhero.ui.menu import MenuScreen
+
+        def denied(self, *a, **k):
+            raise PermissionError(5, "Zugriff verweigert")
+
+        monkeypatch.setattr(Path, "mkdir", denied)
+        menu = MenuScreen(tmp_path / "downloads" / "songs", config=Config())
+        assert "songs" in menu._reload_note
+        assert "Zugriff verweigert" in menu._reload_note
