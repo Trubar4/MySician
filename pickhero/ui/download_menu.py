@@ -248,15 +248,22 @@ class DownloadMenuScreen:
         self._downloading = False
         self._progress = (1.0, "")
         if not grab.ok:
-            # WHY, then the browser. "Songsterr holds no Guitar Pro file for
-            # this tab" is a dead end the player should stop pushing on;
-            # "Songsterr did not answer" is worth another go in a minute.
-            # The first build showed neither and opened a page built from a
-            # bare id, which does not load -- so the one thing on screen was
-            # a browser saying nothing.
+            # WHY, then what to do about it. "Songsterr holds no Guitar Pro
+            # file for this tab" is not a dead end -- it means THIS request
+            # has no file behind it, and the player has a downloader of his
+            # own that does. The bar map came down anyway and is already
+            # sitting in the songs folder waiting for a tab of that name, so
+            # the useful thing to say is the NAME.
             self._notes = [grab.notes[0] if grab.notes
-                           else "The tab could not be downloaded.",
-                           "Songsterr is open in your browser."]
+                           else "The tab could not be downloaded."]
+            if grab.bars:
+                self._notes.append(f"Its bar map ({grab.bars} bars) is saved "
+                                   f"and waiting.")
+                self._notes.append(f"Fetch the tab yourself and save it in "
+                                   f"your songs folder as:")
+                self._notes.append(grab.wanted_name)
+                self._notes.append("Then the sync is already set up.")
+            self._notes.append("Songsterr is open in your browser.")
             self._status_msg = f"{name} — not downloaded"
             webbrowser.open(get_songsterr_url(result.song_id, result.title,
                                               result.artist))

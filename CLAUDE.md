@@ -2953,6 +2953,51 @@ shape is right and its zero is not. `SyncMap` keeps `base_offset_ms` as a separa
 recording 10 ms later, it is stored per song, and it survives the map being measured again. Seven presses is the answer to "70 ms too early", and
 the reason it is the right answer rather than a workaround is that a constant error has a constant correction.
 
+### The Rule Was Written Down And Then Applied By Halves
+
+*"Jetzt habe ich vor dem ersten Öffnen ein Rename gemacht. Das MP3 wurde wieder nicht gefunden."*
+
+One chapter earlier this project wrote **"the file on disk outranks the note about it"** and then checked it only for an EMPTY note. Here is the
+sequence that exposed the other half:
+
+1. the download writes `song_mp3_paths["Thunder v3"] = "<songs>/Thunder v3.mp3"`
+2. `R` moves the file to `AC-DC - Thunder.mp3` and carries the entry to the new key — **with the old file name still inside it**
+3. `mp3_path_for` finds nothing at that path, falls back to the same NAME in the songs folder, finds nothing there either, and hands back the dead
+   path
+4. `_adopt_audio_beside_tab` sees a non-empty answer and stands down
+
+A note pointing nowhere is **not "no recording"** — it is a wrong one, and the two fail differently. The adoption now runs whenever the stored path
+does not exist, and `rename_song` repoints the entry at the file it just moved. Both, because one is the correct fix and the other is the one that
+holds when something else gets it wrong.
+
+The one thing adoption must not fight is `mp3_path_for`'s own fallback — a settings file carried to a second machine points at a folder that is not
+there, and finding the same name in the songs folder is a LIVE answer, not a leftover.
+
+### A Tab Songsterr Will Not Hand Over Is Not A Dead End
+
+*"Mit dem Songsterr Downloader konnte ich das GP downloaden selbst. Das kam auch bei den nächsten 3 anderen Songs."*
+
+Four songs in a row answered `Songsterr holds no Guitar Pro file for this tab` while a third-party downloader fetched all four. **So the file
+request is the part that fails, and it is one request out of three.** The bar map is a separate call and it still works.
+
+So the download carries on. The bar map is fetched and written **next to where the tab would have gone**, and the screen says the NAME to give a
+tab fetched somewhere else:
+
+```
+Songsterr holds no Guitar Pro file for this tab (revision 88 has: ...)
+Its bar map (124 bars) is saved and waiting.
+Fetch the tab yourself and save it in your songs folder as:
+Billy Talent - Swallowed Up By The Ocean.gp5
+Then the sync is already set up.
+```
+
+Same folder, same stem is the only rule anything here follows, so the useful thing to say is the name.
+
+**And the message quotes the reply.** Reaching it means the revision WAS fetched and parsed and simply has no usable `source` — which is a
+different thing from the network being down. Whether the field moved, was renamed, or is genuinely absent for these tabs is a question the reply
+itself answers, so the keys it DID carry are named. That turns the next screenshot into the answer instead of another round of guessing at an API
+nobody here can reach.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

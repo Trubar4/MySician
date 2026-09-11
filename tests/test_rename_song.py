@@ -328,3 +328,89 @@ class TestTheEditorOwnsTheKeyboardEverywhere:
         assert app._menu.is_typing and app._menu.is_renaming
         self._press(app, pygame.K_ESCAPE)
         assert not app._menu.is_typing
+
+
+class TestRenamingBeforeTheFirstOpen:
+    """*"Jetzt habe ich vor dem ersten Öffnen ein Rename gemacht. Das MP3
+    wurde wieder nicht gefunden."*
+
+    The download writes `song_mp3_paths[key] = "<songs>/Old Name.mp3"`. The
+    rename moves the FILE and carries the ENTRY to the new key -- with the
+    old file name still inside it. So the note pointed at a file that was no
+    longer there, which is not "no recording": it is a WRONG one, and the
+    adoption that would have found the right one only ran when the note was
+    empty. The rule "the file on disk outranks the note about it" had been
+    written down and then applied by halves.
+    """
+
+    def _config_with_path(self, tmp_path, stem):
+        config = _config(stem)
+        config.set_mp3_path_for(stem, str(tmp_path / f"{stem}.mp3"))
+        return config
+
+    def test_the_stored_path_follows_the_file(self, tmp_path):
+        stem = "Thunder - Love Walked In v3"
+        tab = _song(tmp_path, stem)
+        config = self._config_with_path(tmp_path, stem)
+        remove.rename_song(tab, "AC-DC - Thunder", config)
+        assert config.mp3_path_for("AC-DC - Thunder") == str(
+            tmp_path / "AC-DC - Thunder.mp3")
+
+    def test_a_recording_that_did_not_move_is_left_pointing_at_itself(
+            self, tmp_path):
+        """His own file, somewhere else entirely. The rename did not touch
+        it and neither does this."""
+        stem = "Thunder - Love Walked In v3"
+        tab = _song(tmp_path, stem)
+        mine = tmp_path / "elsewhere.mp3"
+        mine.write_bytes(b"x")
+        config = _config(stem)
+        config.set_mp3_path_for(stem, str(mine))
+        remove.rename_song(tab, "AC-DC - Thunder", config)
+        assert config.mp3_path_for("AC-DC - Thunder") == str(mine)
+
+    def test_and_the_song_finds_it_even_if_the_note_is_wrong(self, tmp_path,
+                                                             monkeypatch):
+        """The belt to the braces: whatever the note says, a file beside the
+        tab under the tab's own stem is the recording."""
+        import pygame
+        from pickhero.audio.mp3_playback import Mp3Player
+        from pickhero.ui.scrolling import PlayingScreen
+        from tests.test_songsterr import _song as _timeline
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        tab = tmp_path / "AC-DC - Thunder.gp5"
+        tab.write_bytes(b"gp")
+        (tmp_path / "AC-DC - Thunder.mp3").write_bytes(b"x")
+        config = _config("AC-DC - Thunder")
+        # The note a rename used to leave behind: right key, dead path.
+        config.set_mp3_path_for("AC-DC - Thunder",
+                                str(tmp_path / "Old Name.mp3"))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        screen = PlayingScreen(_timeline(), config=config,
+                               song_key="AC-DC - Thunder",
+                               song_path=str(tab))
+        assert screen._mp3_path() == str(tmp_path / "AC-DC - Thunder.mp3")
+
+    def test_a_path_that_is_merely_moved_is_still_respected(self, tmp_path,
+                                                            monkeypatch):
+        """`mp3_path_for` already falls back to the same NAME in the songs
+        folder for a settings file carried to a second machine. That is a
+        live path, not a leftover, and adoption must not fight it."""
+        import pygame
+        from pickhero.audio.mp3_playback import Mp3Player
+        from pickhero.ui.scrolling import PlayingScreen
+        from tests.test_songsterr import _song as _timeline
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        tab = tmp_path / "Song.gp5"
+        tab.write_bytes(b"gp")
+        mine = tmp_path / "my take.mp3"
+        mine.write_bytes(b"x")
+        (tmp_path / "Song.mp3").write_bytes(b"x")
+        config = _config("Song")
+        config.set_mp3_path_for("Song", str(mine))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        screen = PlayingScreen(_timeline(), config=config, song_key="Song",
+                               song_path=str(tab))
+        assert screen._mp3_path() == str(mine)

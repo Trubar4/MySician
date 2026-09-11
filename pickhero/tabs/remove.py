@@ -190,6 +190,12 @@ def rename_song(tab_path, new_stem: str, config=None) -> Renamed:
         mover = getattr(config, "rename_song", None)
         if mover is not None:
             mover(tab.stem, wanted)
+        # The settings carry a PATH to the recording, and the recording has
+        # just moved. Carrying the entry to the new song key without
+        # rewriting it leaves a note pointing at a file that is no longer
+        # there -- which is not "no recording", it is a wrong one, and those
+        # fail differently.
+        _repoint_recording(config, wanted, moves)
         try:
             config.save()
         except OSError as exc:
@@ -218,3 +224,17 @@ def _carry_history(old_key: str, new_key: str) -> None:
         # The history is a bonus here, not the job. A tracker that cannot be
         # written must not take the rename down with it.
         pass
+
+
+def _repoint_recording(config, song_key: str, moves) -> None:
+    """Point the stored recording at where the file actually went."""
+    getter = getattr(config, "song_mp3_paths", None)
+    if not isinstance(getter, dict):
+        return
+    stored = str(getter.get(song_key, "") or "")
+    if not stored:
+        return
+    for source, target in moves:
+        if str(source) == stored:
+            getter[song_key] = str(target)
+            return

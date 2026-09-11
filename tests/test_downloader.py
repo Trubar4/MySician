@@ -235,3 +235,47 @@ class TestSanitizeFilename:
 
     def test_leaves_valid_chars(self):
         assert sanitize_filename("Artist - Song (Live)") == "Artist - Song (Live)"
+
+
+class TestWhyThereIsNoFile:
+    """*"Songsterr holds no Guitar Pro file for this tab"* on four songs in
+    a row, while a third-party downloader fetched all four.
+
+    Reaching that message means the revision WAS fetched and parsed and
+    simply has no usable `source`. Whether the field moved, was renamed, or
+    is genuinely absent is a question the reply itself answers -- so the
+    message quotes it, and the player's next screenshot is the answer
+    instead of another round.
+    """
+
+    def _revision(self, monkeypatch, payload):
+        from pickhero.tabs import downloader as d
+        monkeypatch.setattr(
+            d, "_fetch_json",
+            lambda url: {"revisionId": 77} if "meta" in url else payload)
+
+    def test_the_keys_that_were_there_are_named(self, monkeypatch):
+        from pickhero.tabs import downloader as d
+        self._revision(monkeypatch, {"id": 77, "attachmentUrl": "x",
+                                     "songId": 5})
+        _, why = d._source_of(1)
+        assert "attachmentUrl" in why and "songId" in why
+        assert "revision 77" in why
+
+    def test_an_empty_revision_says_nothing_rather_than_a_blank(self,
+                                                                monkeypatch):
+        from pickhero.tabs import downloader as d
+        self._revision(monkeypatch, {})
+        assert "nothing" in d._source_of(1)[1]
+
+    def test_a_source_that_is_there_is_still_just_used(self, monkeypatch):
+        from pickhero.tabs import downloader as d
+        self._revision(monkeypatch, {"source": "https://gp/x.gp5"})
+        assert d._source_of(1) == ("https://gp/x.gp5", "")
+
+    def test_a_dead_network_is_not_the_same_message(self, monkeypatch):
+        """"The network is down" and "this tab has no file" send the player
+        to completely different places."""
+        from pickhero.tabs import downloader as d
+        monkeypatch.setattr(d, "_fetch_json", lambda url: None)
+        assert "did not answer" in d._source_of(1)[1]

@@ -120,7 +120,16 @@ def _source_of(song_id: int) -> tuple[str, str]:
     source = revision.get("source")
     if isinstance(source, str) and source.startswith("http"):
         return source, ""
-    return "", "Songsterr holds no Guitar Pro file for this tab"
+    # **The keys are named.** Reaching here means the revision was fetched
+    # and parsed and simply has no usable `source` -- which is a different
+    # thing from the network being down, and the player hit it on four songs
+    # in a row while a third-party downloader fetched all four. Whether the
+    # field moved, was renamed, or is genuinely absent for these tabs is a
+    # question the reply itself answers, and a message that quotes the reply
+    # turns his next screenshot into that answer instead of another round.
+    keys = ", ".join(sorted(revision)[:8]) or "nothing"
+    return "", (f"Songsterr holds no Guitar Pro file for this tab "
+                f"(revision {revision_id} has: {keys})")
 
 
 def lookup(song_id: int) -> SongsterrResult | None:
@@ -279,6 +288,10 @@ class Grab:
     #: download screen, because a step that fails silently is a step the
     #: player will spend an evening looking for.
     notes: list[str] = field(default_factory=list)
+    #: What the tab file is called, or would be called if Songsterr had one.
+    #: The name to give a tab fetched somewhere else, so the bar map and the
+    #: audio written here find it.
+    wanted_name: str = ""
 
     @property
     def ok(self) -> bool:
@@ -321,11 +334,21 @@ def grab_song(song_id: int, output_path: str | Path,
     # it `.gp5` was a lie on disk that only did not break the app because the
     # loader reads the CONTENT. Everything after this point takes its names
     # from what was actually written.
-    out, why = download_tab(song_id, out)
-    if out is None:
+    written, why = download_tab(song_id, out)
+    if written is None:
+        # **Carry on anyway.** Songsterr does not hold a Guitar Pro file for
+        # every tab -- the player hit this on four songs in a row and
+        # fetched them himself from a third-party downloader. The bar map
+        # and the audio are a separate request and they still work, so they
+        # are still fetched and still written NEXT TO WHERE THE TAB WOULD
+        # HAVE GONE. He drops his own download in under that name and the
+        # song is set up: same folder, same stem is the only rule anything
+        # here follows.
         grab.notes.append(why or "The tab could not be downloaded.")
-        return grab
-    grab.tab_path = out
+    else:
+        out = written
+        grab.tab_path = out
+    grab.wanted_name = out.name
 
     # The bar map, cached BESIDE THE TAB. Asked for here rather than the
     # first time the player presses Ctrl+S, so the song works on a machine

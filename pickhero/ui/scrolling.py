@@ -6911,8 +6911,16 @@ class PlayingScreen:
         """
         if not self._song_key or not self._song_path:
             return ""
-        if self._mp3_path():
+        stored = self._mp3_path()
+        if stored and Path(stored).exists():
             return ""                      # the player's choice stands
+        # A stored path that leads NOWHERE is not a choice, it is a leftover.
+        # This is where the rule got applied by halves: "the file on disk
+        # outranks the note about it" was written and then only checked for
+        # an EMPTY note. Renaming a tab before its first open carries the
+        # note to the new song key with the old FILE NAME still inside it --
+        # so the recording had moved, was sitting right beside the tab, and
+        # the app reported it missing.
         tab = Path(self._song_path)
         for suffix in self.AUDIO_BESIDE:
             beside = tab.with_name(tab.stem + suffix)

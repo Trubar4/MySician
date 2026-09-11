@@ -252,10 +252,43 @@ class TestOneEnterFetchesTheSong:
             downloader, "download_tab",
             lambda sid, out: (None, "Songsterr holds no Guitar Pro file "
                                     "for this tab"))
-        grab = downloader.grab_song(1, tmp_path / "s.gp5")
+        _fake_songsterr(monkeypatch, raises=songsterr.NotFound("no map"))
+        grab = downloader.grab_song(1, tmp_path / "s.gp5", want_audio=False)
         assert not grab.ok
         assert "holds no Guitar Pro file" in grab.notes[0], \
             "the player is told to keep trying at a dead end"
+
+    def test_the_bar_map_still_comes_down_without_the_tab(self, tmp_path,
+                                                          monkeypatch):
+        """Songsterr does not hold a Guitar Pro file for every tab -- four
+        songs in a row -- and the player fetches those himself. The bar map
+        is a SEPARATE request and it still works, so it is written next to
+        where the tab would have gone."""
+        monkeypatch.setattr(downloader, "download_tab",
+                            lambda sid, out: (None, "no file for this tab"))
+        _fake_songsterr(monkeypatch)
+        grab = downloader.grab_song(2333598, tmp_path / "Thunder.gp5",
+                                    want_audio=False)
+        assert not grab.ok
+        assert grab.bars == 4
+        assert (tmp_path / "Thunder.songsterr.json").is_file()
+
+    def test_and_it_says_what_to_call_the_tab(self, tmp_path, monkeypatch):
+        """Same folder, same stem is the only rule anything here follows, so
+        the useful thing to tell him is the NAME."""
+        monkeypatch.setattr(downloader, "download_tab",
+                            lambda sid, out: (None, "no file for this tab"))
+        _fake_songsterr(monkeypatch)
+        grab = downloader.grab_song(1, tmp_path / "Billy Talent - x.gp5",
+                                    want_audio=False)
+        assert grab.wanted_name == "Billy Talent - x.gp5"
+
+    def test_a_tab_that_downloaded_reports_its_real_name(self, tmp_path,
+                                                         monkeypatch):
+        monkeypatch.setattr(downloader, "download_tab", _writes_a_tab)
+        _fake_songsterr(monkeypatch)
+        grab = downloader.grab_song(1, tmp_path / "s.gp7", want_audio=False)
+        assert grab.wanted_name == "s.gp5"        # what Songsterr held
 
     def test_no_bar_map_still_leaves_a_song_to_practise(self, tmp_path,
                                                        monkeypatch):
