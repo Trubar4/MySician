@@ -150,7 +150,13 @@ class TestTheSyncPanelIsBehindS:
         text = "  ".join(t for t, _ in screen.sync_block_lines())
         assert "Backing: -370 ms (N/M)" in text
         assert "SYNC   0:10 -257 ms" in text
-        assert "Sync:" in text          # the strike-timing offset (K)
+        assert "Your playing:" in text  # the strike-timing offset (K)
+        # NOT "Sync:". It used to be called that, sitting one line under the
+        # recording's sync in the same panel, and the player read
+        # "Sync: -108 ms — play on, still measuring" as the recording still
+        # being lined up. Two things called Sync in one panel is the panel's
+        # fault, not his.
+        assert "Sync: " not in text
 
     def test_and_none_of_it_is_on_the_screen_while_it_is_shut(self):
         screen = _screen()
@@ -506,3 +512,60 @@ class TestATabThatEndsInSilence:
             MeasureInfo(index=i, start_ms=i * 2000.0, end_ms=(i + 1) * 2000.0)
             for i in range(4)])
         assert self._screen(song)._silent_tail() is None
+
+
+class TestThePanelSaysWhereTheRecordingStands:
+    """*"Ist das die bar map? Es ist leider nicht Sync."*
+
+    He was reading two lines that are not about the recording at all: the
+    empty-bars warning, and the strike-timing offset. The panel listed the
+    sync SOURCE and the stored Songsterr id and stopped there, which reads
+    like everything is set -- and left no way to tell a song that had been
+    measured from one that never had.
+    """
+
+    def _panel(self, screen) -> str:
+        return "  ".join(t for t, _ in screen.sync_block_lines())
+
+    def _with_recording(self, tmp_path, monkeypatch):
+        from pickhero.audio.mp3_playback import Mp3Player
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+        audio = tmp_path / "take.mp3"
+        audio.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(audio))
+        # The song key is the tab's stem, so the panel needs a screen that
+        # HAS one -- `_screen()` builds a nameless song and every per-song
+        # setter is a no-op against an empty key.
+        #
+        # monkeypatch, NOT a bare assignment on the class: setting
+        # `Mp3Player.open` here once broke fourteen tests in another FILE,
+        # which is a fixture reaching outside its own test.
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        return PlayingScreen(_song(), config=config, song_key="song")
+
+    def test_an_unmeasured_recording_says_so_in_words(self, tmp_path,
+                                                       monkeypatch):
+        screen = self._with_recording(tmp_path, monkeypatch)
+        assert "NOT lined up yet" in self._panel(screen)
+
+    def test_a_measured_one_says_how_far_it_reaches(self, tmp_path,
+                                                     monkeypatch):
+        screen = self._with_recording(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for(
+            screen._song_key, [(0.0, -120.0), (125_000.0, -130.0)])
+        said = self._panel(screen)
+        assert "2 sync points" in said and "2:05" in said
+
+    def test_no_recording_means_no_line_about_one(self):
+        assert "lined up" not in self._panel(_screen())
+
+    def test_a_live_answer_outranks_the_stored_one(self, tmp_path,
+                                                    monkeypatch):
+        """A measurement that has just run has more to say than a count."""
+        screen = self._with_recording(tmp_path, monkeypatch)
+        screen._sync_lines = ["SYNC   0:10 -257 ms"]
+        said = self._panel(screen)
+        assert "SYNC   0:10 -257 ms" in said
+        assert "NOT lined up yet" not in said

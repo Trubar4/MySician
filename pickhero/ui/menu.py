@@ -56,6 +56,13 @@ class MenuScreen:
         # that looks like nothing happened is indistinguishable from a dead
         # key, and this one usually finds exactly one new file.
         self._reload_note: str = ""
+        #: The song being renamed and the name being typed, or None. A tab
+        #: downloaded from Songsterr arrives called whatever Songsterr calls
+        #: it, and that name is the song's identity everywhere: `song_key` IS
+        #: the stem, so a tidy-up in Explorer silently orphans the speed, the
+        #: recording, the sync points and the practice history.
+        self._renaming = None
+        self._rename_text: str = ""
         #: The song DEL is waiting for a second press on, or None. Deleting
         #: is the one thing on this screen that cannot be undone, and DEL
         #: sits one row from the arrow keys -- so it asks first, and the
@@ -329,6 +336,54 @@ class MenuScreen:
         """
         self._reload_note = text
 
+    def _start_rename(self) -> None:
+        """R: edit the name of the song under the cursor."""
+        path = self._selected_path()
+        if path is None:
+            self.say("Nothing selected")
+            return
+        self._renaming = path
+        self._rename_text = path.stem
+        self._delete_armed = None
+
+    def _handle_rename_key(self, event) -> None:
+        """Type, ENTER to keep, ESC to drop it."""
+        from pickhero.tabs.remove import safe_name
+        if event.key == pygame.K_ESCAPE:
+            self._renaming = None
+            self.say("Rename cancelled")
+            return None
+        if event.key == pygame.K_RETURN:
+            self._finish_rename()
+            return None
+        if event.key == pygame.K_BACKSPACE:
+            self._rename_text = self._rename_text[:-1]
+            return None
+        ch = event.unicode
+        if ch and ch.isprintable() and ch not in ("\r", "\n", "\t"):
+            # Refused as it is typed, not when ENTER fails. A colon is a
+            # rename that dies with a Windows error nobody can read, and the
+            # place to say so is the moment the key is pressed.
+            if safe_name(ch) or ch == " ":
+                self._rename_text += ch
+            else:
+                self.say(f"{ch} cannot be in a file name")
+        return None
+
+    def _finish_rename(self) -> None:
+        """Move the tab and everything keyed to its name."""
+        from pickhero.tabs.remove import rename_song
+        path, self._renaming = self._renaming, None
+        if path is None:
+            return
+        report = rename_song(path, self._rename_text, self._config)
+        # From the DISK. A rename that half happened must show itself rather
+        # than be claimed as finished.
+        self.reload_files()
+        if report.tab_path is not None:
+            self._select_path(report.tab_path)
+        self.say(report.summary())
+
     def _delete_selected(self) -> None:
         """First DEL asks, second DEL does it.
 
@@ -369,6 +424,12 @@ class MenuScreen:
                 # A note is for what just happened, not for the rest of the
                 # session. Any other key means the player has moved on.
                 self._reload_note = ""
+            # The editor owns every key while it is open. Before ESC, before
+            # the search, before DEL -- otherwise typing a song's name is a
+            # minefield of shortcuts, and `d` in "Thunderstruck" deletes it.
+            if self._renaming is not None:
+                return self._handle_rename_key(event)
+
             if event.key != pygame.K_DELETE:
                 # Moving the cursor, searching, or anything else at all
                 # answers "no". An armed delete must never outlive the
@@ -421,6 +482,12 @@ class MenuScreen:
 
             # DEL, twice. Not while typing in the search box: there DEL is
             # what somebody reaches for to fix a typo.
+            # R, next to DEL in what it touches: both act on the song under
+            # the cursor and both move more than the file.
+            if event.key == pygame.K_r and not self._search_active:
+                self._start_rename()
+                return None
+
             if event.key == pygame.K_DELETE and not self._search_active:
                 self._delete_selected()
                 return None
@@ -544,8 +611,24 @@ class MenuScreen:
             label, colour = self._search_text, t.menu_item
         else:
             label, colour = "Search  (F or /)", t.hud_text
-        surface.blit(item_font.render(label, True, colour), (box.x + 8, box.y + 2))
-        if self._reload_note:
+        # Not while renaming: the editor borrows this box, and drawing both
+        # puts two strings on top of each other.
+        if self._renaming is None:
+            surface.blit(item_font.render(label, True, colour),
+                         (box.x + 8, box.y + 2))
+        if self._renaming is not None:
+            # In the search box's place, because it is the same job -- typing
+            # into the one text field this screen has -- and a second box
+            # somewhere else is a second thing to find.
+            pygame.draw.rect(surface, t.menu_selected_bg, box, border_radius=4)
+            pygame.draw.rect(surface, t.hud_accent, box, width=1,
+                             border_radius=4)
+            surface.blit(item_font.render(f"{self._rename_text}_", True,
+                                          t.hud_accent), (box.x + 8, box.y + 2))
+            surface.blit(hint_font.render("Rename — ENTER keeps it, ESC "
+                                          "cancels", True, t.hud_accent),
+                         (box.right + 12, box.y + 6))
+        elif self._reload_note:
             note_surf = hint_font.render(self._reload_note, True, t.hud_accent)
             surface.blit(note_surf, (box.right + 12, box.y + 6))
         elif self._favourites_only:
@@ -674,7 +757,7 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  DEL: delete song  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  R: rename  |  DEL: delete song  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"

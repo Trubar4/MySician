@@ -2857,6 +2857,57 @@ copying it in by hand, which is not pasting. The tkinter that does it moved to `
 box draws the **tail** of a long query: the id lives on the end, and a caret that has walked off the right edge looks like a box that stopped
 taking input.
 
+### Two Things Called Sync In One Panel
+
+The player opened the sync panel, read it, and reported the recording as out of sync:
+
+```
+SYNC   this tab runs to 4:55 but its last note is at 4:03 — 14 empty bars at the end
+SYNC   source: listen, then Songsterr if that fails | Songsterr 2407981 stored | Alt+S changes it
+Sync: -108 ms  — play on, still measuring
+```
+
+*"Ist das die bar map? Es ist leider nicht Sync."*
+
+**Not one of those three lines is about the recording.** The first is the empty-bars explanation for the clock. The second is a setting. And the
+third — the one he read as "still lining the recording up" — is the **strike-timing offset**, which measures how late HIS PLAYING arrives through
+the microphone and the sound card, and which touches the recording not at all. It was called `Sync:` and it sat one line under the recording's own
+sync in the same panel. Two different things called Sync, eight pixels apart. That is the panel's fault, not his: it is now `Your playing: +0 ms (K)`.
+
+**And the panel could not say whether the recording was lined up at all.** It listed the source and the stored Songsterr id and stopped, which reads
+like everything is set — so a song that had been measured and a song that never had looked identical. `_recording_sync_line` says which:
+
+- no recording → nothing, there is nothing to line up
+- a recording and no points → `the recording is NOT lined up yet — Ctrl+S measures it`
+- points → `lined up: 3 sync points out to 4:12   |   Ctrl+S measures again`
+
+A live measurement still outranks the stored count. This is the project's own rule turned on its own status panel: a state that cannot be read off
+the screen is indistinguishable from a broken one, and the player spent a round asking the app a question the app was already holding the answer to.
+
+### R Renames The Song, Not The File
+
+*"Brauche eine Rename Song Möglichkeit in Taboverview."*
+
+A tab from Songsterr arrives called `Thunder - Love Walked In v3`, and the player wants it tidy. But **the name is the song's identity**: `song_key`
+IS the tab's stem. Renaming in Explorer leaves the speed, the recording, the sync points, the Songsterr id, the transpose **and the practice
+history** behind under the old name — looking like a rename that wiped the setup, with the leftovers waiting to be inherited by the next song that
+takes the old name.
+
+So `R` moves all of it: the tab, the bar map, the audio beside it, every per-song setting, and the progress record. `Config.rename_song` walks the
+dataclass fields exactly as `forget_song` does — a hand-written list would be wrong in the same way, and the failure shows up as one setting quietly
+lost months later.
+
+Three things it refuses to get wrong:
+
+- **A name already taken moves nothing**, checked before the first `rename()`. A half-done rename leaves the tab under one name and its recording
+  under another, which is worse than not renaming at all.
+- **A character Windows refuses never reaches the box.** A colon is a rename that dies with an error nobody can read; the place to say so is the
+  keypress, not the ENTER.
+- **The editor owns every key while it is open.** Otherwise typing a name is a minefield — `d` in "Thunderstruck" arms the delete, `f` opens the
+  search, ESC leaves the song list.
+
+Afterwards the list is re-read from the disk and the cursor follows the song to its new name.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

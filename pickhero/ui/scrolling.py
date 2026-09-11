@@ -4032,6 +4032,15 @@ class PlayingScreen:
         exactly that state, which is the state Shift+K produces -- so the one
         key whose whole job is to put the offset back to zero looked like it
         had done nothing at all.
+
+        **It used to be called "Sync:", and it sits in the SYNC panel one
+        line under the recording's sync.** So the player read *"Sync: -108 ms
+        — play on, still measuring"* as the recording still being lined up
+        and reported the recording as out of sync. It is a different
+        measurement of a different thing: how late HIS PLAYING reaches the
+        app through the microphone and the sound card. Nothing here touches
+        the recording. Two things called Sync in one panel is the panel's
+        fault, not the player's.
         """
         offset = self._config.audio_latency_offset_ms
         if self._audio_enabled and self._matcher is not None:
@@ -4043,11 +4052,12 @@ class PlayingScreen:
                 # can help.
                 spread = self._matcher.timing_spread_ms()
                 spread_text = f"  ±{int(spread):d} ms" if spread is not None else ""
-                return (f"Sync: {int(offset):+d} ms  |  strikes "
+                return (f"Your playing: {int(offset):+d} ms (K)  |  strikes "
                         f"{int(abs(err)):d} ms {'late' if err > 0 else 'early'}"
                         f"{spread_text} {self._sync_advice()}",
                         "hud_accent" if abs(err) > 20 else "hud_text")
-        return (f"Sync: {int(offset):+d} ms  {self._sync_advice()}", "hud_text")
+        return (f"Your playing: {int(offset):+d} ms (K)  "
+                f"{self._sync_advice()}", "hud_text")
 
     def sync_block_lines(self) -> list[tuple[str, str]]:
         """Everything about lining sound up against the notes, in one place.
@@ -4084,6 +4094,9 @@ class PlayingScreen:
         latency = self._latency_line()
         if latency:
             out.append(latency)
+        standing = self._recording_sync_line()
+        if standing:
+            out.append((standing, "hud_text"))
         if self._auto_sync_line():
             out.append((self._auto_sync_line(), "hud_accent"))
         else:
@@ -4092,6 +4105,30 @@ class PlayingScreen:
             if beyond:
                 out.append((beyond, "feedback_close"))
         return out
+
+    def _recording_sync_line(self) -> str:
+        """Where the RECORDING's sync stands, when nothing has just measured.
+
+        The panel listed the source and the stored Songsterr id and stopped,
+        which reads like everything is set -- and the player could not tell a
+        song that had been measured from one that never had. He asked the
+        question straight out: *"Ist das die bar map? Es ist leider nicht
+        Sync."* Neither line was about the recording at all.
+
+        So the state is said. Nothing here measures anything; it reports what
+        is on disk, which is the one thing the panel could not do.
+        """
+        if self._auto_sync_thread is not None or self._sync_lines:
+            return ""                      # a live answer outranks a stored one
+        if not self._mp3_path():
+            return ""                      # no recording, nothing to line up
+        points = self._mp3_anchors()
+        if not points:
+            return ("SYNC   the recording is NOT lined up yet — "
+                    "Ctrl+S measures it")
+        covered = format_time(max(t for t, _ in points))
+        return (f"SYNC   lined up: {len(points)} sync points out to {covered}"
+                f"   |   Ctrl+S measures again")
 
     def _toggle_sync_block(self) -> None:
         """S: show what is going on with the sound, or put it away again."""

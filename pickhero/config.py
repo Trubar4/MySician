@@ -269,6 +269,32 @@ class Config:
             dropped.append("favourites")
         return dropped
 
+    def rename_song(self, old_key: str, new_key: str) -> list[str]:
+        """Carry every per-song setting to a new name. Returns what moved.
+
+        The mirror of `forget_song`, and found the same way rather than
+        listed, for the same reason: a tenth per-song dict added later must
+        not be the one setting a rename silently loses.
+
+        An existing entry under the NEW name is overwritten -- the caller has
+        already established that the new name's files are free, so anything
+        left under it belongs to a song that is gone.
+        """
+        moved: list[str] = []
+        if not old_key or not new_key or old_key == new_key:
+            return moved
+        for entry in fields(self):
+            if not entry.name.startswith("song_"):
+                continue
+            held = getattr(self, entry.name, None)
+            if isinstance(held, dict) and old_key in held:
+                held[new_key] = held.pop(old_key)
+                moved.append(entry.name)
+        if old_key in (self.favourites or []):
+            self.favourites[self.favourites.index(old_key)] = new_key
+            moved.append("favourites")
+        return moved
+
     def set_favourite(self, song_key: str, favourite: bool) -> None:
         """Star a song, or take the star off. Idempotent either way."""
         if not song_key:

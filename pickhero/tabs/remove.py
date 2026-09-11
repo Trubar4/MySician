@@ -1,4 +1,4 @@
-"""Delete a song and everything the app put there for it.
+"""Move or delete a song and everything the app put there for it.
 
 *"Ich brauche eine Möglichkeit Tabs inkl. allem (außer History) zu löschen."*
 
@@ -101,3 +101,120 @@ def delete_song(tab_path, config=None) -> Removed:
         except OSError as exc:
             out.failed.append(f"settings ({exc.strerror or exc})")
     return out
+
+
+# ── Renaming ────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Renamed:
+    """What moved, and what would not."""
+
+    old_key: str = ""
+    new_key: str = ""
+    files: list[Path] = field(default_factory=list)
+    tab_path: Path | None = None
+    failed: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed and self.tab_path is not None
+
+    def summary(self) -> str:
+        if self.failed:
+            return f"Could not rename {self.old_key}: {self.failed[0]}"
+        extra = len(self.files) - 1
+        also = f" and {extra} file" + ("s" if extra != 1 else "") if extra else ""
+        return f"Renamed to {self.new_key}{also}. Settings and history kept."
+
+
+def safe_name(text: str) -> str:
+    """A name Windows will actually accept, or "" if nothing is left.
+
+    The player types this, so it is checked here rather than trusted: a
+    colon or a slash in a tab name is a rename that fails with an error he
+    has no way to interpret, and a leading dot is a file he cannot see.
+    """
+    import re
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", text or "").strip(" .")
+    return cleaned
+
+
+def rename_song(tab_path, new_stem: str, config=None) -> Renamed:
+    """Rename a tab, and take its bar map, audio and settings with it.
+
+    **The settings travel because `song_key` IS the stem.** Renaming the tab
+    alone would leave the speed, the recording, the sync points, the
+    Songsterr id and the transpose behind under the old name -- looking to
+    the player like a rename that quietly wiped the song's setup, and
+    waiting to be inherited by the next song that takes the old name.
+
+    The practice history is keyed the same way, and it moves too: it is a
+    record of playing THIS PIECE, and the piece did not change.
+
+    Never raises. Nothing is moved unless the new name is free.
+    """
+    tab = Path(tab_path)
+    out = Renamed(old_key=tab.stem, new_key=new_stem)
+
+    wanted = safe_name(new_stem)
+    if not wanted:
+        out.failed.append("that name has no usable characters")
+        return out
+    out.new_key = wanted
+    if wanted == tab.stem:
+        out.tab_path = tab
+        return out                         # nothing to do, and not an error
+
+    moves = [(p, p.with_name(wanted + p.name[len(tab.stem):]))
+             for p in belongings(tab)]
+    clash = [b for _, b in moves if b.exists()]
+    if clash:
+        # Checked BEFORE anything moves. A half-done rename leaves a tab
+        # under one name and its recording under another, which is worse
+        # than not renaming at all.
+        out.failed.append(f"{clash[0].name} is already there")
+        return out
+
+    for source, target in moves:
+        try:
+            source.rename(target)
+            out.files.append(target)
+            if target.suffix == tab.suffix:
+                out.tab_path = target
+        except OSError as exc:
+            out.failed.append(f"{source.name} ({exc.strerror or exc})")
+            return out
+
+    if config is not None:
+        mover = getattr(config, "rename_song", None)
+        if mover is not None:
+            mover(tab.stem, wanted)
+        try:
+            config.save()
+        except OSError as exc:
+            out.failed.append(f"settings ({exc.strerror or exc})")
+    _carry_history(tab.stem, wanted)
+    return out
+
+
+def _carry_history(old_key: str, new_key: str) -> None:
+    """Move the practice record too. Silent when there is nothing to move.
+
+    A rename is not a new piece. Losing the best-ever score for a song
+    because its file was given a tidier name is the kind of thing nobody
+    notices until they go looking for it months later.
+    """
+    try:
+        from pickhero.progress import ProgressTracker
+        tracker = ProgressTracker()
+        record = tracker.get_best(old_key)
+        if record is None:
+            return
+        tracker._data[new_key] = record
+        tracker._data.pop(old_key, None)
+        tracker._save()
+    except Exception:
+        # The history is a bonus here, not the job. A tracker that cannot be
+        # written must not take the rename down with it.
+        pass
