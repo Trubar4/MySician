@@ -237,45 +237,93 @@ class TestSanitizeFilename:
         assert sanitize_filename("Artist - Song (Live)") == "Artist - Song (Live)"
 
 
-class TestWhyThereIsNoFile:
+class TestFindingARevisionThatStillHasAFile:
     """*"Songsterr holds no Guitar Pro file for this tab"* on four songs in
     a row, while a third-party downloader fetched all four.
 
-    Reaching that message means the revision WAS fetched and parsed and
-    simply has no usable `source`. Whether the field moved, was renamed, or
-    is genuinely absent is a question the reply itself answers -- so the
-    message quotes it, and the player's next screenshot is the answer
-    instead of another round.
+    The player's own data for Papa Roach 14907 says what is going on:
+    revision 6688469 has **no `source` key at all**, and its
+    `prevRevisionId` 5981666 has **`"source": ""`**. Songsterr keeps these
+    tabs in their own format -- per-track hashes, an `audioV4` mix -- and a
+    Guitar Pro file exists only where somebody uploaded one. But every
+    revision links to the one before it, so the history is walkable.
     """
 
-    def _revision(self, monkeypatch, payload):
-        from pickhero.tabs import downloader as d
-        monkeypatch.setattr(
-            d, "_fetch_json",
-            lambda url: {"revisionId": 77} if "meta" in url else payload)
+    #: Trimmed to the shape that matters, from the reply the player sent.
+    PAPA_ROACH = {
+        6688469: {"revisionId": 6688469, "songId": 14907,
+                  "artist": "Papa Roach", "audioV4": "v4-SKh",
+                  "prevRevisionId": 5981666},
+        5981666: {"revisionId": 5981666, "songId": 14907, "source": "",
+                  "prevRevisionId": 4100000},
+        4100000: {"revisionId": 4100000,
+                  "source": "https://gp.songsterr.com/x.gp5"},
+    }
 
-    def test_the_keys_that_were_there_are_named(self, monkeypatch):
+    def _songsterr(self, monkeypatch, revisions, latest=6688469):
         from pickhero.tabs import downloader as d
-        self._revision(monkeypatch, {"id": 77, "attachmentUrl": "x",
-                                     "songId": 5})
-        _, why = d._source_of(1)
-        assert "attachmentUrl" in why and "songId" in why
-        assert "revision 77" in why
 
-    def test_an_empty_revision_says_nothing_rather_than_a_blank(self,
-                                                                monkeypatch):
-        from pickhero.tabs import downloader as d
-        self._revision(monkeypatch, {})
-        assert "nothing" in d._source_of(1)[1]
+        def fetch(url):
+            if "meta" in url:
+                return {"revisionId": latest}
+            return revisions.get(int(url.rsplit("/", 1)[-1]))
 
-    def test_a_source_that_is_there_is_still_just_used(self, monkeypatch):
+        monkeypatch.setattr(d, "_fetch_json", fetch)
+
+    def test_the_walk_finds_the_older_revision_that_has_one(self,
+                                                            monkeypatch):
         from pickhero.tabs import downloader as d
-        self._revision(monkeypatch, {"source": "https://gp/x.gp5"})
-        assert d._source_of(1) == ("https://gp/x.gp5", "")
+        self._songsterr(monkeypatch, self.PAPA_ROACH)
+        url, revision, why = d._source_of(14907)
+        assert url == "https://gp.songsterr.com/x.gp5"
+        assert why == ""
+
+    def test_and_says_which_revision_it_came_from(self, monkeypatch):
+        """The bar map has to come from the SAME one: a tab from revision N
+        timed by a map from revision N+6 is two different edits of the song
+        pretending to be one."""
+        from pickhero.tabs import downloader as d
+        self._songsterr(monkeypatch, self.PAPA_ROACH)
+        assert d._source_of(14907)[1] == 4100000
+
+    def test_an_empty_source_string_does_not_count(self, monkeypatch):
+        """Revision 5981666 has `"source": ""`. A key that is there and
+        empty is not a file."""
+        from pickhero.tabs import downloader as d
+        self._songsterr(monkeypatch, {
+            5981666: {"source": ""}}, latest=5981666)
+        assert d._source_of(1)[0] == ""
+
+    def test_a_history_with_no_file_anywhere_says_how_far_it_looked(
+            self, monkeypatch):
+        """"No file" said of one revision is a guess; said of eight it is a
+        finding."""
+        from pickhero.tabs import downloader as d
+        chain = {n: {"revisionId": n, "audioV4": "x", "prevRevisionId": n - 1}
+                 for n in range(100, 80, -1)}
+        self._songsterr(monkeypatch, chain, latest=100)
+        url, _, why = d._source_of(1)
+        assert url == ""
+        assert f"{d.SOURCE_HOPS} revisions checked" in why
+        assert "audioV4" in why, "the keys it did find are named"
+
+    def test_it_stops_rather_than_looping_on_a_self_referencing_history(
+            self, monkeypatch):
+        from pickhero.tabs import downloader as d
+        self._songsterr(monkeypatch, {7: {"revisionId": 7,
+                                          "prevRevisionId": 7}}, latest=7)
+        assert d._source_of(1)[0] == ""
+
+    def test_a_source_on_the_newest_revision_is_taken_at_once(self,
+                                                              monkeypatch):
+        from pickhero.tabs import downloader as d
+        self._songsterr(monkeypatch, {9: {"source": "https://gp/x.gp5"}},
+                        latest=9)
+        assert d._source_of(1) == ("https://gp/x.gp5", 9, "")
 
     def test_a_dead_network_is_not_the_same_message(self, monkeypatch):
         """"The network is down" and "this tab has no file" send the player
         to completely different places."""
         from pickhero.tabs import downloader as d
         monkeypatch.setattr(d, "_fetch_json", lambda url: None)
-        assert "did not answer" in d._source_of(1)[1]
+        assert "did not answer" in d._source_of(1)[2]

@@ -433,6 +433,17 @@ class MenuScreen:
         self.reload_files()
         self.say(report.summary())
 
+    def copy_text(self) -> str:
+        """The song list as text, with the note under it."""
+        out = ["MySician — songs"]
+        if self._search_text:
+            out.append(f"Search: {self._search_text}")
+        if self._reload_note:
+            out.append(self._reload_note)
+        out += [f"{'> ' if p == self._selected_path() else '  '}{p.stem}"
+                for p in self._display_files]
+        return "\n".join(out)
+
     def handle_event(self, event: pygame.event.Event) -> Path | str | None:
         """Process input. Returns Path (file selected), "escape" (quit), or None."""
         files = self._display_files
@@ -775,12 +786,12 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  R: rename  |  DEL: delete song  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"
             fav = "on" if self._favourites_only else "off"
-            hint = f"F or /: search  |  M: favourite (Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+            hint = f"F or /: search  |  M: favourite (Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
         # The build, bottom right and out of the way. It is asked for
         # exactly once per report -- "which version are you running" --
         # and answering it has cost several rounds.

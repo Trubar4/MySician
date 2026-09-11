@@ -2998,6 +2998,51 @@ different thing from the network being down. Whether the field moved, was rename
 itself answers, so the keys it DID carry are named. That turns the next screenshot into the answer instead of another round of guessing at an API
 nobody here can reach.
 
+### The Newest Revision Has No File, And An Older One Does
+
+The player sent the two replies for Papa Roach 14907 and they answer the question outright:
+
+| revision | what it carries |
+|---|---|
+| 6688469 (latest) | `aiGenerated, artist, audioV4, audioV4Midi, audios, tracks[].hash` — **no `source` key at all** |
+| 5981666 (`prevRevisionId`) | the same, plus **`"source": ""`** |
+
+**Songsterr keeps these tabs in their own format** — a hash per track, an `audioV4` mix — and a Guitar Pro file exists only where somebody uploaded
+one. That is why a third-party downloader can produce a `.gp` for a tab this app cannot fetch: it *builds* one from Songsterr's own data rather than
+finding a file.
+
+But every revision carries `prevRevisionId`, so **the history is walkable**. `_source_of` follows it up to `SOURCE_HOPS = 8` and takes the first
+revision with a real `source`. Eight because the walk costs one request per hop and a tab edited daily for a fortnight is not the same tab any more
+— past that the bar count moves, and a bar map whose count differs is refused anyway, which is the safety net this leans on.
+
+**And the revision comes back with the URL, because the bar map has to come from the same one.** A file from revision N timed by a per-bar map from
+revision N+6 is two different edits of the song pretending to be one, and the drift would read as a bad measurement rather than as a mismatch.
+`grab_song` asks for the found revision's video points first and falls back to the latest, since an old revision may have none at all.
+
+Two details that are the difference between working and nearly working: **`"source": ""` is not a file** — a key that is present and empty has to
+fail the same test as a missing one — and the walk stops on a revision it has already seen, because a history that points at itself is a loop.
+
+When the walk finds nothing it says how far it looked: *"8 revisions checked back to 4100000 (it has: aiGenerated, artist, audioV4…)"*. "No file"
+said of one revision is a guess; said of eight it is a finding.
+
+### Ctrl+C Copies The Screen
+
+*"Kannst du etwas bauen, damit ich Text am Screen mit der Maus markieren und kopieren kann, oder wenigstens ein generelles Ctrl+C?"*
+
+Asked after reading a 200-character error off a **photograph of his monitor** and typing it back here to be diagnosed. Mouse selection would mean
+laying out every string as characters with hit boxes, in a window whose entire job is drawing music. Copying the whole screen costs one key and
+answers the same need.
+
+It lives in `App._process_events`, next to the key-repeat guard and for the same reason: **that is the one door every screen's events come
+through**, and a screen added later would otherwise have to remember. Each screen offers a `copy_text()`; one without it says so rather than
+copying an empty string and looking like a key that does nothing.
+
+**No text-box exception.** The first version guarded it behind "is anything being typed" — which would have switched it off on the search screen,
+the exact screen it was asked for. Ctrl+C is a modified key and no box on any screen wants it.
+
+One thing the tkinter needs: its clipboard is emptied when the interpreter is destroyed, so the hidden window is kept alive for one `update()`
+after the append. Without it the copy appears to work and the paste comes back empty.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

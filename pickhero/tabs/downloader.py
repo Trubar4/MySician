@@ -91,47 +91,6 @@ def search(query: str, max_results: int = 10) -> list[SongsterrResult]:
     return results
 
 
-def _source_of(song_id: int) -> tuple[str, str]:
-    """(the GP file's URL, why there is not one). Exactly one is filled in.
-
-    Two API calls:
-        1. /api/meta/{songId} → revisionId
-        2. /api/revision/{revisionId} → source URL
-
-    **The reason is returned, not swallowed.** "Songsterr has no file for
-    this tab" and "the network is down" are the same empty result and
-    completely different problems, and the first build reported both by
-    opening a browser at a page that did not load. Not every tab on
-    Songsterr has a source file behind it -- some exist only in their own
-    format -- and a player who is told that stops trying.
-    """
-    meta = _fetch_json(f"{SONGSTERR_META_URL}/{song_id}")
-    if not isinstance(meta, dict):
-        return "", "Songsterr did not answer for this song"
-
-    revision_id = meta.get("revisionId")
-    if not revision_id:
-        return "", "Songsterr has no revision for this tab"
-
-    revision = _fetch_json(f"{SONGSTERR_REVISION_URL}/{revision_id}")
-    if not isinstance(revision, dict):
-        return "", f"Songsterr did not answer for revision {revision_id}"
-
-    source = revision.get("source")
-    if isinstance(source, str) and source.startswith("http"):
-        return source, ""
-    # **The keys are named.** Reaching here means the revision was fetched
-    # and parsed and simply has no usable `source` -- which is a different
-    # thing from the network being down, and the player hit it on four songs
-    # in a row while a third-party downloader fetched all four. Whether the
-    # field moved, was renamed, or is genuinely absent for these tabs is a
-    # question the reply itself answers, and a message that quotes the reply
-    # turns his next screenshot into that answer instead of another round.
-    keys = ", ".join(sorted(revision)[:8]) or "nothing"
-    return "", (f"Songsterr holds no Guitar Pro file for this tab "
-                f"(revision {revision_id} has: {keys})")
-
-
 def lookup(song_id: int) -> SongsterrResult | None:
     """One song by its id, or None if Songsterr does not have it.
 
@@ -183,6 +142,72 @@ def find(query: str, max_results: int = 10) -> list[SongsterrResult]:
     return direct + others
 
 
+#: How far back through a tab's history to look for a revision that still
+#: has a file behind it. Eight because the walk costs one request per hop
+#: and a tab edited daily for a fortnight is not the same tab any more --
+#: past that the bar count starts to move, and a bar map whose count differs
+#: is refused anyway.
+SOURCE_HOPS = 8
+
+
+def _source_of(song_id: int) -> tuple[str, int, str]:
+    """(the GP file's URL, the revision it came from, why there is none).
+
+    Two API calls per revision:
+        1. /api/meta/{songId} -> revisionId
+        2. /api/revision/{revisionId} -> source URL
+
+    **The newest revision often has no file, and an older one does.** Read
+    off the player's own data for Papa Roach 14907: revision 6688469 has no
+    `source` key at all, and its `prevRevisionId` 5981666 has `"source": ""`.
+    Songsterr keeps these tabs in their own format -- per-track hashes, an
+    `audioV4` mix -- and a Guitar Pro file exists only where somebody
+    uploaded one. Since every revision links to the one before it the
+    history is walkable, and an earlier revision of the same tab is very
+    nearly the same tab.
+
+    The revision comes back as well as the URL because **the bar map has to
+    come from the same one**. A file from revision N against a per-bar map
+    from revision N+6 is two different edits of the song pretending to be
+    one, and the drift would read as a bad measurement.
+
+    **The reason is returned, not swallowed.** "Songsterr has no file for
+    this tab" and "the network is down" are the same empty result and
+    completely different problems, and the first build reported both by
+    opening a browser at a page that did not load.
+    """
+    meta = _fetch_json(f"{SONGSTERR_META_URL}/{song_id}")
+    if not isinstance(meta, dict):
+        return "", 0, "Songsterr did not answer for this song"
+
+    revision_id = meta.get("revisionId")
+    if not revision_id:
+        return "", 0, "Songsterr has no revision for this tab"
+
+    seen: list[int] = []
+    last_keys = "nothing"
+    while revision_id and revision_id not in seen and len(seen) < SOURCE_HOPS:
+        seen.append(revision_id)
+        revision = _fetch_json(f"{SONGSTERR_REVISION_URL}/{revision_id}")
+        if not isinstance(revision, dict):
+            if len(seen) == 1:
+                return "", 0, (f"Songsterr did not answer for revision "
+                               f"{revision_id}")
+            break                     # the walk ran out, not the network
+        source = revision.get("source")
+        if isinstance(source, str) and source.startswith("http"):
+            return source, int(revision_id), ""
+        last_keys = ", ".join(sorted(revision)[:8]) or "nothing"
+        revision_id = revision.get("prevRevisionId")
+
+    # Named with what was actually looked at. "Songsterr holds no file" said
+    # of one revision is a guess; said of eight it is a finding.
+    plural = "s" if len(seen) != 1 else ""
+    return "", 0, (f"Songsterr holds no Guitar Pro file for this tab - "
+                   f"{len(seen)} revision{plural} checked back to "
+                   f"{seen[-1] if seen else 0} (it has: {last_keys})")
+
+
 def _get_source_url(song_id: int) -> str | None:
     """The GP file's URL, or None. Kept for callers that want just the URL."""
     return _source_of(song_id)[0] or None
@@ -220,29 +245,30 @@ def suffix_for(source_url: str) -> str:
     return found if found in GP_EXTENSIONS else ".gp5"
 
 
-def download_tab(song_id: int, output_path: str | Path) -> tuple[Path | None,
-                                                                 str]:
-    """Download a tab. Returns (what was written, why nothing was).
+def download_tab(song_id: int,
+                 output_path: str | Path) -> tuple[Path | None, int, str]:
+    """Download a tab. Returns (what was written, its revision, why not).
 
     `output_path`'s SUFFIX IS REPLACED by whatever Songsterr actually holds
-    -- the caller knows the name, not the format.
+    -- the caller knows the name, not the format. The revision comes back so
+    the bar map can be asked for from the SAME edit of the song.
     """
-    source_url, why = _source_of(song_id)
+    source_url, revision_id, why = _source_of(song_id)
     if not source_url:
-        return None, why
+        return None, 0, why
 
     try:
         file_data = _urlopen(source_url)
     except (urllib.error.URLError, OSError) as exc:
-        return None, f"The file could not be fetched: {exc}"
+        return None, 0, f"The file could not be fetched: {exc}"
 
     output = Path(output_path).with_suffix(suffix_for(source_url))
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(file_data)
     except OSError as exc:
-        return None, f"It could not be saved: {exc}"
-    return output, ""
+        return None, 0, f"It could not be saved: {exc}"
+    return output, revision_id, ""
 
 
 def download_gp5(song_id: int, output_path: str | Path) -> bool:
@@ -334,7 +360,7 @@ def grab_song(song_id: int, output_path: str | Path,
     # it `.gp5` was a lie on disk that only did not break the app because the
     # loader reads the CONTENT. Everything after this point takes its names
     # from what was actually written.
-    written, why = download_tab(song_id, out)
+    written, revision_id, why = download_tab(song_id, out)
     if written is None:
         # **Carry on anyway.** Songsterr does not hold a Guitar Pro file for
         # every tab -- the player hit this on four songs in a row and
@@ -356,7 +382,22 @@ def grab_song(song_id: int, output_path: str | Path,
     step(0.35, "asking Songsterr for its bar map")
     try:
         meta = songsterr.fetch_meta(song_id)
-        entries = songsterr.fetch_entries(song_id, int(meta["revisionId"]))
+        # THE REVISION THE FILE CAME FROM, where there was one. The newest
+        # revision often has no Guitar Pro file and an older one does, and a
+        # tab from revision N timed by a map from revision N+6 is two
+        # different edits of the song pretending to be one. The latest is
+        # the fallback, because an old revision may have no video points at
+        # all -- and a map from the wrong edit is refused later on its bar
+        # count anyway, which is the safety net this leans on.
+        entries = []
+        if revision_id and revision_id != int(meta["revisionId"]):
+            try:
+                entries = songsterr.fetch_entries(song_id, revision_id)
+            except songsterr.NotFound:
+                entries = []
+        if not songsterr.all_bar_times(entries):
+            entries = songsterr.fetch_entries(song_id,
+                                              int(meta["revisionId"]))
         songsterr.save_cache(out, song_id, meta, entries)
     except songsterr.NotFound as exc:
         grab.notes.append(f"No bar map: {exc}")

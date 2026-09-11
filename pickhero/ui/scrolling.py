@@ -5343,6 +5343,33 @@ class PlayingScreen:
 
     STATUS_NOTE_SECONDS = 8.0
 
+    def say(self, text: str) -> None:
+        """The public name for `_say`, so the App can report into it.
+
+        Ctrl+C is handled once for every screen, and it answers in the place
+        that screen already puts its notes.
+        """
+        self._say(text)
+
+    def copy_text(self) -> str:
+        """The song's whole HUD as text, sync panel included.
+
+        The panel is where every number this project argues about lives --
+        the sync points, the bar map, the offsets, the tuning -- and the
+        player was reading them off a photograph of his monitor.
+        """
+        out = [f"Song: {self._song_key}"]
+        try:
+            out += [t for t, _ in self.tuning_segments()]
+            out += [t for t, _ in self.sync_block_lines()]
+            out += [t for t, _ in self._left_notes()]
+            out += [t for t, _ in self.footer_segments()]
+        except Exception:
+            # A HUD that cannot describe itself must not take the key down
+            # with it: half the lines copied beats a traceback.
+            pass
+        return "\n".join(line for line in out if line)
+
     def _say(self, text: str) -> None:
         """Put one line on screen for a few seconds.
 
@@ -5773,6 +5800,13 @@ class PlayingScreen:
                 ("V: chord scoring", "one string is enough"
                  if self._chord_partial_credit else "every string"),
                 ("T: theme", self._config.theme),
+                # Every screen answers it, so it is written down on the one
+                # screen that lists keys. A feature nobody can find is one
+                # the player has not got -- and this one exists because he
+                # was reading error messages off a photograph of his
+                # monitor.
+                ("Ctrl+C: copy everything on this screen to the clipboard",
+                 "works on every screen"),
                 ("F: fret limit", f"up to fret {self._max_fret}"),
                 # Low string first, the order a guitarist names them in and
                 # the reverse of the index: active_strings[0] is the high e.

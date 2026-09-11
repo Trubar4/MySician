@@ -196,7 +196,7 @@ def _writes_a_tab(song_id, out):
     from pathlib import Path
     written = Path(out).with_suffix(".gp5")
     written.write_bytes(b"gp")
-    return written, ""
+    return written, 0, ""
 
 
 def _fake_songsterr(monkeypatch, entries=ENTRIES, raises=None):
@@ -250,8 +250,8 @@ class TestOneEnterFetchesTheSong:
                                                    monkeypatch):
         monkeypatch.setattr(
             downloader, "download_tab",
-            lambda sid, out: (None, "Songsterr holds no Guitar Pro file "
-                                    "for this tab"))
+            lambda sid, out: (None, 0, "Songsterr holds no Guitar Pro file "
+                                       "for this tab"))
         _fake_songsterr(monkeypatch, raises=songsterr.NotFound("no map"))
         grab = downloader.grab_song(1, tmp_path / "s.gp5", want_audio=False)
         assert not grab.ok
@@ -265,7 +265,8 @@ class TestOneEnterFetchesTheSong:
         is a SEPARATE request and it still works, so it is written next to
         where the tab would have gone."""
         monkeypatch.setattr(downloader, "download_tab",
-                            lambda sid, out: (None, "no file for this tab"))
+                            lambda sid, out: (None, 0,
+                                              "no file for this tab"))
         _fake_songsterr(monkeypatch)
         grab = downloader.grab_song(2333598, tmp_path / "Thunder.gp5",
                                     want_audio=False)
@@ -277,7 +278,8 @@ class TestOneEnterFetchesTheSong:
         """Same folder, same stem is the only rule anything here follows, so
         the useful thing to tell him is the NAME."""
         monkeypatch.setattr(downloader, "download_tab",
-                            lambda sid, out: (None, "no file for this tab"))
+                            lambda sid, out: (None, 0,
+                                              "no file for this tab"))
         _fake_songsterr(monkeypatch)
         grab = downloader.grab_song(1, tmp_path / "Billy Talent - x.gp5",
                                     want_audio=False)

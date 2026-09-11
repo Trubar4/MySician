@@ -322,6 +322,25 @@ class App:
                 # caller went on drawing to the one it already had.
                 self._apply_display_mode((event.w, event.h))
 
+            # Ctrl+C, on every screen, before anything else can claim it.
+            # *"Kannst du etwas bauen, damit ich Text am Screen markieren
+            # und kopieren kann, oder wenigstens ein generelles Ctrl+C?"* --
+            # asked after typing a 200-character error message back to be
+            # diagnosed, read off a photograph of a monitor.
+            #
+            # Here rather than on each screen, for the same reason the key
+            # repeat guard is here: this is the one door every screen's
+            # events come through, and a screen added later would otherwise
+            # have to remember.
+            # No text-box exception: Ctrl+C is a MODIFIED key and no box on
+            # any screen wants it. Guarding it behind "is anything being
+            # typed" would have switched it off on the search screen, which
+            # is the exact screen it was asked for.
+            if (event.type == pygame.KEYDOWN and event.key == pygame.K_c
+                    and event.mod & pygame.KMOD_CTRL):
+                self._copy_screen()
+                continue
+
             if self._state == "menu":
                 self._handle_menu_event(event)
             elif self._state == "playing":
@@ -336,6 +355,44 @@ class App:
                 self._handle_tuner_event(event)
             elif self._state == "settings":
                 self._handle_settings_event(event)
+
+    def _current_screen(self):
+        """Whatever is being drawn right now, or None."""
+        return {
+            "menu": self._menu,
+            "playing": self._playing_screen,
+            "device": self._device_menu,
+            "download": self._download_menu,
+            "calibration": self._calibration_menu,
+            "tuner": self._tuner_menu,
+            "settings": self._settings_menu,
+        }.get(self._state)
+
+    def _copy_screen(self) -> None:
+        """Put the current screen's text on the clipboard.
+
+        Selecting with the mouse would mean laying out every string as
+        characters with hit boxes, in a window whose whole job is drawing
+        music. The whole screen costs one key and answers the same need.
+
+        A screen with nothing to say says so, rather than copying an empty
+        string and looking like a key that does nothing.
+        """
+        from pickhero.ui.clipboard import put_clipboard
+        screen = self._current_screen()
+        getter = getattr(screen, "copy_text", None)
+        text = getter() if callable(getter) else ""
+        say = getattr(screen, "say", None)
+        if not text:
+            if callable(say):
+                say("Nothing on this screen to copy")
+            return
+        lines = text.count("\n") + 1
+        plural = "s" if lines != 1 else ""
+        said = (f"Copied {lines} line{plural} to the clipboard"
+                if put_clipboard(text) else "Could not reach the clipboard")
+        if callable(say):
+            say(said)
 
     def _handle_menu_event(self, event: pygame.event.Event) -> None:
         # Shift+U reaches the tuner even with the search box open, and it has

@@ -187,6 +187,27 @@ class DownloadMenuScreen:
             return None
         return "downloaded"
 
+    def say(self, text: str) -> None:
+        """One line under whatever the screen is showing."""
+        self._status_msg = text
+
+    def copy_text(self) -> str:
+        """Everything on this screen, as text.
+
+        The reason this screen has it first: its failure line names a
+        Songsterr revision and the fields that revision carried, and the
+        player was reading that off a photograph of his monitor and typing
+        it back.
+        """
+        out = ["Search Songsterr", f"Query: {self._query}"]
+        if self._status_msg:
+            out.append(self._status_msg)
+        out += list(self._notes)
+        out += [f"{'> ' if i == self._selected else '  '}"
+                f"{r.artist} - {r.title}  (s{r.song_id})"
+                for i, r in enumerate(self._results)]
+        return "\n".join(out)
+
     @staticmethod
     def _wake() -> None:
         """Nudge the event loop, because the answer came from a thread.
@@ -357,7 +378,8 @@ class DownloadMenuScreen:
                  prompt_surf.get_height()))
         surface.blit(prompt_surf, (box_left + 8, box_top + 6))
 
-        hint = "ENTER: search  |  Ctrl+V: paste a link  |  ESC: back"
+        hint = ("ENTER: search  |  Ctrl+V: paste a link  |  "
+                "Ctrl+C: copy this screen  |  ESC: back")
         hint_surf = hint_font.render(hint, True, t.hud_text)
         surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
 
@@ -454,7 +476,7 @@ class DownloadMenuScreen:
             line = hint_font.render(note, True, t.hud_text)
             surface.blit(line, (w // 2 - line.get_width() // 2, top + i * 26))
 
-        hint = "Any key: back to the songs"
+        hint = "Ctrl+C: copy this screen  |  any key: back to the songs"
         hint_surf = hint_font.render(hint, True, t.hud_text)
         surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
 
