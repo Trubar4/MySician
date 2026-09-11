@@ -6826,6 +6826,35 @@ class PlayingScreen:
             # the rest of the session -- which is exactly what hid the offset
             # from the one key that exists to change it.
             self._mp3_note = ""
+            self._sync_after_new_recording()
+
+    def _sync_after_new_recording(self) -> None:
+        """Line the new recording up, without being asked.
+
+        *"Wenn ich nur noch das MP3 laden und mit sh+U im Song verknüpfen
+        muss und die Songsterr Sync schon im Song ist, dann reicht das."*
+
+        Picking a recording and then having to press Ctrl+S is one key that
+        exists only because nothing connected the two. The recording is new,
+        it has no sync, and there is exactly one thing to do with it -- so it
+        happens.
+
+        **Only when there is nothing there.** A song that already carries
+        sync points carries the player's own work in them: Shift+N/M
+        nudges, Shift+S pins, an anchor set by ear in the middle of a song
+        that drifts. Re-picking the same file must never throw that away,
+        and re-picking is exactly what somebody does after moving the file.
+        `_forget_sync_for_new_recording` has already cleared the points when
+        the FILE genuinely changed, so an empty list here means there is
+        nothing of his to lose.
+
+        Sync by hand is a choice, not a gap, so it is left alone.
+        """
+        if self._mp3_anchors():
+            return
+        if self._sync_source() == "hand":
+            return
+        self._start_auto_sync()
 
     def _clear_mp3_note(self) -> None:
         """Drop a status message once it has been overtaken by events.
@@ -7150,20 +7179,12 @@ class PlayingScreen:
     def _clipboard_text() -> str:
         """Whatever is on the clipboard, or "" when there is no way to ask.
 
-        Its own seam because it is the one part of pasting a link that
-        cannot run without a desktop -- no tkinter and an empty clipboard
-        look the same from here, and the advice is the same either way.
+        The search box needs the same thing, so the tkinter lives in
+        `ui/clipboard.py` now and this stays as the name the tests and the
+        key handler already use.
         """
-        try:
-            import tkinter
-            root = tkinter.Tk()
-            root.withdraw()
-            try:
-                return str(root.clipboard_get())
-            finally:
-                root.destroy()
-        except Exception:
-            return ""
+        from pickhero.ui.clipboard import clipboard_text
+        return clipboard_text()
 
     def _paste_songsterr_link(self) -> None:
         """Ctrl+U: take a Songsterr link off the clipboard.

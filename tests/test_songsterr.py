@@ -9,6 +9,7 @@ readings neither map was fitted to, the listening is 8-16 ms and this is
 """
 
 import json
+import types
 
 import pytest
 
@@ -649,3 +650,106 @@ class TestAMapMayCoverJustTheMusic:
                                              [self._times(6)])
         assert not report["wrong_bars"]
         assert report["readable"] and report["bars"] == 6
+
+
+class TestPickingARecordingLinesItUp:
+    """*"Wenn ich nur noch das MP3 laden und mit sh+U im Song verknüpfen
+    muss und die Songsterr Sync schon im Song ist, dann reicht das."*
+
+    Shift+U then Ctrl+S is two keys where the second exists only because
+    nothing connected the first to the obvious next step. The recording is
+    new, it has no sync, and there is exactly one thing to do with it.
+    """
+
+    def _screen(self, tmp_path, monkeypatch, song_id=2333598):
+        return TestInsideTheApp()._screen(tmp_path, monkeypatch, song_id)
+
+    def _picks(self, monkeypatch, chosen):
+        from pickhero.ui import scrolling
+        monkeypatch.setattr(scrolling, "pick_audio_file",
+                            lambda start_dir=None: chosen)
+
+    def _started(self, monkeypatch):
+        from pickhero.ui.scrolling import PlayingScreen
+        runs = []
+        monkeypatch.setattr(PlayingScreen, "_start_auto_sync",
+                            lambda self: runs.append(self._song_key))
+        return runs
+
+    def test_a_new_recording_syncs_itself(self, tmp_path, monkeypatch):
+        runs = self._started(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch)
+        other = tmp_path / "another.mp3"
+        other.write_bytes(b"x")
+        self._picks(monkeypatch, str(other))
+        screen._open_mp3_dialog()
+        assert runs == ["song"]
+
+    def test_a_song_that_already_has_sync_is_left_alone(self, tmp_path,
+                                                        monkeypatch):
+        """Those points carry the player's own work -- Shift+N/M nudges, a
+        pin, an anchor set by ear in the middle of a song that drifts. And
+        re-picking the same file is exactly what somebody does after moving
+        it."""
+        runs = self._started(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for("song", [(0.0, -120.0),
+                                                    (60_000.0, -130.0)])
+        self._picks(monkeypatch, screen._mp3_path())
+        screen._open_mp3_dialog()
+        assert runs == []
+        assert screen._mp3_anchors() == [(0.0, -120.0), (60_000.0, -130.0)]
+
+    def test_a_genuinely_different_file_drops_the_old_points_and_resyncs(
+            self, tmp_path, monkeypatch):
+        """Points measured against another rip put the new file out by
+        seconds while LOOKING like a synced song."""
+        runs = self._started(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for("song", [(0.0, -120.0),
+                                                    (60_000.0, -130.0)])
+        other = tmp_path / "another.mp3"
+        other.write_bytes(b"x")
+        self._picks(monkeypatch, str(other))
+        screen._open_mp3_dialog()
+        assert screen._mp3_anchors() == []
+        assert runs == ["song"]
+
+    def test_sync_by_hand_is_a_choice_and_is_obeyed(self, tmp_path,
+                                                    monkeypatch):
+        runs = self._started(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_sync_source_for("song", "hand")
+        other = tmp_path / "another.mp3"
+        other.write_bytes(b"x")
+        self._picks(monkeypatch, str(other))
+        screen._open_mp3_dialog()
+        assert runs == []
+
+    def test_a_cancelled_chooser_starts_nothing(self, tmp_path, monkeypatch):
+        runs = self._started(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch)
+        self._picks(monkeypatch, None)
+        screen._open_mp3_dialog()
+        assert runs == []
+
+    def test_no_link_is_needed_because_the_map_is_beside_the_tab(
+            self, tmp_path, monkeypatch):
+        """*"Link sollte ich nicht pasten müssen, weil es mit dem Download
+        bereits beim GP dabei liegt."* The cache is read before the network,
+        so a downloaded song syncs with no link and no connection."""
+        from pickhero.ui.scrolling import PlayingScreen
+        tab = tmp_path / "song.gp5"
+        tab.write_bytes(b"x")
+        songsterr.save_cache(tab, 2333598, {"revisionId": 1,
+                                            "title": "Thunder"},
+                             [{"id": 1, "videoId": "v", "feature": None,
+                               "points": [0.94, 4.04, 7.11]}])
+
+        def never(*a, **k):
+            raise AssertionError("asked the network with a map on disk")
+
+        monkeypatch.setattr(songsterr, "fetch_meta", never)
+        view = types.SimpleNamespace(_song_path=str(tab))
+        bars, meta = PlayingScreen._songsterr_bar_times(view, 2333598)
+        assert bars[0] == [0.94, 4.04, 7.11]

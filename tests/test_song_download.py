@@ -15,6 +15,8 @@ import json
 import sys
 import types
 
+import pygame
+
 import pytest
 
 from pickhero.tabs import downloader, songsterr, youtube
@@ -471,3 +473,127 @@ class TestWhatYtDlpIsActuallyToldToDo:
         assert steps[-1] <= 0.9
         hook({"status": "finished"})
         assert steps[-1] == pytest.approx(0.9)
+
+
+class TestPastingALink:
+    """*"Kann ich in der Suche auch direkt den Songsterr Link eingeben,
+    wenn ich dort meine Wunschversion gefunden habe, oder die ID?"*
+
+    He has already chosen his version over there. Searching for its name
+    would hand him the other four transcriptions of the same song to pick
+    from again, which is the work he did on Songsterr's site being asked for
+    a second time.
+    """
+
+    def _found(self, monkeypatch, by_search=(), by_id=None):
+        from pickhero.tabs import downloader
+        monkeypatch.setattr(downloader, "search",
+                            lambda q, max_results=10: list(by_search))
+        monkeypatch.setattr(downloader, "lookup", lambda sid: by_id)
+
+    def _hit(self, song_id=2333598, title="Love Walked In v4",
+             artist="Thunder"):
+        return downloader.SongsterrResult(song_id, title, artist, by_id=True)
+
+    def test_a_link_gives_one_answer(self, monkeypatch):
+        self._found(monkeypatch, by_search=[downloader.SongsterrResult(
+            1, "wrong", "wrong")], by_id=self._hit())
+        got = downloader.find("https://www.songsterr.com/a/wsa/"
+                              "thunder-love-walked-in-v4-tab-s2333598")
+        assert [r.song_id for r in got] == [2333598]
+        assert got[0].by_id
+
+    def test_a_bare_id_gives_both_with_the_id_first(self, monkeypatch):
+        """`2112` is a Songsterr id AND a Rush album. Reading it as an id
+        only would make a song named after a number unfindable; as text only
+        would make typing an id pointless."""
+        album = downloader.SongsterrResult(55, "2112", "Rush")
+        self._found(monkeypatch, by_search=[album], by_id=self._hit(2112))
+        got = downloader.find("2112")
+        assert [r.song_id for r in got] == [2112, 55]
+        assert got[0].by_id and not got[1].by_id
+
+    def test_the_id_is_not_listed_twice(self, monkeypatch):
+        same = downloader.SongsterrResult(2112, "2112", "Rush")
+        self._found(monkeypatch, by_search=[same], by_id=self._hit(2112))
+        assert [r.song_id for r in downloader.find("2112")] == [2112]
+
+    def test_ordinary_words_are_an_ordinary_search(self, monkeypatch):
+        hits = [downloader.SongsterrResult(1, "a", "b")]
+        self._found(monkeypatch, by_search=hits, by_id=self._hit())
+        assert downloader.find("thunder") == hits
+
+    def test_a_link_songsterr_does_not_know_comes_back_empty(self,
+                                                             monkeypatch):
+        """Not the search's results wearing the link's clothes: the player
+        would download a song he did not ask for."""
+        self._found(monkeypatch, by_search=[downloader.SongsterrResult(
+            1, "something else", "x")], by_id=None)
+        assert downloader.find(
+            "https://www.songsterr.com/a/wsa/x-tab-s999") == []
+
+    def test_a_bad_id_still_shows_what_the_search_found(self, monkeypatch):
+        hits = [downloader.SongsterrResult(1, "1979", "Smashing Pumpkins")]
+        self._found(monkeypatch, by_search=hits, by_id=None)
+        assert downloader.find("1979") == hits
+
+    def test_lookup_names_the_song_even_with_no_title(self, monkeypatch):
+        from pickhero.tabs import downloader as d
+        monkeypatch.setattr(d, "_fetch_json",
+                            lambda url: {"revisionId": 7})
+        found = d.lookup(2333598)
+        assert found.title == "song 2333598" and found.by_id
+
+    def test_a_song_with_no_revision_is_not_a_result(self, monkeypatch):
+        from pickhero.tabs import downloader as d
+        monkeypatch.setattr(d, "_fetch_json", lambda url: {"title": "x"})
+        assert d.lookup(1) is None
+
+
+class TestTheSearchBoxTakesAPastedLink:
+
+    def _screen(self, tmp_path):
+        from pickhero.ui.download_menu import DownloadMenuScreen
+        return DownloadMenuScreen(tmp_path)
+
+    def _press(self, screen, key, mod=0, unicode=""):
+        return screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=key, mod=mod, unicode=unicode))
+
+    def test_ctrl_v_puts_the_clipboard_in_the_box(self, tmp_path,
+                                                  monkeypatch):
+        """A Songsterr URL is 60 characters of slug nobody types. Without
+        this, "paste a link" means reading it off the screen and copying it
+        in by hand."""
+        url = ("https://www.songsterr.com/a/wsa/"
+               "thunder-love-walked-in-v4-tab-s2333598")
+        monkeypatch.setattr("pickhero.ui.clipboard.clipboard_text",
+                            lambda: url)
+        screen = self._screen(tmp_path)
+        self._press(screen, pygame.K_v, mod=pygame.KMOD_LCTRL)
+        assert screen._query == url
+
+    def test_a_trailing_newline_does_not_come_with_it(self, tmp_path,
+                                                      monkeypatch):
+        monkeypatch.setattr("pickhero.ui.clipboard.clipboard_text",
+                            lambda: "  https://x/y-tab-s12\n")
+        screen = self._screen(tmp_path)
+        self._press(screen, pygame.K_v, mod=pygame.KMOD_LCTRL)
+        assert screen._query == "https://x/y-tab-s12"
+
+    def test_an_empty_clipboard_changes_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("pickhero.ui.clipboard.clipboard_text",
+                            lambda: "")
+        screen = self._screen(tmp_path)
+        screen._query = "thunder"
+        self._press(screen, pygame.K_v, mod=pygame.KMOD_LCTRL)
+        assert screen._query == "thunder"
+
+    def test_plain_v_still_types_a_v(self, tmp_path):
+        screen = self._screen(tmp_path)
+        self._press(screen, pygame.K_v, unicode="v")
+        assert screen._query == "v"
+
+    def test_no_desktop_to_ask_is_not_a_crash(self):
+        from pickhero.ui.clipboard import clipboard_text
+        assert isinstance(clipboard_text(), str)

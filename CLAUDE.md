@@ -2808,6 +2808,55 @@ than deleting the old one. Not while the search box is open: there DEL is what s
 re-read **from the disk**, because a file that would not delete is still there and a list that quietly dropped it would be claiming a
 delete that did not happen.
 
+### Picking A Recording Is The Whole Job Now
+
+*"Wenn ich nur noch das MP3 laden und mit sh+U im Song verknüpfen muss und die Songsterr Sync schon im Song ist, dann reicht das vorläufig auch."*
+
+YouTube's bot check killed the audio half of the download — *"Sign in to confirm you're not a bot"* — and the answer to *"soll ich mich einloggen?"*
+is no: `--cookies-from-browser` makes automated downloads run **as a named account**, and what gets restricted when the abuse machinery fires again
+is his Gmail. So the recording goes back to being his, and the only thing that has to be automatic is what happens after he picks it.
+
+**Shift+U now runs the sync, if there is none.** The recording is new, it has no sync points, and there is exactly one thing to do with it. Two
+guards decide when it stays out of the way:
+
+- **Points already there are the player's own work** — a Shift+N/M nudge, a Shift+S pin, an anchor set by ear in the middle of a song that drifts —
+  and re-picking the same file is exactly what somebody does after moving it. `_forget_sync_for_new_recording` has already cleared them when the
+  FILE genuinely changed, so an empty list means there is nothing of his to lose.
+- **Sync by hand is a choice, not a gap.**
+
+And no link needs pasting, which is the other half of what he asked for: the bar map is cached beside the tab at download time and
+`_songsterr_bar_times` reads the disk before the network. `Ctrl+U` is now only for a tab that arrived some other way.
+
+**One thing he asked for that was already true.** He asked for it to "take the Songsterr route". `auto` — the default — already does, and does it
+better: it listens first (8–16 ms on his own Thunder recording) and falls back to the bar map (80–92 ms) only when the listening reads nothing.
+Forcing Songsterr would make every song where the listening works five to ten times coarser to fix the songs where it does not. `Alt+S` is still
+there for a song he can hear it got wrong.
+
+### The Search Box Takes A Link
+
+*"Kann ich in der Suche auch direkt den Songsterr Link eingeben, wenn ich dort meine Wunschversion gefunden habe, oder die ID?"*
+
+He has already chosen his version over there. Searching for its name hands him the other four transcriptions of the same song to pick from again —
+the work he did on Songsterr's own site being asked for a second time. So `find` reads three shapes:
+
+| typed | what comes back |
+|---|---|
+| a Songsterr link | **one** answer, the song it names — searching for a URL's text finds nothing anyway |
+| a bare number | **both**, the id first and marked ★ |
+| anything else | the search, unchanged |
+
+**A bare number is genuinely ambiguous and not rarely**: `2112` is a Songsterr id and a Rush album, `1979` is one and a Smashing Pumpkins single.
+Reading it as an id only makes a song named after a number unfindable. Reading it as text only makes typing an id pointless. So it is both, in the
+order that costs nothing to be wrong about.
+
+A link Songsterr does not know comes back **empty**, never as the search's results wearing the link's clothes — that would have the player download
+a song he did not ask for.
+
+**And Ctrl+V, because a Songsterr URL is 60 characters of slug nobody types.** Without it, "paste a link" means reading it off the screen and
+copying it in by hand, which is not pasting. The tkinter that does it moved to `ui/clipboard.py` so the search box and `Ctrl+U` share one seam. The
+box draws the **tail** of a long query: the id lives on the end, and a caret that has walked off the right edge looks like a box that stopped
+taking input.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

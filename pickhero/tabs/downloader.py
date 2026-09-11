@@ -37,6 +37,11 @@ class SongsterrResult:
     song_id: int
     title: str
     artist: str
+    #: Looked up by id rather than found by searching. The player pasted a
+    #: link, or typed a number -- he has already picked his version on
+    #: Songsterr's own site, and this is that exact one rather than whatever
+    #: the search thinks he meant.
+    by_id: bool = False
 
 
 def _urlopen(url: str, timeout: int = REQUEST_TIMEOUT) -> bytes:
@@ -116,6 +121,57 @@ def _source_of(song_id: int) -> tuple[str, str]:
     if isinstance(source, str) and source.startswith("http"):
         return source, ""
     return "", "Songsterr holds no Guitar Pro file for this tab"
+
+
+def lookup(song_id: int) -> SongsterrResult | None:
+    """One song by its id, or None if Songsterr does not have it.
+
+    What makes a pasted link work: the player has already chosen his version
+    over there -- *"wenn ich dort meine Wunschversion gefunden habe"* -- and
+    searching for its name would hand him the four other transcriptions of
+    the same song to pick from again.
+    """
+    meta = _fetch_json(f"{SONGSTERR_META_URL}/{song_id}")
+    if not isinstance(meta, dict) or not meta.get("revisionId"):
+        return None
+    return SongsterrResult(
+        song_id=int(song_id),
+        # Named as well as it can be. A song with no title still has an id,
+        # and a row that says nothing is worse than one that says the number
+        # the player just typed.
+        title=str(meta.get("title") or f"song {song_id}"),
+        artist=str(meta.get("artist") or ""),
+        by_id=True,
+    )
+
+
+def find(query: str, max_results: int = 10) -> list[SongsterrResult]:
+    """Search, OR look up a pasted link or a typed id. Best answer first.
+
+    Three shapes go in:
+
+    - **A Songsterr link.** One answer, the song it names. Searching for the
+      URL's text finds nothing, and the player has already decided.
+    - **A bare number.** Ambiguous, and not rarely: `2112` is a Songsterr id
+      and a Rush album. So it is BOTH -- the id first and marked, the search
+      hits under it. Reading it as an id only would make a song named after
+      a number unfindable; reading it as text only would make typing an id
+      pointless.
+    - **Anything else.** The search, unchanged.
+    """
+    from pickhero.tabs.songsterr import song_id_of
+
+    text = (query or "").strip()
+    song_id = song_id_of(text)
+    if not song_id:
+        return search(text, max_results)
+
+    found = lookup(song_id)
+    direct = [found] if found is not None else []
+    if not text.isdigit():
+        return direct                          # a link means one song
+    others = [r for r in search(text, max_results) if r.song_id != song_id]
+    return direct + others
 
 
 def _get_source_url(song_id: int) -> str | None:

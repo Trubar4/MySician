@@ -31,10 +31,10 @@ import pygame
 
 from pickhero.tabs.downloader import (
     SongsterrResult,
+    find,
     get_songsterr_url,
     grab_song,
     sanitize_filename,
-    search,
 )
 from pickhero.ui.colors import get_theme
 
@@ -99,6 +99,19 @@ class DownloadMenuScreen:
             self._state = "status"
             thread = threading.Thread(target=self._do_search, daemon=True)
             thread.start()
+            return None
+
+        # Ctrl+V, because a Songsterr URL is 60 characters of slug nobody
+        # types. Without this "paste a link" means "read it off the screen
+        # and copy it in by hand", which is not pasting.
+        if event.key == pygame.K_v and event.mod & pygame.KMOD_CTRL:
+            from pickhero.ui.clipboard import clipboard_text
+            # One line, whitespace out. A URL copied from a browser can
+            # arrive with a trailing newline, and `song_id_of` would still
+            # find the id -- but the box would draw a second empty line.
+            pasted = " ".join(clipboard_text().split())
+            if pasted:
+                self._query += pasted
             return None
 
         if event.key == pygame.K_BACKSPACE:
@@ -191,8 +204,14 @@ class DownloadMenuScreen:
             pass
 
     def _do_search(self) -> None:
-        """Run search in background thread."""
-        results = search(self._query.strip())
+        """Run search in background thread.
+
+        `find`, not `search`: a pasted Songsterr link or a typed id goes
+        straight to that song. The player who has already picked his version
+        over there should not be handed the other four transcriptions of the
+        same song to choose from again.
+        """
+        results = find(self._query.strip())
         self._results = results
         self._selected = 0
         self._scroll_offset = 0
@@ -200,7 +219,10 @@ class DownloadMenuScreen:
         if results:
             self._state = "results"
         else:
-            self._status_msg = "No results found. Press ESC to try again."
+            self._status_msg = ("Songsterr has no song with that id. "
+                                "Press ESC to try again."
+                                if self._query.strip().isdigit() else
+                                "No results found. Press ESC to try again.")
         self._wake()
 
     def _start_download(self, result: SongsterrResult) -> None:
@@ -300,7 +322,8 @@ class DownloadMenuScreen:
 
     def _render_input(self, surface, w, h, item_font, hint_font, t) -> None:
         sub_surf = hint_font.render(
-            "Type a song or artist name", True, t.hud_text
+            "Type a song or artist — or paste a Songsterr link or id",
+            True, t.hud_text
         )
         surface.blit(sub_surf, (w // 2 - sub_surf.get_width() // 2, 68))
 
@@ -315,18 +338,30 @@ class DownloadMenuScreen:
             (box_left, box_top, box_width, box_height),
             border_radius=4,
         )
+        # A pasted Songsterr URL is longer than the box. The TAIL is what
+        # matters -- the id lives on the end -- and a caret that has walked
+        # off the right edge looks like a box that stopped taking input.
         prompt = f"> {self._query}_"
         prompt_surf = item_font.render(prompt, True, t.menu_selected)
+        room = box_width - 16
+        if prompt_surf.get_width() > room:
+            prompt_surf = prompt_surf.subsurface(
+                (prompt_surf.get_width() - room, 0, room,
+                 prompt_surf.get_height()))
         surface.blit(prompt_surf, (box_left + 8, box_top + 6))
 
-        hint = "ENTER: search  |  ESC: back"
+        hint = "ENTER: search  |  Ctrl+V: paste a link  |  ESC: back"
         hint_surf = hint_font.render(hint, True, t.hud_text)
         surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
 
     def _render_results(self, surface, w, h, item_font, hint_font, t) -> None:
-        sub_surf = hint_font.render(
-            f"{len(self._results)} results for \"{self._query}\"", True, t.hud_text
-        )
+        marked = any(r.by_id for r in self._results)
+        said = (f"★ the song your link names"
+                + (f", and {len(self._results) - 1} search hits"
+                   if len(self._results) > 1 else "")
+                if marked else
+                f"{len(self._results)} results for \"{self._query}\"")
+        sub_surf = hint_font.render(said, True, t.hud_text)
         surface.blit(sub_surf, (w // 2 - sub_surf.get_width() // 2, 68))
 
         list_top = 110
@@ -349,7 +384,12 @@ class DownloadMenuScreen:
             else:
                 color = t.menu_item
 
-            label = f"{result.artist} - {result.title}"
+            # Marked, because the whole point of pasting a link is that
+            # THIS one is the version he chose. A row that looks like the
+            # four search hits under it does not say that.
+            name = f"{result.artist} - {result.title}" if result.artist \
+                else result.title
+            label = f"★ {name}  (s{result.song_id})" if result.by_id else name
             text_surf = item_font.render(label, True, color)
             surface.blit(text_surf, (list_left, y + 4))
 
