@@ -7000,7 +7000,62 @@ class PlayingScreen:
             return
         if self._sync_source() == "hand":
             return
+        self._default_to_the_bar_map()
         self._start_auto_sync()
+
+    def _bar_map_available(self) -> bool:
+        """Whether this song has a per-bar map to reach for at all."""
+        if self._songsterr_id():
+            return True
+        if not self._song_path:
+            return False
+        from pickhero.tabs import songsterr
+        return songsterr.load_cache(self._song_path) is not None
+
+    def _default_to_the_bar_map(self) -> str:
+        """A song with nothing stored starts on Songsterr. Returns the source.
+
+        *"Ich hätte gerne standardmäßig Songsterr map nehmen, wenn noch
+        nichts hinterlegt ist. Wenn schon was da ist, dann lassen wir es
+        so."*
+
+        **This reverses advice I gave a week ago, and the reason is that the
+        ground moved rather than that he asked twice.** Measured on his own
+        Thunder recording the listening is 8-16 ms and the bar map is 80-92,
+        so `auto` -- listen first, fall back -- produced the better answer
+        and was the right default. Then the measurement started running BY
+        ITSELF when a song opens, and that changed what the comparison is
+        between:
+
+        - the bar map is a **file read**: it was cached beside the tab at
+          download time, so it costs nothing and cannot fail
+        - the listening is **seconds of FFT on a worker thread**, at the
+          exact moment the player is reaching for the space bar, and on his
+          songs it has failed outright more than once -- What's Up reads
+          +9.9, -34.4, -6.2 and +21.1 s and means none of it
+
+        A default is what happens to somebody who has not decided. Making
+        that the slow answer that sometimes reads nothing, rather than the
+        instant one that is 80 ms out and correctable with seven presses of
+        Shift+M, is the wrong way round.
+
+        It is STORED, not just used for this run, so the panel names it and
+        `Alt+S` can move it -- a default nobody can see is a decision the
+        app made in secret. Only when there is a map to reach for: setting
+        this on a song with no Songsterr id would leave `Ctrl+S` refusing
+        with "no link is stored", which is worse than listening.
+        """
+        if self._sync_source() != "auto" or not self._bar_map_available():
+            return self._sync_source()
+        setter = getattr(self._config, "set_sync_source_for", None)
+        if setter is None:
+            return "auto"
+        setter(self._song_key, "songsterr")
+        try:
+            self._config.save()
+        except OSError:
+            pass                    # it still applies to this run
+        return "songsterr"
 
     def _clear_mp3_note(self) -> None:
         """Drop a status message once it has been overtaken by events.

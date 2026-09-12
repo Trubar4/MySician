@@ -3058,6 +3058,36 @@ pressing one twice is harmless — it answers *"Already a favourite"* rather tha
 
 `_toggle_favourite` is now one line through `_set_favourite`, because two copies of the same work drift apart.
 
+### The Default Moved Because The Ground Moved
+
+*"Ich hätte gerne standardmäßig Songsterr map nehmen, wenn noch nichts hinterlegt ist. Wenn schon was da ist, dann lassen wir es so."*
+
+A week earlier this file argued the opposite, with numbers: measured on the player's own Thunder recording the listening is **8-16 ms** and the bar
+map is **80-92**, so `auto` — listen first, fall back — produced the better answer. That was right, and it is now wrong, because what the default
+governs changed underneath it.
+
+Back then the measurement ran when `Ctrl+S` was pressed: a deliberate act, worth waiting for the finer answer. It now runs **by itself when a song
+opens**, and the comparison is no longer "which measurement is more accurate" but:
+
+| | cost at song open | can it fail |
+|---|---|---|
+| bar map | a **file read** — cached beside the tab at download time | no |
+| listening | **seconds of FFT** on a worker thread, as the player reaches for the space bar | yes, and it has: one of his songs reads +9.9, −34.4, −6.2 and +21.1 s |
+
+**A default is what happens to somebody who has not decided.** Making that the slow answer that sometimes reads nothing, rather than the instant one
+that is 80 ms out and corrected by seven presses of `Shift+M`, is the wrong way round. The finer measurement is still one keypress away.
+
+Three boundaries keep it honest:
+
+- **Only when there is a map to reach for.** Setting Songsterr on a song with no id would leave `Ctrl+S` refusing with *"no link is stored"* — worse
+  than listening.
+- **Only when the player has not decided.** `listen`, `songsterr` and `hand` are all choices and none is overwritten.
+- **It is stored, not just used for the run**, so the panel names it and `Alt+S` can move it. A default nobody can see is a decision the app made in
+  secret.
+
+And it touches the source only. The 70 ms the player dialled in with `Shift+M` lives in a different setting from the points, and defaulting one must
+never quietly reach into the other.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

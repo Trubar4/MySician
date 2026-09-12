@@ -865,3 +865,112 @@ class TestOpeningTheSongIsEnough:
             "length_gap": 0.0, "wrong_length": False})
         screen._start_auto_sync()
         assert not screen._sync_on_open
+
+
+class TestAnUndecidedSongStartsOnTheBarMap:
+    """*"Ich hätte gerne standardmäßig Songsterr map nehmen, wenn noch nichts
+    hinterlegt ist. Wenn schon was da ist, dann lassen wir es so."*
+
+    This reverses a default chosen a week earlier, and the reason is that
+    the ground moved. The listening is 8-16 ms against the map's 80-92, so
+    `auto` produced the better answer -- back when it only ran on Ctrl+S.
+    Now it runs BY ITSELF when a song opens, and the comparison is between
+    a file read that cannot fail and seconds of FFT at the moment the player
+    is reaching for the space bar.
+    """
+
+    def _screen(self, tmp_path, monkeypatch, cached=True, source=None,
+                anchors=None, song_id=0):
+        import pygame
+        from pickhero.audio.mp3_playback import Mp3Player
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        tab = tmp_path / "song.gp5"
+        tab.write_bytes(b"gp")
+        (tmp_path / "song.mp3").write_bytes(b"x")
+        if cached:
+            songsterr.save_cache(tab, 2333598, {"revisionId": 1,
+                                                "title": "t"},
+                                 [{"id": 1, "videoId": "v", "feature": None,
+                                   "points": [0.94, 4.04, 7.11]}])
+        config = Config()
+        config.set_mp3_path_for("song", str(tmp_path / "song.mp3"))
+        if song_id:
+            config.set_songsterr_for("song", song_id)
+        if source:
+            config.set_sync_source_for("song", source)
+        if anchors:
+            config.set_mp3_anchors_for("song", anchors)
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(PlayingScreen, "_start_auto_sync",
+                            lambda self: None)
+        return PlayingScreen(_song(), config=config, song_key="song",
+                             song_path=str(tab))
+
+    def test_a_cached_bar_map_makes_it_the_source(self, tmp_path,
+                                                  monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.update()
+        assert screen._sync_source() == "songsterr"
+
+    def test_and_it_is_stored_not_just_used(self, tmp_path, monkeypatch):
+        """A default nobody can see is a decision the app made in secret.
+        Stored, so the panel names it and Alt+S can move it."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.update()
+        assert screen._config.sync_source_for("song") == "songsterr"
+        assert "Songsterr's bar map only" in " ".join(
+            t for t, _ in screen.sync_block_lines())
+
+    def test_a_stored_link_counts_even_with_no_cache_yet(self, tmp_path,
+                                                         monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, cached=False,
+                              song_id=2333598)
+        screen.update()
+        assert screen._sync_source() == "songsterr"
+
+    def test_a_song_with_no_map_at_all_keeps_listening(self, tmp_path,
+                                                       monkeypatch):
+        """Setting Songsterr on a song with no id would leave Ctrl+S
+        refusing with "no link is stored", which is worse than listening."""
+        screen = self._screen(tmp_path, monkeypatch, cached=False)
+        screen.update()
+        assert screen._sync_source() == "auto"
+
+    def test_a_song_that_is_already_lined_up_is_not_touched(self, tmp_path,
+                                                            monkeypatch):
+        """*"Wenn schon was da ist, dann lassen wir es so."*"""
+        screen = self._screen(tmp_path, monkeypatch,
+                              anchors=[(0.0, -120.0), (60_000.0, -130.0)])
+        screen.update()
+        assert screen._sync_source() == "auto"
+        assert screen._mp3_anchors() == [(0.0, -120.0), (60_000.0, -130.0)]
+
+    @pytest.mark.parametrize("chosen", ["listen", "songsterr", "hand"])
+    def test_a_choice_the_player_made_is_never_overwritten(self, tmp_path,
+                                                            monkeypatch,
+                                                            chosen):
+        screen = self._screen(tmp_path, monkeypatch, source=chosen)
+        screen.update()
+        assert screen._sync_source() == chosen
+
+    def test_a_correction_set_by_hand_survives(self, tmp_path, monkeypatch):
+        """The 70 ms he dialled in with Shift+M is his work, and it sits in
+        a different setting from the points. Defaulting the SOURCE must not
+        touch it."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_offset_for("song", 70.0)
+        screen.update()
+        assert screen._config.mp3_offset_for("song") == 70.0
+
+    def test_sync_by_hand_still_measures_nothing(self, tmp_path,
+                                                 monkeypatch):
+        from pickhero.ui.scrolling import PlayingScreen
+        runs = []
+        screen = self._screen(tmp_path, monkeypatch, source="hand")
+        monkeypatch.setattr(PlayingScreen, "_start_auto_sync",
+                            lambda self: runs.append(1))
+        screen.update()
+        assert runs == []
