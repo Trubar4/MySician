@@ -252,20 +252,49 @@ class MenuScreen:
         return "Reloaded: " + ", ".join(parts)
 
     def _toggle_favourite(self) -> None:
-        """Star the selected song, or take the star off (M)."""
+        """Star the selected song, or take the star off (M).
+
+        One line, because `_set_favourite` is the same work said explicitly
+        and two copies of it would drift.
+        """
+        if self._config is None:
+            return
+        song = self._selected_path()
+        if song is not None:
+            self._set_favourite(not self._config.is_favourite(song.stem))
+
+    def _set_favourite(self, starred: bool) -> None:
+        """Star the selected song, or take the star off. No toggling.
+
+        *"Im Filter kann ich keine Favoriten setzen."*
+
+        `M` toggles, and a toggle is the wrong shape for this: while the
+        filter box is open the note is the last thing being read, so
+        pressing it means finding out afterwards which way it went. Two
+        keys that SAY what they do can be pressed without looking, and
+        pressing the same one twice is harmless.
+
+        Ctrl, not Shift: a Ctrl combination produces no character, so it
+        works mid-word. `Shift+M` is how a capital M is typed, and a filter
+        box that cannot spell Metallica is a filter box.
+        """
         if self._config is None:
             return
         song = self._selected_path()
         if song is None:
+            self.say("Nothing selected")
             return
-        starred = not self._config.is_favourite(song.stem)
+        if self._config.is_favourite(song.stem) == starred:
+            self.say(("Already a favourite: " if starred
+                      else "Not a favourite anyway: ") + song.stem[:40])
+            return
         self._config.set_favourite(song.stem, starred)
         self._config.save()
-        self._reload_note = (("Favourite: " if starred
-                              else "No longer a favourite: ") + song.stem[:40])
+        self.say(("Favourite: " if starred else "No longer a favourite: ")
+                 + song.stem[:40])
         if self._favourites_only:
-            # It has just left the list it is being shown in, so the list has
-            # to be rebuilt and the cursor put somewhere that still exists.
+            # It has just left the list it is being shown in, so the list
+            # has to be rebuilt and the cursor put somewhere that exists.
             self._apply_filter()
             self._select_path(song)
 
@@ -483,6 +512,15 @@ class MenuScreen:
                 self._search_active = True
                 self._search_text = ""
                 self._apply_filter()
+                return None
+
+            # Ctrl+M stars, Ctrl+Shift+M unstars -- and BEFORE the search
+            # guard below, because the whole point is that they work while
+            # the filter box is open. Ctrl produces no character, so nothing
+            # is stolen from the box: Shift+M is how a capital M is typed,
+            # and a filter that cannot spell Metallica is not a filter.
+            if event.key == pygame.K_m and event.mod & pygame.KMOD_CTRL:
+                self._set_favourite(not (event.mod & pygame.KMOD_SHIFT))
                 return None
 
             # M marks, Shift+M filters. A letter is fine here because it is
@@ -786,12 +824,12 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"
             fav = "on" if self._favourites_only else "off"
-            hint = f"F or /: search  |  M: favourite (Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+            hint = f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
         # The build, bottom right and out of the way. It is asked for
         # exactly once per report -- "which version are you running" --
         # and answering it has cost several rounds.

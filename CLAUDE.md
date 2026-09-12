@@ -3043,6 +3043,21 @@ the exact screen it was asked for. Ctrl+C is a modified key and no box on any sc
 One thing the tkinter needs: its clipboard is emptied when the interpreter is destroyed, so the hidden window is kept alive for one `update()`
 after the append. Without it the copy appears to work and the paste comes back empty.
 
+### A Filter Box That Cannot Spell Metallica
+
+*"Im Filter kann ich keine Favoriten setzen. Bitte Sh+M für Favorit und Str+M für kein Favorit. Möglich?"*
+
+The keys are **Ctrl+M** and **Ctrl+Shift+M**, not the pair he named, for one concrete reason: **`Shift+M` is how a capital M is typed.** A filter box
+where it means "favourite" cannot spell Metallica — the same lesson U2 taught the rename editor one chapter ago. A Ctrl combination produces no
+character at all, so it works mid-word and steals nothing from the box. It also leaves `Shift+M` on the favourites-only filter, where it already
+was: the alternative was one key meaning two things depending on mode, which is the fault this file has now paid for three times.
+
+**Set and unset, not toggle.** `M` toggles, and a toggle is the wrong shape here: while the box is open the note under it is the last thing being
+read, so pressing a toggle means finding out afterwards which way it went. Two keys that SAY what they do can be pressed without looking, and
+pressing one twice is harmless — it answers *"Already a favourite"* rather than quietly undoing the press before it.
+
+`_toggle_favourite` is now one line through `_set_favourite`, because two copies of the same work drift apart.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus
