@@ -3184,6 +3184,25 @@ Both new modules are named in `pickhero.spec`. They are imported inside the func
 the verovio lesson — and this is the one feature that exists *for* the .exe-only laptop, so failing there and nowhere else would be the worst
 possible place for it.
 
+### "Every Song Has Four Files" Was A Promise, Not A State
+
+*"Ab wann hat jeder Song 4 Files? Muss ich in jeden Song reingehen? Einmalig beim Öffnen der App wäre praktischer."*
+
+He read the feature correctly and found the hole in it. The sidecar was written on the way OUT of a song, after a measurement, a rename or a
+download — all the moments when something CHANGES. Which meant a folder of fifty songs practised before the feature existed had **no** sidecars at
+all, and "every song has four files" would have come true one song at a time, in whatever order they happened to be played. Before copying anything
+anywhere he would have had to visit every single one.
+
+So the song list writes the missing ones when it scans. Two rules keep it honest:
+
+- **Only where there is something to carry.** A song nobody has touched gets no file: an empty sidecar is clutter that also LIES — a file saying
+  "settings live here" when they do not. That song is simply three files instead of four, and copying it loses nothing.
+- **An existing sidecar is never rewritten.** It may have arrived from the other machine and be newer than anything here, and overwriting it on a
+  scan would silently undo an import.
+
+Which makes the scan two-way and idempotent: it adopts what the folder knows and this machine does not, and it writes what this machine knows and
+the folder does not. Run it twice and the second run does nothing.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

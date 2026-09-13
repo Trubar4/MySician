@@ -58,6 +58,8 @@ class MenuScreen:
         self._reload_note: str = ""
         #: How many songs took settings out of the folder on the last scan.
         self._adopted: int = 0
+        #: And how many had their settings written back into it.
+        self._backfilled: int = 0
         #: The last import's report, shown over the list until a key is
         #: pressed. A multi-line answer, because "23 songs, 140 sittings,
         #: 4 better scores" is four facts and the note line holds one.
@@ -223,7 +225,14 @@ class MenuScreen:
         # here is either overwritten immediately or, worse, left standing
         # after the next scan that found nothing.
         self._adopted = self._adopt_sidecars(found)
-        if self._adopted:
+        # And the other direction: a song whose settings only exist in
+        # settings.json gets its file written NOW rather than the next time
+        # it happens to be opened and left. Without this, "every song has
+        # four files" was a promise that came true one song at a time, in
+        # whatever order they were played -- and the player would have had
+        # to visit every one before copying anything anywhere.
+        self._backfilled = self._write_missing_sidecars(found)
+        if self._adopted or self._backfilled:
             self._reload_note = self._adopted_note()
         self._search_text = ""
         self._search_active = False
@@ -267,6 +276,8 @@ class MenuScreen:
             parts.append("nothing changed")
         if self._adopted:
             parts.append(f"{self._adopted} picked up settings")
+        if self._backfilled:
+            parts.append(f"{self._backfilled} got a settings file")
         return "Reloaded: " + ", ".join(parts)
 
     def _blit_import_report(self, surface, w, h, item_font, hint_font,
@@ -613,10 +624,46 @@ class MenuScreen:
         return taken
 
     def _adopted_note(self) -> str:
-        """What the last scan took out of the songs folder."""
-        return (f"Picked up settings for {self._adopted} song"
-                + ("s" if self._adopted != 1 else "")
-                + " from the songs folder")
+        """What the last scan took out of, and put into, the songs folder."""
+        parts = []
+        if self._adopted:
+            parts.append(f"picked up settings for {self._adopted} song"
+                         + ("s" if self._adopted != 1 else ""))
+        if self._backfilled:
+            parts.append(f"wrote settings beside {self._backfilled} song"
+                         + ("s" if self._backfilled != 1 else ""))
+        return "Songs folder: " + ", ".join(parts)
+
+    def _write_missing_sidecars(self, found) -> int:
+        """Give every song that HAS settings a file to carry them in.
+
+        Only where there is no sidecar yet. An existing one is left alone --
+        it may have come from the other machine and be newer than anything
+        here, and overwriting it on a scan would undo an import.
+        """
+        if self._config is None:
+            return 0
+        from pickhero.tabs import sidecar
+        best_of = {}
+        try:
+            from pickhero.progress import ProgressTracker
+            tracker = ProgressTracker()
+            best_of = {p.stem: tracker.get_best(p.stem) for p in found}
+        except Exception:
+            pass
+        written = 0
+        for path in found:
+            try:
+                if sidecar.path_for(path).exists():
+                    continue
+                best = best_of.get(path.stem)
+                if not sidecar.worth_writing(path.stem, self._config, best):
+                    continue
+                if sidecar.write(path, path.stem, self._config, best):
+                    written += 1
+            except Exception:
+                continue          # one bad song is not a broken song list
+        return written
 
     def copy_text(self) -> str:
         """The song list as text, with the note under it."""

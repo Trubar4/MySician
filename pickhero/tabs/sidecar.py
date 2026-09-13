@@ -88,6 +88,24 @@ def collect(song_key: str, config, best=None) -> dict:
     return out
 
 
+def worth_writing(song_key: str, config, best=None) -> bool:
+    """Whether this song has anything to put in a sidecar.
+
+    A song nobody has touched has nothing to carry, and an empty sidecar
+    beside it would be clutter that also LIES -- a file saying "settings
+    live here" when they do not. So the backfill writes nothing for it, and
+    that song is simply three files instead of four.
+    """
+    if not song_key:
+        return False
+    if best is not None:
+        return True
+    if song_key in (config.favourites or []):
+        return True
+    return any(song_key in getattr(config, name, {})
+               for name in song_fields(config))
+
+
 def write(tab_path, song_key: str, config, best=None) -> Path | None:
     """Write the song's settings beside the tab. None if it could not be.
 

@@ -243,7 +243,7 @@ class TestItMovesWithTheSong:
         screen = MenuScreen(tmp_path, config=fresh)
         assert fresh.is_favourite("AC-DC - Thunder")
         assert fresh.songsterr_for("AC-DC - Thunder") == 2333598
-        assert "Picked up settings for 1 song" in screen._reload_note
+        assert "picked up settings for 1 song" in screen._reload_note
 
     def test_a_song_that_arrives_while_the_app_is_open_is_picked_up_by_f5(
             self, tmp_path):
@@ -285,3 +285,104 @@ class TestItMovesWithTheSong:
         screen = MenuScreen(tmp_path, config=config)
         screen.reload_files()
         assert len(screen._display_files) == 2
+
+
+class TestGivingEverySongItsFile:
+    """*"Ab wann hat jeder Song 4 Files? Einmalig beim Öffnen der App wäre
+    praktischer."*
+
+    Right: the sidecar was written on the way OUT of a song, so "every song
+    has four files" came true one song at a time, in whatever order they
+    happened to be played -- and the player would have had to visit every
+    one before copying anything anywhere.
+    """
+
+    def _list(self, tmp_path, config):
+        from pickhero.ui.menu import MenuScreen
+        return MenuScreen(tmp_path, config=config)
+
+    def test_a_song_with_settings_gets_one_on_the_first_scan(self, tmp_path):
+        tab = _song(tmp_path)
+        config = _config()
+        assert not sidecar.path_for(tab).exists()
+        screen = self._list(tmp_path, config)
+        assert sidecar.path_for(tab).is_file()
+        assert screen._backfilled == 1
+        assert "wrote settings beside 1 song" in screen._reload_note
+
+    def test_what_it_wrote_is_what_the_song_carries(self, tmp_path):
+        tab = _song(tmp_path)
+        self._list(tmp_path, _config())
+        got = sidecar.read(tab)["settings"]
+        assert got["song_songsterr"] == 2333598
+        assert got["song_mp3_anchors"] == [[0.0, -120.0], [60_000.0, -130.0]]
+
+    def test_a_song_nobody_has_touched_gets_nothing(self, tmp_path):
+        """An empty sidecar would be clutter that also lies -- a file saying
+        "settings live here" when they do not."""
+        tab = _song(tmp_path, "Never played")
+        config = Config()
+        config.save = lambda: None
+        screen = self._list(tmp_path, config)
+        assert not sidecar.path_for(tab).exists()
+        assert screen._backfilled == 0
+
+    def test_an_existing_sidecar_is_left_alone(self, tmp_path):
+        """It may have come from the other machine and be newer than
+        anything here. Overwriting it on a scan would undo an import."""
+        tab = _song(tmp_path)
+        sidecar.path_for(tab).write_text(json.dumps(
+            {"version": sidecar.VERSION, "song": "AC-DC - Thunder",
+             "settings": {"song_transpose": 7}}), encoding="utf-8")
+        self._list(tmp_path, _config())
+        assert sidecar.read(tab)["settings"]["song_transpose"] == 7
+
+    def test_a_second_start_writes_nothing_more(self, tmp_path):
+        _song(tmp_path)
+        config = _config()
+        self._list(tmp_path, config)
+        again = self._list(tmp_path, config)
+        assert again._backfilled == 0
+
+    def test_the_favourite_alone_is_worth_a_file(self, tmp_path):
+        tab = _song(tmp_path, "Starred")
+        config = Config()
+        config.save = lambda: None
+        config.set_favourite("Starred", True)
+        self._list(tmp_path, config)
+        assert sidecar.read(tab)["favourite"]
+
+    def test_and_so_is_a_best_score_on_its_own(self, tmp_path, monkeypatch):
+        from pickhero import progress
+        monkeypatch.setattr(progress, "PROGRESS_FILE",
+                            tmp_path / "progress.json")
+        monkeypatch.setattr(progress, "CONFIG_DIR", tmp_path)
+        tab = _song(tmp_path, "Only played")
+        progress.ProgressTracker().record_result(
+            "Only played", {"accuracy_percent": 77.0, "hits": 1, "total": 2})
+        config = Config()
+        config.save = lambda: None
+        self._list(tmp_path, config)
+        assert sidecar.read(tab)["best"]["best_accuracy"] == 77.0
+
+    def test_one_song_that_cannot_be_written_does_not_stop_the_rest(
+            self, tmp_path, monkeypatch):
+        _song(tmp_path, "A song")
+        _song(tmp_path, "B song")
+        real = sidecar.write
+        calls = []
+
+        def sometimes(tab_path, song_key, config, best=None):
+            calls.append(song_key)
+            if song_key == "A song":
+                raise OSError("locked")
+            return real(tab_path, song_key, config, best)
+
+        monkeypatch.setattr(sidecar, "write", sometimes)
+        config = Config()
+        config.save = lambda: None
+        config.set_favourite("A song", True)
+        config.set_favourite("B song", True)
+        screen = self._list(tmp_path, config)
+        assert screen._backfilled == 1
+        assert sidecar.path_for(tmp_path / "B song.gp5").is_file()
