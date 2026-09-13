@@ -260,3 +260,46 @@ class TestTheSettingsThatBelongToTheSONG:
         got = json.loads((target / "settings.json").read_text())
         assert got["song_mp3_offsets"]["solo"] == -1200.0
         assert got["theme"] == "dark"
+
+
+class TestEverySongSettingTravels:
+    """The list was hand-written and had gone stale.
+
+    Seven names, written months before `song_songsterr` and
+    `song_sync_source` existed. Merging two machines would have dropped the
+    Songsterr link and the sync source -- and "silently dropped" on a merge
+    means nobody notices until they open the song and the sync is gone.
+    """
+
+    def test_it_is_found_rather_than_listed(self):
+        from dataclasses import fields
+
+        from pickhero.config import Config
+        from tools.merge_stats import SONG_SETTINGS
+
+        every = {f.name for f in fields(Config)
+                 if f.name.startswith("song_")
+                 and isinstance(getattr(Config(), f.name, None), dict)}
+        assert set(SONG_SETTINGS) == every
+
+    def test_the_two_that_were_missing_are_in_it(self):
+        from tools.merge_stats import SONG_SETTINGS
+        assert "song_songsterr" in SONG_SETTINGS
+        assert "song_sync_source" in SONG_SETTINGS
+
+    def test_nothing_belonging_to_the_machine_comes_across(self):
+        """The audio device, the calibration and the latency offset describe
+        an interface and a sound card. Carrying them over would break the
+        other computer's input while looking like a settings problem."""
+        from tools.merge_stats import SONG_SETTINGS
+        for machine in ("audio", "calibration", "audio_latency_offset_ms",
+                        "songs_dir", "theme", "display"):
+            assert machine not in SONG_SETTINGS
+
+    def test_the_songsterr_link_actually_survives_a_merge(self):
+        from tools.merge_stats import merge_settings
+        merged, _ = merge_settings(
+            {}, {"song_songsterr": {"Thunder": 2333598},
+                 "song_sync_source": {"Thunder": "songsterr"}})
+        assert merged["song_songsterr"]["Thunder"] == 2333598
+        assert merged["song_sync_source"]["Thunder"] == "songsterr"

@@ -92,18 +92,37 @@ def merge_progress(mine: dict, theirs: dict) -> tuple[dict, list[str]]:
     return out, improved
 
 
-# The per-song settings, and nothing else. Everything absent from this list
-# stays as the receiving machine has it -- see the module docstring.
-SONG_SETTINGS = ("song_tempo_factors", "song_mp3_paths", "song_mp3_offsets",
-                 "song_backing_offsets",
-                 # The sync points, which are the expensive ones: a song
-                 # measured against its recording on one machine had to be
-                 # measured again on the other, and a setting that moves
-                 # house has to be followed into every reader.
-                 "song_mp3_anchors", "song_mp3_rates",
-                 # Which tuning the song is played in. It describes the SONG
-                 # and the player's hands, not the machine.
-                 "song_transpose")
+def song_settings() -> tuple[str, ...]:
+    """Every per-song setting there is. FOUND, not listed.
+
+    This was a hand-written tuple of seven names, and by the time anybody
+    looked it was missing two: `song_songsterr` and `song_sync_source`,
+    both added months after it was written. Merging two machines would have
+    silently dropped the Songsterr link and the sync source -- and "silently
+    dropped" on a merge means nobody notices until they open the song and
+    the sync is gone.
+
+    The rule that makes this safe is a naming one, and it already holds:
+    everything scoped to a SONG is a dict called `song_something`, and
+    everything scoped to the MACHINE is not -- the audio device index, the
+    calibration, the latency offset. Carrying a machine setting across
+    would break the other computer's input while looking like a settings
+    problem, which is why the split matters more than the list.
+
+    `Config.forget_song` and `Config.rename_song` walk the fields for the
+    same reason. Three readers of the same set, and a list in any of them
+    is a setting waiting to be lost.
+    """
+    from dataclasses import fields
+
+    from pickhero.config import Config
+
+    return tuple(f.name for f in fields(Config)
+                 if f.name.startswith("song_")
+                 and isinstance(getattr(Config(), f.name, None), dict))
+
+
+SONG_SETTINGS = song_settings()
 
 
 def merge_settings(mine: dict, theirs: dict) -> tuple[dict, list[str]]:
