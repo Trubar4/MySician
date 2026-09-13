@@ -60,6 +60,14 @@ STEADY_MS = 400.0
 # Only readings this confident are used at all.
 MIN_CONFIDENCE = 0.75
 
+# How far a reading may be from a string the player has NAMED. Far wider
+# than the automatic window on purpose: the whole reason to name a string is
+# that the tuner would not own it -- a fresh string half a tone flat gets no
+# answer from `nearest_string` at all, which is exactly when a tuner is most
+# needed. Stopping short of 1200 keeps YIN's octave error out: a reading an
+# octave up is the detector being wrong, not the string being wrong.
+LOCKED_CENTS = 900.0
+
 # The needle's smoothing. A raw YIN reading on a decaying low string jitters
 # by a few cents, which makes a needle that never settles and cannot be
 # tuned against.
@@ -110,6 +118,12 @@ class TunerMenuScreen:
         self._steady_since: dict[int, float] = {}
         self._done: set[int] = set()
         self._active: int | None = None
+        #: The string the player named, or None for "whichever is heard".
+        #: *"damit ich beim Stimmen die Saite wählen kann, falls die falsche
+        #: erkannt wird"* -- and the case that needs it most is the one
+        #: where NO string is recognised, because the one in his hand is too
+        #: far out for any of them to own it.
+        self._locked: int | None = None
         self._last_heard = 0.0
         self._start_capture()
 
@@ -168,7 +182,7 @@ class TunerMenuScreen:
         freq, confidence = self._capture.get_tuner_data(raw=True)
         if freq <= 0 or confidence < MIN_CONFIDENCE:
             return
-        found = nearest_string(float(freq), self.tuning)
+        found = self._reading(float(freq))
         if found is None:
             return
         string, cents = found
@@ -186,11 +200,51 @@ class TunerMenuScreen:
             self._steady_since.pop(string, None)
             self._done.discard(string)
 
+    def _reading(self, freq: float) -> tuple[int, float] | None:
+        """(string, cents) for this frequency, or None to ignore it.
+
+        With a string named, every reading is about THAT string and the
+        catch window does not apply -- naming it is the player saying so.
+        Without one, the tuner guesses as it always did.
+        """
+        if self._locked is None:
+            return nearest_string(freq, self.tuning)
+        target = midi_to_freq(self.tuning[self._locked])
+        if freq <= 0 or target <= 0:
+            return None
+        cents = 1200.0 * math.log2(freq / target)
+        return (self._locked, cents) if abs(cents) <= LOCKED_CENTS else None
+
+    def _lock(self, string: int) -> None:
+        """Name a string, or let go of the one already named.
+
+        The same key both ways: the player who pressed 5 to get away from a
+        wrong guess presses 5 again to stop, without having to find a second
+        key for it. Letting go clears that string's reading too -- it was
+        measured against a target that is no longer the question.
+        """
+        if string not in self.tuning:
+            return
+        self._locked = None if self._locked == string else string
+        self._cents.pop(string, None)
+        self._steady_since.pop(string, None)
+        self._done.discard(string)
+        self._active = self._locked
+
     def handle_event(self, event: pygame.event.Event) -> str | None:
         if event.type != pygame.KEYDOWN:
             return None
         if event.key in (pygame.K_ESCAPE, pygame.K_g):
             return "escape"
+        # 1 to 6, the way a guitarist counts them and the way the rest of
+        # this app already numbers them: 6 is the low E, 1 the high one.
+        # They are written under the pips, so nothing has to be remembered.
+        if pygame.K_1 <= event.key <= pygame.K_6:
+            self._lock(event.key - pygame.K_1 + 1)
+            return None
+        if pygame.K_KP1 <= event.key <= pygame.K_KP6:
+            self._lock(event.key - pygame.K_KP1 + 1)
+            return None
         if event.key in (pygame.K_LEFT, pygame.K_UP):
             self._choose_tuning(-1)
         elif event.key in (pygame.K_RIGHT, pygame.K_DOWN):
@@ -200,6 +254,7 @@ class TunerMenuScreen:
             self._steady_since.clear()
             self._done.clear()
             self._active = None
+            self._locked = None
         return None
 
     # -- drawing -------------------------------------------------------
@@ -223,6 +278,11 @@ class TunerMenuScreen:
         """
         if self._active is None:
             return "Play a string", ""
+        if self._locked is not None and self._cents.get(self._locked) is None:
+            # Named but not heard yet. "Play a string" would be wrong -- it
+            # is one particular string that is being waited for.
+            return (f"Play string {self._locked}",
+                    midi_to_name(self.tuning[self._locked]))
         note = midi_to_name(self.tuning[self._active])
         cents = self._cents.get(self._active)
         if cents is None:
@@ -310,12 +370,33 @@ class TunerMenuScreen:
             if string == self._active:
                 pygame.draw.circle(surface, t.hud_accent, (x, pips_y),
                                    pip_r + 5, 2)
+            if string == self._locked:
+                # A second, thicker ring: the named string has to be
+                # findable at a glance from across the room, and it is a
+                # different fact from "this is the one being heard".
+                pygame.draw.circle(surface, t.hud_accent, (x, pips_y),
+                                   pip_r + 10, 3)
             label = small.render(
                 midi_to_name(self.tuning[string]).rstrip("0123456789"), True,
                 t.hud_text)
             surface.blit(label, (x - label.get_width() // 2, pips_y + 20))
+            # The KEY, under the note. Written down because a tuner is read
+            # with a guitar in both hands and nothing should have to be
+            # remembered -- and because 6 being the low E is a convention,
+            # not something the screen would otherwise say.
+            number = small.render(str(string), True,
+                                  t.hud_accent if string == self._locked
+                                  else t.signal_cold)
+            surface.blit(number, (x - number.get_width() // 2, pips_y + 40))
+
+        if self._locked is not None:
+            note = midi_to_name(self.tuning[self._locked])
+            told = small.render(
+                f"Listening only to string {self._locked} ({note}) — "
+                f"{self._locked} again for automatic", True, t.hud_accent)
+            surface.blit(told, (w // 2 - told.get_width() // 2, h - 80))
 
         done = small.render(
-            f"{len(self._done)} of 6 in tune   |   R: start over   "
-            f"|   ESC: back", True, t.hud_text)
+            f"{len(self._done)} of 6 in tune   |   1-6: pick the string   "
+            f"|   R: start over   |   ESC: back", True, t.hud_text)
         surface.blit(done, (w // 2 - done.get_width() // 2, h - 56))

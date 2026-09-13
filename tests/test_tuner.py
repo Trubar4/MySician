@@ -219,3 +219,155 @@ class TestItSaysWhatToDo:
         screen._cents[6] = 2.0
         screen._done.add(6)
         assert screen.advice()[0] == "In tune"
+
+
+class TestNamingTheStringYourself:
+    """*"Damit ich beim Stimmen die Saite wählen kann, falls die falsche
+    erkannt wird."*
+
+    The bigger half of this is the case he did not name: a string too far
+    out for ANY target to own it gets no answer at all from
+    `nearest_string`, which is exactly when a tuner is most needed. Naming
+    the string is the player saying which one it is, so the catch window
+    stops applying.
+    """
+
+    def _tuner(self):
+        from pickhero.config import Config
+        from pickhero.ui.tuner_menu import TunerMenuScreen
+        screen = TunerMenuScreen.__new__(TunerMenuScreen)
+        screen._config = Config()
+        screen._capture = None
+        screen._error = ""
+        screen._tuning_index = 0
+        screen._song = ""
+        screen._cents = {}
+        screen._steady_since = {}
+        screen._done = set()
+        screen._active = None
+        screen._locked = None
+        screen._last_heard = 0.0
+        return screen
+
+    def _press(self, screen, key):
+        import pygame
+        return screen.handle_event(pygame.event.Event(pygame.KEYDOWN,
+                                                      key=key, mod=0))
+
+    def test_six_is_the_low_e_the_way_a_guitarist_counts(self):
+        import pygame
+        from pickhero.audio.note_utils import midi_to_name
+        screen = self._tuner()
+        self._press(screen, pygame.K_6)
+        assert screen._locked == 6
+        assert midi_to_name(screen.tuning[6]).startswith("E")
+
+    def test_and_one_is_the_high_one(self):
+        import pygame
+        from pickhero.audio.note_utils import midi_to_name
+        screen = self._tuner()
+        self._press(screen, pygame.K_1)
+        assert midi_to_name(screen.tuning[1]).startswith("E")
+        assert screen.tuning[1] > screen.tuning[6]
+
+    def test_the_same_key_lets_go_again(self):
+        """The player who pressed 5 to get away from a wrong guess presses 5
+        again to stop, without finding a second key for it."""
+        import pygame
+        screen = self._tuner()
+        self._press(screen, pygame.K_5)
+        self._press(screen, pygame.K_5)
+        assert screen._locked is None
+
+    def test_another_number_moves_the_lock(self):
+        import pygame
+        screen = self._tuner()
+        self._press(screen, pygame.K_5)
+        self._press(screen, pygame.K_3)
+        assert screen._locked == 3
+
+    def test_a_string_far_too_flat_is_still_read(self):
+        """The case that matters most. Half a tone flat on the low E is 100
+        cents out, which `nearest_string` on Standard would still catch --
+        but four hundred cents is a string nothing owns, and that is a
+        string this tuner used to be silent about."""
+        from pickhero.audio.note_utils import midi_to_freq
+        from pickhero.ui.tuner_menu import nearest_string
+        screen = self._tuner()
+        way_out = midi_to_freq(screen.tuning[6]) * 2 ** (-400 / 1200)
+        assert nearest_string(way_out, screen.tuning) is None
+        import pygame
+        self._press(screen, pygame.K_6)
+        string, cents = screen._reading(way_out)
+        assert string == 6
+        assert round(cents) == -400
+
+    def test_an_octave_error_is_still_refused(self):
+        """A reading an octave up is the detector being wrong, not the
+        string being wrong."""
+        from pickhero.audio.note_utils import midi_to_freq
+        import pygame
+        screen = self._tuner()
+        self._press(screen, pygame.K_6)
+        assert screen._reading(midi_to_freq(screen.tuning[6]) * 2) is None
+
+    def test_a_neighbouring_string_no_longer_steals_the_reading(self):
+        """What he actually asked for: the wrong string being recognised."""
+        from pickhero.audio.note_utils import midi_to_freq
+        import pygame
+        screen = self._tuner()
+        a_string = midi_to_freq(screen.tuning[5])
+        assert nearest_string_of(screen, a_string) == 5
+        self._press(screen, pygame.K_6)
+        assert screen._reading(a_string)[0] == 6
+
+    def test_without_a_lock_nothing_changed(self):
+        from pickhero.audio.note_utils import midi_to_freq
+        screen = self._tuner()
+        assert screen._reading(midi_to_freq(screen.tuning[4]))[0] == 4
+
+    def test_letting_go_drops_that_string_s_reading(self):
+        """It was measured against a target that is no longer the
+        question."""
+        import pygame
+        screen = self._tuner()
+        self._press(screen, pygame.K_2)
+        screen._cents[2] = -300.0
+        screen._done.add(2)
+        self._press(screen, pygame.K_2)
+        assert 2 not in screen._cents and 2 not in screen._done
+
+    def test_r_lets_go_too(self):
+        import pygame
+        screen = self._tuner()
+        self._press(screen, pygame.K_6)
+        self._press(screen, pygame.K_r)
+        assert screen._locked is None
+
+    def test_it_says_which_string_it_is_waiting_for(self):
+        import pygame
+        screen = self._tuner()
+        self._press(screen, pygame.K_4)
+        action, note = screen.advice()
+        assert action == "Play string 4" and note
+
+    def test_the_keys_are_written_on_the_screen(self):
+        """A tuner is read with a guitar in both hands."""
+        import inspect
+        from pickhero.ui import tuner_menu
+        source = inspect.getsource(tuner_menu)
+        assert "1-6: pick the string" in source
+        assert "str(string)" in source, "the number under each pip"
+
+    def test_a_number_no_tuning_has_is_ignored(self):
+        import pygame
+        screen = self._tuner()
+        screen._locked = 3
+        screen._lock(9)
+        assert screen._locked == 3
+
+
+def nearest_string_of(screen, freq):
+    from pickhero.ui.tuner_menu import nearest_string
+    found = nearest_string(freq, screen.tuning)
+    return found[0] if found else None

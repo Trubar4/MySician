@@ -3260,6 +3260,24 @@ Both halves are fixed, because one is the correct fix and the other holds when s
 The lesson is not about Songsterr. It is that **a capability check and a permission check that disagree produce a feature that silently does
 nothing** — and the default I had just changed turned a latent disagreement into every sync on the song failing.
 
+### Naming The String Is The Player Saying So
+
+*"Können wir noch was einbauen, damit ich beim Stimmen die Saite wählen kann, falls die falsche erkannt wird."*
+
+He asked for the case where the tuner picks the **wrong** string. The bigger half is the one he did not name: `nearest_string` returns **None** when
+no target owns the reading, and a string far enough out that nothing owns it is exactly when a tuner is most needed. A fresh string four hundred
+cents flat got no answer at all — the screen simply sat there saying "Play a string" while he was playing one.
+
+`1` to `6` name a string, and with one named the catch window stops applying: naming it IS the player saying which one it is. Three details:
+
+- **6 is the low E**, the way a guitarist counts and the way the rest of this app already numbers strings (`F1`–`F6`, `active_strings`). The pips are
+  drawn low-first, so the numbers read left to right — and each one is **written under its pip**, because a tuner is read with a guitar in both hands
+  and 6-is-the-low-E is a convention rather than something the screen would otherwise say.
+- **The same key lets go.** The player who pressed 5 to escape a wrong guess presses 5 again to stop, without hunting for a second key. Letting go
+  drops that string's reading, which was measured against a target that is no longer the question.
+- **An octave is still refused.** The window is ±900 cents — wide enough for any string a person would actually try to tune, and stopping short of
+  1200 keeps YIN's octave error out. A reading an octave up is the detector being wrong, not the string being wrong.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus
