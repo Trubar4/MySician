@@ -533,6 +533,38 @@ class App:
             self._open_device_menu("settings")
         elif result == "calibration":
             self._open_calibration("settings")
+        elif result == "songs":
+            self._choose_songs_folder()
+
+    def _choose_songs_folder(self) -> None:
+        """Point the app at another songs folder, from inside the app.
+
+        It could only be done with `--songs` on the command line, which on
+        the laptop that has nothing but MySician.exe on it means it could
+        not be done at all. Same chooser as the import.
+
+        The path is stored ABSOLUTE. A relative one resolves against
+        wherever the .exe was started from, which is how this app once died
+        before drawing a frame -- see `Config.songs_path`.
+        """
+        from pickhero.ui.filepick import pick_folder
+        chosen = pick_folder("Where your tabs are",
+                             str(self._config.songs_dir))
+        try:
+            pygame.event.clear(pygame.KEYDOWN)
+            pygame.event.clear(pygame.KEYUP)
+        except Exception:
+            pass
+        if not chosen:
+            return                        # cancelled, or no desktop to ask
+        self._config.songs_dir = str(Path(chosen).resolve())
+        self._config.save()
+        if self._menu is not None:
+            self._menu.say(self._menu.set_songs_dir(self._config.songs_path()))
+        # Back to the list, because the answer to "did that work" is the
+        # list of songs and not a settings row.
+        self._settings_menu = None
+        self._state = "menu"
 
     def _handle_device_event(self, event: pygame.event.Event) -> None:
         result = self._device_menu.handle_event(event)

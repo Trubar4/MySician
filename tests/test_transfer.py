@@ -304,3 +304,93 @@ class TestTheKey:
         for line in inspect.getsource(menu).splitlines():
             if "Type to search" in line or "F or /: search" in line:
                 assert "Ctrl+I" in line
+
+
+class TestChoosingTheSongsFolder:
+    """*"Wie kann ich jetzt den Standort-Ordner ändern?"*
+
+    It could only be done with `--songs` on the command line, which on the
+    laptop that has nothing but MySician.exe on it means it could not be
+    done at all -- the same gap that made `tools/merge_stats.py` useless
+    where it was most needed.
+    """
+
+    def _app(self, tmp_path, chosen, monkeypatch):
+        import pygame
+        from pickhero.ui.app import App
+        from pickhero.ui.menu import MenuScreen
+        from pickhero.ui.settings_menu import SettingsMenuScreen
+        songs, config = _here(tmp_path)
+        (songs / "Old song.gp5").write_bytes(b"gp")
+        monkeypatch.setattr("pickhero.ui.filepick.pick_folder",
+                            lambda *a, **k: str(chosen))
+        app = App.__new__(App)
+        app._config = config
+        app._menu = MenuScreen(songs, config=config)
+        app._settings_menu = SettingsMenuScreen(config)
+        app._state = "settings"
+        return app
+
+    def test_the_row_is_there_and_says_where_it_is(self, tmp_path):
+        from pickhero.ui.settings_menu import SettingsMenuScreen
+        songs, config = _here(tmp_path)
+        rows = {r.key: r for r in SettingsMenuScreen(config)._rows}
+        assert "songs" in rows
+        assert rows["songs"].value().endswith("songs")
+
+    def test_a_long_path_is_shortened_from_the_front(self, tmp_path):
+        """The half that identifies it is the END -- every one of these
+        paths starts the same way."""
+        from pickhero.ui.settings_menu import SettingsMenuScreen
+        _, config = _here(tmp_path)
+        config.songs_dir = "C:\\\\Users\\\\Admin\\\\Documents\\\\Guitar\\\\Tabs\\\\everything\\\\songs"
+        shown = {r.key: r for r in SettingsMenuScreen(config)._rows}[
+            "songs"].value()
+        assert shown.startswith("…") and shown.endswith("songs")
+        assert len(shown) <= 42
+
+    def test_choosing_one_points_the_list_at_it(self, tmp_path,
+                                                monkeypatch):
+        elsewhere = tmp_path / "other place"
+        elsewhere.mkdir()
+        (elsewhere / "New song.gp5").write_bytes(b"gp")
+        app = self._app(tmp_path, elsewhere, monkeypatch)
+        app._choose_songs_folder()
+        assert [p.stem for p in app._menu._display_files] == ["New song"]
+        assert app._config.songs_dir == str(elsewhere.resolve())
+
+    def test_the_path_is_stored_absolute(self, tmp_path, monkeypatch):
+        """A relative one resolves against wherever the .exe was started
+        from, which is how this app once died before drawing a frame."""
+        elsewhere = tmp_path / "other place"
+        elsewhere.mkdir()
+        app = self._app(tmp_path, elsewhere, monkeypatch)
+        app._choose_songs_folder()
+        from pathlib import Path as _Path
+        assert _Path(app._config.songs_dir).is_absolute()
+
+    def test_it_goes_back_to_the_list(self, tmp_path, monkeypatch):
+        """The answer to "did that work" is the list of songs, not a
+        settings row."""
+        elsewhere = tmp_path / "other place"
+        elsewhere.mkdir()
+        app = self._app(tmp_path, elsewhere, monkeypatch)
+        app._choose_songs_folder()
+        assert app._state == "menu" and app._settings_menu is None
+
+    def test_cancelling_changes_nothing(self, tmp_path, monkeypatch):
+        app = self._app(tmp_path, "", monkeypatch)
+        before = app._config.songs_dir
+        app._choose_songs_folder()
+        assert app._config.songs_dir == before
+        assert app._state == "settings"
+
+    def test_the_new_folder_s_sidecars_are_picked_up(self, tmp_path,
+                                                     monkeypatch):
+        """Pointing at a folder carried over from the other machine has to
+        bring its settings with it, like any other scan."""
+        elsewhere = tmp_path / "from nb1"
+        _song(elsewhere)
+        app = self._app(tmp_path, elsewhere, monkeypatch)
+        app._choose_songs_folder()
+        assert app._config.transpose_for("AC-DC - Thunder") == 2

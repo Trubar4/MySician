@@ -169,7 +169,23 @@ class SettingsMenuScreen:
                     parts.append(f" {name} ")
             return "".join(parts)
 
+        def songs_folder() -> str:
+            """The folder, shortened from the FRONT.
+
+            `C:\\Users\\Admin\\Documents\\Guitar\\songs` does not fit
+            the value column, and the half that identifies it is the end --
+            every one of these paths starts the same way.
+            """
+            shown = str(c.songs_dir)
+            return shown if len(shown) <= 42 else "…" + shown[-41:]
+
         return [
+            Setting("songs", "Songs folder", songs_folder, opens="songs",
+                    note="Where MySician looks for your tabs. ENTER to "
+                         "choose another one — everything for a song lives "
+                         "beside it, so moving the folder takes the sync "
+                         "and the settings with it.",
+                    is_default=lambda: True),
             Setting("device", "Audio input", audio_device_name, opens="device",
                     note="Which interface the guitar comes in on. ENTER to "
                          "choose.",

@@ -3203,6 +3203,27 @@ So the song list writes the missing ones when it scans. Two rules keep it honest
 Which makes the scan two-way and idempotent: it adopts what the folder knows and this machine does not, and it writes what this machine knows and
 the folder does not. Run it twice and the second run does nothing.
 
+### The Songs Folder Could Only Be Changed From A Command Line
+
+*"Import hat auf NB2 funktioniert. Wie kann ich jetzt den Standort-Ordner ändern?"*
+
+With `--songs` — which on the laptop that has nothing but `MySician.exe` on it means it could not be done at all. The **third** time this exact gap
+has surfaced in a week: the merge tool lived in `tools/` and so did not exist in the .exe, `ffmpeg` needed a script to fetch it, and now this. The
+pattern is worth naming: **anything that can only be reached from a shell does not exist on the machine that most needs it.**
+
+It is a row in the settings screen rather than a new key, because CLAUDE.md already says where this belongs — the place for anything set once that
+then lives on invisibly — and because a row SHOWS the current folder while a keybinding shows nothing. The path is shortened from the **front**: the
+half that identifies it is the end, and every one of these paths starts the same way.
+
+Two details that are the difference between working and nearly working:
+
+- **The stored path is absolute.** A relative one resolves against wherever the .exe was started from, which is how this app once died before
+  drawing a single frame — `Config.songs_path` carries that scar already.
+- **It returns to the song list.** The answer to "did that work" is the list of songs, not a settings row that says a path.
+
+And because pointing at a new folder is an ordinary scan, a folder carried over from the other machine brings its sidecars in on arrival — the same
+path as every other reload, rather than a second one written for this case.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

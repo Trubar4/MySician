@@ -239,6 +239,17 @@ class MenuScreen:
         self._index.scan_in_background(self._files)
         self._apply_filter()
 
+    def set_songs_dir(self, folder) -> str:
+        """Look somewhere else from now on. Returns what it found there.
+
+        The search and the cursor are dropped on purpose: they belong to the
+        list that was being looked at, and this is a different one.
+        """
+        self._songs_dir = Path(folder)
+        self._search_text, self._search_active = "", False
+        self._selected = self._scroll_offset = 0
+        return self.reload_files()
+
     def reload_files(self) -> str:
         """Read the folder again without losing the player's place (F5).
 
