@@ -98,6 +98,16 @@ a = Analysis(
         "resvg_py",
         "pickhero.ui.tab_view",
         "pickhero.tabs.musicxml",
+        # Imported inside the functions that use them, so nothing in the
+        # static graph reaches them -- the same way verovio came to be
+        # missing from a build that passed. The import key (Ctrl+I) is the
+        # one feature that exists FOR the .exe-only laptop, so it failing
+        # there and nowhere else would be the worst possible place for it.
+        "pickhero.transfer",
+        "pickhero.ui.filepick",
+        "pickhero.ui.clipboard",
+        "pickhero.tabs.sidecar",
+        "pickhero.tabs.remove",
     ],
     hookspath=[],
     hooksconfig={},

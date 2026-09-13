@@ -43,138 +43,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pickhero.config import CONFIG_DIR  # noqa: E402
 from pickhero import practice_log  # noqa: E402
-
-
-def session_key(session) -> tuple:
-    """What makes a sitting the same sitting.
-
-    The start time is to the second and the song is in it, so two machines
-    cannot invent the same one -- and the same one copied twice collapses.
-    """
-    return (session.started, session.song)
-
-
-def merge_sessions(mine: list, theirs: list) -> tuple[list, int]:
-    """(merged, how many were new), oldest first."""
-    seen = {session_key(s) for s in mine}
-    added = [s for s in theirs if session_key(s) not in seen]
-    # A later merge must not depend on which order they arrived in.
-    merged = sorted(mine + added, key=lambda s: (s.started, s.song))
-    return merged, len(added)
-
-
-def merge_progress(mine: dict, theirs: dict) -> tuple[dict, list[str]]:
-    """(merged, the songs whose best came from the other machine)."""
-    out = dict(mine)
-    improved = []
-    for song, other in theirs.items():
-        current = out.get(song)
-        if current is None:
-            out[song] = dict(other)
-            improved.append(song)
-            continue
-        merged = dict(current)
-        # attempts: the larger, NOT the sum. See the module docstring.
-        merged["attempts"] = max(current.get("attempts", 0),
-                                 other.get("attempts", 0))
-        merged["last_played"] = max(current.get("last_played", ""),
-                                    other.get("last_played", ""))
-        if other.get("best_accuracy", 0.0) > current.get("best_accuracy", 0.0):
-            # The record is taken whole: hits, total and the histories belong
-            # to the run that scored it, and mixing them makes a run that
-            # never happened.
-            for field in ("best_accuracy", "best_hits", "best_total",
-                          "section_history", "tempo_history"):
-                if field in other:
-                    merged[field] = other[field]
-            improved.append(song)
-        out[song] = merged
-    return out, improved
-
-
-def song_settings() -> tuple[str, ...]:
-    """Every per-song setting there is. FOUND, not listed.
-
-    This was a hand-written tuple of seven names, and by the time anybody
-    looked it was missing two: `song_songsterr` and `song_sync_source`,
-    both added months after it was written. Merging two machines would have
-    silently dropped the Songsterr link and the sync source -- and "silently
-    dropped" on a merge means nobody notices until they open the song and
-    the sync is gone.
-
-    The rule that makes this safe is a naming one, and it already holds:
-    everything scoped to a SONG is a dict called `song_something`, and
-    everything scoped to the MACHINE is not -- the audio device index, the
-    calibration, the latency offset. Carrying a machine setting across
-    would break the other computer's input while looking like a settings
-    problem, which is why the split matters more than the list.
-
-    `Config.forget_song` and `Config.rename_song` walk the fields for the
-    same reason. Three readers of the same set, and a list in any of them
-    is a setting waiting to be lost.
-    """
-    from dataclasses import fields
-
-    from pickhero.config import Config
-
-    return tuple(f.name for f in fields(Config)
-                 if f.name.startswith("song_")
-                 and isinstance(getattr(Config(), f.name, None), dict))
-
+# The merge itself lives in the PACKAGE, not here. `tools/` is not in the
+# .exe, and the laptop that most needs to merge is the one with only the
+# .exe on it -- so the song list can do this too (Ctrl+I) and both front
+# ends run the same code. This file is the command line for it.
+from pickhero.transfer import (  # noqa: E402
+    backup as _backup, merge_progress, merge_sessions, merge_settings,
+    read_json as _read_json, session_key, song_settings)
 
 SONG_SETTINGS = song_settings()
-
-
-def merge_settings(mine: dict, theirs: dict) -> tuple[dict, list[str]]:
-    """(merged, what changed). Per-song entries and favourites only.
-
-    An entry this machine already has WINS. It was set here, on this
-    instrument, in this room -- and a sync that silently overwrites what you
-    just adjusted is worse than no sync.
-    """
-    out = dict(mine)
-    changed = []
-    for field in SONG_SETTINGS:
-        ours = dict(out.get(field) or {})
-        added = 0
-        for song, value in (theirs.get(field) or {}).items():
-            if song not in ours:
-                ours[song] = value
-                added += 1
-        if added:
-            out[field] = ours
-            changed.append(f"{field}: {added} Songs dazu")
-    stars = list(out.get("favourites") or [])
-    new_stars = [s for s in (theirs.get("favourites") or []) if s not in stars]
-    if new_stars:
-        out["favourites"] = stars + new_stars
-        changed.append(f"favourites: {len(new_stars)} dazu")
-    return out, changed
-
-
-def _read_json(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _read_progress(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _backup(path: Path) -> None:
-    if path.exists():
-        shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+_read_progress = _read_json
 
 
 def main() -> int:
@@ -247,9 +125,7 @@ def main() -> int:
     target.mkdir(parents=True, exist_ok=True)
     if added:
         _backup(my_log)
-        with open(my_log, "w", encoding="utf-8") as handle:
-            for session in merged:
-                handle.write(json.dumps(session.__dict__, ensure_ascii=False) + "\n")
+        practice_log.write(my_log, merged)
     if improved:
         _backup(target / "progress.json")
         (target / "progress.json").write_text(

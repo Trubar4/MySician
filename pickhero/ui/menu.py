@@ -58,6 +58,10 @@ class MenuScreen:
         self._reload_note: str = ""
         #: How many songs took settings out of the folder on the last scan.
         self._adopted: int = 0
+        #: The last import's report, shown over the list until a key is
+        #: pressed. A multi-line answer, because "23 songs, 140 sittings,
+        #: 4 better scores" is four facts and the note line holds one.
+        self._import_lines: list[str] = []
         #: The song being renamed and the name being typed, or None. A tab
         #: downloaded from Songsterr arrives called whatever Songsterr calls
         #: it, and that name is the song's identity everywhere: `song_key` IS
@@ -265,6 +269,26 @@ class MenuScreen:
             parts.append(f"{self._adopted} picked up settings")
         return "Reloaded: " + ", ".join(parts)
 
+    def _blit_import_report(self, surface, w, h, item_font, hint_font,
+                            t) -> None:
+        """What the last import did, over the list until a key is pressed."""
+        line_h = 26
+        block = len(self._import_lines) * line_h + 56
+        top = max(80, h // 2 - block // 2)
+        panel = pygame.Rect(40, top - 20, w - 80, block)
+        pygame.draw.rect(surface, t.menu_bg, panel, border_radius=6)
+        pygame.draw.rect(surface, t.hud_accent, panel, width=1,
+                         border_radius=6)
+        for i, line in enumerate(self._import_lines):
+            font = item_font if i == 0 else hint_font
+            colour = t.hud_accent if i == 0 else t.hud_text
+            drawn = font.render(line, True, colour)
+            surface.blit(drawn, (w // 2 - drawn.get_width() // 2,
+                                 top + i * line_h))
+        hint = hint_font.render("Any key closes this", True, t.hud_text)
+        surface.blit(hint, (w // 2 - hint.get_width() // 2,
+                            top + len(self._import_lines) * line_h + 8))
+
     def _toggle_favourite(self) -> None:
         """Star the selected song, or take the star off (M).
 
@@ -397,6 +421,38 @@ class MenuScreen:
         place.
         """
         self._reload_note = text
+
+    def _import_from_folder(self) -> None:
+        """Ctrl+I: take another computer's songs and history from a folder.
+
+        A laptop that cannot have a cloud client installed still has a USB
+        stick, and a stick is a real folder. Nothing is overwritten and a
+        `.bak` is left beside anything rewritten, so this runs in one step
+        rather than asking first -- the report says what happened, which is
+        the thing that actually needs seeing.
+        """
+        if self._config is None:
+            return
+        from pickhero.transfer import import_from
+        from pickhero.ui.filepick import pick_folder
+        self.say("Opening the folder chooser…")
+        chosen = pick_folder("Folder from the other computer",
+                             str(self._songs_dir))
+        # Every key repeat that arrived while the dialog held the app is
+        # still queued, and each one would open it again -- the same bill
+        # the recording chooser already paid.
+        try:
+            pygame.event.clear(pygame.KEYDOWN)
+            pygame.event.clear(pygame.KEYUP)
+        except Exception:
+            pass
+        self._reload_note = ""
+        if not chosen:
+            return                     # cancelled, or no desktop to ask
+        report = import_from(chosen, self._config)
+        self._import_lines = report.lines()
+        if report.songs_added:
+            self.reload_files()        # the new songs have to appear
 
     def _start_rename(self) -> None:
         """R: edit the name of the song under the cursor."""
@@ -645,6 +701,19 @@ class MenuScreen:
             # letter: the search box takes those the moment it is open.
             if event.key == pygame.K_F5:
                 self._reload_note = self.reload_files()
+                return None
+
+            # Any key clears the import report first -- it is a thing that
+            # has been read, not a mode, so nothing should have to be aimed
+            # at it.
+            if self._import_lines:
+                self._import_lines = []
+
+            # Ctrl+I, because the laptop that needs it is the one with only
+            # the .exe on it and no way to run a script. Ctrl so it works
+            # with the filter box open, like Ctrl+M.
+            if event.key == pygame.K_i and event.mod & pygame.KMOD_CTRL:
+                self._import_from_folder()
                 return None
 
             # R, next to DEL in what it touches: both act on the song under
@@ -938,12 +1007,15 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  DEL: delete song  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  DEL: delete song  |  Ctrl+I: import  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"
             fav = "on" if self._favourites_only else "off"
-            hint = f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+            hint = f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song  |  Ctrl+I: import from another PC  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+        if self._import_lines:
+            self._blit_import_report(surface, w, h, item_font, hint_font, t)
+
         # The build, bottom right and out of the way. It is asked for
         # exactly once per report -- "which version are you running" --
         # and answering it has cost several rounds.

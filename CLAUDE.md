@@ -3151,6 +3151,39 @@ cursor is somewhere it is not, which is worse than no cursor.
 Two tests had to be inverted for this, and that is the point worth keeping: both asserted the old rule faithfully, so changing the behaviour showed
 up as a failing suite rather than as a surprise months later.
 
+### A Stick Is A Real Folder
+
+*"Auf NB2 geht keiner der Wege mit OneDrive, iCloud oder Dropbox. Ich könnte das Trio GP, MP3, Songsterr.Map von Hand kopieren."*
+
+Two corrections, one of them his and one of them mine.
+
+**His trio is a quartet, and that is the whole answer.** Since the settings moved into `<name>.mysician.json`, a song IS its four files — tab, bar
+map, recording, settings — all beside each other under one name. So `settings.json` and `progress.json` are no longer on the list of things to
+carry: the per-song half of both already travels with the songs. What is genuinely left over is **the chronological sitting log**, and whatever
+still sits in an older `settings.json` written before the sidecar existed.
+
+**And an iCloud share link is not a folder.** `https://www.icloud.com/iclouddrive/…` is a web page; the app needs a path it can read *and write* —
+sidecars, measurements, settings. A read-only pull would make the second laptop a spectator. The answer for a machine where no cloud client can be
+installed is the thing that was always there: a USB stick is a real folder.
+
+So `Ctrl+I` on the song list takes a folder and pulls out what is missing. The merge core moved from `tools/merge_stats.py` into
+`pickhero/transfer.py` for one blunt reason: **`tools/` is not in the .exe, and the laptop that most needs to merge is the one with only the .exe on
+it.** The command line is now a front end for the same code rather than a second copy of it — and `practice_log.write` came along with it, because
+the tool had its own copy of the write loop and a format with two writers is a format that drifts.
+
+The rules are the ones this project already had, said once more where they now live:
+
+- **Running it twice changes nothing the second time.** Sittings are keyed by when they started and which song.
+- **What this machine has WINS**, per setting and per file. A song already here keeps the copy being practised, whatever the other machine says.
+- **Per FILE, not per song.** A sidecar arriving beside a tab we already have can only add settings we have not got, and the tab is left alone.
+- **Nothing that belongs to the MACHINE moves** — audio device, calibration, latency — and the report says so out loud, because "what did it just do
+  to my sound card" is the question this feature would otherwise raise.
+- A `.bak` is left beside anything rewritten, which is why it runs in one step instead of asking first.
+
+Both new modules are named in `pickhero.spec`. They are imported inside the functions that use them, so nothing in the static graph reaches them —
+the verovio lesson — and this is the one feature that exists *for* the .exe-only laptop, so failing there and nowhere else would be the worst
+possible place for it.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus
