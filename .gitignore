@@ -74,5 +74,7 @@ pickhero/_build_stamp.txt
 tools/ffmpeg
 tools/ffmpeg.exe
 
-# The bar map the download screen caches beside each tab.
+# What the app writes beside each tab: the bar map it caches, and the
+# song's own settings, which travel with the songs folder.
 *.songsterr.json
+*.mysician.json

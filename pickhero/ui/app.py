@@ -488,6 +488,14 @@ class App:
             return
         if result == "menu":
             self._playing_screen.stop_audio()      # writes the sitting
+            # And the song's settings back beside the song, so copying the
+            # songs folder to the other laptop carries the work with it.
+            # Asked for rather than assumed: this is the teardown path, and
+            # a screen that cannot write its settings must still be able to
+            # be left.
+            writer = getattr(self._playing_screen, "write_sidecar", None)
+            if callable(writer):
+                writer()
             self._playing_screen = None
             self._state = "menu"
             self._menu.scan_files()

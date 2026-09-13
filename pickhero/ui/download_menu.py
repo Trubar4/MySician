@@ -323,6 +323,11 @@ class DownloadMenuScreen:
                 if setter is not None:
                     setter(song_key, str(grab.audio_path))
             config.save()
+            # And beside the tab, so the song arrives on the second laptop
+            # already knowing its Songsterr id and its recording.
+            if grab.tab_path is not None:
+                from pickhero.tabs import sidecar
+                sidecar.write(grab.tab_path, song_key, config)
         except (OSError, AttributeError, ValueError) as exc:
             self._notes.append(f"Settings not saved: {exc}")
 

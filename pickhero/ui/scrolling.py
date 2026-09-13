@@ -956,6 +956,10 @@ class PlayingScreen:
         #: Measure this song's sync once the first frame is up. Set when the
         #: song opens with a recording and no sync points of its own.
         self._sync_on_open = False
+        #: Settings changed and the sidecar has not caught up. Written on the
+        #: next frame rather than inside the handler, so a measurement
+        #: finishing does not stall a frame on file IO.
+        self._sidecar_due = False
         self._mp3_dialog_armed = False
         self._mp3_pending_seek_ms: float | None = None
         self._mp3_last_seek_at = float("-inf")
@@ -1125,6 +1129,7 @@ class PlayingScreen:
             self._init_midi_player(backing_track)
         if guide_track is not None and len(guide_track) > 0:
             self._init_guide_player(guide_track)
+        self._adopt_song_sidecar()
         self._adopt_audio_beside_tab()
         self._load_mp3_for_song()
         # A song opened with sync points already measured has to SHOW them.
@@ -1432,6 +1437,10 @@ class PlayingScreen:
 
     def update(self) -> None:
         """Advance playback clock by real elapsed time."""
+        if self._sidecar_due:
+            self._sidecar_due = False
+            self.write_sidecar()
+
         if self._sync_on_open:
             # Once, and only once: a measurement that finds nothing leaves
             # the points empty, and re-arming here would measure again every
@@ -5343,6 +5352,30 @@ class PlayingScreen:
 
     STATUS_NOTE_SECONDS = 8.0
 
+    def write_sidecar(self) -> None:
+        """Put this song's settings back beside the tab. Never raises.
+
+        On the way OUT of a song and after anything expensive -- a
+        measurement, an anchor pinned by ear -- rather than on every
+        keypress. The file is small, but a cloud folder that sees it change
+        forty times a minute is a cloud folder fighting itself.
+        """
+        if not self._song_path or not self._song_key:
+            return
+        try:
+            from pickhero.tabs import sidecar
+            best = None
+            try:
+                from pickhero.progress import ProgressTracker
+                best = ProgressTracker().get_best(self._song_key)
+            except Exception:
+                pass
+            sidecar.write(self._song_path, self._song_key, self._config, best)
+        except Exception:
+            # A song that plays beats a note about why its settings could
+            # not be written down.
+            pass
+
     def say(self, text: str) -> None:
         """The public name for `_say`, so the App can report into it.
 
@@ -6928,6 +6961,25 @@ class PlayingScreen:
     #: after a move.
     AUDIO_BESIDE = (".mp3", ".ogg", ".flac", ".wav")
 
+    def _adopt_song_sidecar(self) -> None:
+        """Take what travelled with this song, where nothing is set here.
+
+        The song list already does the settings when it scans -- a star has
+        to show in the LIST -- but the practice record is not something the
+        list reads, so it is picked up on the way in.
+        """
+        if not self._song_path or not self._song_key:
+            return
+        try:
+            from pickhero.progress import ProgressTracker
+            from pickhero.tabs import sidecar
+            if sidecar.adopt(self._song_path, self._song_key, self._config):
+                self._config.save()
+            sidecar.adopt_best(self._song_path, self._song_key,
+                               ProgressTracker())
+        except Exception:
+            pass
+
     def _adopt_audio_beside_tab(self) -> str:
         """Take the recording sitting next to the tab, if none is assigned.
 
@@ -7231,6 +7283,10 @@ class PlayingScreen:
         self._sync_lines = self._auto_sync_report_lines(points, report)
         if not report["readable"] or len(points) < 2:
             return
+        # Written beside the tab as soon as they exist. These are minutes of
+        # measurement, and losing them to a crash before the song is closed
+        # is the one loss this whole sidecar exists to prevent.
+        self._sidecar_due = True
         setter = getattr(self._config, "set_mp3_anchors_for", None)
         if setter is None:
             return

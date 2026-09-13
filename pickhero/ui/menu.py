@@ -56,6 +56,8 @@ class MenuScreen:
         # that looks like nothing happened is indistinguishable from a dead
         # key, and this one usually finds exactly one new file.
         self._reload_note: str = ""
+        #: How many songs took settings out of the folder on the last scan.
+        self._adopted: int = 0
         #: The song being renamed and the name being typed, or None. A tab
         #: downloaded from Songsterr arrives called whatever Songsterr calls
         #: it, and that name is the song's identity everywhere: `song_key` IS
@@ -209,6 +211,13 @@ class MenuScreen:
                                  f"{exc.strerror or exc}")
             found = []
         self._files = found
+        # Counted, not announced from in here. `reload_files` OWNS the note
+        # -- it returns one and the caller displays it -- so a message set
+        # here is either overwritten immediately or, worse, left standing
+        # after the next scan that found nothing.
+        self._adopted = self._adopt_sidecars(found)
+        if self._adopted:
+            self._reload_note = self._adopted_note()
         self._search_text = ""
         self._search_active = False
         self._index.scan_in_background(self._files)
@@ -249,6 +258,8 @@ class MenuScreen:
             parts.append(f"{gone} gone")
         if not added and not gone:
             parts.append("nothing changed")
+        if self._adopted:
+            parts.append(f"{self._adopted} picked up settings")
         return "Reloaded: " + ", ".join(parts)
 
     def _toggle_favourite(self) -> None:
@@ -290,6 +301,7 @@ class MenuScreen:
             return
         self._config.set_favourite(song.stem, starred)
         self._config.save()
+        self._write_sidecar(song)
         self.say(("Favourite: " if starred else "No longer a favourite: ")
                  + song.stem[:40])
         if self._favourites_only:
@@ -461,6 +473,57 @@ class MenuScreen:
         # claiming a delete that did not happen.
         self.reload_files()
         self.say(report.summary())
+
+    def _write_sidecar(self, path) -> None:
+        """Put this song's settings back beside the song. Never raises."""
+        if self._config is None or path is None:
+            return
+        try:
+            from pickhero.tabs import sidecar
+            best = None
+            try:
+                from pickhero.progress import ProgressTracker
+                best = ProgressTracker().get_best(path.stem)
+            except Exception:
+                pass
+            sidecar.write(path, path.stem, self._config, best)
+        except Exception:
+            pass
+
+    def _adopt_sidecars(self, found) -> int:
+        """Take the settings that travelled with the songs.
+
+        Here rather than when a song is opened, because a star has to show
+        in the LIST -- and "my favourites are gone" is what copying the
+        folder to the second laptop used to look like.
+
+        Only what this machine has no answer for; `sidecar.adopt` is the one
+        that decides. Nothing is written back: a folder that is read
+        produces no cloud conflict.
+        """
+        if self._config is None:
+            return 0
+        from pickhero.tabs import sidecar
+        taken = 0
+        for path in found:
+            try:
+                if sidecar.adopt(path, path.stem, self._config):
+                    taken += 1
+            except Exception:
+                continue          # one bad file is not a broken song list
+        if not taken:
+            return 0
+        try:
+            self._config.save()
+        except OSError:
+            return 0
+        return taken
+
+    def _adopted_note(self) -> str:
+        """What the last scan took out of the songs folder."""
+        return (f"Picked up settings for {self._adopted} song"
+                + ("s" if self._adopted != 1 else "")
+                + " from the songs folder")
 
     def copy_text(self) -> str:
         """The song list as text, with the note under it."""

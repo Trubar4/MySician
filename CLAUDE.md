@@ -3088,6 +3088,49 @@ Three boundaries keep it honest:
 And it touches the source only. The 70 ms the player dialled in with `Shift+M` lives in a different setting from the points, and defaulting one must
 never quietly reach into the other.
 
+### The Songs Folder Is The Sync
+
+*"Wie bekomme ich alle Songs von NB1 auf NB2 mit Syncs etc.? Ich könnte einen iCloud Link nutzen."*
+
+Copying the songs folder carried the tab, its bar map and its recording — and left the expensive part behind. The practice speed, the **sync points**,
+the Songsterr id, the transpose and the star all lived in one `settings.json` in the home folder, keyed by the tab's stem. The second laptop got the
+songs and none of the work.
+
+**Two machines writing one settings file is the problem, not the copying.** A cloud folder syncs files; it cannot merge two edits of one JSON, and
+this app saves that file on almost every keypress. Last writer wins, and what loses is silent. Putting `settings.json` in iCloud would have looked
+like a fix for a week and then eaten an evening of sync points.
+
+So the split is by **scope, not by convenience**:
+
+| lives with the SONG (`<name>.mysician.json`) | lives on the MACHINE (`settings.json`) |
+|---|---|
+| practice speed, sync points, both offsets, playback rate | audio device index |
+| Songsterr id and sync source | calibration |
+| transpose, favourite, best score | input latency offset |
+
+That right-hand column is the same list `merge_stats.py` has always refused to carry: an audio device index and a sound-card latency describe an
+interface, and moving them breaks the other computer's input while looking like a settings problem.
+
+Three rules make it safe:
+
+- **What this machine already has WINS.** Only settings with no local entry are taken. That is the rule `merge_stats.py` has always used, and one
+  rule in the project beats two — a sync that silently overwrites what you just adjusted is worse than no sync.
+- **The recording travels as a NAME, not a path.** `C:\Users\Admin\…` means nothing on the other laptop, and it is only adopted if a file of that
+  name is really beside the tab — otherwise this would store a path to nothing, which the app reports as a moved recording.
+- **Never a raise.** One unreadable sidecar must not break the song list, and a song that plays beats a note about why its settings could not be
+  written down.
+
+**It is written on the way out, not on the way through.** Leaving a song, finishing a measurement, a rename, a download — the expensive moments. A
+cloud folder that sees a file change forty times a minute is a cloud folder fighting itself. The sync points are the exception that writes at once:
+they are minutes of measurement, and losing them to a crash is the one loss this exists to prevent.
+
+**And the list reads them when it scans**, not when a song is opened, because a star has to show in the LIST — *"my favourites are gone"* is what
+copying the folder used to look like. `reload_files` owns its own note, so the count is folded into the line it returns rather than set behind its
+back; a second writer of that note leaves stale news standing, which is exactly what the first version did.
+
+`sidecar.song_fields` is the **fourth** reader of "every per-song setting" — with `forget_song`, `rename_song` and `merge_stats` — and four are only
+safe because none of them writes the names down. The one that did was found this week with two settings missing.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

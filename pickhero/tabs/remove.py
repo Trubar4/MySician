@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pickhero.tabs.sidecar import SUFFIX as SETTINGS_SUFFIX
 from pickhero.tabs.songsterr import CACHE_SUFFIX
 
 #: Everything the app might have downloaded or been pointed at as a
@@ -69,7 +70,8 @@ def belongings(tab_path) -> list[Path]:
     """
     tab = Path(tab_path)
     found = [tab] if tab.is_file() else []
-    beside = [tab.with_name(tab.stem + CACHE_SUFFIX)]
+    beside = [tab.with_name(tab.stem + CACHE_SUFFIX),
+              tab.with_name(tab.stem + SETTINGS_SUFFIX)]
     beside += [tab.with_name(tab.stem + suffix) for suffix in AUDIO_SUFFIXES]
     found += [p for p in beside if p.is_file()]
     return found
@@ -201,6 +203,18 @@ def rename_song(tab_path, new_stem: str, config=None) -> Renamed:
         except OSError as exc:
             out.failed.append(f"settings ({exc.strerror or exc})")
     _carry_history(tab.stem, wanted)
+    # The sidecar moved with the rest, but it still says the OLD name
+    # inside. Rewritten from what the settings now hold, so a copy of this
+    # folder carries the song under the name it actually has.
+    if out.tab_path is not None and config is not None:
+        from pickhero.tabs import sidecar
+        best = None
+        try:
+            from pickhero.progress import ProgressTracker
+            best = ProgressTracker().get_best(wanted)
+        except Exception:
+            pass
+        sidecar.write(out.tab_path, wanted, config, best)
     return out
 
 
