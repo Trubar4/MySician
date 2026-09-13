@@ -3224,6 +3224,42 @@ Two details that are the difference between working and nearly working:
 And because pointing at a new folder is an ordinary scan, a folder carried over from the other machine brings its sidecars in on arrival — the same
 path as every other reload, rather than a second one written for this case.
 
+### Born To Be My Baby: Nothing Downstream Was Broken
+
+*"Bei Born to be my baby scheinen alle Syncs zu versagen. Kannst du das bitte mal analysieren?"*
+
+Measured on the player's own three files, every part that could have been at fault was fine:
+
+| | reads |
+|---|---|
+| the listening | 40 of 43 windows, 0 ambiguous, one section, no breaks |
+| Songsterr's bar map | 43 of 43 windows, 68 ms scatter, 149 points against 149 measures |
+| the two maps against each other | within ~100 ms across the whole song |
+| the follow loop, simulated at 60 fps over the real map | worst error **17 ms**, **zero** snaps |
+
+The song is a real find in one respect — the recording runs about **1.2 % slower than the tab throughout**, so the offset walks from −0.2 s to
+**+2.6 s** over four and a half minutes, the largest warp this project has met. `SYNC_PULL_FRACTION` gives 50 ms/s of authority against the 12 ms/s
+that needs, so the picture tracks it without a visible correction. That part works.
+
+**The failure was one step before all of it, and it was a regression from three days earlier.** He carried the tab and its `.songsterr.json` across
+by hand — no sidecar, so no stored song id. Then:
+
+1. `_bar_map_available()` said yes, because the **cache** is there
+2. so the new "undecided songs start on the bar map" default set the source to `songsterr`
+3. and `_start_auto_sync` refused, because it asked a **different question**: is an **id** stored
+
+The measurement never ran. Nothing was ever stored. Every attempt answered *"no link is stored"*. Two questions about the same thing, asked
+differently in two places — and the one that decides was not the one that does the work.
+
+Both halves are fixed, because one is the correct fix and the other holds when something else gets it wrong:
+
+- the guard now asks `_bar_map_available()`, the same question the default asks
+- **the song id is taken out of the cache**, where it has been written since the first day and nothing ever read it back. `Ctrl+U` existed to type
+  in by hand a number the song was carrying all along.
+
+The lesson is not about Songsterr. It is that **a capability check and a permission check that disagree produce a feature that silently does
+nothing** — and the default I had just changed turned a latent disagreement into every sync on the song failing.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

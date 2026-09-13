@@ -974,3 +974,90 @@ class TestAnUndecidedSongStartsOnTheBarMap:
                             lambda self: runs.append(1))
         screen.update()
         assert runs == []
+
+
+class TestATabCarriedAcrossWithItsBarMap:
+    """*"Bei Born to be my baby scheinen alle Syncs zu versagen."*
+
+    Measured on the player's own three files, both measurements WORK and
+    agree with each other to about 100 ms across the whole song, and the
+    follow loop tracks them to 17 ms with no snaps. Nothing downstream was
+    broken. The failure was one step before all of it:
+
+    He copied the tab and its `.songsterr.json` across by hand. No sidecar,
+    so no stored song id. `_bar_map_available` said yes -- the CACHE is
+    there -- so the new default set the source to "songsterr". Then
+    `_start_auto_sync` refused, because it asked a DIFFERENT question: is an
+    ID stored. So the measurement never ran, nothing was ever stored, and
+    every attempt answered "no link is stored".
+
+    Two questions about the same thing, asked differently in two places.
+    """
+
+    def _screen(self, tmp_path, monkeypatch, cached=True, song_id=0):
+        import pygame
+        from pickhero.audio.mp3_playback import Mp3Player
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        tab = tmp_path / "Bon Jovi - Born To Be My Baby.gp5"
+        tab.write_bytes(b"gp")
+        (tmp_path / "Bon Jovi - Born To Be My Baby.mp3").write_bytes(b"x")
+        if cached:
+            songsterr.save_cache(tab, 27278, {"revisionId": 8465060,
+                                              "title": "Born To Be My Baby"},
+                                 [{"id": 1, "videoId": "T6oyujbaw1E",
+                                   "feature": None,
+                                   "points": [0.01, 1.83, 3.66]}])
+        config = Config()
+        config.set_mp3_path_for(tab.stem, str(tmp_path / f"{tab.stem}.mp3"))
+        if song_id:
+            config.set_songsterr_for(tab.stem, song_id)
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        return PlayingScreen(_song(), config=config, song_key=tab.stem,
+                             song_path=str(tab))
+
+    def test_the_song_id_is_taken_out_of_the_bar_map(self, tmp_path,
+                                                     monkeypatch):
+        """It was written into the cache from the first day and nothing read
+        it back, so Ctrl+U existed to type in a number the song was carrying
+        all along."""
+        screen = self._screen(tmp_path, monkeypatch)
+        assert screen._songsterr_id() == 27278
+        assert screen._config.songsterr_for(
+            "Bon Jovi - Born To Be My Baby") == 27278
+
+    def test_an_id_the_player_has_is_not_replaced(self, tmp_path,
+                                                  monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, song_id=999)
+        assert screen._songsterr_id() == 999
+
+    def test_the_measurement_actually_runs(self, tmp_path, monkeypatch):
+        """It refused outright before: the default had set the source to
+        Songsterr and the guard asked for an id that was not stored."""
+        from pickhero.ui.scrolling import PlayingScreen
+        runs = []
+        monkeypatch.setattr(autosync, "find", lambda *a, **k: runs.append(1))
+        screen = self._screen(tmp_path, monkeypatch)
+        screen.update()
+        assert screen._sync_source() == "songsterr"
+        assert screen._auto_sync_thread is not None, \
+            "the sync refused instead of measuring"
+        screen._auto_sync_thread.join(30)
+
+    def test_the_guard_asks_the_same_question_the_work_answers(
+            self, tmp_path, monkeypatch):
+        """A cache alone is enough to measure, so it must be enough to be
+        allowed to try."""
+        screen = self._screen(tmp_path, monkeypatch)
+        assert screen._bar_map_available()
+        monkeypatch.setattr(screen._config, "song_songsterr", {})
+        assert screen._bar_map_available(), "the cache alone is a bar map"
+
+    def test_a_song_with_neither_still_says_so(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, cached=False)
+        screen._config.set_sync_source_for(screen._song_key, "songsterr")
+        screen._start_auto_sync()
+        assert screen._auto_sync_thread is None
+        assert "no bar map is here" in screen._status_note_text()

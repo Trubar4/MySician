@@ -6970,6 +6970,7 @@ class PlayingScreen:
         """
         if not self._song_path or not self._song_key:
             return
+        self._adopt_songsterr_id()
         try:
             from pickhero.progress import ProgressTracker
             from pickhero.tabs import sidecar
@@ -7054,6 +7055,35 @@ class PlayingScreen:
             return
         self._default_to_the_bar_map()
         self._start_auto_sync()
+
+    def _adopt_songsterr_id(self) -> int:
+        """Take the song id out of the bar map beside the tab, if it is not
+        stored yet. Returns the id now in force.
+
+        The cache was written with `songId` in it from the first day, and
+        nothing read it back -- so a tab carried to the other machine with
+        its map arrived without the one number that says which song it is.
+        `Ctrl+U` existed to type that number in by hand, for a song that was
+        carrying it all along.
+        """
+        stored = self._songsterr_id()
+        if stored or not self._song_path or not self._song_key:
+            return stored
+        from pickhero.tabs import songsterr
+        raw = songsterr.load_cache(self._song_path)
+        try:
+            found = int((raw or {}).get("songId") or 0)
+        except (TypeError, ValueError):
+            return 0
+        setter = getattr(self._config, "set_songsterr_for", None)
+        if not found or setter is None:
+            return 0
+        setter(self._song_key, found)
+        try:
+            self._config.save()
+        except OSError:
+            pass                      # it still applies to this run
+        return found
 
     def _bar_map_available(self) -> bool:
         """Whether this song has a per-bar map to reach for at all."""
@@ -7214,9 +7244,16 @@ class PlayingScreen:
             self._say("This song is set to sync by hand (O → Sync source). "
                       "Shift+N/M to line it up, Shift+S to pin it")
             return
-        if source == "songsterr" and not song_id:
-            self._say("This song is set to use Songsterr, but no link is "
-                      "stored — copy one and press Ctrl+U")
+        if source == "songsterr" and not self._bar_map_available():
+            # `_bar_map_available`, NOT a stored id. The two were different
+            # questions and that cost the player a song: he carried a tab
+            # and its `.songsterr.json` across by hand, the default set the
+            # source to Songsterr because the CACHE was there, and this
+            # refused because the ID was not -- so the measurement never ran
+            # at all and every sync looked broken. One question, asked the
+            # same way in both places.
+            self._say("This song is set to use Songsterr, but no bar map is "
+                      "here — copy a link and press Ctrl+U")
             return
 
         def report(fraction: float, what: str) -> bool:
