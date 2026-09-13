@@ -65,6 +65,9 @@ class MenuScreen:
         #: recording, the sync points and the practice history.
         self._renaming = None
         self._rename_text: str = ""
+        #: Where the next character goes, 0..len(text). Without one the
+        #: editor could only ever grow and shrink at the end.
+        self._rename_caret: int = 0
         #: The song DEL is waiting for a second press on, or None. Deleting
         #: is the one thing on this screen that cannot be undone, and DEL
         #: sits one row from the arrow keys -- so it asks first, and the
@@ -403,11 +406,24 @@ class MenuScreen:
             return
         self._renaming = path
         self._rename_text = path.stem
+        # At the END, because the usual edit is trimming what Songsterr
+        # called it -- " v3" off the back.
+        self._rename_caret = len(self._rename_text)
         self._delete_armed = None
 
     def _handle_rename_key(self, event) -> None:
-        """Type, ENTER to keep, ESC to drop it."""
+        """Type, move, ENTER to keep, ESC to drop it.
+
+        **A caret, not an append.** The first version could only add at the
+        end and rub out from the end, so fixing the FRONT of a name meant
+        deleting the whole thing and typing it again -- and the names that
+        need fixing are Songsterr's, where the artist is at the front. Every
+        key here is what it is in any other text field: arrows move, Home
+        and End jump, Backspace eats behind, Delete eats in front.
+        """
         from pickhero.tabs.remove import safe_name
+        text, caret = self._rename_text, self._rename_caret
+
         if event.key == pygame.K_ESCAPE:
             self._renaming = None
             self.say("Rename cancelled")
@@ -415,16 +431,37 @@ class MenuScreen:
         if event.key == pygame.K_RETURN:
             self._finish_rename()
             return None
-        if event.key == pygame.K_BACKSPACE:
-            self._rename_text = self._rename_text[:-1]
+        if event.key == pygame.K_LEFT:
+            self._rename_caret = max(0, caret - 1)
             return None
+        if event.key == pygame.K_RIGHT:
+            self._rename_caret = min(len(text), caret + 1)
+            return None
+        if event.key == pygame.K_HOME:
+            self._rename_caret = 0
+            return None
+        if event.key == pygame.K_END:
+            self._rename_caret = len(text)
+            return None
+        if event.key == pygame.K_BACKSPACE:
+            if caret:
+                self._rename_text = text[:caret - 1] + text[caret:]
+                self._rename_caret = caret - 1
+            return None
+        if event.key == pygame.K_DELETE:
+            # In here it is a text key, and the song list's own DEL never
+            # sees it: the editor owns every key while it is open.
+            self._rename_text = text[:caret] + text[caret + 1:]
+            return None
+
         ch = event.unicode
         if ch and ch.isprintable() and ch not in ("\r", "\n", "\t"):
             # Refused as it is typed, not when ENTER fails. A colon is a
             # rename that dies with a Windows error nobody can read, and the
             # place to say so is the moment the key is pressed.
             if safe_name(ch) or ch == " ":
-                self._rename_text += ch
+                self._rename_text = text[:caret] + ch + text[caret:]
+                self._rename_caret = caret + 1
             else:
                 self.say(f"{ch} cannot be in a file name")
         return None
@@ -610,15 +647,19 @@ class MenuScreen:
                 self._reload_note = self.reload_files()
                 return None
 
-            # DEL, twice. Not while typing in the search box: there DEL is
-            # what somebody reaches for to fix a typo.
             # R, next to DEL in what it touches: both act on the song under
-            # the cursor and both move more than the file.
+            # the cursor and both move more than the file. A letter, so it
+            # stays out of the search box.
             if event.key == pygame.K_r and not self._search_active:
                 self._start_rename()
                 return None
 
-            if event.key == pygame.K_DELETE and not self._search_active:
+            # DEL, twice -- and while the filter box is open too. The first
+            # version kept it out of there on the theory that DEL is a
+            # typing key. It is not, in THIS box: backspace is what edits
+            # the search text and DEL does nothing there, while "find the
+            # song, then delete it" is the order somebody actually works in.
+            if event.key == pygame.K_DELETE:
                 self._delete_selected()
                 return None
 
@@ -753,10 +794,20 @@ class MenuScreen:
             pygame.draw.rect(surface, t.menu_selected_bg, box, border_radius=4)
             pygame.draw.rect(surface, t.hud_accent, box, width=1,
                              border_radius=4)
-            surface.blit(item_font.render(f"{self._rename_text}_", True,
+            surface.blit(item_font.render(self._rename_text, True,
                                           t.hud_accent), (box.x + 8, box.y + 2))
-            surface.blit(hint_font.render("Rename — ENTER keeps it, ESC "
-                                          "cancels", True, t.hud_accent),
+            # A bar WHERE THE CARET IS, not an underscore stuck on the end.
+            # The trailing "_" was fine while the editor could only append;
+            # with arrow keys it would say the cursor is somewhere it is
+            # not, which is worse than no cursor at all.
+            caret = max(0, min(len(self._rename_text), self._rename_caret))
+            caret_x = box.x + 8 + item_font.size(
+                self._rename_text[:caret])[0]
+            pygame.draw.line(surface, t.hud_accent, (caret_x, box.y + 4),
+                             (caret_x, box.bottom - 4), 2)
+            surface.blit(hint_font.render("Rename — arrows move, ENTER "
+                                          "keeps it, ESC cancels", True,
+                                          t.hud_accent),
                          (box.right + 12, box.y + 6))
         elif self._reload_note:
             note_surf = hint_font.render(self._reload_note, True, t.hud_accent)
@@ -887,7 +938,7 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  DEL: delete song  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"

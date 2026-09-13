@@ -3131,6 +3131,26 @@ back; a second writer of that note leaves stale news standing, which is exactly 
 `sidecar.song_fields` is the **fourth** reader of "every per-song setting" — with `forget_song`, `rename_song` and `merge_stats` — and four are only
 safe because none of them writes the names down. The one that did was found this week with two settings missing.
 
+### Two Rules About Text Boxes, Revised By Use
+
+*"DEL sollte auch während filtern gehen. Rename: Es sollte möglich sein mit Pfeiltasten zu springen."*
+
+**DEL was kept out of the search box on a theory, and the theory was wrong.** The reasoning written down at the time was "there DEL is what somebody
+reaches for to fix a typo" — true of a browser address bar, false of THIS box, which edits with backspace and does nothing with DEL at all. And the
+order somebody actually works in is *find the song, then delete it*: filtering down to one row is how you find it. The two-press confirm was already
+the protection; the guard was protecting nothing. It now works there and the search hint says so.
+
+**The rename editor could only grow and shrink at the end**, which meant fixing the FRONT of a name — and the names that need fixing are Songsterr's,
+where the artist sits at the front — was "delete the whole thing and type it again". It has a caret now, and every key is what it is in any other
+text field: arrows move, Home and End jump, Backspace eats behind, Delete eats in front. DEL is a text key in here and the song list's own DEL never
+sees the event, because the editor owns every key while it is open.
+
+The caret is drawn **where it is**, as a bar. The trailing `_` was honest while the editor could only append; with arrow keys it would claim the
+cursor is somewhere it is not, which is worse than no cursor.
+
+Two tests had to be inverted for this, and that is the point worth keeping: both asserted the old rule faithfully, so changing the behaviour showed
+up as a failing suite rather than as a surprise months later.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus

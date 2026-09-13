@@ -205,15 +205,21 @@ class TestTheKey:
         assert first.is_file() and second.is_file()
         assert "B song" in screen._reload_note
 
-    def test_del_while_searching_is_left_alone(self, tmp_path, monkeypatch):
-        """There it is the key somebody reaches for to fix a typo."""
+    def test_del_works_while_searching_too(self, tmp_path, monkeypatch):
+        """*"DEL sollte auch während filtern gehen."*
+
+        This asserted the opposite, on the theory that DEL is a typing key.
+        It is not in THIS box -- backspace is what edits the search text and
+        DEL does nothing there -- and "find the song, then delete it" is the
+        order somebody actually works in."""
         tab = _song(tmp_path)
         screen = self._menu(tmp_path, monkeypatch)
         self._press(screen, pygame.K_f)
         assert screen._search_active
         self._press(screen, pygame.K_DELETE)
+        assert tab.is_file(), "one press must still only ask"
         self._press(screen, pygame.K_DELETE)
-        assert tab.is_file()
+        assert not tab.exists()
 
     def test_an_empty_list_says_so(self, tmp_path, monkeypatch):
         screen = self._menu(tmp_path, monkeypatch)

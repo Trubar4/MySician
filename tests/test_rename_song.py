@@ -202,9 +202,13 @@ class TestTheKey:
         _song(tmp_path)
         screen = self._menu(tmp_path)
         self._press(screen, pygame.K_r, unicode="r")
-        screen._rename_text = "abc"
+        # Through the editor, not by assigning the text. Setting the string
+        # behind its back leaves the caret pointing at the OLD length, and
+        # the test then measures a state the app cannot reach.
+        screen._rename_text, screen._rename_caret = "abc", 3
         self._press(screen, pygame.K_BACKSPACE)
         assert screen._rename_text == "ab"
+        assert screen._rename_caret == 2
 
     def test_the_cursor_follows_the_renamed_song(self, tmp_path):
         _song(tmp_path, stem="A song")
@@ -414,3 +418,166 @@ class TestRenamingBeforeTheFirstOpen:
         screen = PlayingScreen(_timeline(), config=config, song_key="Song",
                                song_path=str(tab))
         assert screen._mp3_path() == str(mine)
+
+
+class TestTheCaret:
+    """*"Rename: Es sollte möglich sein mit Pfeiltasten zu springen."*
+
+    The first version could only add at the end and rub out from the end, so
+    fixing the FRONT of a name meant deleting the whole thing and typing it
+    again -- and the names that need fixing are Songsterr's, where the
+    artist sits at the front.
+    """
+
+    def _menu(self, tmp_path, stem="Thunder - Love Walked In v3"):
+        from pickhero.ui.menu import MenuScreen
+        _song(tmp_path, stem)
+        config = _config(stem)
+        return MenuScreen(tmp_path, config=config)
+
+    def _press(self, screen, key, mod=0, unicode=""):
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=key, mod=mod, unicode=unicode))
+
+    def _type(self, screen, text):
+        for ch in text:
+            self._press(screen, ord(ch.lower()) if len(ch) == 1 else 0,
+                        unicode=ch)
+
+    def _editing(self, tmp_path, **kw):
+        screen = self._menu(tmp_path, **kw)
+        self._press(screen, pygame.K_r, unicode="r")
+        return screen
+
+    def test_it_starts_at_the_end(self, tmp_path):
+        """The usual edit is trimming what Songsterr called it."""
+        screen = self._editing(tmp_path)
+        assert screen._rename_caret == len(screen._rename_text)
+
+    def test_left_and_right_move_it(self, tmp_path):
+        screen = self._editing(tmp_path)
+        end = screen._rename_caret
+        self._press(screen, pygame.K_LEFT)
+        self._press(screen, pygame.K_LEFT)
+        assert screen._rename_caret == end - 2
+        self._press(screen, pygame.K_RIGHT)
+        assert screen._rename_caret == end - 1
+
+    def test_it_cannot_walk_off_either_end(self, tmp_path):
+        screen = self._editing(tmp_path)
+        for _ in range(80):
+            self._press(screen, pygame.K_LEFT)
+        assert screen._rename_caret == 0
+        for _ in range(80):
+            self._press(screen, pygame.K_RIGHT)
+        assert screen._rename_caret == len(screen._rename_text)
+
+    def test_home_and_end_jump(self, tmp_path):
+        screen = self._editing(tmp_path)
+        self._press(screen, pygame.K_HOME)
+        assert screen._rename_caret == 0
+        self._press(screen, pygame.K_END)
+        assert screen._rename_caret == len(screen._rename_text)
+
+    def test_typing_at_the_front_is_the_whole_point(self, tmp_path):
+        screen = self._editing(tmp_path, stem="Thunder")
+        self._press(screen, pygame.K_HOME)
+        self._type(screen, "AC-DC ")
+        assert screen._rename_text == "AC-DC Thunder"
+        assert screen._rename_caret == 6
+
+    def test_backspace_eats_behind_the_caret(self, tmp_path):
+        screen = self._editing(tmp_path, stem="abcd")
+        self._press(screen, pygame.K_LEFT)
+        self._press(screen, pygame.K_BACKSPACE)
+        assert screen._rename_text == "abd"
+        assert screen._rename_caret == 2
+
+    def test_and_does_nothing_at_the_front(self, tmp_path):
+        screen = self._editing(tmp_path, stem="abcd")
+        self._press(screen, pygame.K_HOME)
+        self._press(screen, pygame.K_BACKSPACE)
+        assert screen._rename_text == "abcd"
+
+    def test_delete_eats_in_front_of_it(self, tmp_path):
+        """In here DEL is a text key. The song list's own DEL never sees the
+        event -- the editor owns every key while it is open."""
+        screen = self._editing(tmp_path, stem="abcd")
+        self._press(screen, pygame.K_HOME)
+        self._press(screen, pygame.K_DELETE)
+        assert screen._rename_text == "bcd"
+        assert screen._rename_caret == 0
+        assert (tmp_path / "abcd.gp5").is_file(), "it deleted the song"
+
+    def test_and_does_nothing_at_the_end(self, tmp_path):
+        screen = self._editing(tmp_path, stem="abcd")
+        self._press(screen, pygame.K_DELETE)
+        assert screen._rename_text == "abcd"
+
+    def test_the_hint_says_the_arrows_work(self):
+        import inspect
+        from pickhero.ui import menu
+        assert "arrows move" in inspect.getsource(menu)
+
+
+class TestDeletingWhileFiltering:
+    """*"DEL sollte auch während filtern gehen."*
+
+    The first version kept it out of the search box on the theory that DEL
+    is a typing key. It is not, in THIS box: backspace is what edits the
+    search text and DEL does nothing there -- while "find the song, then
+    delete it" is the order somebody actually works in.
+    """
+
+    def _menu(self, tmp_path):
+        from pickhero.ui.menu import MenuScreen
+        _song(tmp_path, "AC-DC - Thunder")
+        _song(tmp_path, "Metallica - One")
+        config = _config("AC-DC - Thunder")
+        return MenuScreen(tmp_path, config=config)
+
+    def _press(self, screen, key, mod=0, unicode=""):
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=key, mod=mod, unicode=unicode))
+
+    def test_two_presses_delete_the_filtered_song(self, tmp_path):
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_f, unicode="f")
+        for ch in "thun":
+            self._press(screen, ord(ch), unicode=ch)
+        assert [p.stem for p in screen._display_files] == ["AC-DC - Thunder"]
+        self._press(screen, pygame.K_DELETE)
+        self._press(screen, pygame.K_DELETE)
+        assert not (tmp_path / "AC-DC - Thunder.gp5").exists()
+        assert (tmp_path / "Metallica - One.gp5").is_file()
+
+    def test_one_press_still_only_asks(self, tmp_path):
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_f, unicode="f")
+        self._press(screen, pygame.K_DELETE)
+        assert (tmp_path / "AC-DC - Thunder.gp5").is_file()
+        assert "DEL again to confirm" in screen._reload_note
+
+    def test_typing_on_still_cancels_it(self, tmp_path):
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_f, unicode="f")
+        self._press(screen, pygame.K_DELETE)
+        self._press(screen, pygame.K_t, unicode="t")
+        self._press(screen, pygame.K_DELETE)
+        assert (tmp_path / "AC-DC - Thunder.gp5").is_file()
+
+    def test_the_search_survives_the_delete(self, tmp_path):
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_f, unicode="f")
+        for ch in "thun":
+            self._press(screen, ord(ch), unicode=ch)
+        self._press(screen, pygame.K_DELETE)
+        self._press(screen, pygame.K_DELETE)
+        assert screen._search_text == "thun"
+
+    def test_the_searching_hint_names_it(self):
+        import inspect
+        from pickhero.ui import menu
+        searching = [line for line in inspect.getsource(menu).splitlines()
+                     if "Type to search" in line][0]
+        assert "DEL: delete song" in searching

@@ -204,12 +204,15 @@ class TestTheKeyIsWrittenDown:
         from pickhero.ui import download_menu
         assert "Ctrl+C: copy this screen" in inspect.getsource(download_menu)
 
-    def test_and_the_rename_hint_does_not_advertise_dead_keys(self):
-        """R and DEL are both guarded by `not self._search_active`, so a
-        search hint offering them advertises keys that do nothing."""
+    def test_the_search_hint_offers_only_keys_that_work_there(self):
+        """A hint advertising a key that does nothing is worse than none.
+
+        `R` is a letter and belongs to the box, so it is not offered. `DEL`
+        is not -- it edits nothing in a box that uses backspace -- and it
+        now deletes the song you just filtered down to, so it is."""
         import inspect
         from pickhero.ui import menu
         searching = [line for line in inspect.getsource(menu).splitlines()
                      if "Type to search" in line][0]
         assert "R: rename" not in searching
-        assert "DEL: delete" not in searching
+        assert "DEL: delete song" in searching
