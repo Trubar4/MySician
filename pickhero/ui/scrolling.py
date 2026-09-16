@@ -30,6 +30,7 @@ from pickhero.audio import midi_playback
 from pickhero.audio import output
 from pickhero.audio.syncmap import SyncMap
 from pickhero import practice_log
+from pickhero import runs
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.chords import name_chord
 from pickhero.tabs.timeline import NoteEvent, Timeline
@@ -49,6 +50,7 @@ from pickhero.ui.colors import (
 from pickhero.ui.feedback import FeedbackRenderer
 from pickhero.ui import sheet
 from pickhero.ui import strip
+from pickhero.ui.stats_view import StatsOverlay
 
 # Layout constants
 LANE_TOP_MARGIN = 80
@@ -537,6 +539,16 @@ _TAB_VERDICT_COLOURS = {
     MatchType.HIT: "feedback_hit",
     MatchType.CLOSE: "feedback_close",
     MatchType.MISS: "feedback_miss",
+}
+
+# The same three verdicts, as the one character a stored run keeps per note.
+# Two maps of one thing, which this project normally refuses -- but they are
+# maps to different alphabets and neither can be derived from the other; a
+# colour cannot be written to disk and a letter cannot be blitted.
+_RUN_VERDICT = {
+    MatchType.HIT: "hit",
+    MatchType.CLOSE: "close",
+    MatchType.MISS: "miss",
 }
 
 # How long seeks have to stop arriving before the recording follows them.
@@ -1259,6 +1271,17 @@ class PlayingScreen:
         # beim spielen) und dann spielen klicken"*.
         self._strip_loop_from: float | None = None
         self._strip_loop_to: float | None = None
+
+        # Several runs of this song, side by side. A MODE of this screen and
+        # not a screen of its own: the timeline, the loop, the clock and the
+        # seek are all here, and a comparison with its own would be a second
+        # answer to where the song is.
+        self._stats = StatsOverlay(self, _get_font)
+        # Where the button that opens it came out. Recorded by the drawing
+        # rather than computed twice, because it is right-aligned against a
+        # clock whose width changes with the song -- and because it cannot be
+        # clicked before it has been on screen.
+        self._stats_button: pygame.Rect | None = None
         # Whether the sync panel is open. Everything about lining sound up
         # against the notes lives in it, and none of it is needed while
         # playing -- which is what the screen is for.
@@ -1857,6 +1880,16 @@ class PlayingScreen:
             if event.key == self._step_key:
                 self._step_key = None
             return None
+        # The run comparison owns the keyboard and the mouse while it is up,
+        # the way the track picker owns the keyboard. It answers False when
+        # it is closed, so nothing below it changes.
+        if self._stats.handle_event(event):
+            return None
+        if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                and self._stats_button is not None
+                and self._stats_button.collidepoint(event.pos)):
+            self._open_stats()
+            return None
         # The strip along the bottom is the one thing on this screen the mouse
         # means anything to. It is checked before the keyboard gate below,
         # which returns None for every event that is not a key -- which is why
@@ -1955,7 +1988,13 @@ class PlayingScreen:
         elif event.key == pygame.K_f:
             self._cycle_fret_limit()
         elif event.key == pygame.K_d:
-            self._export_run_log()
+            if shift_held(event):
+                # D writes the log of THIS run; Shift+D shows every run there
+                # has been. Both are the record of what happened, which is
+                # why they share a letter.
+                self._open_stats()
+            else:
+                self._export_run_log()
         elif event.key == pygame.K_F1:
             self._toggle_string(1)
         elif event.key == pygame.K_F2:
@@ -2034,7 +2073,18 @@ class PlayingScreen:
         return None
 
     def render(self, surface: pygame.Surface) -> None:
-        """Draw the full playing screen."""
+        """Draw the full playing screen, and anything over the top of it.
+
+        Split in two because the body has three views and three returns, and
+        the run comparison has to be drawn LAST in all of them. Three copies
+        of one call is how a view quietly ends up without it -- the fault
+        this file has already paid for at the strip, the footer and the help.
+        """
+        self._render_body(surface)
+        self._stats.draw(surface)
+
+    def _render_body(self, surface: pygame.Surface) -> None:
+        """Draw the song itself, in whichever view is up."""
         t = get_theme()
         layout = self._layout(surface)
         if (self._last_layout is None
@@ -4696,8 +4746,17 @@ class PlayingScreen:
         self._strip_loop_from = self._strip_loop_to = None
         if first is None or last is None or abs(last - first) < 1.0:
             return
-        self._set_loop_start(min(first, last))
-        self._set_loop_end(max(first, last))
+        self.take_passage(min(first, last), max(first, last))
+
+    def take_passage(self, start_ms: float, end_ms: float) -> None:
+        """Loop this stretch, go to its start, and wait there.
+
+        One implementation, because two things now mark a passage -- the
+        strip under the song and the comparison of two runs -- and a second
+        copy would be a second answer to what marking one means.
+        """
+        self._set_loop_start(start_ms)
+        self._set_loop_end(end_ms)
         self._loop_enabled = True
         if self._playing:
             self.toggle_play()          # land with the hands free
@@ -5045,6 +5104,34 @@ class PlayingScreen:
             used = max(used, 6 + card_size(CHORD_CARD_SCALE)[1])
         return used
 
+    def _open_stats(self) -> None:
+        """Put the run comparison up, and stop the clock while it is there.
+
+        The overlay covers the music, so a song left running behind it is a
+        run being scored through a screen nobody can see -- half a minute of
+        red bought by reading a statistic.
+        """
+        if self._playing:
+            self.toggle_play()
+        self._stats.toggle()
+
+    def _blit_stats_button(self, surface: pygame.Surface, font, right: int,
+                           top: int, height: int) -> pygame.Rect:
+        """The way in, where the player asked for it: *"zB rechts oben"*.
+
+        Beside the clock rather than above the column under it, so nothing
+        below moves -- the stacking in that corner is measured off the line
+        above and a new first line would push every one of them down.
+        """
+        t = get_theme()
+        label = font.render("Stats", True, t.hud_accent)
+        rect = pygame.Rect(right - label.get_width() - 14, top,
+                           label.get_width() + 14, height)
+        pygame.draw.rect(surface, t.hud_accent, rect, 1, border_radius=4)
+        surface.blit(label, (rect.x + 7,
+                             rect.y + (rect.height - label.get_height()) // 2))
+        return rect
+
     def _draw_hud(self, surface: pygame.Surface, layout: _Layout) -> None:
         """Everything around the music.
 
@@ -5111,6 +5198,9 @@ class PlayingScreen:
                      f"{format_time(self._timeline.duration_ms)}")
         time_surf = big_font.render(time_text, True, t.hud_text)
         surface.blit(time_surf, (w - time_surf.get_width() - 12, 12))
+        self._stats_button = self._blit_stats_button(
+            surface, hint_font, w - time_surf.get_width() - 20, 12,
+            time_surf.get_height())
         right_y = 12 + time_surf.get_height() + 2
 
         # The score used to be here, as big as the clock. It is in the strip
@@ -6476,6 +6566,13 @@ class PlayingScreen:
                 "  goes there, and waits for SPACE.",
                 "Going back does NOT erase how it went — playing on from a",
                 "  point re-judges from there and keeps what is behind it.",
+                ("Shift+D (or Stats, top right): every run of this song,",
+                 "kept beside the tab"),
+                "  Pick two with SPACE or the mouse, ENTER stacks them, and",
+                "  +/- makes the bars bigger. RIGHT-drag either one to mark",
+                "  a passage — same as on the strip.",
+                "  Two rows nobody played: the best each note has ever been,",
+                "  and the mistakes you make in more than half your runs.",
                 ("PgDn/PgUp: practice speed, kept for this song",
                  f"{meta.tempo} BPM ({int(self._tempo_factor * 100)} %)"),
                 ("A: audio on/off", "on" if self._audio_enabled else "off"),
@@ -7109,6 +7206,44 @@ class PlayingScreen:
         if self._audio_capture is not None:
             self._audio_capture.stop()
 
+    def current_run(self) -> runs.Run:
+        """This sitting as the matcher judged it: one character per note.
+
+        Read at the END of the run rather than kept as it goes, because the
+        matcher is the one record and a second copy maintained alongside it
+        would be a second answer to "how did that note go". `timeline.notes`
+        copies the list, so this is asked once and never in a frame.
+        """
+        marks = []
+        for note in self._timeline.notes:
+            kind = None
+            checked = False
+            if self._matcher is not None:
+                kind = _RUN_VERDICT.get(self._matcher.get_note_state(note))
+                checked = kind is not None and not self._matcher.unreliable(note)
+            marks.append((kind, checked))
+        return runs.make(runs.encode(marks), self._session_seconds,
+                         int(round(self._tempo_factor * 100)),
+                         int(self._track_index or 0))
+
+    def _write_run(self) -> None:
+        """Keep this run beside the tab, if it judged anything at all.
+
+        Where the sitting is written, and for the same reason: leaving the
+        song is the end of the run and either route out can be the last one.
+        A song opened and left without a note being judged writes nothing --
+        `worth_keeping` -- so a history does not fill up with the evenings
+        somebody looked at a tab and put the guitar down again.
+        """
+        if not self._song_path:
+            return
+        try:
+            runs.append(self._song_path, self.current_run())
+        except Exception:
+            # A history that cannot be written is a slower day, not a broken
+            # song -- the sidecar's rule, one file along.
+            pass
+
     def close_session(self) -> bool:
         """Write this sitting to the practice diary. Once, whenever it ends.
 
@@ -7120,6 +7255,7 @@ class PlayingScreen:
         if self._session_written or not self._song_key:
             return False
         self._session_written = True
+        self._write_run()
         stats = (self._matcher.get_statistics()
                  if (self._matcher is not None and self._song_completed) else None)
         session = practice_log.Session(

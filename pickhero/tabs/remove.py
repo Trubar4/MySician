@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from pickhero.tabs.sidecar import SUFFIX as SETTINGS_SUFFIX
+from pickhero.runs import SUFFIX as RUNS_SUFFIX
 from pickhero.tabs.songsterr import CACHE_SUFFIX
 
 #: Everything the app might have downloaded or been pointed at as a
@@ -59,7 +60,8 @@ class Removed:
                                              else "")]
         if self.settings:
             bits.append("its settings")
-        return f"Deleted {self.song_key} — {', '.join(bits)}. History kept."
+        return (f"Deleted {self.song_key} — {', '.join(bits)}. "
+                "Practice diary kept.")
 
 
 def belongings(tab_path) -> list[Path]:
@@ -71,7 +73,12 @@ def belongings(tab_path) -> list[Path]:
     tab = Path(tab_path)
     found = [tab] if tab.is_file() else []
     beside = [tab.with_name(tab.stem + CACHE_SUFFIX),
-              tab.with_name(tab.stem + SETTINGS_SUFFIX)]
+              tab.with_name(tab.stem + SETTINGS_SUFFIX),
+              # The runs of THIS tab. Not the practice diary, which is a
+              # record of what the player did and stays: these are per-note
+              # verdicts of a file that is about to stop existing, and the
+              # next song to take the name would inherit them.
+              tab.with_name(tab.stem + RUNS_SUFFIX)]
     beside += [tab.with_name(tab.stem + suffix) for suffix in AUDIO_SUFFIXES]
     found += [p for p in beside if p.is_file()]
     return found

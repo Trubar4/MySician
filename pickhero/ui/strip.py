@@ -113,7 +113,24 @@ def ms_for_x(x: float, duration_ms: float, width: int) -> float:
     return max(0.0, min(1.0, x / width)) * max(0.0, duration_ms)
 
 
-def row_y(string: int, height: int) -> float:
+def row_spread_for(height: int) -> float:
+    """How much of a bar this tall the six rows should take.
+
+    `ROW_SPREAD` is fitted to the 37 px strip, where the margin it leaves is
+    what makes the playhead and the loop shading legible among the dots. A
+    bar four times that size does not need four times the margin -- at 400 px
+    it was leaving 68 px of nothing above and below, and the dots are what the
+    player is reading. So the spread opens towards 0.92 as the bar
+    grows, and the strip itself is untouched.
+    """
+    MAX = 0.92
+    if height <= STRIP_HEIGHT:
+        return ROW_SPREAD
+    reach = min(1.0, (height - STRIP_HEIGHT) / 160.0)
+    return ROW_SPREAD + (MAX - ROW_SPREAD) * reach
+
+
+def row_y(string: int, height: int, spread: float | None = None) -> float:
     """The centre of a string's row, string 1 at the TOP.
 
     The same way up as the board and the sheet: string 6, the low E, is the
@@ -123,14 +140,15 @@ def row_y(string: int, height: int) -> float:
     The six rows occupy `ROW_SPREAD` of the band, centred, rather than all of
     it -- see the constant.
     """
-    band = height * ROW_SPREAD
+    band = height * (ROW_SPREAD if spread is None else spread)
     return (height - band) / 2.0 + (string - 0.5) * band / STRINGS
 
 
-def dot(note, duration_ms: float, width: int, height: int) -> tuple[int, int]:
+def dot(note, duration_ms: float, width: int, height: int,
+        spread: float | None = None) -> tuple[int, int]:
     """The pixel one note occupies, as (x, y)."""
     return (int(x_for_ms(note.timestamp_ms, duration_ms, width)),
-            int(row_y(note.string, height)))
+            int(row_y(note.string, height, spread)))
 
 
 def note_dots(notes, duration_ms: float, width: int,

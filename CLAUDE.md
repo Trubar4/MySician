@@ -4033,6 +4033,7 @@ pickhero/
 ├── matcher.py           # note matching engine (hit/close/miss)
 ├── practice_log.py      # one line per session: minutes and notes struck
 ├── progress.py          # per-song progress tracking
+├── runs.py              # every run of a song, one character per note
 ├── audio/
 │   ├── __init__.py
 │   ├── input.py
@@ -4056,6 +4057,7 @@ pickhero/
     ├── feedback.py
     ├── menu.py
     ├── settings_menu.py    # everything set once, and what it is set to
+    ├── stats_view.py       # the list of runs, and two of them stacked
     ├── strip.py            # the bottom strip: where you are, how it went, spooling
     ├── device_menu.py
     └── download_menu.py
@@ -4069,6 +4071,8 @@ pickhero/
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
 - `tests/test_review.py` — what could not be judged, that a seek keeps the run, and the right-drag loop
+- `tests/test_runs.py` — the stored runs, and the two synthetic ones, on strings and without a screen
+- `tests/test_stats_view.py` — the list, picking two, and that marking a passage does not start playing
 - Use `pytest`. Keep tests independent of audio hardware (mock sounddevice).
 
 ## Build & Run
@@ -4249,6 +4253,81 @@ on. Two buttons, two meanings, nothing ambiguous — and the song does not move 
   them as missed. A song already running is paused, so landing always means landing with the hands free.
 - **A right CLICK marks nothing.** The right button is also how a mouse gets put down.
 - **The passage is shaded while it is being drawn**, in the live loop's own colour, so the thing being chosen is visible before it is chosen.
+
+## Every Run Of A Song, Kept
+
+*"Ich hätte gerne Vergleiche gemacht von mehreren Durchgängen des selben Songs."*
+
+The app already knew how a run went — the matcher holds a verdict per note and the strip along the bottom draws them — and threw all of it away
+the moment the song was left. `progress.py` kept the BEST a song had ever been played, one record overwritten as it improves, which by
+construction cannot answer *"is this passage getting better"*: it forgets everything except the peak.
+
+So a run is kept whole, as **one character per note of the timeline**, in `<name>.runs.json` **beside the tab** — *"Durchgänge liegen neben gp im
+gleichen Ordner"* — which is the rule the sidecar, the bar map and the recording already follow, and which makes copying the songs folder carry
+the history with it. `runs.py` is the arithmetic and the storage and no pygame, so the two synthetic runs below are tested on strings.
+
+- **The case carries what nothing checked.** `h c m` are verdicts something stood behind; `H C M` are the same verdicts drained — a chord string
+  credited to a strum nobody could confirm, a note whose window held a strike the detector could make nothing of — and `.` is never judged, which
+  covers both "not reached" and "filtered out". It is the same distinction all three views drain the colour for, written down instead of drawn.
+- **The counts come out of the string, not from beside it.** `Run.counts()` reads the characters, so the percentage in the list and the dots in
+  the bar are the same arithmetic and cannot drift apart — and a synthetic run is counted by exactly the same rule as a real one.
+- **A run of another TRACK is listed and not drawn.** It happened, so it belongs in the list; its verdicts describe notes that are not these
+  notes, and drawing them against this song would put every dot in the wrong place. `note_count` and the track index are what say so.
+- **It is written where the sitting is written** (`close_session`), so either route out of a song reaches it once, and a song opened and left
+  without a note being judged writes nothing at all.
+- **And it is a belonging of the tab.** `belongings()` is the one reader, so deleting a song takes its runs, renaming one carries them, and
+  `Ctrl+I` brings them over from the other laptop without a line being written for it. The practice diary is a record of what the player DID and
+  stays either way; these are per-note verdicts of a file that is about to stop existing, and the next song to take the name would inherit them.
+  The named limit is that an import is per FILE: a machine that already has a `.runs.json` for a song keeps its own, so two laptops that have
+  both played the same song do not pool their evenings. That is the rule everything else here follows — what this machine has wins — and pooling
+  them would need a merge, not a copy.
+
+### The two runs nobody played
+
+- **Best ever** takes the best each note has ever been, over every run that fits. Not an evening that happened — it says so — but a real answer
+  to *"is this song within reach at all"*: a passage red here was never once played, and a passage green here has been, on some evening, in one
+  piece. At equal verdict the one that was actually HEARD wins over the one credited to a strum.
+- **Most frequent errors** is *"wo ich in mehr als der Hälfte aller Durchgänge Fehler gemacht habe"*, and three rules stop it claiming what it
+  cannot show:
+  - **Only runs that reached the note vote on it.** A note nobody got to is not evidence either way, and counting it in the denominator would
+    hide a passage at the end of a song that is wrong every single time it is reached.
+  - **Only verdicts something stood behind.** *"Ja ausschließen"* — a drained verdict is the app saying it could not tell, so `H`, `C` and `M`
+    abstain rather than vote, and they do not shrink the denominator either. The presumption of innocence the chord verifier runs on, one level
+    up.
+  - **Fixed is fixed.** A note the LAST run played right is dropped however many evenings it went wrong before.
+  - **A CLOSE is not a Fehler.** It is the right note played off the beat, which is what the timing percentage answers for; counting it here
+    would paint most of a run red and the word would stop meaning anything.
+
+### The list, and two of them stacked
+
+`Shift+D`, or the **Stats** button beside the clock — *"ein kleiner Statistics Knopf im Song (zB rechts oben)"*. A MODE of the playing screen,
+not a screen of its own: the timeline, the loop, the clock and the seek are all here, and a comparison with its own would be a second answer to
+where the song is. `ui/stats_view.py` owns the keyboard and the mouse while it is up, the way the track picker already does.
+
+- **Opening it stops the clock.** The overlay covers the music, so a song left running behind it is a run being scored through a screen nobody
+  can see — half a minute of red bought by reading a statistic. It also makes the one expensive frame free: opening builds a bar per row, which
+  is **24.8 ms at 1400 notes and twelve runs**, and nobody sees a dropped frame in a paused song.
+- **The bars are the strip's own drawing at another size.** `strip.dot` places a note here exactly as it does down there, so the miniature in the
+  list and the miniature under the song are one object and cannot disagree. A drained verdict keeps its hue and loses its conviction here too.
+- **`+`/`-` walk from the strip's height to the room there is**, both runs stacked — *"das Minimum ist die Progressbargröße, das Maximum die
+  Größe der Standardansicht"*. What a bigger bar buys is the six rows moving APART (`row_spread_for`) and not a bigger dot: the dot's limit is
+  horizontal, since a song puts a couple of hundred notes per string across the width, and much past six pixels a row becomes one solid line.
+  Past twice the strip's height the six strings are drawn under the dots, for the reason the board draws a fretboard rather than a table of rows.
+- **The frame is drawn round what is IN it**, in both modes. A border enclosing eight rows and six hundred pixels of nothing says the list failed
+  to draw rather than that the player has played eight times.
+- **Right-drag either bar to mark a passage**: loop, jump, wait. `take_passage` is one implementation, because two things now mark one — the
+  strip under the song and this — and a second copy would be a second answer to what marking one means.
+- **The run in progress is in the list before it is saved.** It is written when the song is LEFT, so without it the list would answer "how did
+  that go" a song later than it was asked. Its line says it is not saved yet.
+
+**And the percentage says what it is a percentage OF.** Two runs at 68 % are not the same evening when one covered the whole song and the other
+gave up in the third bar, and side by side in a list nothing else says so — the bar shows it, but only to somebody already reading the bar. Each
+line carries `judged N % of the notes` whenever that is under 98. Same rule as strikes-heard beside notes-credited, and as the practice speed
+beside a take: a number is only readable next to what it is a number of.
+
+**Measured on 1400 notes and twelve runs at 1920x1200**: the closed overlay costs nothing measurable (2.99 ms a frame, unchanged), the list
+5.51 ms and the biggest comparison 5.70 ms, against a 16.7 ms budget. Every bar is built once per size and kept, and the loop over the song's
+notes runs when a bar is built and never in a frame — which is the loop this codebase has now found growing with the song four times.
 
 ## What NOT To Do
 

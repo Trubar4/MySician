@@ -150,7 +150,7 @@ class TestDeleting:
 
     def test_the_summary_says_the_history_is_kept(self, tmp_path):
         report = remove.delete_song(_song(tmp_path), self._config())
-        assert "History kept" in report.summary()
+        assert "Practice diary kept" in report.summary()
 
 
 class TestTheKey:
