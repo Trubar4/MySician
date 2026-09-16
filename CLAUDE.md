@@ -4084,6 +4084,10 @@ pyinstaller pickhero.spec --noconfirm
 
 Asked for at the end of the session that added the nut and the lead-in, and **not started** — so this is a brief, not a record.
 
+**Where to start:** `main` is the trunk. Everything up to and including the nut and the lead-in is merged into it, so branch fresh off `main`
+(`git checkout main && git pull && git checkout -b <new-branch>`). The branch that carried that work, `claude/mysician-fast-songs-blur-04ahyh`,
+is history now — do not continue on it and do not reuse its pull request.
+
 *"Ich hätte gerne eine Anzeige am unteren Bildrand, wo ich im Song stehe. Hier könnten wir auch den %-Wert hinschreiben und aufteilen 82 % (groß)
 und kleiner 90 % timing, 76 % Right Notes. Die Fortschrittsanzeige soll auch zum Spulen verwendet werden können. Sie ist wie eine vereinfachte
 Miniatur des Tabs."*
