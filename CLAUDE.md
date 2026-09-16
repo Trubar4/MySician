@@ -4310,15 +4310,47 @@ where the song is. `ui/stats_view.py` owns the keyboard and the mouse while it i
 - **The bars are the strip's own drawing at another size.** `strip.dot` places a note here exactly as it does down there, so the miniature in the
   list and the miniature under the song are one object and cannot disagree. A drained verdict keeps its hue and loses its conviction here too.
 - **`+`/`-` walk from the strip's height to the room there is**, both runs stacked — *"das Minimum ist die Progressbargröße, das Maximum die
-  Größe der Standardansicht"*. What a bigger bar buys is the six rows moving APART (`row_spread_for`) and not a bigger dot: the dot's limit is
-  horizontal, since a song puts a couple of hundred notes per string across the width, and much past six pixels a row becomes one solid line.
-  Past twice the strip's height the six strings are drawn under the dots, for the reason the board draws a fretboard rather than a table of rows.
+  Größe der Standardansicht"*. Past twice the strip's height the six strings are drawn under the dots, for the reason the board draws a
+  fretboard rather than a table of rows.
 - **The frame is drawn round what is IN it**, in both modes. A border enclosing eight rows and six hundred pixels of nothing says the list failed
   to draw rather than that the player has played eight times.
 - **Right-drag either bar to mark a passage**: loop, jump, wait. `take_passage` is one implementation, because two things now mark one — the
   strip under the song and this — and a second copy would be a second answer to what marking one means.
 - **The run in progress is in the list before it is saved.** It is written when the song is LEFT, so without it the list would answer "how did
   that go" a song later than it was asked. Its line says it is not saved yet.
+
+### Zooming in, because a whole song is a pixel a note
+
+*"Wie kann ich beim Vergleichen nach rechts fahren? Pfeiltasten wären gut für links rechts, wenn ich etwas zoome."* He is right, and the
+version before this could not be scrolled because it could not be zoomed: the whole song always filled the width. On a real song that is
+**about a pixel between two notes**, which answers "where did it go wrong" and cannot answer "which note" — and "which" is what a comparison is
+opened for.
+
+**Two axes, two key pairs, because they answer different questions.** `+`/`-` is how BIG the bars are drawn, which is his own spec and is
+unchanged. `UP`/`DOWN` zoom from the whole song down to a thirty-second of it, and `LEFT`/`RIGHT` move along it by a quarter of what is on
+screen — a step the eye can follow across a picture that does not otherwise move.
+
+- **It opens on the whole song, every time.** "Where" is asked before "which", and only the whole picture answers the first.
+- **Zooming keeps the MIDDLE.** Zooming towards the left edge walks the thing being looked at off the screen, and the player would have to
+  scroll back to it after every press.
+- **A note outside the window is not placed at all**, rather than clamped to the edge. Clamping would pile every note before the view onto the
+  left margin, which reads as a chord nobody played.
+- **Bar lines and their numbers appear once there is room** (`BAR_TICK_PX`, `BAR_NUMBER_PX`). Without them a zoomed-in picture says a note went
+  wrong and gives no way to NAME the place — and naming it is what turns "I keep getting this wrong" into a loop and a practice session.
+  Thinned out below the spacing where they would be a picket fence behind the notes, which is what the board's own bar lines were thinned for.
+- **The dot size is measured now, not fitted.** Two limits: vertically it must not close the gap between two string rows, horizontally it must
+  not close the gap between two notes ON THE SAME ROW — the only place two dots can collide, since a row is a string. Taken at the tenth
+  percentile of the gaps actually in the window, the same rule and the same reason as `_spacing_percentile` on the board. Zoomed out the
+  horizontal limit binds and the dot stays small; zoomed in there is room and it grows, which is the whole point of zooming. Floored at twice
+  `DOT_PX` at the overview, where a dot is allowed to touch its neighbour because what is being read there is density and colour.
+- **The list rows are always the whole song.** A row is how the runs are told apart, and two rows showing different stretches would be a
+  comparison nobody asked for.
+
+**And `convert()` was 4.2 ms of a 5 ms bar.** An arrow press rebuilds two 1852x520 surfaces, and measured thirty times over: `Surface()` is
+0.18 ms, `convert()` on top of it is **4.20 ms**, and asking for the display's format up front is **0.13 ms**. Same lesson as the tab page one
+step earlier — the cost was never the drawing, it was the pixel format. **What that is worth per FRAME is deliberately not claimed**: the frame
+after an arrow reads 12.8-13.0 ms over three runs against one earlier reading of 14.8, and nothing inside the run-to-run spread is a finding.
+The operation is measured; the frame is not.
 
 **And the percentage says what it is a percentage OF.** Two runs at 68 % are not the same evening when one covered the whole song and the other
 gave up in the third bar, and side by side in a list nothing else says so — the bar shows it, but only to somebody already reading the bar. Each

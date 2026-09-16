@@ -456,3 +456,162 @@ class TestItTravelsWithTheTab:
         runs.append(tab, _run("hcm", "2026-09-01T10:00:00+00:00"))
         import_songs(stick, here, Report())
         assert runs.load(here / "song.gp5")[0].notes == "hcm"
+
+
+# -- moving through the comparison ------------------------------------------
+
+class TestZoomAndScroll:
+
+    def _compare(self, tmp_path, bars=12):
+        song = _song(bars=bars)
+        screen = _screen(song, tmp_path)
+        for day in (1, 2):
+            runs.append(screen._song_path,
+                        _run("h" * len(song.notes),
+                             f"2026-09-0{day}T10:00:00+00:00"))
+        screen._stats.show()
+        screen._stats._pick(0)
+        screen._stats._pick(1)
+        screen._stats._compare()
+        return screen
+
+    def test_it_opens_on_the_whole_song(self, display, tmp_path):
+        # "Where did it go wrong" is asked before "which note", and only the
+        # whole picture answers the first.
+        overlay = self._compare(tmp_path)._stats
+        assert overlay.zoom == 0
+        start, end = overlay.window()
+        assert (start, end) == (0.0, overlay._screen._timeline.duration_ms)
+
+    def test_zooming_keeps_the_middle_where_it_is(self, display, tmp_path):
+        overlay = self._compare(tmp_path)._stats
+        overlay.view_from_ms = 8000.0
+        overlay.set_zoom(1)
+        before = sum(overlay.window()) / 2
+        overlay.set_zoom(3)
+        assert abs(sum(overlay.window()) / 2 - before) < 1.0
+
+    def test_the_arrows_move_along_the_song(self, display, tmp_path):
+        screen = self._compare(tmp_path)
+        overlay = screen._stats
+        overlay.set_zoom(2)
+        was = overlay.window()[0]
+        screen.handle_event(_key(pygame.K_RIGHT))
+        assert overlay.window()[0] > was
+        screen.handle_event(_key(pygame.K_LEFT))
+        assert abs(overlay.window()[0] - was) < 1.0
+
+    def test_it_cannot_be_scrolled_off_either_end(self, display, tmp_path):
+        overlay = self._compare(tmp_path)._stats
+        overlay.set_zoom(2)
+        duration = overlay._screen._timeline.duration_ms
+        for _ in range(40):
+            overlay.scroll(+1)
+        assert overlay.window()[1] <= duration + 1.0
+        for _ in range(80):
+            overlay.scroll(-1)
+        assert overlay.window()[0] >= -1.0
+
+    def test_the_zoom_has_ends_and_they_are_sentences(self, display, tmp_path):
+        overlay = self._compare(tmp_path)._stats
+        for _ in range(20):
+            overlay.set_zoom(overlay.zoom + 1)
+        assert overlay.zoom == stats_view.ZOOM_STEPS - 1
+        for _ in range(20):
+            overlay.set_zoom(overlay.zoom - 1)
+        assert overlay.zoom == 0
+
+    def test_a_note_outside_the_window_is_not_placed(self, display, tmp_path):
+        # Clamping one instead would pile every note before the view onto the
+        # left edge, which reads as a chord nobody played.
+        overlay = self._compare(tmp_path)._stats
+        spots = overlay._note_positions(600, 120, 4000.0, 8000.0)
+        notes = overlay._screen._timeline.notes
+        for note, spot in zip(notes, spots):
+            inside = 4000.0 <= note.timestamp_ms <= 8000.0
+            assert (spot is not None) == inside
+
+    def test_a_right_drag_lands_where_the_picture_says(self, display,
+                                                      tmp_path):
+        screen = self._compare(tmp_path)
+        overlay = screen._stats
+        overlay.set_zoom(3)
+        start, end = overlay.window()
+        screen.render(pygame.display.get_surface())
+        rect = overlay._bar_rects[0][1]
+        screen.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, button=3,
+            pos=(rect.x + rect.width // 4, rect.centery)))
+        screen.handle_event(pygame.event.Event(
+            pygame.MOUSEMOTION,
+            pos=(rect.x + 3 * rect.width // 4, rect.centery)))
+        screen.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONUP, button=3,
+            pos=(rect.x + 3 * rect.width // 4, rect.centery)))
+        # Inside the stretch being looked at, not somewhere near the start of
+        # the song -- which is what reading x against the whole song gives.
+        assert start <= screen._loop_start_ms <= end
+        assert start <= screen._loop_end_ms <= end
+        assert screen._loop_start_ms > start + (end - start) * 0.1
+
+    def test_the_dot_grows_when_there_is_room_for_it(self, display, tmp_path):
+        overlay = self._compare(tmp_path, bars=60)._stats
+        duration = overlay._screen._timeline.duration_ms
+        whole = overlay.dot_size(
+            overlay._note_positions(900, 200, 0.0, duration), 200)
+        near = overlay.dot_size(
+            overlay._note_positions(900, 200, 0.0, duration / 32), 200)
+        assert near > whole
+
+    def test_the_rows_never_merge_however_much_room_there_is(self, display,
+                                                            tmp_path):
+        # The vertical limit still binds: a list row is 37 px and six rows in
+        # it sit about four pixels apart.
+        overlay = self._compare(tmp_path)._stats
+        spots = overlay._note_positions(900, strip.STRIP_HEIGHT, 0.0, 500.0)
+        pitch = strip.STRIP_HEIGHT * strip.ROW_SPREAD / strip.STRINGS
+        assert overlay.dot_size(spots, strip.STRIP_HEIGHT) <= pitch
+
+    def test_the_list_always_shows_the_whole_song(self, display, tmp_path):
+        # A row is how the runs are told apart; two rows showing different
+        # stretches would be a comparison nobody asked for.
+        screen = self._compare(tmp_path)
+        overlay = screen._stats
+        overlay.set_zoom(3)
+        overlay.mode = "list"
+        screen.render(pygame.display.get_surface())
+        whole = (0.0, screen._timeline.duration_ms)
+        assert any(key[3] == round(whole[0]) and key[4] == round(whole[1])
+                   for key in overlay._bars)
+
+
+# -- the two runs nobody played are ordinary rows ---------------------------
+
+class TestThePretendRuns:
+
+    def test_best_ever_can_be_picked_like_any_other(self, display, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        for day in (1, 2):
+            runs.append(screen._song_path,
+                        _run("h" * len(song.notes),
+                             f"2026-09-0{day}T10:00:00+00:00"))
+        screen._stats.show()
+        overlay = screen._stats
+        assert overlay._entries[0].run.kind == "best"
+        overlay._pick(0)
+        assert overlay.selected == [0]
+
+    def test_frequent_errors_can_be_picked_too(self, display, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        wrong = "m" + "h" * (len(song.notes) - 1)
+        for day in (1, 2, 3):
+            runs.append(screen._song_path,
+                        _run(wrong, f"2026-09-0{day}T10:00:00+00:00"))
+        screen._stats.show()
+        overlay = screen._stats
+        kinds = [e.run.kind for e in overlay._entries[:2]]
+        assert kinds == ["best", "errors"]
+        overlay._pick(1)
+        assert overlay.selected == [1]
