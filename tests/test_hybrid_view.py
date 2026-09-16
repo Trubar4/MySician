@@ -778,3 +778,64 @@ class TestTheSheetMargin:
         assert taken == ["screen_w"], "the pad can see more than the width"
         assert isinstance(inspect.getattr_static(PlayingScreen, "_sheet_pad"),
                           staticmethod), "it can reach self, so it can loop"
+
+
+class TestTheLeadIn:
+    """A second playhead, running in on the row that comes next.
+
+    *"Bei langen Tönen schaue ich bereits nach links, verpasse dann aber oft
+    um 150 ms den ersten Ton."*
+
+    The eye moves to the next row before the music does, and until now there
+    was nothing there to read -- so the entry was guessed, and a guess is
+    late. The left margin, which exists so the eye need not travel to the
+    very edge, turns out to be the runway this needs.
+    """
+
+    def _x(self, at, arrive=10_000.0, target=60.0, **kw):
+        from pickhero.ui.scrolling import lead_in_x
+        return lead_in_x(at, arrive, target, **kw)
+
+    def test_it_starts_at_the_screen_edge(self):
+        from pickhero.ui.scrolling import LEAD_IN_MS
+        assert self._x(10_000.0 - LEAD_IN_MS) == 0.0
+
+    def test_and_lands_on_the_note_as_the_music_does(self):
+        """The whole feature is in this: it arrives WITH the music, so the
+        entry is read instead of guessed."""
+        assert self._x(9_999.0) == pytest.approx(59.94, abs=0.1)
+
+    def test_before_the_runway_there_is_nothing_to_draw(self):
+        from pickhero.ui.scrolling import LEAD_IN_MS
+        assert self._x(10_000.0 - LEAD_IN_MS - 1) is None
+
+    def test_and_nothing_after_it_has_arrived(self):
+        """None rather than a position past the target, so a bar that has
+        already landed cannot be left on the screen."""
+        assert self._x(10_000.0) is None
+        assert self._x(10_500.0) is None
+
+    def test_it_moves_evenly_through_the_runway(self):
+        halfway = self._x(9_500.0)
+        assert halfway == pytest.approx(30.0, abs=0.1)
+
+    def test_a_runway_of_no_length_is_refused(self):
+        assert self._x(9_999.0, lead_ms=0.0) is None
+
+    def test_it_can_start_somewhere_other_than_zero(self):
+        assert self._x(9_500.0, from_x=20.0) == pytest.approx(40.0, abs=0.1)
+
+    def test_the_last_row_has_nothing_coming_after_it(self, monkeypatch):
+        """Asserted on the guard, because a row index past the end is an
+        IndexError in a frame -- the loudest possible way to fail."""
+        import inspect
+        from pickhero.ui.scrolling import PlayingScreen
+        source = inspect.getsource(PlayingScreen._draw_lead_in)
+        assert "following >= len(rows)" in source
+
+    def test_it_is_quieter_than_the_real_playhead_and_brightens(self):
+        """It is not where the music IS, and the brightening is the half of
+        the signal that does not depend on how wide the margin happens to
+        be: 56 px of travel in a second is a millimetre a frame."""
+        from pickhero.ui.scrolling import LEAD_IN_DIM, LEAD_IN_DIM_START
+        assert 0.0 < LEAD_IN_DIM_START < LEAD_IN_DIM < 1.0

@@ -420,6 +420,34 @@ MIN_SYNC_SPAN_MS = 30_000.0
 # it and the count has to be in rows rather than in staves.
 TAB_SYSTEMS_SHOWN = 2
 TAB_PLAYHEAD_PX = 5
+
+# ── The lead-in ─────────────────────────────────────────────────────────────
+# How long before a row change the SECOND playhead starts running in from the
+# left edge, so it lands on the new row's first note exactly when the music
+# does.
+#
+# *"Bei langen Tönen schaue ich bereits nach links, verpasse dann aber oft um
+# 150 ms den ersten Ton."* -- which is the whole fault: the eye has already
+# moved and there is nothing there to read yet, so the entry is guessed. The
+# left margin is the runway.
+#
+# A second, at 130 BPM a little over two beats: long enough to catch the eye
+# and count into, short enough that it is not already crossing the screen
+# while the hand still has work to do on the row above.
+LEAD_IN_MS = 1000.0
+# Quieter than the real one, in both weight and colour. It is not where the
+# music IS; it is where the music is about to be, and a mark that shouts the
+# same as the playhead would make two things to watch out of one.
+LEAD_IN_DIM = 0.55
+# ...and it BRIGHTENS as it comes, from nearly nothing to that.
+#
+# Measured, because the first version only moved: the runway is the left
+# margin and nothing more -- 56 px at 1600 wide -- so a second of travel is
+# a millimetre a frame. That is motion the eye can miss, which is the exact
+# failure this exists to fix. Growing brightness over the same second is the
+# half of the signal that does not depend on how wide the margin happens to
+# be.
+LEAD_IN_DIM_START = 0.18
 # How long the page takes to slide up by a row, and the distance past which
 # a move is not a page turn at all. Seeking across a song must not crawl.
 TAB_GLIDE_S = 0.25
@@ -726,6 +754,28 @@ def _nut_disc(radius: int, fill, ring) -> "pygame.Surface":
     pygame.draw.circle(disc, (*ring, NUT_RING_ALPHA), centre, radius, 2)
     _NUT_DISC_CACHE[key] = disc
     return disc
+
+
+def lead_in_x(playback_ms: float, arrive_ms: float, target_x: float,
+              lead_ms: float = LEAD_IN_MS,
+              from_x: float = 0.0) -> float | None:
+    """Where the lead-in bar is, or None when there is not one to draw.
+
+    It travels from the screen's edge to the new row's first note and gets
+    there at `arrive_ms` -- the moment the music does. Everything about the
+    feature is in that sentence: the player looking at an empty left margin
+    sees the entry coming instead of guessing it.
+
+    None rather than a position outside the window, so the caller has one
+    thing to check and cannot draw a bar that has already arrived.
+    """
+    if lead_ms <= 0:
+        return None
+    start = arrive_ms - lead_ms
+    if not (start <= playback_ms < arrive_ms):
+        return None
+    share = (playback_ms - start) / lead_ms
+    return from_x + (target_x - from_x) * share
 
 
 def nut_letters(tuning: dict[int, int] | None) -> list[str]:
@@ -2334,6 +2384,8 @@ class PlayingScreen:
             self._draw_sheet_row(surface, rows[index], pad,
                                  top + index * pitch - scroll, head,
                                  content_w, index == current, strip)
+        self._draw_lead_in(surface, rows, current, pad,
+                           top - scroll, pitch, head, strip)
         surface.set_clip(was)
 
         # Nothing is written across the top of the music. What the view is
@@ -2504,6 +2556,48 @@ class PlayingScreen:
             # be a column of labelling down the page, and the question they
             # answer is about the hand, which is on one row at a time.
             self._draw_nut(surface, x, lanes_top, lane_h)
+
+    def _draw_lead_in(self, surface: pygame.Surface, rows, current: int,
+                      pad: int, top: float, pitch: float, head: float,
+                      strip: float) -> None:
+        """The second playhead, running in on the row that is coming next.
+
+        *"Bei langen Tönen schaue ich bereits nach links, verpasse dann aber
+        oft um 150 ms den ersten Ton."*
+
+        The eye moves to the next row before the music does, and until now
+        there was nothing there to read -- so the entry was guessed, and a
+        guess is late. This runs in from the screen's edge through the left
+        margin and reaches the row's first note at the moment the music
+        does. The margin, which exists so the eye does not have to travel to
+        the very edge, turns out to be exactly the runway this needs.
+
+        Drawn INSIDE the rows' clip, so it cannot appear over the HUD; and
+        quieter than the real playhead, because it is not where the music
+        is.
+        """
+        following = current + 1
+        if following >= len(rows):
+            return                  # the last row has nothing after it
+        row = rows[following]
+        # The row's own first anchor, not the pad: a row whose first bar
+        # starts with a rest has its first note further in, and THAT is the
+        # moment being led to.
+        target = pad + row.x_at(row.start_ms)
+        x = lead_in_x(self._playback_ms, row.start_ms, target)
+        if x is None:
+            return
+        t = get_theme()
+        y = top + following * pitch
+        lanes_top = y + strip
+        band_h = 6 * sheet.LANE_HEADS * head
+        # How far along the runway it is, from the same numbers that placed
+        # it -- so the brightness and the position can never disagree.
+        share = 1.0 if target <= 0 else max(0.0, min(1.0, x / target))
+        glow = LEAD_IN_DIM_START + (LEAD_IN_DIM - LEAD_IN_DIM_START) * share
+        pygame.draw.line(surface, dimmed(t.tab_playhead, glow),
+                         (int(x), int(y)), (int(x), int(lanes_top + band_h)),
+                         max(2, TAB_PLAYHEAD_PX - 2))
 
     def _draw_nut(self, surface: pygame.Surface, x: float,
                   lanes_top: float, lane_h: float) -> None:

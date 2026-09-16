@@ -3315,6 +3315,29 @@ which changed the room, which changed the head size, which walked 44.4 → 44.5 
 alone. The test asserts that on the signature rather than by grepping the source — `_sheet_pad` is a staticmethod taking a width and nothing else, so
 it cannot see the layout it feeds. That makes the loop impossible rather than merely absent today.
 
+### The Lead-In: Where The Eye Already Is
+
+*"Bei langen Tönen schaue ich bereits nach links, verpasse dann aber oft um 150 ms den ersten Ton."*
+
+The diagnosis is his, and it is exact. On a held note at the end of a row the eye has already moved to where the music is about to continue — and
+until now there was **nothing there to read**. So the entry was guessed, and a guess is late. 150 ms late, measured by the person doing the guessing.
+
+So a second, quieter playhead runs in on the row below and reaches that row's first note **at the moment the music does**. Nothing about it is
+decoration: it exists so the entry can be read instead of counted.
+
+Three decisions worth keeping:
+
+- **It targets the row's first ANCHOR, not the margin.** A row whose first bar opens with a rest has its first note further in, and that is the
+  moment being led to.
+- **Always, at every row change.** A cue that only turns up sometimes is one that cannot be planned around — and planning the entry is the whole job.
+- **`lead_in_x` returns None outside its window**, so the caller has one thing to check and a bar that has already landed cannot be left on screen.
+
+**And a measurement that changed the design.** The first version only moved, and the runway is the left margin and nothing more — **56 px at 1600
+wide**. A second of travel across that is about a millimetre a frame, which is motion the eye can miss: the exact failure the feature exists to fix.
+So it brightens as it comes, from 0.18 to 0.55 of the playhead's colour, over the same second. The brightening is the half of the signal that does
+not depend on how wide the margin happens to be — and the share that drives it is computed from the position that was already chosen, so the two
+can never disagree.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus
