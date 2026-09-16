@@ -184,13 +184,14 @@ class Report:
     songs_added: list[str] = field(default_factory=list)
     files_added: int = 0
     sittings_added: int = 0
+    runs_added: int = 0
     bests_improved: list[str] = field(default_factory=list)
     settings_changed: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
 
     @property
     def anything(self) -> bool:
-        return bool(self.songs_added or self.sittings_added
+        return bool(self.songs_added or self.sittings_added or self.runs_added
                     or self.bests_improved or self.settings_changed)
 
     def lines(self) -> list[str]:
@@ -205,6 +206,10 @@ class Report:
                        + (" …" if len(self.songs_added) > 4 else ""))
         if self.sittings_added:
             out.append(f"{self.sittings_added} practice sittings")
+        if self.runs_added:
+            out.append(f"{self.runs_added} run"
+                       + ("s" if self.runs_added != 1 else "")
+                       + " of songs you already have")
         if self.bests_improved:
             out.append(f"{len(self.bests_improved)} better scores: "
                        + ", ".join(self.bests_improved[:4])
@@ -227,11 +232,17 @@ def import_songs(source, songs_dir, report: Report) -> None:
     exactly as it is. Overwriting would mean the other machine's copy of a
     song silently replacing the one being practised here.
     """
+    from pickhero import runs as runs_mod
     from pickhero.tabs.remove import belongings
     target = Path(songs_dir)
     for tab in find_songs(source):
         if Path(tab).parent.resolve() == target.resolve():
             continue                      # already looking at our own folder
+        # The runs are the one belonging that MERGES rather than being kept
+        # or copied whole: a history is a list, and two lists of different
+        # evenings have a union. Everything else beside a tab is a single
+        # answer, where "what this machine has wins" is the only safe rule.
+        report.runs_added += _merge_runs(tab, target, report, runs_mod)
         wanted = [p for p in belongings(tab)
                   if not (target / p.name).exists()]
         if not wanted:
@@ -251,6 +262,29 @@ def import_songs(source, songs_dir, report: Report) -> None:
         if copied:
             report.songs_added.append(tab.stem)
             report.files_added += copied
+
+
+def _merge_runs(tab, target: Path, report: Report, runs_mod) -> int:
+    """Take the other machine's runs of a song this one already has.
+
+    Only where the tab is REALLY the same file by name -- the rule every
+    belonging here follows. A song this machine has never seen is copied
+    whole by the loop above, runs and all, and needs nothing from here.
+    """
+    if not runs_mod.path_for(tab).is_file():
+        return 0
+    here = target / Path(tab).name              # the same tab, in our folder
+    if not here.is_file() or not runs_mod.path_for(here).is_file():
+        # Nothing of ours to merge INTO: a song this machine has never seen,
+        # or one it has never played. The ordinary file loop copies the
+        # history over whole, which is the same answer by a cheaper route --
+        # and running both would count it twice.
+        return 0
+    if report.dry_run:
+        _, would = runs_mod.merge(runs_mod.load(here), runs_mod.load(tab))
+        return would
+    backup(runs_mod.path_for(here))
+    return runs_mod.merge_files(here, tab)
 
 
 def import_from(source, config=None, dry_run: bool = False,

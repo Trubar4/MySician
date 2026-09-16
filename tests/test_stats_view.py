@@ -615,3 +615,92 @@ class TestThePretendRuns:
         assert kinds == ["best", "errors"]
         overlay._pick(1)
         assert overlay.selected == [1]
+
+
+class TestPoolingTwoMachines:
+    """*"Import bzw. Zusammenführen wäre sehr nett als Funktion."*"""
+
+    def test_importing_pools_the_runs_of_a_song_both_machines_have(
+            self, tmp_path):
+        # "Import bzw. Zusammenführen wäre sehr nett als Funktion." The runs
+        # are the one belonging that merges: a history is a list, and two
+        # lists of different evenings have a union.
+        from pickhero.transfer import Report, import_songs
+        stick = tmp_path / "stick"
+        here = tmp_path / "songs"
+        stick.mkdir()
+        here.mkdir()
+        for folder, day, notes in ((here, 1, "hhh"), (stick, 2, "mmm")):
+            tab = folder / "song.gp5"
+            tab.write_text("x")
+            runs.append(tab, _run(notes, f"2026-09-0{day}T20:00:00+00:00"))
+        report = Report()
+        import_songs(stick, here, report)
+        kept = runs.load(here / "song.gp5")
+        assert [r.notes for r in kept] == ["hhh", "mmm"]
+        assert report.runs_added == 1
+        assert "1 run of songs you already have" in " ".join(report.lines())
+
+    def test_importing_the_same_stick_twice_adds_nothing(self, tmp_path):
+        from pickhero.transfer import Report, import_songs
+        stick = tmp_path / "stick"
+        here = tmp_path / "songs"
+        stick.mkdir()
+        here.mkdir()
+        for folder, day in ((here, 1), (stick, 2)):
+            tab = folder / "song.gp5"
+            tab.write_text("x")
+            runs.append(tab, _run("hh", f"2026-09-0{day}T20:00:00+00:00"))
+        import_songs(stick, here, Report())
+        again = Report()
+        import_songs(stick, here, again)
+        assert again.runs_added == 0
+        assert len(runs.load(here / "song.gp5")) == 2
+
+    def test_the_tab_this_machine_is_practising_is_never_replaced(self,
+                                                                 tmp_path):
+        from pickhero.transfer import Report, import_songs
+        stick = tmp_path / "stick"
+        here = tmp_path / "songs"
+        stick.mkdir()
+        here.mkdir()
+        (here / "song.gp5").write_text("mine")
+        (stick / "song.gp5").write_text("theirs")
+        runs.append(stick / "song.gp5",
+                    _run("hh", "2026-09-02T20:00:00+00:00"))
+        import_songs(stick, here, Report())
+        assert (here / "song.gp5").read_text() == "mine"
+        assert len(runs.load(here / "song.gp5")) == 1
+
+    def test_a_song_this_machine_has_never_seen_arrives_whole(self, tmp_path):
+        from pickhero.transfer import Report, import_songs
+        stick = tmp_path / "stick"
+        here = tmp_path / "songs"
+        stick.mkdir()
+        here.mkdir()
+        tab = stick / "new.gp5"
+        tab.write_text("x")
+        runs.append(tab, _run("hcm", "2026-09-02T20:00:00+00:00"))
+        report = Report()
+        import_songs(stick, here, report)
+        # Copied by the ordinary file loop, not merged -- and counted once,
+        # as a song added rather than as runs pooled.
+        assert runs.load(here / "new.gp5")[0].notes == "hcm"
+        assert report.runs_added == 0
+        assert report.songs_added == ["new"]
+
+    def test_a_dry_run_says_how_many_it_would_take_and_writes_nothing(
+            self, tmp_path):
+        from pickhero.transfer import Report, import_songs
+        stick = tmp_path / "stick"
+        here = tmp_path / "songs"
+        stick.mkdir()
+        here.mkdir()
+        for folder, day in ((here, 1), (stick, 2)):
+            tab = folder / "song.gp5"
+            tab.write_text("x")
+            runs.append(tab, _run("hh", f"2026-09-0{day}T20:00:00+00:00"))
+        report = Report(dry_run=True)
+        import_songs(stick, here, report)
+        assert report.runs_added == 1
+        assert len(runs.load(here / "song.gp5")) == 1

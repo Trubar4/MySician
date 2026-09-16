@@ -190,25 +190,75 @@ def load(tab_path) -> list[Run]:
     return out
 
 
-def append(tab_path, run: Run) -> bool:
-    """Add a run to the file beside the tab. False if it could not be.
+def save(tab_path, kept: list[Run]) -> bool:
+    """Write the history beside the tab, newest last. False if it could not be.
 
     Never raises: a history that cannot be written is a slower day, not a
     broken song -- the sidecar's rule, and for the same reason.
     """
-    if not tab_path or not worth_keeping(run):
+    if not tab_path:
         return False
-    runs = load(tab_path)
-    runs.append(run)
-    runs = runs[-MAX_RUNS:]
     try:
         path_for(tab_path).write_text(
             json.dumps({"version": VERSION,
-                        "runs": [r.as_json() for r in runs]}, indent=1),
+                        "runs": [r.as_json() for r in kept[-MAX_RUNS:]]},
+                       indent=1),
             encoding="utf-8")
     except OSError:
         return False
     return True
+
+
+def append(tab_path, run: Run) -> bool:
+    """Add a run to the file beside the tab. False if it could not be."""
+    if not tab_path or not worth_keeping(run):
+        return False
+    return save(tab_path, load(tab_path) + [run])
+
+
+def merge(mine: list[Run], theirs: list[Run]) -> tuple[list[Run], int]:
+    """Both machines' evenings, in time order. Returns the list and how many
+    came from `theirs` that this machine did not have.
+
+    *"Import bzw. Zusammenfuehren waere sehr nett als Funktion."* Until now an
+    import was per FILE and a `.runs.json` already here kept its own, so the
+    other laptop's evenings were simply not taken. A history is a LIST, and
+    two lists of different evenings have an obvious union -- which is not true
+    of the settings beside them, where "what this machine has wins" is the
+    only safe rule.
+
+    - **Keyed by when it started AND what it says.** Two runs cannot share a
+      microsecond, so the timestamp alone would do; carrying the verdicts as
+      well makes the key stricter, and stricter fails the safe way. A doubled
+      run would flatter the history; a dropped one is an evening gone, and
+      this whole feature exists to stop that.
+    - **Sorted by TIME, not by which file they came from.** `common_errors`
+      asks what the LAST run did, and after a merge the last run has to be the
+      most recent evening rather than whichever file was read second.
+    - **Idempotent**, because nobody remembers whether they already imported:
+      running it twice adds nothing the second time.
+    """
+    seen = {(r.started, r.notes) for r in mine}
+    added = [r for r in theirs if (r.started, r.notes) not in seen]
+    both = sorted(mine + added, key=lambda r: r.started)
+    return both, len(added)
+
+
+def merge_files(mine_path, theirs_path) -> int:
+    """Pull the other machine's runs into this tab's file. Never raises.
+
+    Returns how many evenings were added, 0 for none and for anything that
+    could not be read or written -- the caller reports a count, and a history
+    that will not merge must not take an import down with it.
+    """
+    theirs = load(theirs_path)
+    if not theirs:
+        return 0
+    mine = load(mine_path)
+    both, added = merge(mine, theirs)
+    if not added:
+        return 0
+    return added if save(mine_path, both) else 0
 
 
 def best_ever(runs: list[Run]) -> Run | None:

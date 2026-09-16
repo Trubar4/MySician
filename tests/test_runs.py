@@ -176,3 +176,74 @@ def test_the_label_says_what_it_is_made_of():
     assert "3 runs" in got.label
     assert got.notes.count(runs.MISS) == 2
     assert got.kind == "errors"
+
+
+# -- two machines -----------------------------------------------------------
+
+def test_merging_takes_what_this_machine_has_not_got():
+    mine = [_run("hh", "2026-09-01T20:00:00+00:00")]
+    theirs = [_run("mm", "2026-09-02T20:00:00+00:00")]
+    both, added = runs.merge(mine, theirs)
+    assert added == 1
+    assert [r.notes for r in both] == ["hh", "mm"]
+
+
+def test_merging_twice_changes_nothing_the_second_time():
+    # Nobody remembers whether they already imported, and a doubled history
+    # cannot be told apart from having practised twice as much.
+    mine = [_run("hh", "2026-09-01T20:00:00+00:00")]
+    theirs = [_run("mm", "2026-09-02T20:00:00+00:00")]
+    once, _ = runs.merge(mine, theirs)
+    twice, added = runs.merge(once, theirs)
+    assert added == 0
+    assert [r.notes for r in twice] == [r.notes for r in once]
+
+
+def test_the_last_run_is_the_most_recent_evening_not_the_last_file_read():
+    # `common_errors` asks what the LAST run did, so the order has to be time.
+    mine = [_run("hh", "2026-09-05T20:00:00+00:00")]
+    theirs = [_run("mm", "2026-09-02T20:00:00+00:00")]
+    both, _ = runs.merge(mine, theirs)
+    assert both[-1].started.startswith("2026-09-05")
+
+
+def test_two_runs_that_say_different_things_both_survive():
+    # The key carries the verdicts as well as the moment: stricter fails the
+    # safe way, because a dropped evening is what this exists to prevent.
+    same = "2026-09-01T20:00:00+00:00"
+    both, added = runs.merge([_run("hh", same)], [_run("mm", same)])
+    assert added == 1 and len(both) == 2
+
+
+def test_a_merged_history_still_does_not_grow_for_ever():
+    mine = [_run("h", f"2026-09-01T20:00:{i:02d}+00:00") for i in range(40)]
+    theirs = [_run("m", f"2026-09-02T20:00:{i:02d}+00:00") for i in range(40)]
+    both, _ = runs.merge(mine, theirs)
+    assert len(both) == 80        # the merge itself keeps everything
+    # The cap is `save`'s: it is the FILE that must not grow for ever, and
+    # trimming inside the merge would throw away runs the caller may want.
+    assert len(both[-runs.MAX_RUNS:]) == runs.MAX_RUNS
+
+
+def test_the_file_on_disk_takes_the_other_machines_evenings(tmp_path):
+    here = tmp_path / "here"
+    there = tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    for folder, day in ((here, 1), (there, 2)):
+        tab = folder / "song.gp5"
+        tab.write_text("x")
+        runs.append(tab, _run("hh", f"2026-09-0{day}T20:00:00+00:00"))
+    assert runs.merge_files(here / "song.gp5", there / "song.gp5") == 1
+    kept = runs.load(here / "song.gp5")
+    assert len(kept) == 2
+    assert runs.merge_files(here / "song.gp5", there / "song.gp5") == 0
+
+
+def test_a_history_that_cannot_be_read_does_not_take_the_import_down(tmp_path):
+    here = tmp_path / "song.gp5"
+    here.write_text("x")
+    there = tmp_path / "other.gp5"
+    there.write_text("x")
+    runs.path_for(there).write_text("{not json", encoding="utf-8")
+    assert runs.merge_files(here, there) == 0

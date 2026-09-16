@@ -4275,12 +4275,33 @@ the history with it. `runs.py` is the arithmetic and the storage and no pygame, 
   notes, and drawing them against this song would put every dot in the wrong place. `note_count` and the track index are what say so.
 - **It is written where the sitting is written** (`close_session`), so either route out of a song reaches it once, and a song opened and left
   without a note being judged writes nothing at all.
-- **And it is a belonging of the tab.** `belongings()` is the one reader, so deleting a song takes its runs, renaming one carries them, and
-  `Ctrl+I` brings them over from the other laptop without a line being written for it. The practice diary is a record of what the player DID and
-  stays either way; these are per-note verdicts of a file that is about to stop existing, and the next song to take the name would inherit them.
-  The named limit is that an import is per FILE: a machine that already has a `.runs.json` for a song keeps its own, so two laptops that have
-  both played the same song do not pool their evenings. That is the rule everything else here follows — what this machine has wins — and pooling
-  them would need a merge, not a copy.
+- **And it is a belonging of the tab.** `belongings()` is the one reader, so deleting a song takes its runs and renaming one carries them. The
+  practice diary is a record of what the player DID and stays either way; these are per-note verdicts of a file that is about to stop existing,
+  and the next song to take the name would inherit them.
+
+### Two laptops, one history
+
+*"Import bzw. Zusammenführen wäre sehr nett als Funktion."* The first build shipped the limit rather than the feature: an import is per FILE, so
+a `.runs.json` already here kept its own and the other laptop's evenings were simply not taken. That is the right rule for everything else beside
+a tab — a setting is one answer and "what this machine has wins" is what stops a sync undoing what you just adjusted — and it is the wrong rule
+here, because **a history is a LIST, and two lists of different evenings have an obvious union.**
+
+So the runs are the one belonging that MERGES. `Ctrl+I` pools them, and `tools/merge_stats.py` gets it for free, being a front end for the same
+code.
+
+- **Keyed by when it started AND what it says.** Two runs cannot share a microsecond, so the timestamp alone would do; carrying the verdicts as
+  well makes the key stricter, and stricter fails the safe way. A doubled run would flatter the history; a dropped one is an evening gone, and
+  this exists to stop that.
+- **Sorted by TIME, not by which file was read second.** `common_errors` asks what the LAST run did, so after a merge the last run has to be the
+  most recent evening. Getting this wrong would not crash anything — it would quietly report a mistake as still-being-made when the other laptop
+  had already fixed it.
+- **Idempotent**, because nobody remembers whether they already imported: running it twice adds nothing the second time. Same constraint as the
+  sitting log, and the reason the key is a pair rather than a count.
+- **Only where both sides have one.** A song this machine has never seen, or has never played, is copied whole by the ordinary file loop — the
+  same answer by a cheaper route, and running both would count it twice.
+- **A `.bak` is left beside it**, the way everything this import rewrites gets one.
+- **The tab itself is still never replaced.** Merging the history and overwriting the song being practised are different things, and a test pins
+  that the local `.gp5` comes through untouched.
 
 ### The two runs nobody played
 
