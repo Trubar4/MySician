@@ -47,6 +47,7 @@ from pickhero.ui.colors import (
 )
 from pickhero.ui.feedback import FeedbackRenderer
 from pickhero.ui import sheet
+from pickhero.ui import strip
 
 # Layout constants
 LANE_TOP_MARGIN = 80
@@ -1198,6 +1199,7 @@ class PlayingScreen:
         # is a walk over every note and this display has been bitten
         # twice by work that looked cheap until it ran once a frame.
         self._rests: list[tuple[float, float]] = []
+        self._last_end_ms: float | None = None
         self._tab_engraving = None
         self._tab_due: bool = self._view == "tab"
         self._tab_error: str = ""
@@ -1230,6 +1232,27 @@ class PlayingScreen:
         self._sheet_glide_from: float = 0.0
         self._sheet_glide_to: float = 0.0
         self._sheet_glide_at: float = 0.0
+        # The strip along the bottom. The miniature is built ONCE per song
+        # and size into a surface and blitted after that -- the page view
+        # learnt the hard way what a loop over every note costs in a frame
+        # (12.4 ms against a 16.7 ms budget). Only two things move: the
+        # marker, and one dot when a note is judged.
+        #
+        # `_strip_marks` is the verdicts, drawn onto their own transparent
+        # layer as they SETTLE, so a note is painted once and never looked at
+        # again. `_strip_settled_ms` is how far along the song that has got.
+        self._strip_base: pygame.Surface | None = None
+        self._strip_base_key: tuple = ()
+        self._strip_marks: pygame.Surface | None = None
+        self._strip_settled_ms: float = 0.0
+        self._strip_from_ms: float = 0.0
+        self._strip_judged: int = 0
+        self._strip_seen_ms: float = 0.0
+        # Dragging the marker. The seek is what costs -- every one of them
+        # decodes the recording up to that point -- so a drag moves the
+        # marker and the song moves once, when the button comes up.
+        self._strip_drag: bool = False
+        self._strip_preview_ms: float | None = None
         # Whether the sync panel is open. Everything about lining sound up
         # against the notes lives in it, and none of it is needed while
         # playing -- which is what the screen is for.
@@ -1812,6 +1835,13 @@ class PlayingScreen:
             if event.key == self._step_key:
                 self._step_key = None
             return None
+        # The strip along the bottom is the one thing on this screen the mouse
+        # means anything to. It is checked before the keyboard gate below,
+        # which returns None for every event that is not a key -- which is why
+        # a pointer never reached this screen at all until now.
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION,
+                          pygame.MOUSEBUTTONUP):
+            return self._handle_strip_mouse(event)
         if event.type != pygame.KEYDOWN:
             return None
 
@@ -2883,7 +2913,13 @@ class PlayingScreen:
     def _layout(self, surface: pygame.Surface) -> _Layout:
         """Compute layout from current surface dimensions."""
         w, h = surface.get_size()
-        lane_area = h - LANE_TOP_MARGIN - LANE_BOTTOM_MARGIN
+        # The strip along the bottom takes its band out of the music, and it
+        # takes a CONSTANT one. Measuring it off the footer would put the
+        # board's note height downstream of the footer's height -- and the
+        # footer carries "N s ahead", which comes out of the note height. That
+        # circle is the 44.4 -> 44.5 px loop this project has already caught
+        # once; a constant cannot close it.
+        lane_area = h - LANE_TOP_MARGIN - LANE_BOTTOM_MARGIN - strip.STRIP_BAND
         # Compact fretboard band, centred in the available area, instead of
         # six lanes stretched over the whole window
         lane_height = min(lane_area / 6, h * MAX_LANE_HEIGHT_FRACTION)
@@ -3123,8 +3159,20 @@ class PlayingScreen:
         return rests
 
     def _last_note_end_ms(self) -> float:
-        """When the last written note stops sounding, 0.0 for an empty track."""
-        return max((n.end_ms for n in self._timeline.notes), default=0.0)
+        """When the last written note stops sounding, 0.0 for an empty track.
+
+        Computed ONCE, with the rests, and not on every frame. It walked every
+        note in the song and it is asked three times a frame for the HUD's
+        outro line -- on a long song that is four million iterations over the
+        eighty frames the scaling test times, and it dominated everything else
+        in the profile. Fourth time this shape has been found here: a loop
+        that starts at the beginning of the song, arriving as "it stutters,
+        and worse the longer the song has been running".
+        """
+        if self._last_end_ms is None:
+            self._last_end_ms = max(
+                (n.end_ms for n in self._timeline.notes), default=0.0)
+        return self._last_end_ms
 
     def _rest_at(self, ms: float) -> tuple[float, float] | None:
         """The long rest the given moment sits inside, if any."""
@@ -4515,15 +4563,24 @@ class PlayingScreen:
         colour: an entry lights up when the thing it names is not at rest,
         and that is the whole reason the line is worth the space it takes.
         """
+        return self._footer_geometry(layout.screen_w, layout.screen_h, segments)
+
+    def _footer_geometry(self, w: int, h: int, segments=None):
+        """The same answer from a bare width and height.
+
+        The strip along the bottom stacks on the footer and has to know where
+        it starts before there is a layout to ask -- and a second copy of the
+        wrapping would be two answers to one question, which is how the footer
+        and the sync panel came to be drawn over each other.
+        """
         segments = (self.footer_segments() if segments is None else segments)
-        w = layout.screen_w
         for size in self.FOOTER_FONT_SIZES:
             font = _get_font("arial", size)
             rows = _wrap_segments(font, segments, w - 16)
             if len(rows) == 1:
                 break
         line_h = font.get_height() + 2
-        return font, rows, line_h, layout.screen_h - 4 - line_h * len(rows)
+        return font, rows, line_h, h - 4 - line_h * len(rows)
 
     def _blit_footer_lines(self, surface: pygame.Surface,
                            layout: _Layout) -> int:
@@ -4568,9 +4625,312 @@ class PlayingScreen:
         # are not reading while you are lining a recording up.
         #
         # What IS counted is the one-line status note above it, and a gap.
-        bottom = footer_top - 18 - 12
+        bottom = footer_top - 18 - 12 - strip.STRIP_BAND
         top = self._hud_top_used() + TAB_TOP_GAP
         return top, max(1, bottom - top)
+
+    # -- The strip along the bottom ---------------------------------------
+
+    def _strip_rect(self, w: int, h: int) -> pygame.Rect:
+        """The whole band: the numbers and the miniature side by side.
+
+        Stacked on the MEASURED top of the footer rather than at a fixed
+        height, because the footer wraps -- that is the fault this screen has
+        already been fixed for twice, at the sync panel and at the completion
+        overlay. What the band takes out of the music is a constant; where it
+        is drawn is measured.
+        """
+        _, _, _, footer_top = self._footer_geometry(w, h)
+        top = footer_top - strip.STRIP_GAP - strip.STRIP_HEIGHT
+        return pygame.Rect(strip.STRIP_SIDE_PAD, top,
+                           max(1, w - 2 * strip.STRIP_SIDE_PAD),
+                           strip.STRIP_HEIGHT)
+
+    def _strip_has_numbers(self) -> bool:
+        """Whether a column is kept beside the miniature for the score.
+
+        Asked of the AUDIO and not of the score, deliberately, even though it
+        leaves the column blank until the first note is judged. The miniature
+        starts where this column ends, so a column that appeared when the
+        first verdict landed would slide the whole song sideways once, a bar
+        into every run -- and take a drag in progress with it. The only thing
+        that moves it now is `A`, which is a deliberate press.
+
+        With audio off there is no score to come, so the miniature takes the
+        whole width rather than reserving a sixth of it for a blank.
+        """
+        return self._audio_enabled and self._matcher is not None
+
+    def _strip_mini_rect(self, w: int, h: int) -> pygame.Rect:
+        """Just the miniature -- which is the part a click means something in.
+
+        One implementation, asked by the drawing and by the mouse, so a click
+        cannot land somewhere other than where the marker was.
+        """
+        rect = self._strip_rect(w, h)
+        if self._strip_has_numbers():
+            rect = pygame.Rect(rect.x + strip.STRIP_NUMBERS_W, rect.y,
+                               max(1, rect.width - strip.STRIP_NUMBERS_W),
+                               rect.height)
+        return rect
+
+    def _strip_reset(self) -> None:
+        """Throw the verdicts away; the song underneath them is unchanged.
+
+        Starting again from HERE and not from bar 1, which matters twice over.
+        A seek puts every note back to PENDING and the sweep then marks
+        everything behind the playhead missed -- so repainting from the start
+        would show a run nobody played, which is the trap the run log carries
+        too ("`hits 0` is not a detection failure, it is a seek"). And it
+        would walk the whole song on every loop turn, which at a held arrow
+        key is 25 walks a second.
+        """
+        self._strip_marks = None
+        self._strip_settled_ms = self._playback_ms
+        self._strip_from_ms = self._playback_ms
+        self._strip_judged = 0
+
+    def _strip_base_surface(self, mini: pygame.Rect) -> pygame.Surface:
+        """The song as dots, one per note, in its string's colour.
+
+        Built once per song, size and filter. A four-minute song is a couple
+        of thousand notes and this walks every one of them -- which is exactly
+        the loop `_draw_tab_page` had to move out of the frame, and the reason
+        the result is kept rather than recomputed.
+        """
+        key = (mini.width, mini.height, id(self._timeline),
+               self._filter_signature())
+        if self._strip_base is not None and self._strip_base_key == key:
+            return self._strip_base
+        t = get_theme()
+        base = pygame.Surface((mini.width, mini.height))
+        try:
+            base = base.convert()
+        except pygame.error:
+            pass                    # no display yet; the surface still works
+        base.fill(t.lane_bg_even)
+        notes = [n for n in self._timeline.notes if self._note_passes_filter(n)]
+        for x, y, string in strip.note_dots(notes, self._timeline.duration_ms,
+                                            mini.width, mini.height):
+            base.fill(STRING_COLORS[string],
+                      (x, y - strip.DOT_PX // 2, strip.DOT_PX, strip.DOT_PX))
+        self._strip_base = base
+        self._strip_base_key = key
+        # The verdicts were drawn against the old geometry, so they mean
+        # nothing against this one.
+        self._strip_reset()
+        return base
+
+    _STRIP_VERDICT = {
+        MatchType.HIT: "feedback_hit",
+        MatchType.CLOSE: "feedback_close",
+        MatchType.MISS: "feedback_miss",
+    }
+
+    def _strip_verdict_colour(self, note) -> tuple[int, int, int] | None:
+        if self._matcher is None:
+            return None
+        name = self._STRIP_VERDICT.get(self._matcher.get_note_state(note))
+        return getattr(get_theme(), name) if name else None
+
+    def _draw_strip(self, surface: pygame.Surface, layout: _Layout) -> None:
+        """Where you are in the song, how it went, and the way to move.
+
+        Three things in one band because they answer one glance: the miniature
+        says where the playing is dense and where the run went wrong, the
+        marker says where you are, and the numbers say how it is going.
+        """
+        t = get_theme()
+        w, h = layout.screen_w, layout.screen_h
+        rect = self._strip_rect(w, h)
+        if rect.top <= 0 or rect.width < 40:
+            return
+        mini = self._strip_mini_rect(w, h)
+        if self._strip_has_numbers():
+            self._blit_strip_numbers(surface, rect)
+
+        base = self._strip_base_surface(mini)
+        surface.blit(base, mini.topleft)
+        self._blit_strip_verdicts(surface, mini)
+        self._blit_strip_loop(surface, mini)
+        self._blit_strip_marker(surface, mini)
+        pygame.draw.rect(surface, t.lane_line, mini, 1)
+
+    def _blit_strip_verdicts(self, surface: pygame.Surface,
+                             mini: pygame.Rect) -> None:
+        """The dots that have been judged, recoloured.
+
+        Two halves, and they are separate because they cost differently. A
+        note far enough behind the playhead can no longer change its mind --
+        the hit window, the late window, the chord verdict that trails its
+        strike and the rescue that arrives after the note timed out are all
+        inside `SETTLE_MS` -- so it is painted ONCE onto a layer and never
+        looked at again. What is left is the last second of music, which is a
+        handful of notes, and those are drawn fresh every frame because they
+        are still moving.
+        """
+        if self._matcher is None or not self._audio_enabled:
+            return
+        stats = self._matcher.get_statistics()
+        judged = stats["total"]
+        if judged < self._strip_judged or self._playback_ms < self._strip_seen_ms - 1.0:
+            # A seek, a loop turn or a filter change put every note back to
+            # PENDING. Detected here rather than wired into all five places
+            # that reset the matcher, because a sixth would not know to call.
+            self._strip_reset()
+        self._strip_judged = judged
+        self._strip_seen_ms = self._playback_ms
+
+        if self._strip_marks is None:
+            marks = pygame.Surface(mini.size, pygame.SRCALPHA)
+            try:
+                marks = marks.convert_alpha()
+            except pygame.error:
+                pass                # no display yet; the surface still works
+            self._strip_marks = marks
+        duration = self._timeline.duration_ms
+        settled_to = self._playback_ms - strip.SETTLE_MS
+
+        def paint(note, target, origin):
+            colour = self._strip_verdict_colour(note)
+            if colour is None or not self._note_passes_filter(note):
+                return
+            x, y = strip.dot(note, duration, mini.width, mini.height)
+            target.fill(colour, (origin[0] + x,
+                                 origin[1] + y - strip.DOT_PX // 2,
+                                 strip.DOT_PX, strip.DOT_PX))
+
+        # Settled: painted once onto the layer, by the slice of song that has
+        # crossed the line since the last frame. `get_notes_in_range` is a
+        # bisect, so this never walks from the start of the song -- the loop
+        # that did has now been found in this codebase three times, each one
+        # arriving as "it stutters, and worse the longer the song has run".
+        if settled_to - self._strip_settled_ms > strip.JUMP_MS:
+            # The clock jumped rather than ran. Step over it: nothing in there
+            # was played, and walking it would be the loop that grows with the
+            # song, found in this codebase three times already.
+            self._strip_settled_ms = settled_to
+            self._strip_from_ms = self._playback_ms
+        elif settled_to > self._strip_settled_ms:
+            for note in self._timeline.get_notes_in_range(
+                    self._strip_settled_ms, settled_to):
+                paint(note, self._strip_marks, (0, 0))
+            self._strip_settled_ms = settled_to
+        surface.blit(self._strip_marks, mini.topleft)
+
+        # The tail that can still change its mind: bounded by SETTLE_MS of
+        # music, never by the length of the song, and drawn fresh every frame
+        # because a rescue may still turn one of them green.
+        for note in self._timeline.get_notes_in_range(
+                max(settled_to, self._strip_from_ms), self._playback_ms):
+            paint(note, surface, mini.topleft)
+
+    def _blit_strip_loop(self, surface: pygame.Surface,
+                         mini: pygame.Rect) -> None:
+        """Shade the looped stretch.
+
+        A loop silently repeating eight bars is the fret-filter trap in
+        another costume, and the strip is the one place that can say "this is
+        the piece of the song you are going round in" by showing it.
+        """
+        if self._loop_start_ms is None or self._loop_end_ms is None:
+            return
+        t = get_theme()
+        duration = self._timeline.duration_ms
+        x0 = strip.x_for_ms(self._loop_start_ms, duration, mini.width)
+        x1 = strip.x_for_ms(self._loop_end_ms, duration, mini.width)
+        width = max(1, int(x1 - x0))
+        shade = pygame.Surface((width, mini.height), pygame.SRCALPHA)
+        shade.fill(t.loop_region if self._loop_enabled
+                   else t.loop_region_disabled)
+        surface.blit(shade, (mini.x + int(x0), mini.y))
+
+    def _blit_strip_marker(self, surface: pygame.Surface,
+                           mini: pygame.Rect) -> None:
+        """Where the song is -- or, while dragging, where it would land."""
+        t = get_theme()
+        dragging = self._strip_preview_ms is not None
+        ms = self._strip_preview_ms if dragging else self._playback_ms
+        x = mini.x + int(strip.x_for_ms(max(0.0, ms),
+                                        self._timeline.duration_ms,
+                                        mini.width))
+        colour = t.hud_accent if dragging else t.hit_zone
+        surface.fill(colour, (max(mini.x, min(x, mini.right - 2)), mini.y - 2,
+                              2, mini.height + 4))
+        if dragging:
+            # Where it WILL land, said in the unit the clock is read in. A
+            # drag with nothing but a line to go on is a guess.
+            font = _get_font("arial", 12)
+            label = font.render(format_time(ms), True, t.hud_accent)
+            lx = min(max(mini.x, x + 4), mini.right - label.get_width() - 2)
+            surface.blit(label, (lx, mini.y - label.get_height() - 2))
+
+    def _blit_strip_numbers(self, surface: pygame.Surface,
+                            rect: pygame.Rect) -> None:
+        """82 % big, and what it is made of underneath.
+
+        The split is free: `MatchType.CLOSE` has always meant the right note
+        played off the beat, so "right notes" and "timing" fall out of what
+        the matcher already counts. A single percentage cannot answer "was it
+        my fingers or my timing", and those are practised differently.
+        """
+        t = get_theme()
+        stats = self._matcher.get_statistics()
+        overall, timing, right = strip.split_percentages(stats)
+        if overall is None:
+            return
+        big = _get_font("consolas", 26)
+        small = _get_font("arial", 12)
+        drawn = big.render(f"{overall:.0f}%", True,
+                           t.feedback_hit if overall >= 80 else t.hud_text)
+        surface.blit(drawn, (rect.x, rect.y + (rect.height
+                                               - drawn.get_height()) // 2))
+        x = rect.x + drawn.get_width() + 10
+        y = rect.y + (rect.height - 2 * (small.get_height() + 2)) // 2
+        for value, label in ((timing, "Timing"), (right, "Right Notes")):
+            text = ("—" if value is None else f"{value:.0f}%") + "  " + label
+            surface.blit(small.render(text, True, t.hud_text), (x, y))
+            y += small.get_height() + 2
+
+    def _handle_strip_mouse(self, event) -> None:
+        """Click and drag the strip to spool.
+
+        The seek is what costs. Every one of them decodes the recording up to
+        that point, and a dragged mouse produces an event a frame -- the same
+        25 a second that made a held arrow key stutter for seconds at a time.
+        So a drag only moves the MARKER, and the song moves once, when the
+        button comes up.
+        """
+        layout = self._last_layout
+        if layout is None:
+            return None
+        mini = self._strip_mini_rect(layout.screen_w, layout.screen_h)
+        duration = self._timeline.duration_ms
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button != 1 or not mini.collidepoint(event.pos):
+                return None
+            # A plain click jumps straight away: waiting for the button to
+            # come up would make the one-press case feel like a dead key.
+            self._strip_drag = True
+            self._strip_preview_ms = None
+            self.seek(strip.ms_for_x(event.pos[0] - mini.x, duration,
+                                     mini.width))
+            return None
+        if event.type == pygame.MOUSEMOTION:
+            if self._strip_drag:
+                self._strip_preview_ms = strip.ms_for_x(
+                    event.pos[0] - mini.x, duration, mini.width)
+            return None
+        if event.type == pygame.MOUSEBUTTONUP and self._strip_drag:
+            self._strip_drag = False
+            target = self._strip_preview_ms
+            self._strip_preview_ms = None
+            # Only if the mouse really moved. A click seeks on the way down,
+            # and doing it again on the way up would decode the recording
+            # twice for one press.
+            if target is not None and abs(target - self._playback_ms) > 1.0:
+                self.seek(target)
+        return None
 
     def _hud_top_used(self) -> int:
         """How far down the text at the top of the screen reaches.
@@ -4715,6 +5075,7 @@ class PlayingScreen:
         # Drawn in that order because each stacks on the one below it. The
         # sync panel used to start at a fixed height and grow downward into
         # the keys, which is exactly what the player saw overlapping.
+        self._draw_strip(surface, layout)
         footer_top = self._blit_footer_lines(surface, layout)
         note_y = self._blit_sync_block(surface, layout, hint_font, footer_top)
 
@@ -6019,6 +6380,9 @@ class PlayingScreen:
                 ("SPACE: play/pause", "playing" if self._playing else "paused"),
                 "HOME: restart     ESC: song list",
                 "LEFT/RIGHT: a beat   Shift: a bar   Ctrl: 30 seconds",
+                "The strip along the bottom is the whole song: click it to",
+                "  jump, drag it to spool. Each dot is a note on its string,",
+                "  and it turns green, yellow or red as you play it.",
                 ("PgDn/PgUp: practice speed, kept for this song",
                  f"{meta.tempo} BPM ({int(self._tempo_factor * 100)} %)"),
                 ("A: audio on/off", "on" if self._audio_enabled else "off"),

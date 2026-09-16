@@ -4056,6 +4056,7 @@ pickhero/
     ├── feedback.py
     ├── menu.py
     ├── settings_menu.py    # everything set once, and what it is set to
+    ├── strip.py            # the bottom strip: where you are, how it went, spooling
     ├── device_menu.py
     └── download_menu.py
 ```
@@ -4066,6 +4067,7 @@ pickhero/
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
+- `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
 - Use `pytest`. Keep tests independent of audio hardware (mock sounddevice).
 
 ## Build & Run
@@ -4080,45 +4082,94 @@ pyinstaller pickhero.spec --noconfirm
 # Or use build.bat on Windows
 ```
 
-## Open: The Strip Along The Bottom
+## The Strip Along The Bottom
 
-Asked for at the end of the session that added the nut and the lead-in, and **not started** — so this is a brief, not a record.
+*"Ich hätte gerne eine Anzeige am unteren Bildrand, wo ich im Song stehe. Hier könnten wir auch den %-Wert hinschreiben und aufteilen 82 %
+(groß) und kleiner 90 % timing, 76 % Right Notes. Die Fortschrittsanzeige soll auch zum Spulen verwendet werden können. Sie ist wie eine
+vereinfachte Miniatur des Tabs."*
 
-**Where to start:** `main` is the trunk. Everything up to and including the nut and the lead-in is merged into it, so branch fresh off `main`
-(`git checkout main && git pull && git checkout -b <new-branch>`). The branch that carried that work, `claude/mysician-fast-songs-blur-04ahyh`,
-is history now — do not continue on it and do not reuse its pull request.
+One band across the bottom that is three things at once: where you are, how it went, and a way to move. `ui/strip.py` is the arithmetic and
+nothing else -- no drawing, so it is tested without a screen, and because the drawing and the MOUSE need the same answers and must never
+disagree about them. One implementation of "x is this millisecond" is what stops a click landing a bar away from where the marker was.
 
-*"Ich hätte gerne eine Anzeige am unteren Bildrand, wo ich im Song stehe. Hier könnten wir auch den %-Wert hinschreiben und aufteilen 82 % (groß)
-und kleiner 90 % timing, 76 % Right Notes. Die Fortschrittsanzeige soll auch zum Spulen verwendet werden können. Sie ist wie eine vereinfachte
-Miniatur des Tabs."*
+**The split was free, and that is the finding.** `MatchType.CLOSE` has meant *the right note played off the beat* since the matcher was
+written, so the three numbers the player drew fall straight out of what `get_statistics()` already counts and nothing has to be measured
+again:
 
-So: one strip across the bottom that is three things at once — where you are, how it is going, and a way to move.
-
-**The three numbers already exist, and they fall out of the model rather than needing a new one.** `NoteMatcher.get_statistics()` returns `hits`,
-`close`, `misses`, `total`, and `MatchType.CLOSE` means *the right note, played off the beat*. That is exactly the split he drew:
-
-| his label | what it is |
+| | |
 |---|---|
-| Right Notes | `(hits + close) / total` — the right note was played **at all** |
-| Timing | `hits / (hits + close)` — of the right notes, how many were **on time** |
-| the big number | `hits / total`, which is what `accuracy_percent` already is |
+| the big one | `hits / total` -- the right note, on time |
+| Right Notes | `(hits + close) / total` |
+| Timing | `hits / (hits + close)` -- of the right notes, how many landed |
 
-Worth saying to him: the split is free because `CLOSE` was always "right note, wrong moment". Nothing needs re-measuring.
+Over what was REACHED, which is what `get_statistics` counts: a song abandoned at bar 9 reports the first nine bars. That is the honest half,
+and the reason the numbers sit next to the clock, which says how far the run got. **`None` where the denominator is empty, never `0.0`** --
+nothing played is not the same as everything missed, and a zero would claim it was, on the first bar of every run.
 
-**Three things found while scoping it, each of which will cost a round if rediscovered:**
+### Its height is a constant on purpose, and the reason is a loop this project has already paid for
 
-- **The playing screen has no mouse input at all.** `MOUSEBUTTONDOWN` appears only in `ui/menu.py`. Seeking by clicking the strip means adding
-  pointer handling to `PlayingScreen` for the first time — and it is worth asking whether a player with a guitar in both hands wants to reach for a
-  mouse, when `Ctrl+arrow` already seeks by half a minute and `I`/`O`/`P` already loop.
-- **The strip's height feeds back into the hybrid layout.** This file has already paid for that once: putting bars-per-row in the footer changed the
-  footer's height, which changed the room, which changed the head size, which walked 44.4 → 44.5 px and never settled. The strip must have a height
-  that is a **constant**, never one derived from what it draws.
-- **A minimap of the tab is a loop over the whole song.** `_draw_tab_page` learnt this the hard way — walking every note each frame cost 12.4 ms
-  against a 16.7 ms budget. The strip has to be built **once per song** into a surface and blitted, not recomputed per frame; the only thing that
-  moves is the position marker and, when a note is judged, one column of it.
+The footer's height is MEASURED because it wraps. The strip's must not be, because the music's bottom margin is taken from it and the board's
+note height from what is left -- and the footer already carries `N s ahead`, which comes out of that note height. A band sized from what the
+strip DRAWS would close that circle, which is the 44.4 -> 44.5 px walk that `test_a_second_frame_lays_nothing_out` caught when bars-per-row
+went into the footer.
 
-**Still open, to ask before building:** what the miniature actually draws (note density? one block per bar? the verdicts as they land?), whether the
-numbers are for this run or the song's best, and whether the strip replaces part of the footer's key line or pushes it up.
+So: what the band TAKES out of the music is a constant; where it is DRAWN is measured off the footer's top, because a band at a fixed height is
+the fault this screen has been fixed for twice already, at the sync panel and at the completion overlay.
+
+**The numbers column is a constant too, and that one was a real bug before it was a rule.** The miniature starts where the column ends, so a
+column that appeared when the first verdict landed slid the whole song sideways, one bar into every run -- and would have taken a drag in
+progress with it. It is asked of the AUDIO now, not of the score, and stays blank until there is something to say; the only thing that moves it
+is `A`. Found by a verdict landing on the wrong pixel in a test, which is exactly what it would have looked like on screen.
+
+**And its width was fitted by eye and was wrong.** At 168 px the miniature drew over the word "Notes". Measured at the sizes the strip actually
+uses -- "100%" is 64 px of consolas 26, "100%  Right Notes" is 98 px of arial 12 -- it needs 186, and a test asserts the room rather than the
+number, so a font change fails in the suite instead of on the player's screen.
+
+### Nothing in it grows with the song
+
+- **The miniature is built ONCE** per song, size and filter, into a surface that is then blitted. It walks every note -- which is the loop
+  `_draw_tab_page` had to move out of the frame at 12.4 ms against a 16.7 ms budget. The dots are deduplicated by pixel, because a four-minute
+  song puts dozens of notes on one pixel of one row. What survives the squeeze is DENSITY, which is what the miniature is for: a solo looks like
+  a solo and a held chord looks like a gap, without reading anything.
+- **The verdicts are painted once each, onto a layer of their own.** A note far enough behind the playhead can no longer change its mind -- the
+  hit window, the late window, the chord verdict that trails its strike by ~380 ms and the rescue that arrives after the note timed out are all
+  inside `SETTLE_MS` (1200 ms) -- so it is drawn and never looked at again. What is left is the last second of music, a handful of notes, redrawn
+  each frame because a rescue may still turn one of them green.
+- **A jump is stepped over rather than walked, and that is honest before it is cheap.** A seek puts every note back to PENDING and the sweep then
+  marks everything behind the playhead missed -- `hits 0` in a run log is a seek, not a detection failure, which is the trap `seeks` is in the
+  header for. Repainting from the start would fill the strip with a run nobody played, AND walk the whole song on every loop turn, which at a
+  held arrow key is 25 walks a second. Past `JUMP_MS` (2 s) the watermark moves without painting.
+
+**And the scaling test caught something that was not mine.** `test_a_song_four_times_as_long_draws_at_the_same_speed` failed at 1.90x against
+its 1.6 budget, and the profile named a loop that was there already: `_last_note_end_ms()` walked every note in the song and is asked three
+times a frame for the HUD's outro line -- **four million iterations over the eighty frames the test times**, dominating everything else. It was
+sitting at 1.51x before this branch and the strip pushed it over. Computed once now: **1.51x -> 1.12x**, so the frame is materially better than
+it was rather than merely not worse. **Fourth time this shape has been found here**, and it arrives the same way every time: "it stutters now
+and then, and worse the longer the song has been running."
+
+### The mouse had never reached this screen at all
+
+`handle_event` returned `None` for every event that was not a key, so a pointer was dropped before anything could look at it. It is checked
+before that gate now, and the strip is the only thing on the playing screen the mouse means anything to.
+
+- **A click jumps straight away.** Waiting for the button to come up would make the one-press case feel like a dead key.
+- **A drag moves the MARKER and not the song**, and the song moves once, when the button comes up. This is the property that matters and the
+  test asserts it: every seek decodes the recording up to that point, and a dragged mouse fires an event a frame -- the same 25 a second that
+  made a held arrow key stutter for seconds at a time. A second seek is skipped when the mouse did not really move.
+- **A drag that leaves the strip goes on scrubbing**, clamped, because the mouse does not stop at an edge the hand cannot feel.
+- **The preview says where it will land**, in the unit the clock is read in. A drag with nothing but a line to go on is a guess.
+
+### What it draws
+
+One dot per note, on its own string's row, low E at the bottom the way the board and the sheet already lie. It turns green, yellow or red as
+the note is judged, so the strip is the record of the run as well as the position -- *"damit kann ich sogar super zurückschauen, wo Fehler
+waren"*, one view further out. The looped stretch is shaded, because a loop silently repeating eight bars is the fret-filter trap in another
+costume and the strip is the one place that can say so by showing it.
+
+**Open, and it is one word from the player:** the big percentage is now on screen twice, top right and in the strip. That is against his own
+rule -- *a line earns its place by saying something that CHANGES and that nothing else on screen says* -- and the top-right one is the
+duplicate, since the strip carries the split the number is made of. It was left standing because he was asked and chose to keep the footer and
+the top-right column as they were; taking it out is a one-line change whenever he says so.
 
 ## What NOT To Do
 

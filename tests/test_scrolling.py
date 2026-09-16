@@ -367,10 +367,14 @@ class TestFretboardLayout:
 
     def test_band_is_centred_between_the_margins(self):
         from pickhero.ui.scrolling import LANE_BOTTOM_MARGIN, LANE_TOP_MARGIN
+        from pickhero.ui.strip import STRIP_BAND
         screen = PlayingScreen(_make_timeline(tempo=120))
         layout = screen._layout(self._MockSurface(1280, 720))
         gap_above = layout.lane_top - LANE_TOP_MARGIN
-        gap_below = (720 - LANE_BOTTOM_MARGIN) - (layout.lane_top + 6 * layout.lane_height)
+        # The strip along the bottom takes a constant band out of the window
+        # before the board is centred in what is left.
+        gap_below = ((720 - LANE_BOTTOM_MARGIN - STRIP_BAND)
+                     - (layout.lane_top + 6 * layout.lane_height))
         assert gap_above == pytest.approx(gap_below, abs=1.0)
 
     def test_band_still_scales_with_window_size(self):

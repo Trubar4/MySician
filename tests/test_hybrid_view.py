@@ -347,7 +347,13 @@ class TestTheBoardUnderTheNotes:
         _, room = screen._tab_room(screen._layout(surface))
         head = screen._sheet_head_px(room)
         band = int(6 * sheet.LANE_HEADS * head)
-        rects = self._rects(screen, surface, monkeypatch)
+        top, room = screen._tab_room(screen._layout(surface))
+        # Only what is drawn in the music's own room. The strip along the
+        # bottom is a band of its own below it, and a rect that happens to be
+        # a sixth of a lane band tall down there says nothing about the
+        # fretboard -- which is what this test is about.
+        rects = [r for r in self._rects(screen, surface, monkeypatch)
+                 if top <= r.top < top + room]
         full = [r for r in rects if abs(r.height - band) <= 2]
         sixth = [r for r in rects if abs(r.height - band / 6) <= 2]
         assert full, "no fretboard panel was drawn"
