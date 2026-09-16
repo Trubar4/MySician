@@ -147,7 +147,15 @@ class TestDownloadGp5:
             result = download_gp5(42, output)
 
         assert result is True
-        assert output.read_bytes() == file_bytes
+        # The SOURCE decides the suffix, not the name it was asked for. This
+        # test used to assert `test.gp5` while the source it mocked ends in
+        # `.gp` -- so it asserted the bug the player reported: *"Why does it
+        # download a gp5 and when I use songsterr-downloader.com I get a
+        # gp?"*. The loader dispatches on content, so both opened; but a
+        # Guitar Pro 7 file called .gp5 is the wrong file to hand to Guitar
+        # Pro itself.
+        assert not output.exists()
+        assert (tmp_path / "test.gp").read_bytes() == file_bytes
 
     def test_source_url_not_found(self, tmp_path):
         with patch("pickhero.tabs.downloader._urlopen",
@@ -189,15 +197,30 @@ class TestDownloadGp5:
             result = download_gp5(42, output)
 
         assert result is True
-        assert output.exists()
+        assert (tmp_path / "sub" / "dir" / "test.gp").exists()
 
 
 class TestGetSongsterrUrl:
-    def test_format(self):
-        assert get_songsterr_url(123) == "https://www.songsterr.com/a/wsa/123"
+    """A page that loads.
 
-    def test_different_id(self):
-        assert get_songsterr_url(999) == "https://www.songsterr.com/a/wsa/999"
+    `/a/wsa/{id}` is not a Songsterr URL and does not open -- which is what
+    the player saw when a download failed and the browser opened on nothing.
+    Songsterr's shape is `<artist>-<title>-tab-s<id>`, and it redirects any
+    slug with the right `-s<id>` tail to the right page.
+    """
+
+    def test_it_is_the_shape_songsterr_actually_uses(self):
+        assert (get_songsterr_url(2333598, "Love Walked In v4", "Thunder")
+                == "https://www.songsterr.com/a/wsa/"
+                   "thunder-love-walked-in-v4-tab-s2333598")
+
+    def test_the_id_is_always_on_the_end(self):
+        assert get_songsterr_url(999, "What's Up", "4 Non Blondes").endswith(
+            "-tab-s999")
+
+    def test_a_name_of_nothing_still_gives_a_page(self):
+        assert get_songsterr_url(123) == (
+            "https://www.songsterr.com/a/wsa/tab-tab-s123")
 
 
 class TestSanitizeFilename:
@@ -212,3 +235,95 @@ class TestSanitizeFilename:
 
     def test_leaves_valid_chars(self):
         assert sanitize_filename("Artist - Song (Live)") == "Artist - Song (Live)"
+
+
+class TestFindingARevisionThatStillHasAFile:
+    """*"Songsterr holds no Guitar Pro file for this tab"* on four songs in
+    a row, while a third-party downloader fetched all four.
+
+    The player's own data for Papa Roach 14907 says what is going on:
+    revision 6688469 has **no `source` key at all**, and its
+    `prevRevisionId` 5981666 has **`"source": ""`**. Songsterr keeps these
+    tabs in their own format -- per-track hashes, an `audioV4` mix -- and a
+    Guitar Pro file exists only where somebody uploaded one. But every
+    revision links to the one before it, so the history is walkable.
+    """
+
+    #: Trimmed to the shape that matters, from the reply the player sent.
+    PAPA_ROACH = {
+        6688469: {"revisionId": 6688469, "songId": 14907,
+                  "artist": "Papa Roach", "audioV4": "v4-SKh",
+                  "prevRevisionId": 5981666},
+        5981666: {"revisionId": 5981666, "songId": 14907, "source": "",
+                  "prevRevisionId": 4100000},
+        4100000: {"revisionId": 4100000,
+                  "source": "https://gp.songsterr.com/x.gp5"},
+    }
+
+    def _songsterr(self, monkeypatch, revisions, latest=6688469):
+        from pickhero.tabs import downloader as d
+
+        def fetch(url):
+            if "meta" in url:
+                return {"revisionId": latest}
+            return revisions.get(int(url.rsplit("/", 1)[-1]))
+
+        monkeypatch.setattr(d, "_fetch_json", fetch)
+
+    def test_the_walk_finds_the_older_revision_that_has_one(self,
+                                                            monkeypatch):
+        from pickhero.tabs import downloader as d
+        self._songsterr(monkeypatch, self.PAPA_ROACH)
+        url, revision, why = d._source_of(14907)
+        assert url == "https://gp.songsterr.com/x.gp5"
+        assert why == ""
+
+    def test_and_says_which_revision_it_came_from(self, monkeypatch):
+        """The bar map has to come from the SAME one: a tab from revision N
+        timed by a map from revision N+6 is two different edits of the song
+        pretending to be one."""
+        from pickhero.tabs import downloader as d
+        self._songsterr(monkeypatch, self.PAPA_ROACH)
+        assert d._source_of(14907)[1] == 4100000
+
+    def test_an_empty_source_string_does_not_count(self, monkeypatch):
+        """Revision 5981666 has `"source": ""`. A key that is there and
+        empty is not a file."""
+        from pickhero.tabs import downloader as d
+        self._songsterr(monkeypatch, {
+            5981666: {"source": ""}}, latest=5981666)
+        assert d._source_of(1)[0] == ""
+
+    def test_a_history_with_no_file_anywhere_says_how_far_it_looked(
+            self, monkeypatch):
+        """"No file" said of one revision is a guess; said of eight it is a
+        finding."""
+        from pickhero.tabs import downloader as d
+        chain = {n: {"revisionId": n, "audioV4": "x", "prevRevisionId": n - 1}
+                 for n in range(100, 80, -1)}
+        self._songsterr(monkeypatch, chain, latest=100)
+        url, _, why = d._source_of(1)
+        assert url == ""
+        assert f"{d.SOURCE_HOPS} revisions checked" in why
+        assert "audioV4" in why, "the keys it did find are named"
+
+    def test_it_stops_rather_than_looping_on_a_self_referencing_history(
+            self, monkeypatch):
+        from pickhero.tabs import downloader as d
+        self._songsterr(monkeypatch, {7: {"revisionId": 7,
+                                          "prevRevisionId": 7}}, latest=7)
+        assert d._source_of(1)[0] == ""
+
+    def test_a_source_on_the_newest_revision_is_taken_at_once(self,
+                                                              monkeypatch):
+        from pickhero.tabs import downloader as d
+        self._songsterr(monkeypatch, {9: {"source": "https://gp/x.gp5"}},
+                        latest=9)
+        assert d._source_of(1) == ("https://gp/x.gp5", 9, "")
+
+    def test_a_dead_network_is_not_the_same_message(self, monkeypatch):
+        """"The network is down" and "this tab has no file" send the player
+        to completely different places."""
+        from pickhero.tabs import downloader as d
+        monkeypatch.setattr(d, "_fetch_json", lambda url: None)
+        assert "did not answer" in d._source_of(1)[2]

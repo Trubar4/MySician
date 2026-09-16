@@ -899,11 +899,12 @@ class TestAnAlreadySyncedSongSaysSo:
         surface = pygame.display.set_mode((1280, 720))
         screen = self._screen([(0.0, -260.0), (177_000.0, -1330.0)])
         layout = screen._layout(surface)
-        footer_top = screen._blit_footer_lines(
-            surface, layout, screen._footer_lines(), (255, 255, 255))
+        screen._show_sync = True
+        footer_top = screen._blit_footer_lines(surface, layout)
         # Every sync line has to end above where the footer begins.
-        lines = len(screen._sync_lines)
+        lines = len(screen.sync_block_lines())
         top = footer_top - 6 - 18 * lines
+        assert lines >= len(screen._sync_lines)
         assert top + 18 * lines <= footer_top
 
     def test_a_very_long_line_is_cut_to_the_window(self):
@@ -990,14 +991,29 @@ class TestAutoSyncInsideTheApp:
         monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
         return PlayingScreen(_timeline(), config=config, song_key="song")
 
-    def _found(self, monkeypatch, points, windows=20, usable=18):
+    def _found(self, monkeypatch, points, windows=20, usable=18, breaks=(),
+               wrong_length=False):
+        """Stand in for the measurement, so the app's half is what is tested.
+
+        The report is what the app now reads -- how much was readable, and
+        where the two stopped being the same piece of music -- so that is
+        what has to be faked, not the row list it was derived from.
+        """
         from pickhero.audio import autosync
-        monkeypatch.setattr(
-            autosync, "find_points",
-            lambda tab, audio, progress=None, tolerance_ms=25.0: (
-                points, [(0.0, 0.0, 0.9)] * windows))
-        monkeypatch.setattr(
-            autosync, "usable_rows", lambda rows: [(0.0, 0.0)] * usable)
+        readable = (usable >= windows * autosync.MIN_USABLE_SHARE
+                    and not wrong_length)
+        monkeypatch.setattr(autosync, "find", lambda tab, audio,
+                            progress=None, tolerance_ms=25.0: {
+            "points": points if readable else [],
+            "readable": readable, "share": usable / max(1, windows),
+            "windows": windows, "ambiguous": windows - usable,
+            "breaks": list(breaks), "sections": 1, "sections_used": 1,
+            "unreadable": [], "usable": usable,
+            "covered": (0.0, 240.0), "song_s": 260.0,
+            "tab_s": 381.5 if wrong_length else 260.0, "recording_s": 280.1,
+            "length_gap": 0.27 if wrong_length else 0.0,
+            "wrong_length": wrong_length,
+        })
 
     def _run(self, screen):
         screen.update()
@@ -1035,6 +1051,62 @@ class TestAutoSyncInsideTheApp:
         self._run(screen)
         assert "22 of 30" in " ".join(screen._sync_lines)
 
+    def test_a_tab_of_the_wrong_length_is_named_as_such(self, tmp_path,
+                                                        monkeypatch):
+        """The player spent a session on Thunder's sync with a tab 6:21 long
+        against a 4:40 recording -- 248 bars at 156 BPM against 91 at 78, two
+        different transcriptions -- and nothing on screen ever compared the
+        two numbers. No offset, rate or map can bridge that."""
+        self._found(monkeypatch, [(0.0, -260.0), (60_000.0, -300.0)],
+                    windows=51, usable=42, wrong_length=True)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        assert screen._mp3_anchors() == []
+        panel = " ".join(screen._sync_lines)
+        assert "not the same transcription" in panel
+        assert "6:21" in panel and "4:40" in panel
+        assert "27 %" in panel
+
+    def test_a_reading_too_thin_to_trust_is_not_stored_at_all(
+            self, tmp_path, monkeypatch):
+        """Measured on What's Up -- four chords repeated for four minutes,
+        where the windows match +9.9, -34.4, -6.2 and +21.1 s. It kept 5 of
+        41 and stored a map claiming -3.02 % drift and 5.1 s of correction,
+        and that map looked exactly as measured as a good one."""
+        points = [(0.0, -260.0), (177_000.0, -1330.0)]
+        self._found(monkeypatch, points, windows=41, usable=5)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        assert screen._mp3_anchors() == []
+        panel = " ".join(screen._sync_lines)
+        assert "could not read this recording" in panel
+        assert "Shift+S" in panel, "it does not say what to do instead"
+
+    def test_and_where_the_two_part_company_is_named(self, tmp_path,
+                                                     monkeypatch):
+        """"29 of 47 windows" is a number nobody can act on. A time is a
+        place to put a point."""
+        points = [(0.0, -260.0), (60_000.0, -300.0)]
+        self._found(monkeypatch, points, windows=47, usable=29,
+                    breaks=[(89.0, -8.8), (179.0, -4.2)])
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        panel = " ".join(screen._sync_lines)
+        assert "part company" in panel
+        assert "1:29" in panel and "-8.8" in panel
+
+    def test_a_song_that_reads_cleanly_says_nothing_about_breaks(
+            self, tmp_path, monkeypatch):
+        points = [(0.0, -260.0), (60_000.0, -300.0)]
+        self._found(monkeypatch, points, windows=42, usable=32)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        assert "part company" not in " ".join(screen._sync_lines)
+
     def test_a_recording_it_cannot_read_says_so(self, tmp_path, monkeypatch):
         self._found(monkeypatch, [], windows=30, usable=1)
         screen = self._screen(tmp_path, monkeypatch)
@@ -1042,7 +1114,9 @@ class TestAutoSyncInsideTheApp:
         self._run(screen)
         assert screen._mp3_anchors() == []
         panel = " ".join(screen._sync_lines)
-        assert "could not be read" in panel and "1 of 30" in panel
+        assert "could not read this recording" in panel
+        assert "1 of 30" in panel
+        assert "nothing was stored" in panel
 
     def test_a_failure_is_named_not_swallowed(self, tmp_path, monkeypatch):
         from pickhero.audio import autosync
@@ -1050,7 +1124,7 @@ class TestAutoSyncInsideTheApp:
         def explode(*a, **k):
             raise RuntimeError("that file cannot be decoded")
 
-        monkeypatch.setattr(autosync, "find_points", explode)
+        monkeypatch.setattr(autosync, "find", explode)
         screen = self._screen(tmp_path, monkeypatch)
         screen._start_auto_sync()
         self._run(screen)
@@ -1240,9 +1314,66 @@ class TestTheRecordingsOwnSpeed:
         return PlayingScreen(_timeline(), config=config, song_key="song")
 
     def _mark(self, screen, at_ms, offset_ms):
-        screen._config.set_mp3_offset_for("song", offset_ms)
+        """The player, at `at_ms`, nudging until the recording sits right.
+
+        `offset_ms` is where the offset TRULY is here, which is what they
+        measured. It is reached by nudging, because the stored offset is a
+        nudge on top of whatever the existing points already say -- so the
+        press has to be given the difference, exactly as a hand on Shift+N
+        would arrive at it. Setting the stored offset to the absolute value
+        and pressing was the old shape of this, and it only worked because
+        the map threw the number away and `_set_sync_point` saved it anyway.
+        """
         screen._playback_ms = at_ms
+        already = screen._sync_map().offset_at(at_ms)
+        screen._config.set_mp3_offset_for("song", offset_ms - already)
         screen._set_sync_point()
+
+    def test_a_point_records_what_is_heard_not_what_is_stored(
+        self, tmp_path, monkeypatch
+    ):
+        """The fault behind all of this, on the screen rather than the map.
+
+        The player's song carries points around +11.0 s. Standing in the solo
+        with the recording 200 ms out, they nudge and press -- and the point
+        has to say what they were HEARING, roughly +11.2 s. It used to save
+        the nudge alone, which on that song is a point saying +0.2 s where
+        the map says +11.0: not a mended tail, a destroyed map.
+        """
+        screen = self._screen(tmp_path, monkeypatch)
+        self._players_own(screen)
+        screen._playback_ms = 300_000.0
+        heard = screen._sync_map().offset_at(300_000.0)
+        screen._config.set_mp3_offset_for("song", 200.0)      # the nudge
+        screen._set_sync_point()
+        placed = dict(screen._mp3_anchors())[300_000.0]
+        assert placed == pytest.approx(heard + 200.0)
+
+    def test_the_nudge_is_spent_once_the_point_holds_it(
+        self, tmp_path, monkeypatch
+    ):
+        """Left standing it would be applied a second time, to the whole
+        song, including the parts the player had already got right."""
+        screen = self._screen(tmp_path, monkeypatch)
+        self._players_own(screen)
+        before = screen._sync_map().offset_at(0.0)
+        screen._playback_ms = 300_000.0
+        screen._config.set_mp3_offset_for("song", 200.0)
+        screen._set_sync_point()
+        assert screen._mp3_offset() == 0.0
+        # And the part that was already right is still right.
+        assert screen._sync_map().offset_at(0.0) == pytest.approx(before)
+
+    def test_the_offset_keys_move_a_synced_song_at_all(
+        self, tmp_path, monkeypatch
+    ):
+        """They were dead on every song that had ever been synced, while the
+        HUD went on printing a number the player could change."""
+        screen = self._screen(tmp_path, monkeypatch)
+        self._players_own(screen)
+        was = screen._mp3_ms(120_000.0)
+        screen._adjust_mp3_offset(250.0)
+        assert screen._mp3_ms(120_000.0) == pytest.approx(was - 250.0)
 
     def _players_own(self, screen):
         for at, off in ((0.0, -260.0), (177_000.0, -1330.0),
@@ -1620,3 +1751,89 @@ class TestTheRecordingFollowsTheTuning:
         screen._mp3_stretch_thread.join(timeout=5)
         assert asked["semitones"] == -2
         assert screen._mp3_stretch_done[3] == -2
+
+
+class TestSayingItIsTheTempo:
+    """"Mit einmaligem Anpassen klappt es nur am Anfang. Danach läuft es
+    wieder auseinander." An offset moves the song by a constant and cannot
+    repair a rate -- and the panel used to answer that with "27 % apart",
+    which is true and useless."""
+
+    def _screen(self, tmp_path, monkeypatch, bars=80, bar_ms=3692.3):
+        from pickhero.tabs.timeline import (MeasureInfo, NoteEvent,
+                                            SongMetadata, Timeline)
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        notes = [NoteEvent(timestamp_ms=i * bar_ms, duration_ms=400.0,
+                           midi_note=40, string=6, fret=3, measure=i)
+                 for i in range(bars)]
+        measures = [MeasureInfo(index=i, start_ms=i * bar_ms,
+                                end_ms=(i + 1) * bar_ms) for i in range(bars)]
+        timeline = Timeline(notes, SongMetadata(title="t", tempo=65),
+                            measures=measures)
+        return PlayingScreen(timeline, config=config, song_key="song")
+
+    def _report(self, tab_s, rec_s):
+        return {
+            "points": [], "readable": False, "share": 0.9, "windows": 40,
+            "ambiguous": 1, "usable": 36, "breaks": [], "sections": 1,
+            "sections_used": 1, "unreadable": [], "covered": (0.0, 240.0),
+            "song_s": tab_s, "tab_s": tab_s, "recording_s": rec_s,
+            "length_gap": abs(tab_s - rec_s) / max(tab_s, rec_s),
+            "wrong_length": True,
+        }
+
+    def test_it_names_both_lengths_and_both_causes(self, tmp_path,
+                                                    monkeypatch):
+        """It cannot tell them apart, so it must not pick one. What's Up
+        looked like 16 % of tempo and turned out to be mostly structure --
+        Songsterr times 72 bars where the tab has 80, so eight of them are
+        not in the recording at all and only about 3 % is really tempo."""
+        screen = self._screen(tmp_path, monkeypatch)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [], self._report(295.4, 253.9)))
+        assert "4:55" in lines and "4:13" in lines
+        assert "65 BPM" in lines and "76" in lines
+        assert "music the recording does not" in lines
+        assert "either" in lines
+
+    def test_and_says_what_can_actually_repair_it(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [], self._report(295.4, 253.9)))
+        assert "Ctrl+U" in lines and "Alt+S" in lines
+        assert "nothing was stored" in lines
+
+    def test_a_longer_recording_points_the_other_way(self, tmp_path,
+                                                      monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        # The tab is 4:55; a 6:40 recording makes the written tempo too
+        # FAST. The ratio comes from the open timeline, never from the
+        # report's own tab_s -- the bar grid is what the question is about.
+        lines = " ".join(screen._auto_sync_report_lines(
+            [], self._report(295.4, 400.0)))
+        assert "6:40" in lines
+        assert "48" in lines, "the tempo it would have to be"
+
+    def test_a_tab_with_tempo_changes_falls_back_to_the_length_line(
+            self, tmp_path, monkeypatch):
+        """One number cannot describe a file that changes tempo, and naming
+        a wrong one would send the player to fix something that is right."""
+        from pickhero.tabs.timeline import MeasureInfo, SongMetadata, Timeline
+        screen = self._screen(tmp_path, monkeypatch)
+        measures, at = [], 0.0
+        for i in range(80):
+            length = 3692.3 if i < 40 else 1846.0
+            measures.append(MeasureInfo(index=i, start_ms=at,
+                                        end_ms=at + length))
+            at += length
+        screen._timeline = Timeline([], SongMetadata(title="t", tempo=65),
+                                    measures=measures)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [], self._report(295.4, 253.9)))
+        assert "BPM" not in lines
+        assert "not the same transcription" in lines

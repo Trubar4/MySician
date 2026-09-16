@@ -1835,10 +1835,10 @@ press lands at the far end. The 95 % the player saw is the one frame that render
   unfixed code, which is the only thing that makes it worth having.
 - The scroll factor gets the same gate. It is the same fault, and two answers to one question is how this project has been bitten before.
 
-## Two Complaints Pulling On One Knob — NOT DIAGNOSED, NOT BUILT
+## Two Complaints Pulling On One Knob — And It Was Never One Fault
 
 "Bei schnelleren Songs wie I'd die for you oder Love walked in wird das Bild irgendwie unscharf und ich kann Töne kaum erkennen." Written
-down before anything is built, because the first measurement says the obvious fix is the one that makes the OTHER complaint worse.
+down before anything was built, because the first measurement said the obvious fix is the one that makes the OTHER complaint worse.
 
 **The same player, the same week, asked for opposite things from `+`/`-`:**
 
@@ -1850,45 +1850,1549 @@ down before anything is built, because the first measurement says the obvious fi
 | `+` (2.5x) | 683 | **11.4 px** | furthest apart |
 
 So "the notes are too dense" wants `+` and "the picture is unsharp" wants `-`. **The knob cannot answer both**, and any fix that only moves
-it is trading one report for the other. That is the finding; everything below is a candidate.
+it trades one report for the other. That finding stands. What did not stand is the assumption underneath it: that one cause was behind one
+sentence.
 
-**The arithmetic that makes "unsharp" a real thing and not an impression.** A 60 Hz screen HOLDS each frame for 16.7 ms while the eye tracks
-the moving note smoothly, so an object at `v` px/s is smeared across `v / 60` pixels. It is a property of sample-and-hold displays and no
-amount of drawing quality touches it. Measured on the songs to hand at 1.0x:
+**Then the player's own machine was measured**, which is what this chapter had been waiting for. Two run logs (`D`), one per song, from
+build `400ac736` on 1920x1080 at 60 Hz on Intel integrated graphics:
 
-| | px/s | smear | share of a fret digit |
+| | Thunder, "Love Walked In" | Bon Jovi, "I'd Die For You" |
+|---|---|---|
+| `frame_ms_median` | **19.9 ms** | **19.6 ms** |
+| `frame_ms_worst_tenth` | 22.6 ms | 22.2 ms |
+| `frames_over_budget_percent` | **95** | **93** |
+| `clock_ratio` | 1.0000 | 1.0000 |
+| `frames_measured` | 3600 | 3600 |
+
+**The machine draws about 51 frames a second, not 60**, on both songs alike, and `record_frame_ms` samples the WORK before `clock.tick(60)`
+pads it — so this is the drawing, not the wait. `clock_ratio 1.0000` says the app's clock is exact to four places, which rules out the other
+half of this project's oldest lesson: nothing is being lost, everything is being drawn slowly. On an unsynced 60 Hz panel roughly one frame
+in five is then shown twice, at no fixed interval, and the smear per shown frame is `v / 51` rather than `v / 60`.
+
+**That is a constant, and a constant cannot pick out two songs.** So the tracks the logs actually name — `notes_written` 1819 is Thunder's
+lead, 746 is Bon Jovi's distortion guitar — were measured against a song the player has never once complained about:
+
+| track | px/s | head | smear at 51 Hz | onsets in its densest 2 s |
+|---|---|---|---|---|
+| Kid Rock lead — **never complained about** | **384** | 58 px | 7.5 px | 10 |
+| **Thunder lead** | **384** | 63 px | 7.5 px | 20 |
+| **Bon Jovi distortion** | 432 | 42 px | 8.5 px | 18 |
+
+**Kid Rock's lead and Thunder's lead scroll at the identical 384 px/s**, with the identical smear, on the identical machine. One reads, one
+does not. Persistence blur is real and is measured above, but it is NOT what selects these two songs, and the table this chapter opened with
+would have sent the next session to the scroll speed for the rest of the week.
+
+**What separates them is what happens on ONE STRING**, which is the only place two heads can actually collide — a head is never taller than
+its lane, so notes on different strings cannot touch however busy the screen looks:
+
+| track | pairs on one string | closer than a head | the worst one | fret numbers part-covered |
+|---|---|---|---|---|
+| **Thunder lead** | 1813 | 47 (2.6 %) | **24.6 px on a 63 px head** | **41 — and 22 of them inside five seconds from 3:52** |
+| Bon Jovi distortion | 740 | 3 (0.4 %) | 32.7 px on a 42 px head | **0** |
+| Kid Rock lead | 484 | 20 (4.1 %) | 51.4 px on a 58 px head | 5 |
+
+**The count does not discriminate — Kid Rock crowds its heads MORE often than Thunder does.** The severity does: Thunder's worst pair overlaps
+by 61 % of a head where Kid Rock's overlaps by 11 %, and Thunder puts 22 of them in one run. And the Thunder log stops at
+`reached_ms 229084`, three seconds before that run begins.
+
+**So one sentence was two faults, and only one of them is the one that was fixed here:**
+
+- **The fret number was behind the next note.** `_draw_notes` drew head-then-number for each note in turn, so the following head landed on the
+  number already painted. In a fast run on one string that is every number but the last. Heads are drawn in one pass and numbers in a second
+  now — no geometry changed, no look-ahead was spent, and the `+`/`-` trade at the top of this chapter is untouched. It is asserted as the
+  ORDER the surface is painted in: a pixel count cannot say whether the white it found belongs to the covered number or to the neighbour
+  sitting in the same few pixels, and a first version of the test passed on the broken code for exactly that reason.
+- **The pacing ignores its own tail on purpose.** `_spacing_percentile(10.0)` means a tenth of every song is by construction tighter than the
+  head it is given. That is the right call for the look-ahead — a couple of freak-close notes must not set the pacing for everything else —
+  but it means the fault above lives in the tail the percentile deliberately ignores, which is precisely where a solo lives.
+- **Bon Jovi is NOT this fault.** Zero of its numbers were covered. It is the fastest scroller measured on this machine and it carries the
+  smallest head — 432 px/s on a 42 px head whose two-digit number is 40 px wide — so its number is both the smallest and the fastest-moving
+  in the collection. That one is the frame rate, and the frame rate is not fixed yet.
+
+**What is still open, and it is the bigger of the two.** 19.7 ms a frame is the shared cause behind both songs and every other one; it simply
+only becomes visible when the music asks for about ten notes a second, which is what both named songs do and what Kid Rock's lead (five a
+second) does not. `App.run` calls `set_mode` without `vsync=1` and pads with a SOFTWARE `clock.tick(60)`, so the panel and the app beat
+against each other on top of it. Nothing here has established WHAT costs the 19.7 ms, and the draw path has changed by 338 lines since the
+build these logs came from — chord cards are drawn every frame now — so **the first move is a fresh `D` on the current build, not a guess.**
+
+**Measured AGAIN, and it turned out to be a second COMPUTER rather than a second build.** The player has two laptops and the run logs
+came from both, which is what made the numbers look like a fix:
+
+| | NB1 — Intel Graphics, 1920x1080 at 60 Hz | NB2 — Iris Xe, 1920x1200 at **59 Hz** |
+|---|---|---|
+| `frame_ms_median` | 19.9 / 19.6 ms | **4.2 / 4.3 ms** |
+| `frames_over_budget_percent` | 95 / 93 | **0** |
+| delivered | ~51 a second | 2497 frames in 41.3 s = **60.5** |
+
+A first reading blamed the cheap frames on the microphone — every NB2 run had the gate closed on everything, and `_draw_notes` asks the
+matcher for a verdict per visible note per frame. **That was wrong**, and it is written down because it was nearly built on: the two sets
+differ by MACHINE, and Iris Xe against the older integrated part is the whole four-fold difference. There is nothing to find in the audio
+path.
+
+**And the machine that makes its frames still has the complaint**, which is the finding that matters. NB2 draws in 4.2 ms of a 16.7 ms
+budget, delivers a clean 60, and the player still reports smearing at 1.0x and slight juddering at 0.6x. So making the drawing cheaper
+cannot be the answer: on Thunder's lead at 1.0x the smear is 7.5 px at NB1's 51 frames and 6.5 px at 60 — **the entire prize for fixing
+the frame cost is 13 %**, and NB2 has already collected it.
+
+**What is left on NB2 is not the frame COST but the frame PACING, and it has a number.** The panel runs at **59 Hz** and `App.run` pads
+with `clock.tick(60)`, a software timer against a display nobody asked. Sixty offered into fifty-nine taken is a beat of one a second:
+about once a second a frame is shown twice and the note holds still and then jumps double. That is judder, not blur, it is independent
+of the scroll speed — which is exactly why the player still sees it at 0.6x, where the smear is only 3.9 px — and it is a different
+fault from everything above.
+
+**So the gap BETWEEN pictures is measured now** (`record_frame_shown`, reported as `frame_interval_median`,
+`frames_per_second_shown` and `frames_uneven_percent`). `record_frame_ms` times the WORK before `clock.tick` pads it, which answers "can
+the machine keep up" and says nothing about when the frames were actually handed over. Unevenness is counted against the run's OWN median
+rather than against 16.7 ms, because a steady 17.4 is a different report from an average 16.7 that is really 16.7 and 33.3 in turns --
+only the second one judders, and an average alone cannot tell them apart. A gap spanning a pause is dropped rather than charged to the
+first frame back as a stutter that never happened.
+
+**What it deliberately cannot see is the point of it.** Without vsync `flip` returns before the panel has shown anything, so a frame the
+DISPLAY held twice never reaches the app. That splits the question in two, and the answer decides what gets built: **ragged** here is the
+app's own timer and is fixable without vsync, while **dead even** says the remaining judder is the beat against a panel running at some
+other rate, and only `vsync=1` answers that -- which needs `SCALED` in pygame 2, is a real change to how the window resizes, and may not
+be honoured by the driver at all. That is why it is not being tried first.
+
+**And the measurement is asserted to be WIRED, not only to be correct.** Six tests drive `record_frame_shown` by hand; a seventh runs the
+real `App.run` loop for five frames and counts four gaps, because a measurement nothing calls is a feature that ships doing nothing --
+which this project has shipped before.
+
+**Measured on NB2, three runs, and they agree to a decimal:**
+
+| | Thunder | Thunder | Bon Jovi |
 |---|---|---|---|
-| Kid Rock rhythm | 128 | 2.1 px | 6 % |
-| Papa Roach | 191 | 3.2 px | 10 % |
-| Kid Rock lead | 275 | 4.6 px | 15 % |
-| **Bon Jovi, "I'd Die For You"** | **432** | **7.2 px** | **23 %** |
+| `frame_ms_median` | 8.3 | 9.3 | 9.4 |
+| `frames_over_budget_percent` | 1 | 3 | 1 |
+| `frame_interval_median` | 16.67 | 16.68 | 16.63 |
+| `frame_interval_best_tenth` | 13.75 | 13.59 | 13.68 |
+| `frame_interval_worst_tenth` | 19.48 | 19.90 | 19.59 |
+| `frames_per_second_shown` | **60.0** | **59.9** | **60.1** |
+| `frames_uneven_percent` | **15** | **18** | **15** |
 
-The song the player named is the fastest scroller measured here, at normal speed, and it smears nearly a quarter of the digit's width. That
-is consistent with the report and does not prove it: **nothing has been reproduced or measured on the player's machine**, and "Love Walked
-In" is not in `songs/` at all.
+**Nothing is being doubled inside the app.** A frame held twice would put the worst tenth near 33 ms; it is 19.5. What the spread shows is
+JITTER -- give or take 3 ms on a 16.7 ms frame, a sixth of it, on one frame in six. `clock.tick` sleeps for most of its wait and Windows
+cannot sleep to the millisecond, so this is the software timer's own resolution and nothing else's.
 
-**Three candidates, fixed in three different places. None is established.**
+**How much that is worth in pixels, honestly: not much.** Because `_playback_ms` advances by REAL elapsed time, a frame computed 3 ms early
+is not WRONG, it is simply early -- the note is drawn where it truly is. At 384 px/s the step wobbles between 5.2 and 7.7 px against a
+nominal 6.5. That is a shimmer, not the hesitate-and-jump the player describes.
 
-- **Persistence blur** (the table above). Only two levers exist: fewer px/s, or more frames a second. It is the one candidate whose size is
-  already known.
-- **Frame pacing.** `App.run` uses `clock.tick(60)` — a SOFTWARE timer — and `set_mode` is called without `vsync=1`. An unsynced 60 against a
-  60 Hz panel beats slowly in and out of phase, which reads as juddering rather than as smooth motion, and is a different complaint wearing
-  the same word. `vsync=1` is one argument; whether it helps has not been tried, and it can fail to be honoured at all.
-- **Pixel quantisation.** A note's x is a float landing on whole pixels, so each frame rounds by up to half a pixel. At 4-7 px of travel a
-  frame that is a tenth of the motion, arriving as jitter on top of the smear.
+**The hitch has to come from the other side, and it is the one number the app cannot see: 60.0 handed to a panel Windows calls 59.** The
+app offers sixty pictures a second into a display that shows fifty-nine, so one picture is periodically shown twice however even the app
+is. How often depends on a digit Windows rounds off -- an exact 59 Hz beats once a second, 59.94 once every seventeen -- and neither the
+run log nor `pygame` can tell them apart, because `flip` returns before the panel has done anything.
 
-**And the promising direction is neither of those, which is why this is written down rather than fixed in a hurry:**
+**Then NB1 was measured on the same build, and it overturned the machine explanation as well.** Three runs, and NB1 is now the FASTER
+of the two:
 
-- **The lane's vertical space is free.** "A Note Head Is Squeezed Sideways, Not Downwards" measured 53 % of the lane height unused on a dense
-  song. Look-ahead is bought and sold in WIDTH only, so a taller, bolder head costs nothing at all and is the one improvement that does not
-  come out of the other complaint's budget.
-- **`Shift+T` does not scroll.** `_tab_scroll_for` HOLDS the page while the current system is on screen and moves only at a line break, so a
-  page view has no persistence blur by construction. It may simply be the right view for a fast song, and nobody has asked the player to try
-  it for this.
+| | NB1 Bon Jovi | NB1 Thunder | NB1 Thunder | (NB2, for comparison) |
+|---|---|---|---|---|
+| `frame_ms_median` | **5.9** | 7.0 | 6.6 | 8.3 – 9.4 |
+| `frames_over_budget_percent` | 0 | 0 | 0 | 1 – 3 |
+| `frames_uneven_percent` | **6** | 10 | 10 | 15 – 18 |
+| `frames_per_second_shown` | 60.0 | 59.9 | 59.8 | 59.9 – 60.1 |
 
-**What the next session needs before building anything:** the two `.gp` files (they are not here), and the player's `frame_ms_median` /
-`frames_over_budget_percent` / `clock_ratio` from a run log of one of them — because a machine dropping frames and a machine smearing them
-look identical on screen and are fixed in different places, which is this project's oldest lesson.
+**So the 19.7 ms is gone on the machine that produced it**, and the second explanation has to go the way of the first. What actually
+separates the two slow runs from the ten fast ones is not the build and not the laptop: it is that **those two are the only runs where the
+guitar was audible.** Focusrite plugged in, `level_under_gate_percent 28`; every run since, on both laptops and four builds, has been a
+dead microphone at 100 %. `_draw_notes` asks the matcher for a verdict and the feedback for a colour on every visible note, every frame,
+and with nothing to judge that work does not happen.
+
+**Which is the hypothesis this file already dismissed once, and dismissing it was the mistake.** It is written down twice now because the
+lesson is the method, not the answer: two variables moved together each time, and each reading picked the one that had just changed.
+`frame_ms` also swings by a factor of two between runs on ONE machine in ONE condition (4.2 to 9.4 on NB2), so nothing under about three
+times is a finding at all. **One run settles it and it has not been done: NB1, this build, the interface plugged in, the guitar heard, D.**
+
+**And NB1's panel runs at 60 where NB2's runs at 59, which the unevenness follows**: 6-10 % against 15-18 %, on the machine whose panel
+matches what the app offers. That is the beat showing up exactly where the arithmetic says it should, and it is the strongest evidence for
+the pacing story that exists so far.
+
+**Which makes `vsync=1` the only remaining lever, and it answers both at once**: a blocked flip takes the panel's cadence, so the jitter
+goes and the beat cannot exist. It also MEASURES the panel: with vsync on, `frames_per_second_shown` is the display's true rate, 59 or
+59.94, and the question above answers itself. The cost is real and has to be tried rather than argued: `vsync` needs `SCALED` in pygame 2,
+which fixes a logical size and letterboxes on resize instead of relaying out, and a driver may ignore the request entirely.
+
+**What vsync will NOT do, and the player should hear it before it is built: the smearing stays.** It is `px/s ÷ refresh` and no pacing
+touches it -- 6.5 px at 1.0x on this panel. Vsync is the fix for the juddering only.
+
+**Built as a switch on `Z`, not as a decision.** Both halves of the trade are real and neither can be argued from a keyboard: vsync ends
+the beat and the jitter together, and it costs `SCALED`, which fixes the drawing size so the window LETTERBOXES when it is dragged bigger
+instead of laying the lanes out again — and a driver may refuse the request outright, which raises and is caught, because the window still
+has to open. A refusal is said out loud: silence there reads as "it worked", and the next run log would be compared against a mode that
+never happened.
+
+- **The run log names the pacing** (`vsync   asked` / `off`). Two logs that differ in the one thing under test are worth nothing if
+  neither says which was which, and this session has already lost a day to exactly that.
+- **Every mode change goes through one door** (`_apply_display_mode`). The resize path called `set_mode` itself with the plain flags, so a
+  drag would silently have dropped vsync — and it assigned the result to a local nobody read, so the loop went on drawing to the surface
+  it already had. Both were there before this and both are gone with it.
+- **The window is reopened only when the ANSWER changes**, never per frame: `set_mode` tears the surface down and builds it again.
+- **And the driver said no.** On the player's machine `SCALED|RESIZABLE` with `vsync=1` raises, so the first shape of this reported vsync
+  as impossible on a machine that had been asked exactly once. It asks down a ladder now — `SCALED|RESIZABLE`, then `SCALED` alone, which
+  costs a window that cannot be dragged bigger — because a no to one way of asking is not a no to vsync. **A run came back that LOOKED as though it worked, and reading it that way was a mistake.** On NB1, whose panel really is 60:
+
+| | vsync off | vsync on |
+|---|---|---|
+| `frames_uneven_percent` | 15 | **4** |
+| `frame_interval_best_tenth` | 13.83 | **15.26** |
+| `frame_interval_worst_tenth` | 19.48 | **18.13** |
+| `frames_per_second_shown` | 59.9 | 60.1 |
+| `frame_ms_median` | 6.8 | **10.2** |
+| `frames_over_budget_percent` | 0 | **9** |
+
+The jitter band looks halved — 5.7 ms wide against 3.9 — and the frame cost looks like `SCALED` paying for itself. **Then the player
+answered the one question that settles it: the window can still be dragged bigger while the refusal is on screen.** `SCALED` fixes the
+window; a resizable window means the fallback path ran and vsync was never on. So the whole table above is one noisy run against another
+— NB1's unevenness had already been measured at 6, 10 and 10 % before any of this, and 4 % sits inside that spread.
+
+**That is the third over-reading in this session and the first one where the rule to prevent it was already written down, two chapters
+up, by the same hand: nothing inside the run-to-run spread is a finding.** It was applied to `frame_ms` and then not applied to
+`frames_uneven_percent` an hour later. The rule is not "be careful with frame times"; it is that a single run of anything on these
+machines carries a factor of two, and a change has to clear that before it is a change.
+
+**So vsync is refused on this hardware, by both ways of asking, and that line of attack is closed.**
+
+**The log names the OUTCOME anyway** — `on, window resizable`, `on, window fixed size`, `refused`, `off` — filled in by the window that
+actually opened. `vsync_outcome` is deliberately not stored in the settings file: it belongs to this run on this machine, and the reason
+it exists at all is that "asked" and "got" turned out to be different things nobody could tell apart afterwards.
+
+**Which leaves the jitter, and it can be had without the driver.** `clock.tick` asks the system to sleep for most of the wait and Windows
+cannot sleep to the millisecond — that is where the 3 ms comes from. `Shift+Z` waits in two parts instead: asleep until two milliseconds
+before the frame is due, then spinning. **The spin is the whole cost and it is a tenth of one core, not the whole of it** — the first
+estimate here said 60 % and nearly buried the idea, because it assumed the spin covered the entire wait rather than the last stretch of
+it. The run log names the pacing (`steady` / `system timer`) beside the vsync outcome.
+
+- **The due time walks forward by whole FRAMES, not from "now"**, so a frame that runs long is caught up rather than pushing every frame
+  after it. A real stall — a seek, an engraving — resets it instead, because catching up half a second would run the picture flat out
+  until it had.
+- **The decision is split from the waiting** (`_frame_plan`), and only the decision is tested. The first attempt tested the whole thing by
+  replacing `time.perf_counter` for the process, which stopped the spin from ever reaching its due time and hung the suite. A real busy
+  wait cannot be tested by freezing time, and it does not need to be: the loop is two lines and the arithmetic is all of it.
+
+**And then the third run came back measuring nothing again.** `pacing   system timer` — the switch had not been pressed, exactly as the
+run before it said `vsync off` when the player believed it on, and the one before that said `asked` when it had been refused. Three
+measurements of three settings, none of which were on.
+
+**That is not the player forgetting. It is where the state was kept.** The only places a setting showed itself were a status note that
+expires after eight seconds and a log written after the fact — so at the moment of pressing `D`, nothing on screen said what was being
+measured. The HUD carries it now, beside the scroll line, in **the same words the log uses**: `Pace: steady (Shift+Z) | vsync: refused
+(Z)`. Highlighted whenever either is away from its default, because an experiment the player has forgotten is running is worse than no
+experiment — and highlighted in the STREAK colour, not the HUD accent, which is what half that panel is already drawn in: the first
+version made "highlighted" and "normal" the same blue, and the player asked what it was supposed to mean and answered the question in the
+same sentence.
+
+**The rule this session keeps re-learning, now in its general form: a setting under test must be readable at the moment the measurement is
+taken, in the same words the measurement will use.** Everything else — a toast, a keypress, a memory — is a way of finding out afterwards
+that the run was worthless.
+
+**And with the state finally on screen, the player flipped the switch several times, saw no difference, and was right about the number and
+wrong about the world.** `_frame_ms` and `_frame_intervals` are rolling windows of the last `FRAME_SAMPLES` frames — a minute at 60 Hz.
+Flipping the pacing inside that minute leaves the log averaging half of one mode with half of the other, **so the number could not have
+shown a difference however large the difference was**. Three runs were spent on this before the buffers themselves were looked at.
+
+Changing either setting throws the frame history away now, so a log is always about one mode — and `frame_intervals_measured` doubles as
+how long that mode has actually been running, which makes a log taken two seconds after the switch say so itself.
+
+**His screenshot and his log also disagreed outright**: the HUD read `vsync: on, window resizable` while the log said `refused`. They read
+the same field, so the two were true at different moments — the outcome VARIES between attempts on this machine, granted once and refused
+the next time. That is worth knowing on its own and it is another reason the history has to be dropped at the switch: a run that spanned
+both is not a reading of either.
+
+## The Pacing Is As Good As It Gets And It Was Never The Answer
+
+Three runs on one machine in three minutes, same song, the only difference the switch:
+
+| | vsync | pacing | `frames_uneven_percent` | interval band | `frame_ms_median` |
+|---|---|---|---|---|---|
+| 16:11 | on, window resizable | system timer | 4 | 15.29–18.17 | 10.3 |
+| **16:12** | on, window resizable | **steady** | **2** | **15.67–17.71** | 13.2 |
+| 16:14 | on, window resizable | system timer | 4 | 15.40–18.03 | 13.1 |
+
+**Both things work, and both are now measured rather than argued.** vsync — granted this time, refused the last — took the unevenness from
+the 12 to 18 % this machine used to show down to 4. Steady pacing halves that again to 2, and narrows the jitter band to 2.0 ms against
+2.9. Reproducible, in the right direction, outside the run-to-run spread: this is a finding by the rule two chapters up.
+
+**And the player still reports the same thing he reported on the first day: "Es ruckelt leicht und ist immer sehr schlierig. Geholfen hat
+nichts."**
+
+That is the result, and it is worth more than the improvement. The frame pacing is now within 2 ms of perfect and the complaint has not
+moved, **so the complaint was never the frame pacing.** What is left is `px/s ÷ refresh` — 7.2 px at Bon Jovi's 432 px/s — which is a
+property of a sample-and-hold display and which no amount of timing touches. The two days of vsync, jitter, spin-waiting and log fields
+bought a real 8-fold improvement in a number that was not the one the player was looking at.
+
+**So this line of work is finished, and it is finished by evidence rather than by exhaustion.** The switches stay, measured and documented,
+because they are right and cost nothing. The judder hunt stops. What is left for a fast passage is the thing the player confirmed on day
+one and that this file has now recommended three times: `Shift+T`, a page that does not move.
+
+
+
+**Which leaves the jitter, and it is bigger than this chapter first allowed.** The reasoning that dismissed it was that `_playback_ms`
+advances by real elapsed time, so a frame computed 3 ms early is early rather than wrong. True, and beside the point: the frame is SHOWN
+on the panel's fixed grid, and one that is ready 3 ms late misses its refresh and is held for two. At 15 to 18 % of frames outside a fifth
+of the median that is several hitches a second — where the 60-into-59 beat is one a second at worst. **The jitter is the larger effect and
+the only one that does not need the driver's permission**, and its cause is named: `clock.tick` sleeps for most of its wait on a system
+that cannot sleep to the millisecond.
+
+
+**Measured in the two passages the player actually named, and they are two different faults after all** — at his window, over the solo of
+each song, counting only pairs on ONE string, where two heads can really collide:
+
+| | look-ahead | head | px/s | smear at 60 Hz | pairs closer than a head | median gap |
+|---|---|---|---|---|---|---|
+| **Bon Jovi solo, 1.0x** | 2.3 s | 42 px | **432** | **7.2 px** | **0 of 57** | 98 px |
+| Bon Jovi solo, 0.6x | 3.7 s | 26 px | 270 | 4.5 px | 0 of 57 | 61 px |
+| **Thunder solo, 1.0x** | 4.0 s | 42 px | 255 | 4.2 px | **30 of 55 (55 %)** | **33 px** |
+| **Thunder solo, 0.6x** | 6.3 s | 26 px | 160 | 2.7 px | **30 of 55 (55 %)** | **20 px** |
+| Thunder solo, 1.5x | 2.6 s | 42 px | 382 | 6.4 px | 18 of 55 (33 %) | 49 px |
+
+**Bon Jovi's solo never overlaps at any speed** — nought of fifty-seven — and is the fastest thing measured in this collection. It is
+smear and nothing else. **Thunder's solo overlaps at the MEDIAN**, not in the tail: half its notes sit closer together than a head is wide,
+20 px against a 26 px head at 0.6x, and 26 px is `MIN_HEAD_PX` — **the floor**. There is no smaller head to spend, so at 0.6x the display
+has already lost. Only 1.5x parts them, at 6.4 px of smear against 2.7.
+
+**That is the trade at the top of this chapter with no room left in it.** For a passage of this density the scrolling view cannot be made
+to work on a 60 Hz panel by any setting it has, and `Shift+T` -- which the player has already confirmed is fine there -- is not a
+workaround but the answer.
+
+
+**And the speed knob cannot separate the notes, which is the question the player asked.** Measured on Thunder's lead at his window:
+
+| | look-ahead | head | px/s | smear at 60 Hz | pairs on one string closer than a head | tightest | tightest / head |
+|---|---|---|---|---|---|---|---|
+| `-` 0.6x | 7.7 s | 32 px | 197 | 3.3 px | **47** | 12.6 px | **39 %** |
+| 1.0x | 4.6 s | 53 px | 328 | 5.5 px | **47** | 21.0 px | **40 %** |
+| `+` 1.5x | 3.1 s | 53 px | 492 | 8.2 px | 32 | 31.5 px | 59 % |
+
+**`-` does not reduce the crowding at all** — 47 pairs at 0.6x and 47 at 1.0x — because the head is sized WITH the speed: slower notes
+are smaller notes, and the ratio that decides whether two heads touch barely moves. `+` does separate them, at 59 % against 40 %, and
+pays for it in smear: 8.2 px against 5.5. **Separation and smear are the same number in pixels**, which is why the player reports
+1.5x as readable and worse at the same time, and it is the top of this chapter restated in measurements.
+
+**So the one lever nobody has pulled is the head width at a FIXED speed.** They are locked together today
+(`window = spacing x usable_width / per_head`), so there is no way to ask for "the notes I have now, narrower". At 1.0x a 32 px head
+would give 21.0 / 32 = 66 % separation — better than `+` delivers — at 328 px/s instead of 492, which is a third less smear. It is not
+free: `MIN_FRET_DIGIT_PX` is 34 px because that is what a two-digit fret needs, so this buys reading room by spending digit size, and
+the player has to say which he would rather have.
+
+**The player confirmed `Shift+T` on the fast passage: no problem at all, because the page does not move.** Its playhead was borrowing
+the board's white hit-zone colour onto a paper ground and could not be found; it has its own colour now, asserted as contrast against
+`PAPER` rather than as a named blue.
+
+**And the direction that costs nothing has now been tried, and it works:** `Shift+T` HOLDS the page and moves only at a line break, so a
+page view has no persistence blur by construction and no crowding either. On the passage the player could not read while it scrolled,
+the page view was fine. That is the answer for a fast song until the frame question above is settled.
+
+## A Sheet Has No Hit Line
+
+The scrolling view has one rule it cannot escape, and two days of this session were spent finding out that it cannot. **A note's x is its
+time multiplied by a speed**, because the note has to arrive at the hit line at the moment it is played. So the distance between two notes
+and the speed of the picture are THE SAME NUMBER, and every attempt to part the notes made the picture faster — which is the complaint that
+started all this.
+
+**The player found the way out, and it is not a knob.** A sheet that does not scroll has no hit line, so nothing has to reach a fixed point
+at a fixed moment. **x is then free of time, and the PLAYHEAD carries the time instead** — running quickly through a sparse bar and slowly
+through a dense one. The trade dissolves: every note can have the room it needs, at no cost in speed, because there is no speed.
+
+`ui/sheet.py` is that arithmetic and nothing else — no drawing, so it is tested without a screen, and because two views will want the same
+answer.
+
+- **Proportional until it would overlap, then a floor.** Each gap is `max(gap_ms x per_ms, 1.18 heads)`. That single `max` is the whole
+  idea: rhythm is visible wherever there is room for it, and legibility wins wherever there is not. A run of sixteenths therefore comes out
+  EVENLY spaced rather than proportionally illegible, which is what an engraver does and what Songsterr does — read off the player's own
+  screenshot of it, where a bar of sixteenths is visibly wider than the bar of crotchets beside it.
+- **Rows are whole bars, justified to the line.** Bars are filled in until the next one would not fit, then the row is stretched to the full
+  width rather than left ragged. A single bar too dense for a whole line is squeezed instead of dropped, and the row SAYS SO (`crowded`) —
+  a silent overlap is the fault this view exists to end.
+- **A note that is filtered out takes no room**, or a song with a fret limit is spaced for notes nobody can see.
+
+The numbers this produces on the player's own songs are in the next section, measured on the real screens rather than on a
+hypothetical 1200 px one.
+
+### The view itself
+
+Built. Two rows of music that do not move, the board's own coloured heads on them, and a playhead that runs unevenly across a line that
+does not. Nothing in it is a second copy of anything: the clock, the keys, the matcher, the offsets, the chord cards, the HUD and the help
+overlay are the ones the scrolling board uses, because none of them ever depended on the scrolling. Only the three things that need to know
+where a note LANDED are new — the heads, the chord blocks, and the playhead.
+
+- **The row in the hand is the top one**, so the row after it is always underneath and a line break is never a surprise. This is the rule
+  the page view had to learn the hard way, one chapter down, and it was written here from the start rather than rediscovered.
+- **It slides rather than jumps** (a quarter of a second, eased at both ends) — the same arithmetic the page view uses, extracted into
+  `_glide_step` so the two cannot drift apart. The state is NOT shared: two views glide at once and switching between them must not make
+  the other one jump. The snap distance is passed in, because a row of the sheet is whatever the head size makes it, so "too far to be a
+  page turn" has to be counted in rows and not in pixels.
+- **A note keeps the colour it lit up in, and NOTHING on the sheet is dimmed.** "Damit kann ich sogar super zurückschauen, wo Fehler
+  waren" — and then, once it was on screen: "Die bereits passierten Noten werden ausgegraut. Lass sie einfach in der Farbe der Bewertung
+  stehen ohne abdunkeln." The first build reused the board's colour path, which dims a note the moment it is done with — right there,
+  because a note behind the hit line is in the way of the ones still coming, and wrong here, because on a sheet the row behind the
+  playhead is the RECORD of the run and the only thing this view offers that a scrolling one never can. `_sheet_note_colour` does not
+  dim: a judged note wears its verdict at full strength and keeps it, an unjudged one stays its own string's colour, and the playhead
+  is what says where the music is.
+- **The board under the notes is a fretboard, not a table.** The first build painted six alternating bands and no strings at all, which
+  the player saw immediately: "Die Saiten am Griffbrett sind nicht mehr sichtbar." Alternating bands are exactly the look the scrolling
+  view threw out — "the banding is what made the old display read as a table of rows instead of a fretboard" is a comment sitting in
+  `_draw_lanes`, in this same file, and it was re-introduced anyway. One uniform panel now, with the six strings across it, thicker AND
+  warmer towards the low E, and a wound string drawn as a dark core with a highlight so it reads as round rather than as a thick line.
+  The thicknesses are the gauges of a light set (.010 to .046) divided by the first, scaled to the lane: **2 px for the high e against
+  9 for the low E** on a 68 px lane. "Die tiefe Saite wesentlich dicker als die dünnste" is the strongest cue there is for which lane is
+  which, and it works before a single fret number has been read.
+- **Bar numbers and bar lines.** A sheet without them is a sheet you cannot talk about: "the run in bar 34" is how a passage gets found
+  again and how a loop gets set.
+- **The chords came along.** The grip cards are the board's own method, called unchanged. Only the BLOCK — the tint that says "these five
+  notes are one grip" — had to be told where the notes ended up.
+
+**The size is the one control, and +/- is it.** The head sets both how big a note is drawn AND how far apart two of them have to sit, so
+one key moves legibility and bars-per-row together. The view OPENS at the size where two rows exactly fill the room there is
+(`head_for_room`), which on the player's own machines is a **58 px head against 26 to 44 on the scrolling board**.
+
+**The range goes down only, and the view opens at the top of it.** Two steps up were built, shipped and tried: "Verkleinern fühlt sich gut
+an. Vergrößern macht keinen Sinn." They bought nothing the eye wanted and cost the row that shows what is coming, so they are gone rather
+than left in as a way to make the view worse. What the five remaining steps do to Thunder's lead on the 1200 px screen — and this is the
+answer to "can I set the bars per row with +/-":
+
+| step | head | rows in sight | bars a row | row lasts | pairs closer than a head | tightest |
+|---|---|---|---|---|---|---|
+| 0.50x | 29 px | 3 | 6 | 8.9 s | 0 of 1620 | 35 px |
+| 0.60x | 35 px | 3 | 5 | 7.5 s | 0 of 1592 | 42 px |
+| 0.70x | 41 px | 2 | 4 | 6.1 s | 0 of 1549 | 49 px |
+| 0.85x | 49 px | 2 | 3 | 4.5 s | 0 of 1486 | 61 px |
+| **1.00x** | **58 px** | **2** | **3** | **4.4 s** | **0 of 1472** | **69 px** |
+
+**Not one overlapping pair at any size, on either song.** The smallest step draws a 29 px head — still bigger than the 26 px floor the
+scrolling view was pinned at — and parts every pair by at least 35 px, on the passage that started this whole session.
+
+**Measured on the two songs this session is about, on the player's own screens, at the size the view opens at:**
+
+| | head | rows | bars per row | row lasts | pairs on one string closer than a head | crowded rows |
+|---|---|---|---|---|---|---|
+| **Thunder lead**, 1920x1080 | 50 px | 84 | 3 | 4.5 s | **0 of 1486** | 0 |
+| **Thunder lead**, 1920x1200 | 58 px | 86 | 3 | 4.4 s | **0 of 1472** | 0 |
+| **Bon Jovi lead**, 1920x1080 | 50 px | 49 | 3 | 5.5 s | **0 of 1452** | 0 |
+| **Bon Jovi lead**, 1920x1200 | 58 px | 49 | 3 | 5.5 s | **0 of 1452** | 0 |
+
+**Thunder's solo had 47 overlapping pairs in the scrolling view, 30 of them inside five seconds. It has none here**, at a head bigger than
+the scrolling view has ever drawn, with no speed spent — because there is no speed.
+
+**The frame costs about two milliseconds more than the board's, and that is the whole story** — measured over 300 frames on Thunder's
+lead at 1920x1200 with a matcher running, four runs:
+
+| | median | worst tenth | worst |
+|---|---|---|---|
+| standard | 5.39 – 5.61 ms | 5.71 – 6.25 ms | 7.24 – 9.08 ms |
+| hybrid | 7.17 – 7.30 ms | 7.52 – 7.69 ms | 9.19 – 10.65 ms |
+
+**A retraction belongs here.** The first run of this measurement showed a 19.81 ms worst frame for the standard view against 7.58 for the
+hybrid, and that went into this file as "the worst frame is two and a half times better". It was one outlier in one run: three further
+runs put the standard view's worst at 7.24, 8.47 and 9.08. **Nothing inside the run-to-run spread is a finding** — this file's own rule,
+written two chapters up after breaking it three times, and broken again here within the hour. The honest claim is the boring one: both
+views sit at well under half the 16.7 ms budget, the hybrid costs about two milliseconds more, and the reason to prefer it is what is on
+the screen and not what the profiler says.
+
+The layout is built once per song, size and filter, never per frame; the drawing touches only the rows on screen. Both are held by tests,
+because this display has had to move a loop out of the frame three times already.
+
+**What it costs is a page turn every four to five seconds.** That is the trade, and it is the same one the tab view makes.
+
+### Everything the board draws on a note
+
+"Kann es sein, dass hammer-on, pull-off, bending etc. beim Hybrid fehlen?" It could, and they did. The sheet drew heads and fret numbers
+and nothing else — no bend curves, no slide connectors, no legato arcs, no PM badges. **A view that leaves the techniques out is a view you
+cannot practise a solo on**, which is the only thing this view was built for.
+
+They cost almost nothing to add, because `_draw_slide`, `_draw_legato`, `_draw_bend` and `_draw_badge` take their geometry as arguments
+and assume nothing about a scrolling board. What the sheet had to supply was the one thing it does differently: **where the technique is
+going.** A hammer-on regularly points at the first note of the NEXT row, so `_sheet_next` is built over the whole song (with the layout,
+not per frame — it walks every note), and `Row.x_at` clamps a target outside the row to that row's right edge. Which is what a technique
+running off the end of a line should look like.
+
+**Two things the sheet was quietly getting wrong, found while porting them.**
+
+- **Note lengths.** The board chokes a palm-muted note to 1.3 heads and a dead one to a click, and lets a `let ring` note sound until the
+  next note on its string; the sheet drew all of them at their written value. Its own comment says why that matters: *reading a chug as a
+  held note is how a muted riff ends up played wrong*. And every note now leaves the same gap before its neighbour, without which a run of
+  eighths renders as one unbroken ribbon. The numbers live in `sheet.py` as well as `scrolling.py` — this module may not import the
+  drawing, since the drawing imports it — and a test asserts the two sets are equal, so they cannot drift apart in silence.
+- **The loop was invisible.** The board shades the looped stretch; the sheet did not, so nothing said why the playhead kept going back to
+  the same bar. The fret-filter trap in another costume. It shades across rows now, clamped by `x_at` at both ends, and a switched-off loop
+  is shaded differently from a live one.
+
+**Nothing is dimmed, marks included** — the same rule the heads follow. A badge that fades once its note is played takes half the record of
+the run away, and the record is what the sheet is for.
+
+The frame went from 4.5 ms to 5.2 ms median on Thunder's lead at 1920x1200, against a 16.7 ms budget.
+
+### Three views, one key, one default
+
+`Shift+T` walks all three — standard, hybrid, tab — because a view is chosen by LOOKING at it, so what the key has to do is keep going
+until the right one is up. `O` → **View** sets which one a song opens in.
+
+`_tab_mode` is a property over `_view` rather than a flag of its own. Two booleans have four states, three of them mean something, and the
+fourth is the bug that gets shipped.
+
+## The Screen Went Back To Being A Screen You Read Music Off
+
+The player sent a screenshot of the hybrid view working and, in the same message, a list of what was in the way. Counted off that
+screenshot: **eight lines down the left, two captions across the middle, six numbers down the right, and twenty-three keyboard shortcuts
+across the bottom in two rows** — on a display whose entire purpose is to be read while both hands are on a guitar.
+
+The rule he wrote, and it is a better one than the rule that produced the old HUD: **a line earns its place by saying something that
+CHANGES and that nothing else on screen says.** Everything below follows from it.
+
+### One line of keys, and each one carries its value
+
+The footer is twelve entries now, and every one of them shows the state of the thing it names — the tempo you are at, the hit window in
+force, the view you are in, the size you set — and **lights up when that is not at rest**. Twenty-three shortcuts with no values are not
+a help system, they are wallpaper, and he read four of them.
+
+The other thirty-odd keys moved into `H`, which is now the ONE place every bound key is written down. **The rule that every key is
+documented did not go away, it moved**: `TestEveryKeyIsWrittenDownSomewhere` still reads `handle_event`'s own source, and now checks it
+against `help_blocks()` — which had to be pulled out of the drawing to be readable at all. Adding a shortcut and forgetting to write it
+down still fails in the suite.
+
+### S, and everything about lining sound up
+
+Six lines of sync arithmetic were permanently on the screen: the MIDI offset, the recording's offset, the strike-timing offset, the
+fifteen sync points, the section rates, and the line telling you which keys change them. None of it is needed while playing; all of it is
+needed while syncing. That is what a key is for. `S` opens it and `S` shuts it.
+
+- **It is an OVERLAY, not room taken from the music.** The first build counted its lines in `_tab_room`, which is honest and wrong:
+  less room means a smaller head, which means more bars on a row, which means different line breaks — so pressing `S` re-broke the music
+  into a different page while you were looking at it. It draws over the bottom of the sheet instead, on a ground of its own, which is the
+  part you are not reading while you line a recording up.
+- **The warning built last session still gets out.** "The recording is guessed here, and it drifted 2128 ms where it was measured" is the
+  one line that explains the picture at 3:49, and shutting it in a panel would make it invisible at exactly the moment it matters. The
+  footer's `S: Sync` entry turns warning-coloured instead. One word is the whole signal.
+
+### The tunings, on one line
+
+`Tuning: CFA#D#GC  C#F#BEG#C#  DGCFAD  D#G#C#F#A#D#  EADGBE*` — the one being played in blue, the one it was written in starred. A tab in
+Drop C played on a standard-tuned guitar is wrong on every single note and nothing else on screen says so.
+
+The window is bounded by what a guitarist would actually do: **at most one step down** (further down is a floppy string, not a choice),
+**up to three up**, ending at the standard-shaped tuning, and **never more than five**. The player's rule as written ("original in the
+middle, one lower, three higher") does not survive contact with his own song — Bon Jovi is written in Standard, so there is nothing above
+it and the original cannot be in the middle. What is invariant is the pair that must be there: **the tuning being PLAYED and the one it
+was WRITTEN in are facts, everything else in the strip is a suggestion**, so the trim takes the suggestions first and only touches a fact
+when both cannot fit.
+
+### What went, and what was kept against instructions
+
+Gone: the hit window, the scroll line, the frame-pacing line, the H/C/M breakdown beside the accuracy, the tempo caption in the middle,
+and the view's own caption over the staff (bars-per-row, page number, zoom — all of it now beside the key that changes it).
+
+Kept, and said out loud rather than done quietly:
+
+- **The loop line, but only while a loop is on.** A loop silently repeating eight bars is the fret-filter trap in another costume, and no
+  other line would mention it.
+- **The streak**, moved to the right column under the accuracy rather than deleted — it is feedback, not chrome, and it only appears at
+  three.
+- **`S: Sync` in the footer**, which he did not list. A key nobody can find is a key nobody presses; that is this project's own rule.
+
+### A second pass, from living with it
+
+- **`U: MP3` was missing from the footer.** It is a sound you can hear or not, the same kind of switch as `B` and `Shift+B` beside it, and
+  this player has already reported `U` looking removed once — when its line went quiet, the key looked unbound. A dash where there is no
+  file, the same as the other two.
+- **The help says what everything is set TO.** "G: hit window" is a key; "±150 ms" is the answer to the question you opened the page with.
+  Every entry that names one setting now carries its current value in a column of its own — the view, the tempo, the gate, the fret limit,
+  the muted strings, the tuning, each backing, the timing offset, the vsync outcome, whether the sync panel is open. It turns a page you
+  read once into a page worth opening mid-song.
+- **The grip cards were sitting on the top string.** On the scrolling board they hang above a lane band that starts halfway down the
+  window; the sheet reaches into that corner. They are a tenth smaller now, and `_hud_top_used` counts them, so the music starts below
+  them and the head shrinks to fit — the same measured-not-guessed fix the top margin needed one section up.
+- **And the chord names on the sheet were unreadable.** The first build named every GROUP at 20 px, which on a song that strums sixteenths
+  is twenty-four names across one row, each over the note heads. Three rules now, each from looking at the thing:
+  - only where the chord **changes**, from the list built once per song — the same list the board draws from, so the two views can never
+    name a chord differently;
+  - **plus the chord in force at the row's left edge**, because a row whose chord started on the row above sits in front of you for four
+    seconds saying nothing (the board never needed this: there the change itself scrolls past);
+  - and **never a name that would land on the one before it** — measured on the player's screenshot, three changes inside a bar came out
+    as "DadA/EF#", which is worth less than one name.
+
+  The decision is `sheet_chord_names`, which takes a `width_of` callable rather than a font, so the rule is tested without a screen and
+  the drawing cannot use different widths from the decision that placed them. The row's top strip grows from 20 px to 54 when the names
+  are on, and `head_for_room` is told about it — otherwise the extra height is simply taken off the bottom row.
+
+### Two things the cleanup found
+
+- **The top margin was a constant.** `TAB_TOP_MARGIN = 150` was fitted to the old eight-line column. With three lines it left 90 px of
+  empty window above the music and took it off the bottom row. It is measured now (`_hud_top_used`), the same fix `_tab_room` needed at
+  the bottom for the same reason.
+- **A feedback loop, caught by a test.** Putting bars-per-row in the footer's `+/-` entry made the footer longer, which can push it to a
+  second line, which changes the room, which changes the head size, which changes bars-per-row. `test_a_second_frame_lays_nothing_out`
+  failed with "laid out 2 times" — at 44.4 px and then 44.5. The number is not written there. The bar numbers are on the screen anyway,
+  which is where a player would count them.
+
+**And the frame got cheaper**, which was not the point but is worth recording: 300 frames of Thunder's lead at 1920x1200 went from a
+5.4 ms median on the board and 7.2 on the sheet to **3.7 and 4.5**. Text is what this display spends its frame on — measured at 79 % of
+one, in the chapter that built the font cache — so deleting forty text surfaces a frame is the cheapest millisecond in the file.
+
+## Two Rows Of Music And Nothing Else
+
+"Mir reichen 2 Zeilen des Tabs in der Mitte. Danach sollte oben und unten genug Platz sein für die Anzeigen, die aktuell reinlappen."
+The page filled the window between a 56 px margin and a 104 px one, and the HUD — which is text with no ground of its own — was printed
+straight over the staff. Both are right; neither could give way, because neither knew the other's size.
+
+- **The room is measured now, from the things that take it.** `_footer_block` was split out of the footer drawing so two callers can ask
+  the same question at different moments: the footer draws the block, and `_tab_room` asks how tall it came out BEFORE laying a page out.
+  A constant was the obvious fix and it is the wrong one — the footer is between two and five lines depending on the window width, which
+  is exactly what a constant cannot follow.
+- **Two rows, taken from the rows the page actually has.** A median row spacing was tried first and measured 0.107 of the page over the
+  whole song against 0.094 on the page being looked at, so the window showed two rows and a third of a third one with its beams sliced
+  off at the bottom edge. `row_window` cuts through the MIDDLE of the gaps either side instead, so the boundary never falls through a row.
+  The test asserts that property rather than the arithmetic: every row on the page is wholly inside the window or wholly outside it.
+- **`system_pitch` went with it.** It was written for the median, replaced within the hour, and would have sat there tested and unused —
+  which is the same thing `PAPER` was doing (see below) and the fault this file keeps writing up.
+- **The playhead is the full height of what is shown, and 5 px wide.** Fitted to its own system it was a short mark in a tall picture and
+  took hunting for, and hunting for the playhead is the one thing this view exists to spare.
+- **The paper is white, and it is white in ONE place.** `PAPER` sat unused two screens above a hardcoded `background="#eeece7"` in
+  `rasterise`, so the constant every comment in the file talks about was decoration and changing it changed nothing. The player asked for
+  harder contrast; the reason for an off-white ground — paper does not glare — is a print argument and not a screen one.
+- **And the tab label moved off the tempo.** Both wanted the centre of the top edge and the HUD is drawn second, so they read as one
+  illegible line: the same complaint as the page over the staff, one row up.
+**And the row stepping was wrong in a way only the player would notice.** The rule was "hold the page while the current row is anywhere
+on screen, then move" — right for a window as tall as the page, and the exact opposite of what it is for with a window two rows tall. It
+showed rows in PAIRS: the playhead sat in the top row for one row and in the BOTTOM row for the next, so half the song was played with
+nothing visible underneath. Measured before it was changed, on Thunder, row by row: `OBEN, unten, OBEN, unten` all the way down the page.
+
+**The row IS the state now** (`_tab_offset_for`). The offset follows from which row is being played, so it holds by itself while the
+playhead crosses a row and steps exactly one row when it leaves — and the row after the one in the hand is always the one underneath it.
+Same measurement after: `OBEN` seven times out of seven. `_tab_scroll_for` went with the old rule rather than sit there tested and unused.
+
+**The price is named rather than hidden: the page now steps once a ROW instead of once every two**, about every four seconds on this song
+against every eight. That is the trade the player asked for — a preview at every line break costs a page turn at every line break.
+
+
+## The Songs Folder Killed The App Before It Drew A Frame
+
+```
+FileNotFoundError: 'C:\Users\Admin\Downloads\songs'
+PermissionError: [WinError 5] Zugriff verweigert: 'C:\Users\Admin'
+  pickhero/ui/menu.py line 162, in scan_files
+```
+
+`songs_dir` is **relative** by default, so it resolves against wherever the app was STARTED from — and a portable .exe is started from wherever
+it was downloaded to. Windows reported that folder as not found, and `mkdir(parents=True)` then walked up and tried to create the player's
+own home directory, which is denied. The app died before the first frame, on a machine where it had been running for weeks.
+
+- **The folder is chosen in one place now** (`Config.songs_path`), and one that cannot be made falls back beside the settings file — the
+  one directory this app already knows it can write to, because it has been writing `settings.json` there all along.
+- **And `scan_files` never raises.** A folder it cannot read is an empty list and a line saying which folder and why. A screen saying "no
+  songs here" is a screen; a traceback is not.
+
+## No Offset Can Repair A Tempo
+
+"Es ist schon am Start um ca. 3 Sekunden daneben. Mit einmaligem Anpassen und Syncpoint ergänzen, klappt es nur am Anfang. Danach läuft es
+wieder auseinander. Der Song dauert bei YouTube 4:13 und das ist genau mein MP3. In der App zeigt es mir 4:55 an."
+
+That last sentence is the whole diagnosis, and it is a subtraction. Measured on the file:
+
+    80 bars, every one of them 3.692 s long, written tempo 65 BPM
+    4:55 of tab against a 4:13 recording
+    ratio 1.163 -- the tab is 16.3 % slow, and the record is really at 75.6 BPM
+
+**An offset moves the whole song by a constant; it cannot repair a rate.** That is exactly what he described: one sync point lines the
+start up, and forty-one seconds of error accumulate over the rest.
+
+**And nothing in this app could fix it either.** Every bound here was fitted for a recording of the SAME performance:
+
+| | bound | needed |
+|---|---|---|
+| `autosync.MAX_DRIFT_RATE` | 5 % | 16.3 % |
+| `syncmap.MIN_RATE` / `MAX_RATE` | 10 % | 16.3 % |
+| `config.MIN_MP3_RATE` / `MAX_MP3_RATE` | 10 % | 16.3 % |
+
+A tab written at the wrong tempo is a different fault from a band drifting, and widening the bounds to swallow it would let back in the
+thing they were fitted to reject -- Godsmack's staircase of wrong-chorus matches fits a straight line at −12 %.
+
+**And the first version of this chapter got the cause wrong**, which is worth keeping. It read the 16.3 % as tempo and said so. Then
+Songsterr's reply for the same song arrived: **it times 72 bars where the tab has 80**. Eight bars of that tab are not in the recording at
+all, and once they are taken out only about 3 % is really the tempo — inside every bound above. Saying "the tab is 16 % too slow" would
+have sent the player to change a tempo that is very nearly right.
+
+Two causes, one number, and no way to tell them apart from lengths alone. **So the line names both** and says what could settle it.
+
+**It is said rather than corrected**, as the numbers to act on. `written_tempo_gap` reads the bar grid: when every bar is the
+same length the file is written at one tempo, and the ratio against the recording says what that tempo would have to be. "This tab is 4:55
+and the recording is 4:13 — either the written 65 BPM should be about 76, or the tab has 16 % of music the recording does not." A file that
+carries tempo CHANGES gets no answer at all, because one number cannot describe it and a wrong one would send the player to fix something
+that is right.
+
+**What can repair it is Songsterr's bar map**, which is per bar and absorbs any tempo error by construction — the panel says so, with the
+two keys. This is the song that feature exists for.
+
+## One Hold Of Escape Was One Press Too Many
+
+"ESC reagiert oft zu sensibel und ich fliege aus dem Song und die App schließt sich sofort."
+
+`pygame.key.set_repeat(300, 40)` is one **global** setting for every key, and this file has now paid for it three times: a short press on
+PgDn walking the practice speed from 100 % to 50 %, escape leaving the song AND closing the app on one hold, and — reported later —
+**space**: "Ich klicke space, es zählt von 2 auf 1 und stoppt. Ich drücke nochmals space und es läuft."
+
+Space is the worst of the three, because the repeats arrive while the frame is STALLED on loading the recording and are then drained
+together: an even number of them and the song is paused with no sign of why. Escape crosses two screens that do different things — in the
+song it goes back to the list, on the list it closes the app — so holding it for **340 milliseconds** does both.
+
+Two guards, and they fix different halves:
+
+- **A toggle never repeats** (`NEVER_REPEAT`: escape and space), guarded in `App._process_events` rather than on each screen — it is the one door every screen's events come
+  through, and a screen added later would otherwise have to remember. A KEYDOWN that arrives while escape is still physically down is
+  dropped; the KEYUP re-arms it. Only the toggles: the arrows, the tempo and the size keys want their repeats, and taking those would be a
+  different bug.
+- **The song list does not close on the first press.** It says "Press ESC again to close MySician" and waits for a second, deliberate one.
+  Anything else in between disarms it, because a screen that stays armed is a trap set an hour ago. Escape is the way back out of the
+  song, the settings, the tuner and the device list, so the player arrives on that screen with it already under their finger.
+
+## A Break Is Not An Outlier
+
+"Ich lade den gleichen Song und das identische GP-File, habe aber Probleme, dass es Sync ist." So it was measured, on the three songs to
+hand, before anything was touched:
+
+| | usable windows | covered | what the map claimed |
+|---|---|---|---|
+| Bon Jovi | 32 of 42 (76 %) | 0:00–3:56 of 4:26 | -0.76 % drift, 2.1 s of correction |
+| Godsmack | **11 of 47 (23 %)** | **0:00–1:26 of 4:56** | +1.91 % drift |
+| What's Up | **5 of 41 (12 %)** | 0:00–3:08 of 4:20 | -3.02 % drift, 5.1 s of correction |
+
+**And the filter throwing them away was the wrong one.** Not the margin filter, which drops a window that cannot tell one chorus from
+another — that took 4, 12 and 17. The **outlier** filter took Godsmack from 35 to 11 and What's Up from 24 to 5, with its tolerance pinned
+at the three-second ceiling, which means the readings genuinely disagreed by seconds.
+
+**They disagreed because the curve has STEPS, not a slope.** Godsmack's raw readings: `1:06 → +11.19 s`, `1:36 → −1.89 s`. Thirteen
+seconds, in thirty. That is not a recording running fast; that is thirteen seconds of music one of them has and the other does not — a
+repeat, an added bar, or a window that matched the wrong chorus.
+
+**A single straight line was fitted to the whole song**, so everything after the first step was, correctly by its own logic, an outlier.
+The line described the first minute and the remaining three and a half were extrapolated from it.
+
+### What changed
+
+Three filters now, answering three different questions:
+
+- the **margin**: this window could not tell one chorus from another;
+- the **breaks**: the two stopped being the same piece of music HERE, so stop fitting and start again;
+- the **residual, within a section**: this one window disagrees with the others around it.
+
+A break is told from an outlier by what drift could do. Neighbouring windows are 6 s apart and drift is bounded at 5 %, so drift can move
+them by 0.3 s; a jump past a second is not a speed. **And a break is the curve moving and STAYING moved** — a section shorter than four
+readings and thirty seconds is folded back into the one beside it, because a one-window spike that comes straight back is an outlier and
+splitting there strands the good readings after it. Measured: Bon Jovi's outro has five such spikes of about 14 s, and splitting at all of
+them cost 12 readings and a minute and a half of coverage.
+
+| | usable windows | covered | map vs its own readings |
+|---|---|---|---|
+| Bon Jovi | 32 of 42 | **0:00–3:55 (89 %)** | 3 ms median, 24 ms worst |
+| Godsmack | **29 of 47** | **0:00–4:55 (100 %)** | 0 ms median, 24 ms worst |
+| What's Up | 5 of 41 | — | **nothing stored** |
+
+**What's Up is the important row.** Four chords repeated for four minutes; its windows match +9.9, −34.4, −6.2 and +21.1 s. It used to
+store a map claiming −3.02 % drift and 5.1 s of correction, **and that map looked exactly as measured as a good one**. A reading that
+keeps under a third of a song's windows is now refused outright and the panel says so, with what to do instead. Not thin — wrong.
+
+**And where the two part company is named**, because "29 of 47 windows usable" is a number nobody can act on and "1:29 (−8.8 s)" is a
+place to put a point.
+
+### And the loudest finding was not in the algorithm at all
+
+**Thunder's tab is 6:21 long and the recording is 4:40.** 248 bars at 156 BPM against a 4:40 file — a 27 % difference. The tab the player
+replaced it with is 4:40 in 91 bars at 78 BPM, and matches the recording **to a tenth of a second**. They are two different transcriptions
+of one song, and no offset, rate or map can bridge that.
+
+A whole session went on Thunder's sync — the drifting solo, the extrapolation past 3:22, the `Shift+S` workflow, two real bugs in
+`SyncMap` — and **nothing on screen ever compared the two numbers**. The check is one subtraction. It is now the first thing the listening
+says, in different words from every other verdict, because it is the only one that means "go and get another file" rather than "place a
+point".
+
+Measured across every song the player has, with the new Thunder tab in place:
+
+| tab | tab length | recording | apart |
+|---|---|---|---|
+| What's Up | 4:55 | 4:52 | 1 % |
+| Bon Jovi | 4:27 | 4:30 | 1 % |
+| Godsmack | 4:58 | 4:50 | 3 % |
+| Kid Rock | 5:11 | 5:21 | 3 % |
+| Thunder (old) | **6:21** | 4:40 | **27 %** |
+| Thunder (new) | 4:40 | 4:40 | **0 %** |
+
+And with the right tab, Thunder needs almost nothing from the map: **39 of 44 windows usable, 0:00–4:37 of 4:37 covered, offsets between
+−1.4 s and −0.7 s** — seven hundred milliseconds of drift over the whole song, against the 13 seconds the old tab implied.
+
+**One more thing this found, in the reporting rather than the measurement.** A section can be big enough to fit and still hold a wrong
+match at its edge: Thunder's first 36 s hold six readings, two at +1.2 s and four at −23.5 s. Comparing raw section endpoints reported a
+24.9 s break that the stored points do not contain, and **a break the map does not have is a line that lies**. Breaks are read off the
+readings the map is built from.
+
+### Taking Songsterr's own map — and what it turned out to be worth
+
+The player gets almost all his tabs from Songsterr, so the obvious move was to take their per-bar map instead of measuring one. Their meta
+and video-points replies for Thunder, read for real:
+
+- `api/meta/2333598` → `revisionId`, and `aiGenerated: true` — this tab was transcribed FROM the audio, which is why it fits it.
+- `api/video-points/2333598/3088787/list` → three entries, **91 points each**, against a tab of **91 bars**. Bar lengths run 3.02 to 3.18 s
+  against a written 3.077, so it is real per-bar timing and not a tempo restated.
+- The three videos carry **the same curve shifted by a constant** — exactly −25.15 and −23.25 s on all 91 points, to the last decimal. So
+  the shape is the data and the video is irrelevant; the constant belongs to whatever recording the player actually has, and is found by
+  warping the tab through the map and measuring what is left (`align_to_bar_times`), which reuses the listening rather than inventing a
+  second way to compare two things.
+
+**And then it lost.** Measured on the player's own Thunder recording, scored only on readings each map had NOT been fitted to — our own
+map is built from these windows, so an in-sample number would have flattered it by a factor of five:
+
+| | held-out half 0 | held-out half 1 |
+|---|---|---|
+| one offset, no map | 192 ms | 200 ms |
+| **Songsterr, 91 bar times** | **80 ms** | **92 ms** |
+| **our own listening** | **16 ms** | **8 ms** |
+
+The prediction going in was that Songsterr's map would beat the measurement and make the DTW work unnecessary. **It is five to ten times
+coarser.** Their points are timestamps into a YouTube re-upload, and their own transcription pipeline carries its own error; our chroma
+correlation against the actual file has neither problem.
+
+**And What's Up broke two things in it that Thunder could not have.** Thunder's three videos carry one curve shifted by a constant, so any
+entry would do and the first build took the longest. What's Up's six entries carry **three different timelines**: the main video has 72
+points over 253 s, the backing tracks 78 over 278 s. They are different cuts of the piece, and **the longest is the wrong one** — the
+player's recording is 4:13. So every candidate comes back from the fetch now and each is tried against the recording; the one the windows
+agree about wins. Which of them is the right video is a question only the recording can answer.
+
+**The second thing it broke turned out to be a rule, not a revision.** None of the three timelines matched the tab's 80 bars, and the
+first answer was "your tab is an older revision — download it again". He did, and got the same 80 bars. The tab is not wrong:
+
+    80 bars, of which bar 0 and bars 70-79 carry no note on ANY pitched track
+    the last note is at 4:15, and the clock runs to 4:55
+    Songsterr times the 72 that have music in them
+
+A Guitar Pro export is regularly **padded out to the end of the sheet**. So a map of fewer bars than the tab is accepted when every bar
+past it is empty (`_covers`) — and on What's Up that map fits: it picks the 72-point main video over the 78-point backing one, **21 of 39
+windows agree with it to 17 ms**, and the offsets run −0.1 s to +11.2 s, which is the 3.5 % the recording really runs at. Refusing on the
+count alone threw away a map that was right.
+
+**And the clock now explains itself.** "This tab runs to 4:55 but its last note is at 4:15 — 10 empty bars at the end" is in the sync
+panel, because that number is the one he compared against YouTube three times before concluding he had the wrong file.
+
+**The old finding, for the record:**  a map with MORE bars than the tab, or one that stops inside the music, is still refused rather than stretched — stretching
+it would be silent and wrong everywhere after the first difference — and the line names the counts on offer, because "Songsterr times 72 or
+78 bars and this tab has 80" is a thing to act on and "a different revision" on its own is not.
+
+**What it is for is the songs the listening cannot read at all.** What's Up is four chords repeated for four minutes and its windows match
++9.9, −34.4, −6.2 and +21.1 s — a made map does not care that a song repeats itself, and a windowed search can do nothing else. So the
+listening is asked first and Songsterr only when it comes back empty, and the panel never dresses one up as the other: it says which
+measurement is under the song, and that this one is the coarser.
+
+**And the player decides which measurement runs, not the app.** The first build made the bar map an automatic fallback — used when the
+listening judged ITSELF unreadable and never otherwise — and then added `Alt+S` as a one-off override on top. He read that exactly right:
+*"Ich habe das Gefühl es entscheidet noch immer selbst."* He was right. Asking the listening whether the listening worked is a circle with
+the player outside it, and a one-off override does not let him back in — it just lets him interrupt.
+
+So it is one setting with four answers, per song, and `Ctrl+S` obeys it:
+
+| | what Ctrl+S does |
+|---|---|
+| **listen, then Songsterr if that fails** | the old behaviour, and the default, because a song nobody has decided about has to do something |
+| **listen only** | never asks Songsterr, even with nothing to show for it |
+| **Songsterr's bar map only** | never listens, even when the map does not fit |
+| **by hand only** | Ctrl+S does nothing and says so |
+
+`Alt+S` walks the four and names the one it lands on. Neither of the two "only" answers falls back to the other: falling back would be the
+app deciding again, which is the thing that was reported. The sync panel names the source in force, the stored link, and the key that
+changes them — it was written down only in the help page.
+
+The first build made it an automatic fallback only — used when the listening judged itself
+unreadable and never otherwise — which left a player who can HEAR that the listening got it wrong with nothing to press. "Where it works"
+is a judgement the listening makes about itself, and that is not the last word. `Ctrl+U` takes the link off the clipboard — the app has no text field and building one for a URL somebody just copied out of their browser
+is a screen nobody wants. A map whose bar count differs from the tab's is refused rather than stretched: it is a different revision, or the
+repeats written out differently, and stretching it would be silent and wrong everywhere after the first difference.
+
+### One ENTER Fetches The Song, Not The Tab
+
+*"Wenn wir beim Downloader explizit Songsterr nutzen (keine anderen Dienste) und dort das GP holen und die Youtube-ID und die Sync-Infos,
+dann würde mir das einen Haufen Arbeit sparen. yt-dlp fände ich praktischer. Ich gebe die Daten nicht weiter und nutze sie nur lokal
+offline."*
+
+**Learning a new song was four jobs, and Songsterr answers all four with one reply.** The download screen fetched the tab and stopped;
+the player then found an MP3 somewhere, pasted the Songsterr link back into the app with `Ctrl+U`, and pressed `Ctrl+S` hoping the
+listening would read a song that repeats itself. On What's Up it does not — its windows read +9.9, −34.4, −6.2 and +21.1 s and mean none
+of it. But `api/video-points` had been carrying the answer the whole time: a timestamp per measure **and the YouTube id of the recording
+those timestamps were made against**. Three of the four jobs were being done by hand next to a reply that already contained them.
+
+So `ENTER` on the download screen now fetches:
+
+| what | where it lands | why there |
+|---|---|---|
+| the tab | `songs/<name>.gp5` | unchanged |
+| every video's bar map | `songs/<name>.songsterr.json` | **beside the tab**, so copying the songs folder to the second laptop carries the sync with it — the same rule `mp3_path_for` already follows for the recording |
+| the Songsterr id | settings, against the tab's stem | which is what `song_key` is, so `Ctrl+U` is not needed |
+| the audio | `songs/<name>.mp3` | same stem, so `mp3_path_for` finds it after a move |
+
+**The video is chosen by `feature: null`, not by length.** Songsterr marks the recording the tab was written from with a null feature;
+everything else is a backing track, a live cut or somebody's cover, and those are *different recordings of the song* rather than the same
+one shifted. Thunder hides this — its three videos carry one curve shifted by exactly −25.15 and −23.25 s, so any entry would do. What's
+Up does not: **72 points over 253 s in the main video against 78 over 278 s in the backing ones**. The first build took the longest and
+handed that song the backing track. `main_entry` takes the marked one; `candidates_for` puts it first and keeps the rest, because the
+recording on disk is not always the video it was pulled from and the fit is what decides.
+
+**And pulling the audio from that video collapses the hard part of the sync.** The bar map is in video time. Up to now the app had to
+find the constant between video time and whatever MP3 the player owned, by listening — which is the step that fails on a repetitive song.
+Take the audio from the video the points were made against and there is no constant to find; there is an MP3 encoder delay of about
+26 ms, well inside what the fit reads anyway. The fit still runs rather than the offset being assumed to be zero, because the player may
+already have had a recording or replaced the one that came down.
+
+**ffmpeg is bundled, and that is not optional.** yt-dlp downloads what YouTube serves — m4a (AAC) or webm (Opus). The app plays through
+SDL_mixer, which decodes MP3, OGG, FLAC and WAV, and *neither of YouTube's two formats is on that list*. Without ffmpeg the audio lands on
+disk and silently will not play, which is this project's oldest failure mode wearing a new hat. `tools/fetch_ffmpeg.py` puts one in
+`tools/` at build time and the spec bundles it; the second laptop gets the .exe and needs nothing installed. When the fetch fails the
+build still succeeds and the download screen says **"ffmpeg was not found"** in words — `missing()` returns which half is absent, because
+"ffmpeg was not found" and "this video is private" send the player to completely different places.
+
+**Every step reports itself, and only the tab is required.** A song with no video on Songsterr is still a song to practise; it just syncs
+the way it did before. So `grab_song` never raises for a missing piece — it returns a `Grab` whose `notes` say what came and what did
+not, and the screen holds those lines until a key is pressed. A song that quietly arrived without its recording looks exactly like one
+that arrived with it, until the player is standing in front of it with a guitar.
+
+Two smaller things that were bugs waiting to be reported:
+
+- **The finished download nudges the event loop.** Every state change on that screen is read inside `handle_event`, and `handle_event`
+  only runs when pygame has an event. A player who takes his hands off the keyboard while a song downloads generates none, so the
+  finished download would sit there until something was touched — indistinguishable from a hang. A posted `USEREVENT` closes it.
+- **The bar map is read from disk before the network.** `_songsterr_bar_times` asks the cache first, so a song fetched in the app syncs
+  with no network at all and pressing `Ctrl+S` twice does not ask Songsterr twice. A link pasted by hand still goes out — and what comes
+  back is written to the same place, so that song is offline from the second press on.
+
+
+### Three Things The First Download Round Got Wrong
+
+The player ran it on three songs the day it shipped, and each one found something.
+
+**1. `.gp5` was a lie on disk.** *"Why does it download a gp5 and when I use songsterr-downloader.com I get a gp?"* — because `download_gp5`
+named every file `.gp5` whatever Songsterr actually held. It never broke anything, which is why it survived: the loader dispatches on the
+file's **content** (`zipfile.is_zipfile`, then the GPX magic), so a Guitar Pro 7 file called `.gp5` opened perfectly. But it is the wrong
+file to hand to Guitar Pro itself, and the extension is now taken from the source URL. The old test asserted the bug — it mocked a source
+ending in `.gp` and then asserted the output was `test.gp5`.
+
+**2. A failed download opened a browser at a page that does not exist.** `https://www.songsterr.com/a/wsa/{id}` is not a Songsterr URL.
+Theirs are `<artist>-<title>-tab-s<id>`, and they redirect any slug with the right `-s<id>` tail to the right page — so the slug is built
+from the search result, which already carries both names. And the reason is now **returned rather than swallowed**: `_source_of` says
+whether Songsterr did not answer, has no revision, or **holds no Guitar Pro file for this tab at all** — not every tab on Songsterr has a
+source file behind it. Those are the same empty result and completely different problems, and the first build reported all of them by
+opening a window with nothing in it.
+
+**3. "No audio: ffmpeg was not found" is half a message.** It names the missing thing and not the fix, to a player who is not a developer,
+and it came straight back. What the fix IS depends on what he is running, and the .exe is the case that matters: there is no source tree in
+it to run a script from — but `_search_folders` looks **beside the executable**, so `ffmpeg.exe` dropped next to `MySician.exe` works with
+no rebuild at all. `missing()` says that sentence when frozen and `python tools/fetch_ffmpeg.py` when not. Telling somebody to `pip
+install` inside an .exe is advice they cannot act on.
+
+### DEL Deletes The Song, Not The File
+
+*"Ich brauche eine Möglichkeit Tabs inkl. allem (außer History) zu löschen."*
+
+A tab stopped being one file the day the download screen started writing a bar map and an MP3 beside it. Deleting it in Explorer leaves
+both behind **and nine settings** — speed, recording path, offset, rate, Songsterr id, sync source, anchors, transpose, backing offset —
+and `song_key` is the tab's STEM and nothing else, so the next song that takes the same name inherits all of it.
+
+Two rules make it safe rather than merely thorough:
+
+- **Only what sits beside the tab, under the tab's own name.** The recording the player picked out of his Downloads folder is his. The one
+  this app downloaded is next to the tab and named after it. Same folder **and** same stem, or it is not touched — so `whatsup_original.mp3`
+  and `AC-DC - Thunder (live).mp3` both survive a delete of `AC-DC - Thunder`.
+- **The practice history stays.** `progress.py` and `practice_log.py` are a record of what he DID, and deleting a file does not undo an
+  evening of playing it. He asked for that by name.
+
+**The settings are found, not listed.** Every per-song setting is a dict named `song_something`, so `forget_song` walks the dataclass
+fields. A hand-written list would be correct on the day it was written and silently wrong the first time a tenth was added — and the way
+that failure shows up is a deleted song's sync landing on a different song months later, which nobody would trace back to here.
+
+**DEL asks first, and the question counts the files.** It sits one row from the arrow keys and it cannot be undone, so the first press
+names the song, says how many files will go, and says the history is kept; the second does it. **Any other key cancels** — and the armed
+song is dropped on every keypress that is not DEL, so arming on one song, moving down, and pressing again asks about the new song rather
+than deleting the old one. Not while the search box is open: there DEL is what somebody reaches for to fix a typo. Afterwards the list is
+re-read **from the disk**, because a file that would not delete is still there and a list that quietly dropped it would be claiming a
+delete that did not happen.
+
+### Picking A Recording Is The Whole Job Now
+
+*"Wenn ich nur noch das MP3 laden und mit sh+U im Song verknüpfen muss und die Songsterr Sync schon im Song ist, dann reicht das vorläufig auch."*
+
+YouTube's bot check killed the audio half of the download — *"Sign in to confirm you're not a bot"* — and the answer to *"soll ich mich einloggen?"*
+is no: `--cookies-from-browser` makes automated downloads run **as a named account**, and what gets restricted when the abuse machinery fires again
+is his Gmail. So the recording goes back to being his, and the only thing that has to be automatic is what happens after he picks it.
+
+**Shift+U now runs the sync, if there is none.** The recording is new, it has no sync points, and there is exactly one thing to do with it. Two
+guards decide when it stays out of the way:
+
+- **Points already there are the player's own work** — a Shift+N/M nudge, a Shift+S pin, an anchor set by ear in the middle of a song that drifts —
+  and re-picking the same file is exactly what somebody does after moving it. `_forget_sync_for_new_recording` has already cleared them when the
+  FILE genuinely changed, so an empty list means there is nothing of his to lose.
+- **Sync by hand is a choice, not a gap.**
+
+And no link needs pasting, which is the other half of what he asked for: the bar map is cached beside the tab at download time and
+`_songsterr_bar_times` reads the disk before the network. `Ctrl+U` is now only for a tab that arrived some other way.
+
+**One thing he asked for that was already true.** He asked for it to "take the Songsterr route". `auto` — the default — already does, and does it
+better: it listens first (8–16 ms on his own Thunder recording) and falls back to the bar map (80–92 ms) only when the listening reads nothing.
+Forcing Songsterr would make every song where the listening works five to ten times coarser to fix the songs where it does not. `Alt+S` is still
+there for a song he can hear it got wrong.
+
+### The Search Box Takes A Link
+
+*"Kann ich in der Suche auch direkt den Songsterr Link eingeben, wenn ich dort meine Wunschversion gefunden habe, oder die ID?"*
+
+He has already chosen his version over there. Searching for its name hands him the other four transcriptions of the same song to pick from again —
+the work he did on Songsterr's own site being asked for a second time. So `find` reads three shapes:
+
+| typed | what comes back |
+|---|---|
+| a Songsterr link | **one** answer, the song it names — searching for a URL's text finds nothing anyway |
+| a bare number | **both**, the id first and marked ★ |
+| anything else | the search, unchanged |
+
+**A bare number is genuinely ambiguous and not rarely**: `2112` is a Songsterr id and a Rush album, `1979` is one and a Smashing Pumpkins single.
+Reading it as an id only makes a song named after a number unfindable. Reading it as text only makes typing an id pointless. So it is both, in the
+order that costs nothing to be wrong about.
+
+A link Songsterr does not know comes back **empty**, never as the search's results wearing the link's clothes — that would have the player download
+a song he did not ask for.
+
+**And Ctrl+V, because a Songsterr URL is 60 characters of slug nobody types.** Without it, "paste a link" means reading it off the screen and
+copying it in by hand, which is not pasting. The tkinter that does it moved to `ui/clipboard.py` so the search box and `Ctrl+U` share one seam. The
+box draws the **tail** of a long query: the id lives on the end, and a caret that has walked off the right edge looks like a box that stopped
+taking input.
+
+### Two Things Called Sync In One Panel
+
+The player opened the sync panel, read it, and reported the recording as out of sync:
+
+```
+SYNC   this tab runs to 4:55 but its last note is at 4:03 — 14 empty bars at the end
+SYNC   source: listen, then Songsterr if that fails | Songsterr 2407981 stored | Alt+S changes it
+Sync: -108 ms  — play on, still measuring
+```
+
+*"Ist das die bar map? Es ist leider nicht Sync."*
+
+**Not one of those three lines is about the recording.** The first is the empty-bars explanation for the clock. The second is a setting. And the
+third — the one he read as "still lining the recording up" — is the **strike-timing offset**, which measures how late HIS PLAYING arrives through
+the microphone and the sound card, and which touches the recording not at all. It was called `Sync:` and it sat one line under the recording's own
+sync in the same panel. Two different things called Sync, eight pixels apart. That is the panel's fault, not his: it is now `Your playing: +0 ms (K)`.
+
+**And the panel could not say whether the recording was lined up at all.** It listed the source and the stored Songsterr id and stopped, which reads
+like everything is set — so a song that had been measured and a song that never had looked identical. `_recording_sync_line` says which:
+
+- no recording → nothing, there is nothing to line up
+- a recording and no points → `the recording is NOT lined up yet — Ctrl+S measures it`
+- points → `lined up: 3 sync points out to 4:12   |   Ctrl+S measures again`
+
+A live measurement still outranks the stored count. This is the project's own rule turned on its own status panel: a state that cannot be read off
+the screen is indistinguishable from a broken one, and the player spent a round asking the app a question the app was already holding the answer to.
+
+### R Renames The Song, Not The File
+
+*"Brauche eine Rename Song Möglichkeit in Taboverview."*
+
+A tab from Songsterr arrives called `Thunder - Love Walked In v3`, and the player wants it tidy. But **the name is the song's identity**: `song_key`
+IS the tab's stem. Renaming in Explorer leaves the speed, the recording, the sync points, the Songsterr id, the transpose **and the practice
+history** behind under the old name — looking like a rename that wiped the setup, with the leftovers waiting to be inherited by the next song that
+takes the old name.
+
+So `R` moves all of it: the tab, the bar map, the audio beside it, every per-song setting, and the progress record. `Config.rename_song` walks the
+dataclass fields exactly as `forget_song` does — a hand-written list would be wrong in the same way, and the failure shows up as one setting quietly
+lost months later.
+
+Three things it refuses to get wrong:
+
+- **A name already taken moves nothing**, checked before the first `rename()`. A half-done rename leaves the tab under one name and its recording
+  under another, which is worse than not renaming at all.
+- **A character Windows refuses never reaches the box.** A colon is a rename that dies with an error nobody can read; the place to say so is the
+  keypress, not the ENTER.
+- **The editor owns every key while it is open.** Otherwise typing a name is a minefield — `d` in "Thunderstruck" arms the delete, `f` opens the
+  search, ESC leaves the song list.
+
+Afterwards the list is re-read from the disk and the cursor follows the song to its new name.
+
+### A Text Box Is A Text Box, Wherever It Is Asked About
+
+*"Während ich im Rename bin, darf ich gewisse Buchstaben nicht drücken. Mit O komme ich direkt in Settings."*
+
+The song list's own handler gave the rename editor every key. **The App never got that far.** It consumes `D`, `O`, `S`, `G` and `U` before
+handing the event on, guarded by `not self._menu.is_searching` — a test written when the search box was the only text field that existed. A second
+text box arrived and was not part of it, so `o` in the middle of typing a name opened the settings screen.
+
+The fix is not a longer condition, it is a better question: `is_typing` is true for **any** box that owns the letters, and the App asks that. A text
+field added later is covered by being a text field rather than by somebody remembering to come back here.
+
+One deliberate difference between the two boxes: **Shift+U reaches the tuner while searching and types a capital U while renaming.** Tuning up in
+the middle of hunting for a song is exactly when that shortcut is wanted, and it was asked for. In a name it is a letter — **U2 is a band**, and a
+box that swallows a character is one the player cannot finish a name in.
+
+### Opening The Song Is The Whole Setup
+
+*"Beim jetzigen Versuch wurden MP3, Barmap und GP geladen. Im Song hat das MP3 gefehlt und ich habe es von Hand zugewiesen. Danach hat der Sync
+automatisch funktioniert. Ich hätte gerne, dass das beim ersten Öffnen automatisch passiert."*
+
+Two halves had to be joined, and the first one is the more interesting failure.
+
+**The download writes a settings entry pointing at the audio — and an entry is a NOTE ABOUT a file, not the file.** Rename the tab, re-download it
+under a different suffix, carry the settings to a second machine: the entry now points at nothing while the recording sits right beside the tab
+under the tab's own name. So `_adopt_audio_beside_tab` looks there when no recording is assigned. **Same folder, same stem** is the rule everything
+else here already follows — it is what the download screen writes, and what `mp3_path_for` already falls back to after a move — and it needs no
+settings to be correct. A recording the player chose himself is never replaced.
+
+**And then it measures itself**, on the first `update()` rather than inside `__init__`: the screen has not been drawn yet, so a measurement started
+from the constructor says *"listening to the recording…"* into a frame nobody has seen. Same pattern as the file chooser, same reason.
+
+Two guards, both of which are bugs if they are missing:
+
+- **Once.** A measurement that finds nothing leaves the points empty, and re-arming on that would measure again every single frame for the rest of
+  the song.
+- **`Ctrl+S` disarms it.** The first thread has finished by the time the next frame runs, so the already-running guard does not catch it, and the
+  whole measurement runs a second time.
+
+### A Bar Map That Is Consistently Early Is A Constant
+
+Songsterr's map is 80–92 ms against this player's own recording where the listening is 8–16, and that error is **mostly a constant** — the map's
+shape is right and its zero is not. `SyncMap` keeps `base_offset_ms` as a separate term on top of the points for exactly this: `Shift+M` moves the
+recording 10 ms later, it is stored per song, and it survives the map being measured again. Seven presses is the answer to "70 ms too early", and
+the reason it is the right answer rather than a workaround is that a constant error has a constant correction.
+
+### The Rule Was Written Down And Then Applied By Halves
+
+*"Jetzt habe ich vor dem ersten Öffnen ein Rename gemacht. Das MP3 wurde wieder nicht gefunden."*
+
+One chapter earlier this project wrote **"the file on disk outranks the note about it"** and then checked it only for an EMPTY note. Here is the
+sequence that exposed the other half:
+
+1. the download writes `song_mp3_paths["Thunder v3"] = "<songs>/Thunder v3.mp3"`
+2. `R` moves the file to `AC-DC - Thunder.mp3` and carries the entry to the new key — **with the old file name still inside it**
+3. `mp3_path_for` finds nothing at that path, falls back to the same NAME in the songs folder, finds nothing there either, and hands back the dead
+   path
+4. `_adopt_audio_beside_tab` sees a non-empty answer and stands down
+
+A note pointing nowhere is **not "no recording"** — it is a wrong one, and the two fail differently. The adoption now runs whenever the stored path
+does not exist, and `rename_song` repoints the entry at the file it just moved. Both, because one is the correct fix and the other is the one that
+holds when something else gets it wrong.
+
+The one thing adoption must not fight is `mp3_path_for`'s own fallback — a settings file carried to a second machine points at a folder that is not
+there, and finding the same name in the songs folder is a LIVE answer, not a leftover.
+
+### A Tab Songsterr Will Not Hand Over Is Not A Dead End
+
+*"Mit dem Songsterr Downloader konnte ich das GP downloaden selbst. Das kam auch bei den nächsten 3 anderen Songs."*
+
+Four songs in a row answered `Songsterr holds no Guitar Pro file for this tab` while a third-party downloader fetched all four. **So the file
+request is the part that fails, and it is one request out of three.** The bar map is a separate call and it still works.
+
+So the download carries on. The bar map is fetched and written **next to where the tab would have gone**, and the screen says the NAME to give a
+tab fetched somewhere else:
+
+```
+Songsterr holds no Guitar Pro file for this tab (revision 88 has: ...)
+Its bar map (124 bars) is saved and waiting.
+Fetch the tab yourself and save it in your songs folder as:
+Billy Talent - Swallowed Up By The Ocean.gp5
+Then the sync is already set up.
+```
+
+Same folder, same stem is the only rule anything here follows, so the useful thing to say is the name.
+
+**And the message quotes the reply.** Reaching it means the revision WAS fetched and parsed and simply has no usable `source` — which is a
+different thing from the network being down. Whether the field moved, was renamed, or is genuinely absent for these tabs is a question the reply
+itself answers, so the keys it DID carry are named. That turns the next screenshot into the answer instead of another round of guessing at an API
+nobody here can reach.
+
+### The Newest Revision Has No File, And An Older One Does
+
+The player sent the two replies for Papa Roach 14907 and they answer the question outright:
+
+| revision | what it carries |
+|---|---|
+| 6688469 (latest) | `aiGenerated, artist, audioV4, audioV4Midi, audios, tracks[].hash` — **no `source` key at all** |
+| 5981666 (`prevRevisionId`) | the same, plus **`"source": ""`** |
+
+**Songsterr keeps these tabs in their own format** — a hash per track, an `audioV4` mix — and a Guitar Pro file exists only where somebody uploaded
+one. That is why a third-party downloader can produce a `.gp` for a tab this app cannot fetch: it *builds* one from Songsterr's own data rather than
+finding a file.
+
+But every revision carries `prevRevisionId`, so **the history is walkable**. `_source_of` follows it up to `SOURCE_HOPS = 8` and takes the first
+revision with a real `source`. Eight because the walk costs one request per hop and a tab edited daily for a fortnight is not the same tab any more
+— past that the bar count moves, and a bar map whose count differs is refused anyway, which is the safety net this leans on.
+
+**And the revision comes back with the URL, because the bar map has to come from the same one.** A file from revision N timed by a per-bar map from
+revision N+6 is two different edits of the song pretending to be one, and the drift would read as a bad measurement rather than as a mismatch.
+`grab_song` asks for the found revision's video points first and falls back to the latest, since an old revision may have none at all.
+
+Two details that are the difference between working and nearly working: **`"source": ""` is not a file** — a key that is present and empty has to
+fail the same test as a missing one — and the walk stops on a revision it has already seen, because a history that points at itself is a loop.
+
+When the walk finds nothing it says how far it looked: *"8 revisions checked back to 4100000 (it has: aiGenerated, artist, audioV4…)"*. "No file"
+said of one revision is a guess; said of eight it is a finding.
+
+### Ctrl+C Copies The Screen
+
+*"Kannst du etwas bauen, damit ich Text am Screen mit der Maus markieren und kopieren kann, oder wenigstens ein generelles Ctrl+C?"*
+
+Asked after reading a 200-character error off a **photograph of his monitor** and typing it back here to be diagnosed. Mouse selection would mean
+laying out every string as characters with hit boxes, in a window whose entire job is drawing music. Copying the whole screen costs one key and
+answers the same need.
+
+It lives in `App._process_events`, next to the key-repeat guard and for the same reason: **that is the one door every screen's events come
+through**, and a screen added later would otherwise have to remember. Each screen offers a `copy_text()`; one without it says so rather than
+copying an empty string and looking like a key that does nothing.
+
+**No text-box exception.** The first version guarded it behind "is anything being typed" — which would have switched it off on the search screen,
+the exact screen it was asked for. Ctrl+C is a modified key and no box on any screen wants it.
+
+One thing the tkinter needs: its clipboard is emptied when the interpreter is destroyed, so the hidden window is kept alive for one `update()`
+after the append. Without it the copy appears to work and the paste comes back empty.
+
+### A Filter Box That Cannot Spell Metallica
+
+*"Im Filter kann ich keine Favoriten setzen. Bitte Sh+M für Favorit und Str+M für kein Favorit. Möglich?"*
+
+The keys are **Ctrl+M** and **Ctrl+Shift+M**, not the pair he named, for one concrete reason: **`Shift+M` is how a capital M is typed.** A filter box
+where it means "favourite" cannot spell Metallica — the same lesson U2 taught the rename editor one chapter ago. A Ctrl combination produces no
+character at all, so it works mid-word and steals nothing from the box. It also leaves `Shift+M` on the favourites-only filter, where it already
+was: the alternative was one key meaning two things depending on mode, which is the fault this file has now paid for three times.
+
+**Set and unset, not toggle.** `M` toggles, and a toggle is the wrong shape here: while the box is open the note under it is the last thing being
+read, so pressing a toggle means finding out afterwards which way it went. Two keys that SAY what they do can be pressed without looking, and
+pressing one twice is harmless — it answers *"Already a favourite"* rather than quietly undoing the press before it.
+
+`_toggle_favourite` is now one line through `_set_favourite`, because two copies of the same work drift apart.
+
+### The Default Moved Because The Ground Moved
+
+*"Ich hätte gerne standardmäßig Songsterr map nehmen, wenn noch nichts hinterlegt ist. Wenn schon was da ist, dann lassen wir es so."*
+
+A week earlier this file argued the opposite, with numbers: measured on the player's own Thunder recording the listening is **8-16 ms** and the bar
+map is **80-92**, so `auto` — listen first, fall back — produced the better answer. That was right, and it is now wrong, because what the default
+governs changed underneath it.
+
+Back then the measurement ran when `Ctrl+S` was pressed: a deliberate act, worth waiting for the finer answer. It now runs **by itself when a song
+opens**, and the comparison is no longer "which measurement is more accurate" but:
+
+| | cost at song open | can it fail |
+|---|---|---|
+| bar map | a **file read** — cached beside the tab at download time | no |
+| listening | **seconds of FFT** on a worker thread, as the player reaches for the space bar | yes, and it has: one of his songs reads +9.9, −34.4, −6.2 and +21.1 s |
+
+**A default is what happens to somebody who has not decided.** Making that the slow answer that sometimes reads nothing, rather than the instant one
+that is 80 ms out and corrected by seven presses of `Shift+M`, is the wrong way round. The finer measurement is still one keypress away.
+
+Three boundaries keep it honest:
+
+- **Only when there is a map to reach for.** Setting Songsterr on a song with no id would leave `Ctrl+S` refusing with *"no link is stored"* — worse
+  than listening.
+- **Only when the player has not decided.** `listen`, `songsterr` and `hand` are all choices and none is overwritten.
+- **It is stored, not just used for the run**, so the panel names it and `Alt+S` can move it. A default nobody can see is a decision the app made in
+  secret.
+
+And it touches the source only. The 70 ms the player dialled in with `Shift+M` lives in a different setting from the points, and defaulting one must
+never quietly reach into the other.
+
+### The Songs Folder Is The Sync
+
+*"Wie bekomme ich alle Songs von NB1 auf NB2 mit Syncs etc.? Ich könnte einen iCloud Link nutzen."*
+
+Copying the songs folder carried the tab, its bar map and its recording — and left the expensive part behind. The practice speed, the **sync points**,
+the Songsterr id, the transpose and the star all lived in one `settings.json` in the home folder, keyed by the tab's stem. The second laptop got the
+songs and none of the work.
+
+**Two machines writing one settings file is the problem, not the copying.** A cloud folder syncs files; it cannot merge two edits of one JSON, and
+this app saves that file on almost every keypress. Last writer wins, and what loses is silent. Putting `settings.json` in iCloud would have looked
+like a fix for a week and then eaten an evening of sync points.
+
+So the split is by **scope, not by convenience**:
+
+| lives with the SONG (`<name>.mysician.json`) | lives on the MACHINE (`settings.json`) |
+|---|---|
+| practice speed, sync points, both offsets, playback rate | audio device index |
+| Songsterr id and sync source | calibration |
+| transpose, favourite, best score | input latency offset |
+
+That right-hand column is the same list `merge_stats.py` has always refused to carry: an audio device index and a sound-card latency describe an
+interface, and moving them breaks the other computer's input while looking like a settings problem.
+
+Three rules make it safe:
+
+- **What this machine already has WINS.** Only settings with no local entry are taken. That is the rule `merge_stats.py` has always used, and one
+  rule in the project beats two — a sync that silently overwrites what you just adjusted is worse than no sync.
+- **The recording travels as a NAME, not a path.** `C:\Users\Admin\…` means nothing on the other laptop, and it is only adopted if a file of that
+  name is really beside the tab — otherwise this would store a path to nothing, which the app reports as a moved recording.
+- **Never a raise.** One unreadable sidecar must not break the song list, and a song that plays beats a note about why its settings could not be
+  written down.
+
+**It is written on the way out, not on the way through.** Leaving a song, finishing a measurement, a rename, a download — the expensive moments. A
+cloud folder that sees a file change forty times a minute is a cloud folder fighting itself. The sync points are the exception that writes at once:
+they are minutes of measurement, and losing them to a crash is the one loss this exists to prevent.
+
+**And the list reads them when it scans**, not when a song is opened, because a star has to show in the LIST — *"my favourites are gone"* is what
+copying the folder used to look like. `reload_files` owns its own note, so the count is folded into the line it returns rather than set behind its
+back; a second writer of that note leaves stale news standing, which is exactly what the first version did.
+
+`sidecar.song_fields` is the **fourth** reader of "every per-song setting" — with `forget_song`, `rename_song` and `merge_stats` — and four are only
+safe because none of them writes the names down. The one that did was found this week with two settings missing.
+
+### Two Rules About Text Boxes, Revised By Use
+
+*"DEL sollte auch während filtern gehen. Rename: Es sollte möglich sein mit Pfeiltasten zu springen."*
+
+**DEL was kept out of the search box on a theory, and the theory was wrong.** The reasoning written down at the time was "there DEL is what somebody
+reaches for to fix a typo" — true of a browser address bar, false of THIS box, which edits with backspace and does nothing with DEL at all. And the
+order somebody actually works in is *find the song, then delete it*: filtering down to one row is how you find it. The two-press confirm was already
+the protection; the guard was protecting nothing. It now works there and the search hint says so.
+
+**The rename editor could only grow and shrink at the end**, which meant fixing the FRONT of a name — and the names that need fixing are Songsterr's,
+where the artist sits at the front — was "delete the whole thing and type it again". It has a caret now, and every key is what it is in any other
+text field: arrows move, Home and End jump, Backspace eats behind, Delete eats in front. DEL is a text key in here and the song list's own DEL never
+sees the event, because the editor owns every key while it is open.
+
+The caret is drawn **where it is**, as a bar. The trailing `_` was honest while the editor could only append; with arrow keys it would claim the
+cursor is somewhere it is not, which is worse than no cursor.
+
+Two tests had to be inverted for this, and that is the point worth keeping: both asserted the old rule faithfully, so changing the behaviour showed
+up as a failing suite rather than as a surprise months later.
+
+### A Stick Is A Real Folder
+
+*"Auf NB2 geht keiner der Wege mit OneDrive, iCloud oder Dropbox. Ich könnte das Trio GP, MP3, Songsterr.Map von Hand kopieren."*
+
+Two corrections, one of them his and one of them mine.
+
+**His trio is a quartet, and that is the whole answer.** Since the settings moved into `<name>.mysician.json`, a song IS its four files — tab, bar
+map, recording, settings — all beside each other under one name. So `settings.json` and `progress.json` are no longer on the list of things to
+carry: the per-song half of both already travels with the songs. What is genuinely left over is **the chronological sitting log**, and whatever
+still sits in an older `settings.json` written before the sidecar existed.
+
+**And an iCloud share link is not a folder.** `https://www.icloud.com/iclouddrive/…` is a web page; the app needs a path it can read *and write* —
+sidecars, measurements, settings. A read-only pull would make the second laptop a spectator. The answer for a machine where no cloud client can be
+installed is the thing that was always there: a USB stick is a real folder.
+
+So `Ctrl+I` on the song list takes a folder and pulls out what is missing. The merge core moved from `tools/merge_stats.py` into
+`pickhero/transfer.py` for one blunt reason: **`tools/` is not in the .exe, and the laptop that most needs to merge is the one with only the .exe on
+it.** The command line is now a front end for the same code rather than a second copy of it — and `practice_log.write` came along with it, because
+the tool had its own copy of the write loop and a format with two writers is a format that drifts.
+
+The rules are the ones this project already had, said once more where they now live:
+
+- **Running it twice changes nothing the second time.** Sittings are keyed by when they started and which song.
+- **What this machine has WINS**, per setting and per file. A song already here keeps the copy being practised, whatever the other machine says.
+- **Per FILE, not per song.** A sidecar arriving beside a tab we already have can only add settings we have not got, and the tab is left alone.
+- **Nothing that belongs to the MACHINE moves** — audio device, calibration, latency — and the report says so out loud, because "what did it just do
+  to my sound card" is the question this feature would otherwise raise.
+- A `.bak` is left beside anything rewritten, which is why it runs in one step instead of asking first.
+
+Both new modules are named in `pickhero.spec`. They are imported inside the functions that use them, so nothing in the static graph reaches them —
+the verovio lesson — and this is the one feature that exists *for* the .exe-only laptop, so failing there and nowhere else would be the worst
+possible place for it.
+
+### "Every Song Has Four Files" Was A Promise, Not A State
+
+*"Ab wann hat jeder Song 4 Files? Muss ich in jeden Song reingehen? Einmalig beim Öffnen der App wäre praktischer."*
+
+He read the feature correctly and found the hole in it. The sidecar was written on the way OUT of a song, after a measurement, a rename or a
+download — all the moments when something CHANGES. Which meant a folder of fifty songs practised before the feature existed had **no** sidecars at
+all, and "every song has four files" would have come true one song at a time, in whatever order they happened to be played. Before copying anything
+anywhere he would have had to visit every single one.
+
+So the song list writes the missing ones when it scans. Two rules keep it honest:
+
+- **Only where there is something to carry.** A song nobody has touched gets no file: an empty sidecar is clutter that also LIES — a file saying
+  "settings live here" when they do not. That song is simply three files instead of four, and copying it loses nothing.
+- **An existing sidecar is never rewritten.** It may have arrived from the other machine and be newer than anything here, and overwriting it on a
+  scan would silently undo an import.
+
+Which makes the scan two-way and idempotent: it adopts what the folder knows and this machine does not, and it writes what this machine knows and
+the folder does not. Run it twice and the second run does nothing.
+
+### The Songs Folder Could Only Be Changed From A Command Line
+
+*"Import hat auf NB2 funktioniert. Wie kann ich jetzt den Standort-Ordner ändern?"*
+
+With `--songs` — which on the laptop that has nothing but `MySician.exe` on it means it could not be done at all. The **third** time this exact gap
+has surfaced in a week: the merge tool lived in `tools/` and so did not exist in the .exe, `ffmpeg` needed a script to fetch it, and now this. The
+pattern is worth naming: **anything that can only be reached from a shell does not exist on the machine that most needs it.**
+
+It is a row in the settings screen rather than a new key, because CLAUDE.md already says where this belongs — the place for anything set once that
+then lives on invisibly — and because a row SHOWS the current folder while a keybinding shows nothing. The path is shortened from the **front**: the
+half that identifies it is the end, and every one of these paths starts the same way.
+
+Two details that are the difference between working and nearly working:
+
+- **The stored path is absolute.** A relative one resolves against wherever the .exe was started from, which is how this app once died before
+  drawing a single frame — `Config.songs_path` carries that scar already.
+- **It returns to the song list.** The answer to "did that work" is the list of songs, not a settings row that says a path.
+
+And because pointing at a new folder is an ordinary scan, a folder carried over from the other machine brings its sidecars in on arrival — the same
+path as every other reload, rather than a second one written for this case.
+
+### Born To Be My Baby: Nothing Downstream Was Broken
+
+*"Bei Born to be my baby scheinen alle Syncs zu versagen. Kannst du das bitte mal analysieren?"*
+
+Measured on the player's own three files, every part that could have been at fault was fine:
+
+| | reads |
+|---|---|
+| the listening | 40 of 43 windows, 0 ambiguous, one section, no breaks |
+| Songsterr's bar map | 43 of 43 windows, 68 ms scatter, 149 points against 149 measures |
+| the two maps against each other | within ~100 ms across the whole song |
+| the follow loop, simulated at 60 fps over the real map | worst error **17 ms**, **zero** snaps |
+
+The song is a real find in one respect — the recording runs about **1.2 % slower than the tab throughout**, so the offset walks from −0.2 s to
+**+2.6 s** over four and a half minutes, the largest warp this project has met. `SYNC_PULL_FRACTION` gives 50 ms/s of authority against the 12 ms/s
+that needs, so the picture tracks it without a visible correction. That part works.
+
+**The failure was one step before all of it, and it was a regression from three days earlier.** He carried the tab and its `.songsterr.json` across
+by hand — no sidecar, so no stored song id. Then:
+
+1. `_bar_map_available()` said yes, because the **cache** is there
+2. so the new "undecided songs start on the bar map" default set the source to `songsterr`
+3. and `_start_auto_sync` refused, because it asked a **different question**: is an **id** stored
+
+The measurement never ran. Nothing was ever stored. Every attempt answered *"no link is stored"*. Two questions about the same thing, asked
+differently in two places — and the one that decides was not the one that does the work.
+
+Both halves are fixed, because one is the correct fix and the other holds when something else gets it wrong:
+
+- the guard now asks `_bar_map_available()`, the same question the default asks
+- **the song id is taken out of the cache**, where it has been written since the first day and nothing ever read it back. `Ctrl+U` existed to type
+  in by hand a number the song was carrying all along.
+
+The lesson is not about Songsterr. It is that **a capability check and a permission check that disagree produce a feature that silently does
+nothing** — and the default I had just changed turned a latent disagreement into every sync on the song failing.
+
+### Naming The String Is The Player Saying So
+
+*"Können wir noch was einbauen, damit ich beim Stimmen die Saite wählen kann, falls die falsche erkannt wird."*
+
+He asked for the case where the tuner picks the **wrong** string. The bigger half is the one he did not name: `nearest_string` returns **None** when
+no target owns the reading, and a string far enough out that nothing owns it is exactly when a tuner is most needed. A fresh string four hundred
+cents flat got no answer at all — the screen simply sat there saying "Play a string" while he was playing one.
+
+`1` to `6` name a string, and with one named the catch window stops applying: naming it IS the player saying which one it is. Three details:
+
+- **6 is the low E**, the way a guitarist counts and the way the rest of this app already numbers strings (`F1`–`F6`, `active_strings`). The pips are
+  drawn low-first, so the numbers read left to right — and each one is **written under its pip**, because a tuner is read with a guitar in both hands
+  and 6-is-the-low-E is a convention rather than something the screen would otherwise say.
+- **The same key lets go.** The player who pressed 5 to escape a wrong guess presses 5 again to stop, without hunting for a second key. Letting go
+  drops that string's reading, which was measured against a target that is no longer the question.
+- **An octave is still refused.** The window is ±900 cents — wide enough for any string a person would actually try to tune, and stopping short of
+  1200 keeps YIN's octave error out. A reading an octave up is the detector being wrong, not the string being wrong.
+
+### The Nut Rides With The Playhead
+
+*"Es geht darum, dass der Balken die aktuelle Stimmung der Saite anzeigt. Der Wert je Saite ändert sich während dem ganzen Song nicht. Es ist nur
+eine zusätzliche Orientierung, damit man besser weiß, ob man auf Saite D oder G ist."*
+
+**I read his first sketch as a progress bar and built a plan for one.** It was a drawing over a screenshot, not a feature, and it meant the opposite
+of what I took it for: not something that CHANGES with the song, but the one thing on screen that never does. Six letters on the playhead saying
+which string each lane is. He had to stop me — and the lesson is that a mock-up drawn over a screenshot says what it should LOOK like and nothing
+about what it MEANS, so the meaning has to be asked for rather than inferred.
+
+It is called the **nut** because that is the part of a guitar where the open strings are named, in exactly this order. This one rides with the
+playhead instead of sitting at the top of the neck — moving in the hybrid view, standing still in the standard one, which is the easier half.
+
+Three things it has to get right:
+
+- **See-through.** The notes underneath are the ones being played, so a label that hid them would cost more than it gives.
+- **Only the row being played**, in hybrid. Six letters on every row would be a column of labelling down the page, and the question they answer is
+  about the hand, which is on one row at a time.
+- **`nut_letters` is where the two orders meet.** `tuning_notes` reads low to high because that is how a player tunes; the lanes are drawn the other
+  way up, lane 0 being the high e. Reversing it once here beats a `5 - i` in every caller.
+
+All six discs are identical, so one is built and blitted six times — six SRCALPHA surfaces a frame is sixty a second for a picture that never
+changes.
+
+### A Margin Is Measured In Centimetres, Not Pixels
+
+*"Links und rechts am Rand ein Abstand von 1-2 cm, damit meine Augen nicht ganz bis an den Rand fahren müssen."*
+
+`SHEET_SIDE_PAD = 24` was comfortable on the laptop it was written on and a hairline on a desk monitor, because a margin is about **the distance the
+eye travels** and that is a physical measurement. It is a fraction of the width now — 3.5 %, about 1.2 cm at 1920 — and never less than the 24 px it
+used to be, so no screen ends up worse off.
+
+The reason this is safe where the footer was not: **it is horizontal.** The footer once changed its own height by saying how many bars were on a row,
+which changed the room, which changed the head size, which walked 44.4 → 44.5 px. This changes how many bars fit on a row and leaves the row HEIGHT
+alone. The test asserts that on the signature rather than by grepping the source — `_sheet_pad` is a staticmethod taking a width and nothing else, so
+it cannot see the layout it feeds. That makes the loop impossible rather than merely absent today.
+
+### The Lead-In: Where The Eye Already Is
+
+*"Bei langen Tönen schaue ich bereits nach links, verpasse dann aber oft um 150 ms den ersten Ton."*
+
+The diagnosis is his, and it is exact. On a held note at the end of a row the eye has already moved to where the music is about to continue — and
+until now there was **nothing there to read**. So the entry was guessed, and a guess is late. 150 ms late, measured by the person doing the guessing.
+
+So a second, quieter playhead runs in on the row below and reaches that row's first note **at the moment the music does**. Nothing about it is
+decoration: it exists so the entry can be read instead of counted.
+
+Three decisions worth keeping:
+
+- **It targets the row's first ANCHOR, not the margin.** A row whose first bar opens with a rest has its first note further in, and that is the
+  moment being led to.
+- **Always, at every row change.** A cue that only turns up sometimes is one that cannot be planned around — and planning the entry is the whole job.
+- **`lead_in_x` returns None outside its window**, so the caller has one thing to check and a bar that has already landed cannot be left on screen.
+
+**And a measurement that changed the design.** The first version only moved, and the runway is the left margin and nothing more — **56 px at 1600
+wide**. A second of travel across that is about a millimetre a frame, which is motion the eye can miss: the exact failure the feature exists to fix.
+So it brightens as it comes, from 0.18 to 0.55 of the playhead's colour, over the same second. The brightening is the half of the signal that does
+not depend on how wide the margin happens to be — and the share that drives it is computed from the position that was already chosen, so the two
+can never disagree.
+
+### What this is not
+
+It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus
+while its neighbour matches the first. **A monotone path (DTW) cannot do that by construction**, and on the chroma this file already
+computes it runs over a whole song in 5 s — measured. That is the next piece of work, and the reason this one stops here rather than
+tuning thresholds further.
+
+**What Songsterr actually does, since it is the benchmark:** nothing like this. `songsterr.com/api/video-points/{song}/{revision}/list`
+returns **a timestamp per measure** into a YouTube video. It is a made map, not a found one — by hand, or born with their own
+transcription. Go PlayAlong asks for "2 to 5 points" by hand; Soundslice has you tap `T` on every barline. Every tool that solves this
+well solves it with a human somewhere in the loop, which is worth knowing before spending another week on the search.
+
+## The Recording Is Only Synced Where Somebody Listened
+
+"Thunder synct beim Solo ganz schlecht und liegt weit daneben." Read straight off the run log, and the app was already telling him in a
+line nobody reads at the moment it matters:
+
+```
+mp3_sync_points   11   22s:+11110ms 34s:+11116ms 40s:+11016ms 52s:+10976ms 76s:+10769ms
+                       106s:+10703ms 118s:+10757ms 142s:+10756ms 166s:+10897ms 178s:+10895ms 202s:+10967ms
+mp3_sync_covers   22-202s of 382s   47 %
+```
+
+**The last point is at 3:22 and the solo is at 3:49.** Every note past 3:22 is placed by extrapolating the last measured section, over
+half a song that was never listened to — and the offsets that WERE measured wander from +10703 to +11116 ms, 413 ms of real drift, with
+section rates swinging from -1.64 % to +0.59 %. Extrapolating thirty seconds past the end of that is worth a fifth of a second at best
+and much worse at the rates this song has shown. `mp3_worst_drift_ms` reached 153 in one of the runs.
+
+**The automatic pass did not fail silently, it failed loudly and in the wrong place.** The panel says `found by listening — 28 of 51
+windows usable` and `measured 0:21–3:21 of 6:21`, which is honest and complete. It is also printed once, in blue, next to ten other blue
+lines, while the player is at 0:00 — and read at 3:49, where it is the only thing on screen that explains what he is seeing, it is not
+on screen at all in any form that says "this applies to you NOW".
+
+**The line is said where it applies now.** `_beyond_sync_line` speaks only while the playhead is outside `SyncMap.covers()`, in the
+warning colour, and the size it offers is `drift_seen_ms()` — how far the recording wandered where somebody WAS listening. A modelled
+bound would be a promise; this is a number the song has already produced. Nothing is said inside the span, and nothing on a song with a
+single stored offset, which claims to have been measured nowhere and so has no edge to fall off.
+
+**And then the key it points at turned out to be broken, which is why this chapter grew.** `Shift+S` was going to be the answer that
+needed no code — until it was read:
+
+- **`SyncMap` threw the stored offset away the moment one point existed.** `offset_at` returned the interpolation and ignored
+  `base_offset_ms` entirely. So on every song that had ever been synced, `Shift+N`/`Shift+M` were DEAD: the HUD went on printing a number
+  the player could change while the recording did not move a millisecond. The oldest fault in this file, in the one place nobody looked.
+- **And `_set_sync_point` saved that dead number.** `here = (playback_ms, self._mp3_offset())` — the nudge, not the offset in force. On
+  this player's song the map reads +11.0 s in the solo and the stored offset is +0, so the one press meant to rescue a drifting tail
+  would have written a point saying zero: not a repair, a demolition. **The advice to press it was given before the code was read**, and
+  it would have cost him his sync.
+- **The offset is a nudge ON TOP of the map now**, and a point records the sum. Pressing spends the nudge — left standing it would apply
+  a second time, to the whole song, including the parts already right. The workflow is what it always looked like from outside: nudge
+  with `Shift+N`/`Shift+M` until it sits, then `Shift+S` to pin it there.
+
+**A test helper had to change with it, and that is worth its own line.** `_mark` set the stored offset to an absolute value and pressed;
+it only ever worked because the map discarded the number and the press saved it anyway. It nudges by the difference now, which is what a
+hand does.
 
 ## Slowing The Tab Down Did Nothing At All
 
@@ -2576,11 +4080,52 @@ pyinstaller pickhero.spec --noconfirm
 # Or use build.bat on Windows
 ```
 
+## Open: The Strip Along The Bottom
+
+Asked for at the end of the session that added the nut and the lead-in, and **not started** — so this is a brief, not a record.
+
+*"Ich hätte gerne eine Anzeige am unteren Bildrand, wo ich im Song stehe. Hier könnten wir auch den %-Wert hinschreiben und aufteilen 82 % (groß)
+und kleiner 90 % timing, 76 % Right Notes. Die Fortschrittsanzeige soll auch zum Spulen verwendet werden können. Sie ist wie eine vereinfachte
+Miniatur des Tabs."*
+
+So: one strip across the bottom that is three things at once — where you are, how it is going, and a way to move.
+
+**The three numbers already exist, and they fall out of the model rather than needing a new one.** `NoteMatcher.get_statistics()` returns `hits`,
+`close`, `misses`, `total`, and `MatchType.CLOSE` means *the right note, played off the beat*. That is exactly the split he drew:
+
+| his label | what it is |
+|---|---|
+| Right Notes | `(hits + close) / total` — the right note was played **at all** |
+| Timing | `hits / (hits + close)` — of the right notes, how many were **on time** |
+| the big number | `hits / total`, which is what `accuracy_percent` already is |
+
+Worth saying to him: the split is free because `CLOSE` was always "right note, wrong moment". Nothing needs re-measuring.
+
+**Three things found while scoping it, each of which will cost a round if rediscovered:**
+
+- **The playing screen has no mouse input at all.** `MOUSEBUTTONDOWN` appears only in `ui/menu.py`. Seeking by clicking the strip means adding
+  pointer handling to `PlayingScreen` for the first time — and it is worth asking whether a player with a guitar in both hands wants to reach for a
+  mouse, when `Ctrl+arrow` already seeks by half a minute and `I`/`O`/`P` already loop.
+- **The strip's height feeds back into the hybrid layout.** This file has already paid for that once: putting bars-per-row in the footer changed the
+  footer's height, which changed the room, which changed the head size, which walked 44.4 → 44.5 px and never settled. The strip must have a height
+  that is a **constant**, never one derived from what it draws.
+- **A minimap of the tab is a loop over the whole song.** `_draw_tab_page` learnt this the hard way — walking every note each frame cost 12.4 ms
+  against a 16.7 ms budget. The strip has to be built **once per song** into a surface and blitted, not recomputed per frame; the only thing that
+  moves is the position marker and, when a note is judged, one column of it.
+
+**Still open, to ask before building:** what the miniature actually draws (note density? one block per bar? the verdicts as they land?), whether the
+numbers are for this run or the song's best, and whether the strip replaces part of the footer's key line or pushes it up.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
 - Don't create a web UI or Electron wrapper. This is a desktop app.
-- Don't add online features, accounts, or cloud sync. Offline-first, local files only.
+- Don't add accounts, cloud sync, or anything that sends the player's playing anywhere. Offline-first, local files only.
+  **Songsterr is the one exception and it is one-way**: the download screen fetches a tab, its bar map and the audio of the recording
+  that map was made against, and everything it fetches is written to disk beside the tab so the song works on a machine with no
+  network from then on. Nothing is uploaded, nothing is accounted for, nothing is remembered anywhere but the player's own folder.
+  Asked for by name: *"Wenn wir beim Downloader explizit Songsterr nutzen (keine anderen Dienste) ... Ich gebe die Daten nicht weiter
+  und nutze sie nur lokal offline."* **Songsterr only** -- no second service, no search across the web.
 - Don't over-abstract. Simple classes, no deep inheritance hierarchies. This is a ~3K LOC app, not a framework.
 - Don't add **blind** polyphonic transcription ("here is audio, name every note") and don't add ML. aubio YIN is monophonic and stays the note detector.
   Verifying the notes the tab already predicts is a different problem and is allowed: `audio/chord_verify.py` checks each expected string against

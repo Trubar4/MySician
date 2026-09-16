@@ -399,13 +399,28 @@ class TestTheCardsAndTheTextShareTheCorner:
         return screen, surface
 
     def test_the_text_starts_past_the_cards(self):
-        from pickhero.ui.scrolling import CHORD_CARD_GAP
+        from pickhero.ui.scrolling import CHORD_CARD_GAP, CHORD_CARD_SCALE
         from pickhero.ui.chord_view import card_size
 
         screen, _ = self._screen(True)
-        width, _height = card_size()
+        width, _height = card_size(CHORD_CARD_SCALE)
         cards_right = 12 + 2 * (width + CHORD_CARD_GAP)
         assert screen._hud_left_x() >= cards_right
+
+    def test_and_the_music_starts_below_them(self):
+        """On the scrolling board the cards sat above a lane band that
+        starts halfway down the window. The sheet reaches into that corner,
+        and the first thing the player saw was a diagram over his top
+        string."""
+        from pickhero.ui.scrolling import CHORD_CARD_SCALE
+        from pickhero.ui.chord_view import card_size
+
+        screen, _ = self._screen(True)
+        assert screen._hud_top_used() >= card_size(CHORD_CARD_SCALE)[1]
+
+    def test_and_they_are_a_tenth_smaller_than_the_boards_own(self):
+        from pickhero.ui.scrolling import CHORD_CARD_SCALE
+        assert CHORD_CARD_SCALE == 0.9
 
     def test_and_stays_where_it_was_with_the_cards_off(self):
         """Nothing moves for a player who never turns this on."""

@@ -43,119 +43,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pickhero.config import CONFIG_DIR  # noqa: E402
 from pickhero import practice_log  # noqa: E402
+# The merge itself lives in the PACKAGE, not here. `tools/` is not in the
+# .exe, and the laptop that most needs to merge is the one with only the
+# .exe on it -- so the song list can do this too (Ctrl+I) and both front
+# ends run the same code. This file is the command line for it.
+from pickhero.transfer import (  # noqa: E402
+    backup as _backup, merge_progress, merge_sessions, merge_settings,
+    read_json as _read_json, session_key, song_settings)
 
-
-def session_key(session) -> tuple:
-    """What makes a sitting the same sitting.
-
-    The start time is to the second and the song is in it, so two machines
-    cannot invent the same one -- and the same one copied twice collapses.
-    """
-    return (session.started, session.song)
-
-
-def merge_sessions(mine: list, theirs: list) -> tuple[list, int]:
-    """(merged, how many were new), oldest first."""
-    seen = {session_key(s) for s in mine}
-    added = [s for s in theirs if session_key(s) not in seen]
-    # A later merge must not depend on which order they arrived in.
-    merged = sorted(mine + added, key=lambda s: (s.started, s.song))
-    return merged, len(added)
-
-
-def merge_progress(mine: dict, theirs: dict) -> tuple[dict, list[str]]:
-    """(merged, the songs whose best came from the other machine)."""
-    out = dict(mine)
-    improved = []
-    for song, other in theirs.items():
-        current = out.get(song)
-        if current is None:
-            out[song] = dict(other)
-            improved.append(song)
-            continue
-        merged = dict(current)
-        # attempts: the larger, NOT the sum. See the module docstring.
-        merged["attempts"] = max(current.get("attempts", 0),
-                                 other.get("attempts", 0))
-        merged["last_played"] = max(current.get("last_played", ""),
-                                    other.get("last_played", ""))
-        if other.get("best_accuracy", 0.0) > current.get("best_accuracy", 0.0):
-            # The record is taken whole: hits, total and the histories belong
-            # to the run that scored it, and mixing them makes a run that
-            # never happened.
-            for field in ("best_accuracy", "best_hits", "best_total",
-                          "section_history", "tempo_history"):
-                if field in other:
-                    merged[field] = other[field]
-            improved.append(song)
-        out[song] = merged
-    return out, improved
-
-
-# The per-song settings, and nothing else. Everything absent from this list
-# stays as the receiving machine has it -- see the module docstring.
-SONG_SETTINGS = ("song_tempo_factors", "song_mp3_paths", "song_mp3_offsets",
-                 "song_backing_offsets",
-                 # The sync points, which are the expensive ones: a song
-                 # measured against its recording on one machine had to be
-                 # measured again on the other, and a setting that moves
-                 # house has to be followed into every reader.
-                 "song_mp3_anchors", "song_mp3_rates",
-                 # Which tuning the song is played in. It describes the SONG
-                 # and the player's hands, not the machine.
-                 "song_transpose")
-
-
-def merge_settings(mine: dict, theirs: dict) -> tuple[dict, list[str]]:
-    """(merged, what changed). Per-song entries and favourites only.
-
-    An entry this machine already has WINS. It was set here, on this
-    instrument, in this room -- and a sync that silently overwrites what you
-    just adjusted is worse than no sync.
-    """
-    out = dict(mine)
-    changed = []
-    for field in SONG_SETTINGS:
-        ours = dict(out.get(field) or {})
-        added = 0
-        for song, value in (theirs.get(field) or {}).items():
-            if song not in ours:
-                ours[song] = value
-                added += 1
-        if added:
-            out[field] = ours
-            changed.append(f"{field}: {added} Songs dazu")
-    stars = list(out.get("favourites") or [])
-    new_stars = [s for s in (theirs.get("favourites") or []) if s not in stars]
-    if new_stars:
-        out["favourites"] = stars + new_stars
-        changed.append(f"favourites: {len(new_stars)} dazu")
-    return out, changed
-
-
-def _read_json(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _read_progress(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _backup(path: Path) -> None:
-    if path.exists():
-        shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+SONG_SETTINGS = song_settings()
+_read_progress = _read_json
 
 
 def main() -> int:
@@ -228,9 +125,7 @@ def main() -> int:
     target.mkdir(parents=True, exist_ok=True)
     if added:
         _backup(my_log)
-        with open(my_log, "w", encoding="utf-8") as handle:
-            for session in merged:
-                handle.write(json.dumps(session.__dict__, ensure_ascii=False) + "\n")
+        practice_log.write(my_log, merged)
     if improved:
         _backup(target / "progress.json")
         (target / "progress.json").write_text(

@@ -80,6 +80,26 @@ def append(session: Session, path: Path | None = None) -> bool:
     return True
 
 
+def write(path: Path, sessions: list[Session]) -> bool:
+    """Replace the whole file with these sittings. True if it was written.
+
+    The only writer besides `append`, and it exists because merging two
+    machines has to rewrite the file rather than add to it. Here rather than
+    in the merge tool, so the one module that knows the format is the one
+    that produces it -- the tool had its own copy of this loop, and a format
+    with two writers is a format that drifts.
+    """
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            for session in sessions:
+                handle.write(json.dumps(asdict(session),
+                                        ensure_ascii=False) + "\n")
+    except OSError:
+        return False
+    return True
+
+
 def read(path: Path | None = None) -> list[Session]:
     """Every session ever written. A damaged line is skipped, not fatal."""
     target = Path(path) if path else PRACTICE_FILE

@@ -27,6 +27,12 @@ from pickhero.ui import scrolling
 from pickhero.ui.scrolling import PlayingScreen
 
 
+# Keys that must never fire twice from one hold. See _process_events: the
+# global repeat is 300 ms then every 40 ms, and both of these cross screens
+# that do different things with them.
+NEVER_REPEAT = frozenset({pygame.K_ESCAPE, pygame.K_SPACE})
+
+
 class App:
     """Main application with game loop."""
 
@@ -35,6 +41,15 @@ class App:
         self._progress = ProgressTracker()
         self._running = False
         self._state = "menu"
+        # What the window was last OPENED with, and whether the driver said
+        # no. Kept as the request rather than the result, so a refusal does
+        # not have the loop trying again sixty times a second.
+        self._vsync_asked = False
+        self._vsync_refused = False
+        self._surface: pygame.Surface | None = None
+        # When the next picture is due, on the monotonic clock. See
+        # _wait_for_next_frame.
+        self._next_frame_at: float | None = None
         self._load_error: str | None = None
         self._current_song_path: Path | None = None
         self._current_track_index: int | None = None
@@ -53,6 +68,12 @@ class App:
         # dropping the player somewhere they did not come from is how a menu
         # starts to feel like a maze.
         self._return_to = "menu"
+        # Which no-repeat keys are physically down. See _process_events.
+        self._held: set[int] = set()
+        # And whether the NEXT escape on the song list closes the app. One
+        # keystroke away from gone is too close for a key that is also the
+        # way out of every other screen.
+        self._quit_armed = False
 
     def run(self) -> None:
         """Initialize PyGame, run main loop, clean up."""
@@ -75,31 +96,49 @@ class App:
         pygame.key.set_repeat(300, 40)  # 300ms delay, then repeat every 40ms
         pygame.display.set_caption("PickHero")
 
-        dc = self._config.display
-        surface = pygame.display.set_mode(
-            (dc.width, dc.height), pygame.RESIZABLE
-        )
+        surface = self._apply_display_mode()
         clock = pygame.time.Clock()
 
-        songs_dir = Path(self._config.songs_dir)
-        self._menu = MenuScreen(songs_dir, config=self._config, progress=self._progress)
+        songs_dir = self._config.songs_path()
+        self._menu = MenuScreen(songs_dir, config=self._config,
+                                progress=self._progress)
         self._state = "menu"
         self._running = True
 
         while self._running:
+            # The window is reopened only when the ANSWER changes, not every
+            # frame: set_mode tears the surface down and builds it again, and
+            # doing that sixty times a second is a different bug.
+            if self._config.display.vsync != self._vsync_asked:
+                surface = self._apply_display_mode()
+                # Asked for and not given is a thing the player has to hear.
+                # Silence here reads as "it worked", and the next run log
+                # would then be compared against a mode that never happened.
+                if self._vsync_refused and self._playing_screen is not None:
+                    self._playing_screen._say(
+                        "Vsync: the graphics driver refused it — the "
+                        "software timer is still setting the pace")
             frame_started = time.perf_counter()
             self._process_events(surface)
+            surface = self._surface
             self._update()
             self._render(surface)
             pygame.display.flip()
+            shown = time.perf_counter()
             # How long the work took, BEFORE the wait that pads it out to
             # 60 Hz. clock.get_fps() would report the padded rate and read a
             # healthy 60 right up to the moment the machine can no longer
             # keep up -- which is the one thing it is being asked about.
             if self._playing_screen is not None:
                 self._playing_screen.record_frame_ms(
-                    (time.perf_counter() - frame_started) * 1000.0)
-            clock.tick(60)
+                    (shown - frame_started) * 1000.0)
+                # And the moment the picture went out, which answers the
+                # OTHER question: not whether the machine keeps up but
+                # whether the pictures arrive evenly. Taken after the flip
+                # and before the pad, so the gap it yields spans one whole
+                # frame including the wait.
+                self._playing_screen.record_frame_shown(shown)
+            self._wait_for_next_frame(clock)
 
         # Closing the window ends a session as surely as pressing ESC does.
         if self._playing_screen is not None:
@@ -131,16 +170,176 @@ class App:
         except Exception as exc:                    # noqa: BLE001
             print(f"Dashboard konnte nicht geschrieben werden: {exc}")
 
+    # The ways of asking for vsync, in the order of what they cost. pygame
+    # only offers it with SCALED, and the first shape of this asked ONCE --
+    # SCALED with RESIZABLE -- took the driver's no for the whole answer and
+    # reported vsync as impossible on a machine that had not been asked
+    # properly. Dropping RESIZABLE costs a window that cannot be dragged
+    # bigger, which is worth trying before giving up on the pacing entirely.
+    #
+    # Each carries the name the run log will print, because "asked" and
+    # "got" turned out to be different things and a log that cannot tell
+    # them apart sends the next reading to the wrong conclusion -- which is
+    # exactly what happened on the first attempt.
+    VSYNC_FLAGS = (
+        (pygame.RESIZABLE | pygame.SCALED, "on, window resizable"),
+        (pygame.SCALED, "on, window fixed size"),
+    )
+
+    # The frame this app aims for, and how much of the wait for it is spent
+    # spinning rather than asleep. Two milliseconds is enough to cover what
+    # a system timer gets wrong and is about a tenth of one core -- the cost
+    # is the spin, so it is kept as short as it can be and still work.
+    FRAME_S = 1.0 / 60.0
+    SPIN_S = 0.002
+
+    def _wait_for_next_frame(self, clock: "pygame.time.Clock") -> None:
+        """Hold until the next frame is due.
+
+        `clock.tick` asks the system to sleep for most of the wait, and
+        Windows cannot sleep to the millisecond: measured on the player's
+        machines the gaps between pictures run 13.8 to 19.5 ms against a
+        16.7 ms frame, with 15 to 18 % of them more than a fifth away from
+        the middle. A frame ready late misses its refresh and is held for
+        two, which is judder and not blur.
+
+        So the wait is taken in two parts when it is asked for: asleep until
+        two milliseconds before the frame is due, then spinning. The spin is
+        what costs, and it is kept to the last stretch where the sleep
+        cannot be trusted.
+
+        The due time walks forward by whole frames rather than from "now",
+        so a frame that runs long is caught up rather than pushing every
+        frame after it -- but a real STALL (a seek, an engraving) resets it,
+        because catching up a lost half-second would run the picture flat
+        out until it had.
+        """
+        if not self._config.display.steady_pace:
+            clock.tick(60)
+            return
+        due, nap = self._frame_plan(time.perf_counter())
+        if due is None:
+            clock.tick(60)
+            return
+        if nap > 0:
+            time.sleep(nap)
+        while time.perf_counter() < due:
+            pass
+        self._next_frame_at = due + self.FRAME_S
+
+    def _frame_plan(self, now: float) -> tuple[float | None, float]:
+        """(the moment to wait for, how much of that to spend asleep).
+
+        The arithmetic, kept apart from the waiting so it can be tested
+        without a clock. The first version of the test replaced
+        `time.perf_counter` for the whole process to get at this, which
+        stopped the spin from ever finishing and hung the suite -- a real
+        busy wait cannot be tested by freezing time, and it does not need
+        to be: the loop is two lines and the decision is all of it.
+
+        A due time of None means there is nothing to wait for: the first
+        frame, or one arriving after a genuine stall.
+        """
+        due = self._next_frame_at
+        if due is None or now - due > self.FRAME_S * 4:
+            # A seek or an engraving loses half a second, and catching that
+            # up would run the picture flat out until it had.
+            self._next_frame_at = now + self.FRAME_S
+            return None, 0.0
+        return due, max(0.0, due - now - self.SPIN_S)
+
+    def _apply_display_mode(
+        self, size: tuple[int, int] | None = None
+    ) -> pygame.Surface:
+        """Open the window, with vsync when it is asked for and granted.
+
+        One door for every mode change -- opening, resizing, and the key --
+        because each of them can silently drop what the others set up.
+
+        vsync needs SCALED in pygame: the window then has a FIXED drawing
+        size and is letterboxed when it is dragged bigger, rather than the
+        lanes being laid out again for the new room. That is a real cost and
+        the reason this is a switch rather than the default. A driver may
+        also refuse the request outright, which raises here and is caught:
+        the window still has to open.
+        """
+        dc = self._config.display
+        wanted = size or (dc.width, dc.height)
+        self._vsync_asked = bool(dc.vsync)
+        self._vsync_refused = False
+        if self._vsync_asked:
+            for flags, name in self.VSYNC_FLAGS:
+                try:
+                    self._surface = pygame.display.set_mode(
+                        wanted, flags, vsync=1)
+                    dc.vsync_outcome = name
+                    return self._surface
+                except pygame.error:
+                    continue
+            # Asked for and not given, by any of the ways there are of
+            # asking. Said out loud rather than left to be discovered in a
+            # run log that looks unchanged.
+            self._vsync_refused = True
+        dc.vsync_outcome = "refused" if self._vsync_refused else "off"
+        self._surface = pygame.display.set_mode(wanted, pygame.RESIZABLE)
+        return self._surface
+
     def _process_events(self, surface: pygame.Surface) -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self._running = False
                 return
 
+            # A TOGGLE NEVER REPEATS. `set_repeat(300, 40)` is one global
+            # setting for every key, and this file has now paid for it three
+            # times: a short press on PgDn walking the practice speed from
+            # 100 % to 50 %, escape leaving the song AND closing the app on
+            # one hold, and space starting the count-in and then stopping it
+            # again -- "es zählt von 2 auf 1 und stoppt. Ich drücke nochmals
+            # space und es läuft."
+            #
+            # Space is the worst of the three, because the repeats arrive
+            # while the frame is STALLED on loading the recording and are
+            # then drained together: an even number of them and the song is
+            # paused with no sign of why.
+            #
+            # Only the keys that toggle. The arrows, the tempo and the size
+            # keys want their repeats, and taking those would be a different
+            # bug. Guarded here rather than on each screen, because this is
+            # the one door every screen's events come through and a screen
+            # added later would otherwise have to remember.
+            if event.type == pygame.KEYUP and event.key in NEVER_REPEAT:
+                self._held.discard(event.key)
+            if event.type == pygame.KEYDOWN and event.key in NEVER_REPEAT:
+                if event.key in self._held:
+                    continue                  # the same press, still down
+                self._held.add(event.key)
+
             if event.type == pygame.VIDEORESIZE:
-                surface = pygame.display.set_mode(
-                    (event.w, event.h), pygame.RESIZABLE
-                )
+                # Through the one door, so a resize cannot quietly drop
+                # vsync -- and so the loop gets the new surface. Assigning
+                # to the local `surface` here changed nothing at all: the
+                # caller went on drawing to the one it already had.
+                self._apply_display_mode((event.w, event.h))
+
+            # Ctrl+C, on every screen, before anything else can claim it.
+            # *"Kannst du etwas bauen, damit ich Text am Screen markieren
+            # und kopieren kann, oder wenigstens ein generelles Ctrl+C?"* --
+            # asked after typing a 200-character error message back to be
+            # diagnosed, read off a photograph of a monitor.
+            #
+            # Here rather than on each screen, for the same reason the key
+            # repeat guard is here: this is the one door every screen's
+            # events come through, and a screen added later would otherwise
+            # have to remember.
+            # No text-box exception: Ctrl+C is a MODIFIED key and no box on
+            # any screen wants it. Guarding it behind "is anything being
+            # typed" would have switched it off on the search screen, which
+            # is the exact screen it was asked for.
+            if (event.type == pygame.KEYDOWN and event.key == pygame.K_c
+                    and event.mod & pygame.KMOD_CTRL):
+                self._copy_screen()
+                continue
 
             if self._state == "menu":
                 self._handle_menu_event(event)
@@ -156,6 +355,44 @@ class App:
                 self._handle_tuner_event(event)
             elif self._state == "settings":
                 self._handle_settings_event(event)
+
+    def _current_screen(self):
+        """Whatever is being drawn right now, or None."""
+        return {
+            "menu": self._menu,
+            "playing": self._playing_screen,
+            "device": self._device_menu,
+            "download": self._download_menu,
+            "calibration": self._calibration_menu,
+            "tuner": self._tuner_menu,
+            "settings": self._settings_menu,
+        }.get(self._state)
+
+    def _copy_screen(self) -> None:
+        """Put the current screen's text on the clipboard.
+
+        Selecting with the mouse would mean laying out every string as
+        characters with hit boxes, in a window whose whole job is drawing
+        music. The whole screen costs one key and answers the same need.
+
+        A screen with nothing to say says so, rather than copying an empty
+        string and looking like a key that does nothing.
+        """
+        from pickhero.ui.clipboard import put_clipboard
+        screen = self._current_screen()
+        getter = getattr(screen, "copy_text", None)
+        text = getter() if callable(getter) else ""
+        say = getattr(screen, "say", None)
+        if not text:
+            if callable(say):
+                say("Nothing on this screen to copy")
+            return
+        lines = text.count("\n") + 1
+        plural = "s" if lines != 1 else ""
+        said = (f"Copied {lines} line{plural} to the clipboard"
+                if put_clipboard(text) else "Could not reach the clipboard")
+        if callable(say):
+            say(said)
 
     def _handle_menu_event(self, event: pygame.event.Event) -> None:
         # Shift+U reaches the tuner even with the search box open, and it has
@@ -174,11 +411,18 @@ class App:
         # a capital U is the request however the layout produced it. With
         # caps lock on the two swap over, which is the price and is small:
         # the letter is still typeable, with shift held.
+        # ...but NOT while a song is being renamed. There the capital U is
+        # a letter: U2 is a band, and a text box that swallows a character
+        # is a text box the player cannot finish a name in. Searching is the
+        # case this exception was built for and it keeps it.
         if (event.type == pygame.KEYDOWN and event.key == pygame.K_u
-                and shift_held(event)):
+                and shift_held(event) and not self._menu.is_renaming):
             self._open_tuner("menu")
             return
-        if event.type == pygame.KEYDOWN and not self._menu.is_searching:
+        # `is_typing`, not `is_searching`: the rename editor is a text box
+        # too, and while it was not part of this test, `o` in the middle of
+        # a name opened the settings screen.
+        if event.type == pygame.KEYDOWN and not self._menu.is_typing:
             if event.key == pygame.K_d:
                 self._open_device_menu("menu")
                 return
@@ -187,8 +431,9 @@ class App:
                 self._state = "settings"
                 return
             if event.key == pygame.K_s:
-                songs_dir = Path(self._config.songs_dir)
-                self._download_menu = DownloadMenuScreen(songs_dir)
+                songs_dir = self._config.songs_path()
+                self._download_menu = DownloadMenuScreen(
+                    songs_dir, config=self._config)
                 self._state = "download"
                 return
             if event.key == pygame.K_g:
@@ -198,10 +443,25 @@ class App:
                 self._open_tuner("menu")
                 return
 
+        if (event.type == pygame.KEYDOWN
+                and event.key != pygame.K_ESCAPE and self._quit_armed):
+            # Anything else means the player has moved on, so the next escape
+            # starts from the beginning again. A screen that stays armed is a
+            # trap set an hour ago.
+            self._quit_armed = False
         result = self._menu.handle_event(event)
         if result == "escape":
-            self._running = False
+            # Not on the first press. Escape is the way back out of the song,
+            # the settings, the tuner and the device list, so the player
+            # arrives on this screen with it already under their finger --
+            # and one more press used to end the session.
+            if self._quit_armed:
+                self._running = False
+            else:
+                self._quit_armed = True
+                self._menu.say("Press ESC again to close MySician")
         elif isinstance(result, Path):
+            self._quit_armed = False
             self._load_song(result)
 
     def _handle_playing_event(self, event: pygame.event.Event) -> None:
@@ -228,6 +488,14 @@ class App:
             return
         if result == "menu":
             self._playing_screen.stop_audio()      # writes the sitting
+            # And the song's settings back beside the song, so copying the
+            # songs folder to the other laptop carries the work with it.
+            # Asked for rather than assumed: this is the teardown path, and
+            # a screen that cannot write its settings must still be able to
+            # be left.
+            writer = getattr(self._playing_screen, "write_sidecar", None)
+            if callable(writer):
+                writer()
             self._playing_screen = None
             self._state = "menu"
             self._menu.scan_files()
@@ -265,6 +533,38 @@ class App:
             self._open_device_menu("settings")
         elif result == "calibration":
             self._open_calibration("settings")
+        elif result == "songs":
+            self._choose_songs_folder()
+
+    def _choose_songs_folder(self) -> None:
+        """Point the app at another songs folder, from inside the app.
+
+        It could only be done with `--songs` on the command line, which on
+        the laptop that has nothing but MySician.exe on it means it could
+        not be done at all. Same chooser as the import.
+
+        The path is stored ABSOLUTE. A relative one resolves against
+        wherever the .exe was started from, which is how this app once died
+        before drawing a frame -- see `Config.songs_path`.
+        """
+        from pickhero.ui.filepick import pick_folder
+        chosen = pick_folder("Where your tabs are",
+                             str(self._config.songs_dir))
+        try:
+            pygame.event.clear(pygame.KEYDOWN)
+            pygame.event.clear(pygame.KEYUP)
+        except Exception:
+            pass
+        if not chosen:
+            return                        # cancelled, or no desktop to ask
+        self._config.songs_dir = str(Path(chosen).resolve())
+        self._config.save()
+        if self._menu is not None:
+            self._menu.say(self._menu.set_songs_dir(self._config.songs_path()))
+        # Back to the list, because the answer to "did that work" is the
+        # list of songs and not a settings row.
+        self._settings_menu = None
+        self._state = "menu"
 
     def _handle_device_event(self, event: pygame.event.Event) -> None:
         result = self._device_menu.handle_event(event)

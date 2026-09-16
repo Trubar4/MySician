@@ -21,6 +21,11 @@ class Theme:
     # Hit zone
     hit_zone: tuple[int, int, int]
 
+    # The playhead on the engraved tab page. NOT the hit zone: the page is
+    # laid on paper, so the white that reads against the dark board is the
+    # one colour that cannot be seen on it.
+    tab_playhead: tuple[int, int, int]
+
     # Note text and border
     note_text: tuple[int, int, int]
     note_border: tuple[int, int, int]
@@ -71,6 +76,7 @@ DARK_THEME = Theme(
     lane_bg_odd=(23, 20, 19),
     lane_line=(60, 60, 80),
     hit_zone=(255, 255, 255),
+    tab_playhead=(40, 110, 240),
     note_text=(255, 255, 255),
     note_border=(10, 10, 15),
     menu_bg=(20, 20, 30),
@@ -105,6 +111,7 @@ LIGHT_THEME = Theme(
     lane_bg_odd=(199, 192, 187),
     lane_line=(180, 180, 195),
     hit_zone=(40, 40, 50),
+    tab_playhead=(20, 80, 210),
     note_text=(255, 255, 255),
     note_border=(80, 80, 100),
     menu_bg=(235, 235, 240),

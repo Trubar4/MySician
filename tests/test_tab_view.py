@@ -6,6 +6,7 @@ import pytest
 from pickhero.tabs.timeline import (
     MeasureInfo, NoteEvent, SongMetadata, Timeline,
 )
+from pickhero.ui import scrolling
 from pickhero.ui.tab_view import (
     DEFAULT_ZOOM, TabEngraving, ZOOM_STEPS, _view_box,
 )
@@ -160,11 +161,27 @@ class TestTheViewInsideThePlayingScreen:
         from pickhero.config import Config
         return PlayingScreen(_song(bars=6), config=Config())
 
-    def test_shift_t_switches_and_plain_t_still_themes(self):
-        screen = self._screen()
-        theme_before = screen._config.theme
+    def _shift_t(self, screen):
         screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_t, mod=pygame.KMOD_SHIFT))
+
+    def test_shift_t_walks_all_three_views(self):
+        """There are three ways of drawing one song now, and one key that
+        reaches them. A view is chosen by LOOKING at it, so what the key has
+        to do is keep going until the right one is up."""
+        from pickhero.ui.scrolling import VIEWS
+        screen = self._screen()
+        seen = [screen._view]
+        for _ in VIEWS:
+            self._shift_t(screen)
+            seen.append(screen._view)
+        assert seen == ["standard", "hybrid", "tab", "standard"]
+
+    def test_and_plain_t_still_themes(self):
+        screen = self._screen()
+        theme_before = screen._config.theme
+        self._shift_t(screen)
+        self._shift_t(screen)
         assert screen._tab_mode
         assert screen._config.theme == theme_before
         screen.handle_event(pygame.event.Event(
@@ -378,24 +395,138 @@ class TestThePageDoesNotWanderUpAndDown:
         assert len(heights) == rows
         assert strings > rows, "this song would not show the fault at all"
 
-    def test_the_page_holds_still_while_the_system_is_on_screen(self):
-        screen = _playing_screen()
-        first = screen._tab_scroll_for(1000.0, 1100.0, 4000.0, 700.0)
-        again = screen._tab_scroll_for(1300.0, 1400.0, 4000.0, 700.0)
-        assert first == again
+    def _page(self, tops=(0.05, 0.157, 0.264, 0.371), band=0.039):
+        from pickhero.ui.tab_view import TabPage
+        page = TabPage(number=1, surface=None)
+        page.systems = [(t, t + band) for t in tops]
+        return page
 
-    def test_and_moves_once_the_music_has_left_it(self):
+    def _settled(self, screen, page, row, page_h=4000.0, view_h=700.0):
+        """Where the page comes to REST for this row.
+
+        The page slides there over a quarter of a second (see the chapter on
+        that), and these tests are about which row ends up on top, not about
+        the journey -- so the clock is wound past the slide.
+        """
+        screen._tab_offset_for(page, row, page_h, view_h)
+        screen._tab_glide_at -= scrolling.TAB_GLIDE_S
+        return screen._tab_offset_for(page, row, page_h, view_h)
+
+    def test_the_row_being_played_is_the_top_one(self):
+        """The rule used to be "hold while the row is anywhere on screen",
+        which with a two-row window showed rows in PAIRS -- the playhead in
+        the top row for one row and in the bottom for the next, so half the
+        song was played with no sight of what was coming."""
         screen = _playing_screen()
-        screen._tab_scroll_for(100.0, 200.0, 4000.0, 700.0)
-        before = screen._tab_scroll
-        screen._tab_scroll_for(2000.0, 2100.0, 4000.0, 700.0)
-        assert screen._tab_scroll > before
+        page = self._page()
+        for row in range(3):
+            offset = self._settled(screen, page, row)
+            top, _ = page.row_window(row, scrolling.TAB_SYSTEMS_SHOWN)
+            assert offset == int(top * 4000.0)
+
+    def test_so_the_row_after_it_is_always_underneath(self):
+        screen = _playing_screen()
+        page = self._page()
+        for row in range(3):
+            offset = self._settled(screen, page, row)
+            _, height = page.row_window(row, scrolling.TAB_SYSTEMS_SHOWN)
+            next_top, _ = page.row_window(row + 1, 1)
+            assert offset <= next_top * 4000.0 <= offset + height * 4000.0
+
+    def test_it_holds_still_while_the_playhead_crosses_a_row(self):
+        """The row is the state, so nothing moves until the row changes."""
+        screen = _playing_screen()
+        page = self._page()
+        first = screen._tab_offset_for(page, 1, 4000.0, 700.0)
+        assert screen._tab_offset_for(page, 1, 4000.0, 700.0) == first
+
+    def test_and_steps_exactly_one_row_when_it_leaves(self):
+        screen = _playing_screen()
+        page = self._page()
+        steps = [self._settled(screen, page, row) for row in range(4)]
+        assert steps == sorted(steps)
+        assert all(b > a for a, b in zip(steps, steps[1:]))
 
     def test_a_page_that_fits_never_scrolls(self):
         screen = _playing_screen()
-        assert screen._tab_scroll_for(300.0, 400.0, 600.0, 700.0) == 0
+        assert self._settled(screen, self._page(), 2, 600.0, 700.0) == 0
 
     def test_it_never_scrolls_past_the_end(self):
         screen = _playing_screen()
-        offset = screen._tab_scroll_for(3990.0, 4000.0, 4000.0, 700.0)
+        offset = self._settled(screen, self._page(), 3)
         assert 0 <= offset <= 4000.0 - 700.0
+
+
+class TestThePageSlidesRatherThanJumps:
+    """"Lieber wäre mir, wenn sich die Zeile nach oben schiebt und nicht
+    springt."
+
+    A step is the cheapest thing to draw and the hardest thing to follow:
+    the eye cannot tell whether the page went up by one row or three, so it
+    re-finds the playhead every time. A quarter of a second of movement
+    carries it along, and costs one page turn's worth of motion every four
+    seconds -- not the continuous scrolling this view exists to avoid.
+    """
+
+    def _page(self, tops=(0.05, 0.157, 0.264, 0.371), band=0.039):
+        from pickhero.ui.tab_view import TabPage
+        page = TabPage(number=1, surface=None)
+        page.systems = [(t, t + band) for t in tops]
+        return page
+
+    def test_it_does_not_arrive_at_once(self):
+        screen = _playing_screen()
+        page = self._page()
+        screen._tab_offset_for(page, 0, 4000.0, 700.0)
+        settled = screen._tab_scroll
+        moved = screen._tab_offset_for(page, 1, 4000.0, 700.0)
+        target = page.row_window(1, scrolling.TAB_SYSTEMS_SHOWN)[0] * 4000.0
+        assert settled <= moved < target, "the page jumped straight there"
+
+    def test_and_it_gets_there(self):
+        screen = _playing_screen()
+        page = self._page()
+        screen._tab_offset_for(page, 0, 4000.0, 700.0)
+        screen._tab_offset_for(page, 1, 4000.0, 700.0)
+        screen._tab_glide_at -= scrolling.TAB_GLIDE_S     # as if it had run
+        offset = screen._tab_offset_for(page, 1, 4000.0, 700.0)
+        target = page.row_window(1, scrolling.TAB_SYSTEMS_SHOWN)[0] * 4000.0
+        assert offset == int(target)
+
+    def test_it_eases_in_and_out(self):
+        """A slide that starts and stops abruptly reads as a jump with extra
+        steps, so the middle of the move covers more ground than the ends."""
+        from pickhero.ui.scrolling import TAB_GLIDE_S
+        screen = _playing_screen()
+        page = self._page()
+        screen._tab_offset_for(page, 0, 4000.0, 700.0)
+        start = screen._tab_scroll
+        screen._tab_offset_for(page, 1, 4000.0, 700.0)
+        began = screen._tab_glide_at
+        seen = []
+        for share in (0.1, 0.5, 0.9):
+            screen._tab_glide_at = began - TAB_GLIDE_S * share
+            screen._tab_offset_for(page, 1, 4000.0, 700.0)
+            seen.append(screen._tab_scroll - start)
+        first, middle, last = seen
+        assert (middle - first) > first, "it did not start gently"
+        total = seen[-1]
+        assert (total - middle) < middle, "it did not stop gently"
+
+    def test_a_seek_across_the_song_is_not_a_page_turn(self):
+        """Half a song away would otherwise crawl for a quarter of a second
+        while the music is already somewhere else."""
+        screen = _playing_screen()
+        page = self._page()
+        screen._tab_offset_for(page, 0, 400_000.0, 700.0)
+        far = screen._tab_offset_for(page, 3, 400_000.0, 700.0)
+        target = page.row_window(3, scrolling.TAB_SYSTEMS_SHOWN)[0] * 400_000.0
+        assert far == int(min(target, 400_000.0 - 700.0))
+
+    def test_it_holds_still_once_it_has_arrived(self):
+        screen = _playing_screen()
+        page = self._page()
+        screen._tab_offset_for(page, 1, 4000.0, 700.0)
+        screen._tab_glide_at -= scrolling.TAB_GLIDE_S
+        first = screen._tab_offset_for(page, 1, 4000.0, 700.0)
+        assert screen._tab_offset_for(page, 1, 4000.0, 700.0) == first

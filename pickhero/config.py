@@ -4,7 +4,7 @@ Settings stored as JSON in the user's home directory.
 """
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".pickhero"
@@ -91,6 +91,33 @@ class DisplayConfig:
     height: int = 720
     visible_beats: int = 16
     hit_zone_fraction: float = 0.20
+    # Hand each picture to the panel on ITS beat instead of on a software
+    # timer. Measured before this existed: the app delivers 60.0 pictures a
+    # second into a display Windows calls 59, which shows one of them twice
+    # at some interval nothing in the app can see -- and its own cadence
+    # jitters by 3 ms on a 16.7 ms frame, 15 to 18 % of frames on one laptop
+    # and 6 to 10 % on the other whose panel really is 60.
+    #
+    # Off by default and a KEY rather than a setting buried in a menu,
+    # because it cannot be argued: pygame needs SCALED for it, which fixes a
+    # logical size and letterboxes on resize instead of relaying out, and a
+    # driver may refuse the request outright. It has to be tried on the
+    # machine, both ways, with the run log open.
+    vsync: bool = False
+    # What the display ACTUALLY did with that request, filled in when the
+    # window is opened. Not stored: it belongs to this run on this machine,
+    # and the whole reason it exists is that "asked" and "got" turned out to
+    # be different things nobody could tell apart from a log.
+    vsync_outcome: str = field(default="off", repr=False)
+    # Wait for the next frame precisely instead of asking the system to
+    # sleep for it. Windows cannot sleep to the millisecond, which is where
+    # the measured 3 ms of jitter comes from -- a frame ready late misses
+    # its refresh and is held for two, and that is judder rather than blur.
+    #
+    # Costs a busy wait, but only the last two milliseconds of each frame:
+    # about a tenth of one core, not the whole of it. The first estimate of
+    # this cost was six times too high and nearly buried the idea.
+    steady_pace: bool = False
 
 
 @dataclass
@@ -114,6 +141,13 @@ class Config:
     # the settings screen -- which is the right place for anything set once
     # and then living on invisibly.
     chord_view: bool = False
+    # Which of the three ways of drawing a song opens first: "standard"
+    # (the scrolling board), "hybrid" (two rows that hold still while the
+    # playhead moves) or "tab" (the engraved page). A setting rather than
+    # screen state for the same reason the chord view is one: it is chosen
+    # once and then lives on, and the place to change it is the screen that
+    # SHOWS what is set.
+    default_view: str = "standard"
     timing_window_ms: float = 150.0
     audio_latency_offset_ms: float = 0.0
     chord_threshold_ms: float = 50.0
@@ -167,6 +201,17 @@ class Config:
     # at two places and letting the app fit the line between them. 1.0 means
     # untouched, which is what every song starts at.
     song_mp3_rates: dict = field(default_factory=dict)
+    # {song key: Songsterr song id}. Songsterr stores a timestamp per BAR
+    # into a YouTube video, and a made map never fails on a song that
+    # repeats itself -- which is exactly where listening does. Kept per song
+    # because it belongs to the tab, not to the app.
+    song_songsterr: dict = field(default_factory=dict)
+    # {song key: "auto" | "songsterr" | "listen" | "hand"}. WHICH measurement
+    # this song's sync comes from, decided by the player and not by the app.
+    # "auto" listens and falls back to the bar map; the other three do one
+    # thing and say so. The default is auto only because a song nobody has
+    # decided about has to do something.
+    song_sync_source: dict = field(default_factory=dict)
     # Where the player lined the recording up, per song, as
     # [[song ms, offset ms], ...]. A LIST because two points are a straight
     # line and a band that played without a click does not follow one:
@@ -193,6 +238,62 @@ class Config:
 
     def is_favourite(self, song_key: str) -> bool:
         return song_key in (self.favourites or [])
+
+    def forget_song(self, song_key: str) -> list[str]:
+        """Drop every setting held against one song. Returns what it dropped.
+
+        **Found rather than listed.** Every per-song setting in this class is
+        a dict named `song_something`, and there are nine of them -- speed,
+        recording, offset, rate, Songsterr id, sync source, anchors,
+        transpose, backing offset. A hand-written list here would be correct
+        on the day it was written and quietly wrong the first time a tenth
+        was added, leaving a deleted song's settings to land on the next song
+        that happens to take its name. So the fields are walked.
+
+        The practice history is NOT touched. It lives in its own files
+        (`progress.py`, `practice_log.py`) and it is a record of what the
+        player DID, which deleting a file does not undo.
+        """
+        dropped: list[str] = []
+        if not song_key:
+            return dropped
+        for entry in fields(self):
+            if not entry.name.startswith("song_"):
+                continue
+            held = getattr(self, entry.name, None)
+            if isinstance(held, dict) and song_key in held:
+                held.pop(song_key, None)
+                dropped.append(entry.name)
+        if song_key in (self.favourites or []):
+            self.favourites.remove(song_key)
+            dropped.append("favourites")
+        return dropped
+
+    def rename_song(self, old_key: str, new_key: str) -> list[str]:
+        """Carry every per-song setting to a new name. Returns what moved.
+
+        The mirror of `forget_song`, and found the same way rather than
+        listed, for the same reason: a tenth per-song dict added later must
+        not be the one setting a rename silently loses.
+
+        An existing entry under the NEW name is overwritten -- the caller has
+        already established that the new name's files are free, so anything
+        left under it belongs to a song that is gone.
+        """
+        moved: list[str] = []
+        if not old_key or not new_key or old_key == new_key:
+            return moved
+        for entry in fields(self):
+            if not entry.name.startswith("song_"):
+                continue
+            held = getattr(self, entry.name, None)
+            if isinstance(held, dict) and old_key in held:
+                held[new_key] = held.pop(old_key)
+                moved.append(entry.name)
+        if old_key in (self.favourites or []):
+            self.favourites[self.favourites.index(old_key)] = new_key
+            moved.append("favourites")
+        return moved
 
     def set_favourite(self, song_key: str, favourite: bool) -> None:
         """Star a song, or take the star off. Idempotent either way."""
@@ -239,6 +340,36 @@ class Config:
         else:
             self.backing_offset_ms = float(offset_ms)
 
+    def songs_path(self) -> Path:
+        """A songs folder that exists and can be written to. Never raises.
+
+        `songs_dir` is a RELATIVE path by default, so it resolves against
+        wherever the app was started from -- and a portable .exe is started
+        from wherever it was downloaded to. On the player's machine that was
+        `C:\\Users\\Admin\\Downloads`, which Windows reported as not
+        found; `mkdir(parents=True)` then walked up and tried to create
+        `C:\\Users\\Admin`, which is denied, and the app died before it
+        drew a single frame:
+
+            PermissionError: [WinError 5] Zugriff verweigert: 'C:\\Users\\Admin'
+
+        So the folder is resolved HERE, once, and a folder that cannot be
+        made falls back beside the settings file -- the one directory this
+        app already knows it can write to, because it has been writing
+        settings.json there all along.
+        """
+        wanted = Path(self.songs_dir).expanduser()
+        for candidate in (wanted, CONFIG_DIR / "songs"):
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                return candidate
+            except OSError:
+                continue
+        # Neither could be made. Hand back the one that was asked for and let
+        # the caller report an empty list -- a screen saying "no songs here"
+        # is a screen; a traceback is not.
+        return wanted
+
     def mp3_path_for(self, song_key: str) -> str:
         """The recording chosen for this song, or "" if there is none.
 
@@ -272,6 +403,38 @@ class Config:
         name = stored.replace("\\", "/").rsplit("/", 1)[-1]
         beside = Path(self.songs_dir) / name
         return str(beside) if name and beside.exists() else stored
+
+    #: What Ctrl+S does, in the order the settings screen walks them.
+    SYNC_SOURCES = ("auto", "listen", "songsterr", "hand")
+
+    def sync_source_for(self, song_key: str) -> str:
+        """Which measurement this song's sync comes from."""
+        chosen = self.song_sync_source.get(song_key, "auto")
+        return chosen if chosen in self.SYNC_SOURCES else "auto"
+
+    def set_sync_source_for(self, song_key: str, source: str) -> None:
+        if not song_key or source not in self.SYNC_SOURCES:
+            return
+        if source == "auto":
+            self.song_sync_source.pop(song_key, None)
+        else:
+            self.song_sync_source[song_key] = source
+
+    def songsterr_for(self, song_key: str) -> int:
+        """This song's Songsterr id, or 0 if none was ever pasted."""
+        try:
+            return int(self.song_songsterr.get(song_key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def set_songsterr_for(self, song_key: str, song_id: int) -> None:
+        """Remember (or, with 0, forget) where this tab came from."""
+        if not song_key:
+            return
+        if song_id:
+            self.song_songsterr[song_key] = int(song_id)
+        else:
+            self.song_songsterr.pop(song_key, None)
 
     def set_mp3_path_for(self, song_key: str, path: str) -> None:
         """Remember (or, with an empty path, forget) this song's recording."""
@@ -381,6 +544,7 @@ class Config:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         data = asdict(self)
         data.pop("_default_chord_partial_credit", None)
+        data.get("display", {}).pop("vsync_outcome", None)
         with open(CONFIG_FILE, "w") as f:
             json.dump(data, f, indent=2)
 
@@ -395,6 +559,9 @@ class Config:
             data.pop("_default_chord_partial_credit", None)
             audio_data = data.pop("audio", {})
             display_data = data.pop("display", {})
+            # An older settings.json may carry it from before it was
+            # runtime-only; it is never read from a file.
+            display_data.pop("vsync_outcome", None)
             # Migration: 2048 was the old default and there is no UI to set
             # buf_size, so any stored 2048 came from the old default
             if audio_data.get("buf_size") == 2048:

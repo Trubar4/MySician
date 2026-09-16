@@ -30,7 +30,8 @@ import pygame
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
                              MIN_GATE_DB, Config)
-from pickhero.ui.scrolling import MAX_BACKING_OFFSET_MS
+from pickhero.ui.scrolling import (MAX_BACKING_OFFSET_MS, SYNC_SOURCE_WORDS,
+                                   VIEWS, VIEW_NAMES)
 from pickhero.ui.colors import cycle_theme, get_theme
 
 VISIBLE_ROWS = 14
@@ -72,8 +73,12 @@ class Setting:
 class SettingsMenuScreen:
     """The settings list. Owns no state of its own beyond the cursor."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, song_key: str = ""):
         self._config = config
+        # Which song is open, if one is. Two of these rows belong to a SONG
+        # rather than to the app -- the sync source is the whole point of the
+        # setting -- and a screen reached from the song list has no song.
+        self._song_key = song_key
         self._selected = 0
         self._scroll = 0
         # Which of the six strings the strings row is pointing at. That row is
@@ -99,6 +104,16 @@ class SettingsMenuScreen:
             except Exception:
                 pass
             return f"device #{index}"
+
+        def cycle_sync_source(step: int) -> None:
+            order = list(c.SYNC_SOURCES)
+            here = order.index(c.sync_source_for(self._song_key))
+            c.set_sync_source_for(self._song_key,
+                                  order[(here + step) % len(order)])
+
+        def cycle_view(step: int) -> None:
+            here = VIEWS.index(c.default_view) if c.default_view in VIEWS else 0
+            c.default_view = VIEWS[(here + step) % len(VIEWS)]
 
         def toggle_chord_view() -> None:
             c.chord_view = not c.chord_view
@@ -154,7 +169,23 @@ class SettingsMenuScreen:
                     parts.append(f" {name} ")
             return "".join(parts)
 
+        def songs_folder() -> str:
+            """The folder, shortened from the FRONT.
+
+            `C:\\Users\\Admin\\Documents\\Guitar\\songs` does not fit
+            the value column, and the half that identifies it is the end --
+            every one of these paths starts the same way.
+            """
+            shown = str(c.songs_dir)
+            return shown if len(shown) <= 42 else "…" + shown[-41:]
+
         return [
+            Setting("songs", "Songs folder", songs_folder, opens="songs",
+                    note="Where MySician looks for your tabs. ENTER to "
+                         "choose another one — everything for a song lives "
+                         "beside it, so moving the folder takes the sync "
+                         "and the settings with it.",
+                    is_default=lambda: True),
             Setting("device", "Audio input", audio_device_name, opens="device",
                     note="Which interface the guitar comes in on. ENTER to "
                          "choose.",
@@ -192,6 +223,14 @@ class SettingsMenuScreen:
                          "the grip you are on beside the one coming next. "
                          "Shift+C in the song.",
                     is_default=lambda: c.chord_view == default.chord_view),
+            Setting("view", "View (Shift+T)",
+                    lambda: VIEW_NAMES.get(c.default_view, c.default_view),
+                    cycle_view,
+                    note="Which view a song opens in. The board scrolls; the "
+                         "hybrid sheet holds still and only the playhead "
+                         "moves, which is the one to try when fast notes "
+                         "smear; the tab page is the engraved score.",
+                    is_default=lambda: c.default_view == default.default_view),
             Setting("window", "Hit window",
                     lambda: f"{c.timing_window_ms:.0f} ms", adjust_window,
                     note="How far off the beat a note still counts. Wider is "
@@ -266,6 +305,19 @@ class SettingsMenuScreen:
                     note="Shifts the synth against the notes. N/M while "
                          "playing does 10 ms a press, Alt+N/M a second.",
                     is_default=lambda: c.backing_offset_ms == 0.0),
+            Setting("sync_source", "Sync source",
+                    lambda: (SYNC_SOURCE_WORDS[c.sync_source_for(
+                        self._song_key)] if self._song_key
+                        else "open a song to set this"),
+                    cycle_sync_source if self._song_key else None,
+                    note="Where this song's sync comes from when you press "
+                         "Ctrl+S. Listening is finer where it works; "
+                         "Songsterr's bar map does not care that a song "
+                         "repeats itself. Per song — Alt+S in the song "
+                         "changes it too.",
+                    is_default=lambda: (not self._song_key
+                                        or c.sync_source_for(self._song_key)
+                                        == "auto")),
             Setting("mp3", "Recorded backing track",
                     lambda: "on" if c.mp3_backing_enabled else "off",
                     lambda step: setattr(c, "mp3_backing_enabled",

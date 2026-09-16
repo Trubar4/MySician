@@ -1310,27 +1310,32 @@ class TestSlideTargets:
         assert PlayingScreen._next_on_string([only]) == {}
 
 
-class TestFooterCompleteness:
+class TestEveryKeyIsWrittenDownSomewhere:
     """Every key the screen answers has to be written somewhere on it.
 
-    This reads handle_event's own source rather than a hand-kept list, so
-    adding a shortcut and forgetting to document it fails here instead of
-    quietly shipping a key nobody can find.
+    It used to be the footer, all twenty-three of them across the bottom of
+    a screen you are trying to read music off. The footer is now the twelve
+    worth WATCHING while playing -- the ones whose state you need to see --
+    and H carries the rest. So the rule did not go away, it moved: this
+    reads handle_event's own source against the help page, so adding a
+    shortcut and forgetting to document it fails here instead of quietly
+    shipping a key nobody can find.
     """
 
-    # pygame constant suffix -> the text the footer must contain for it
+    # pygame constant suffix -> the text the help must contain for it
     LABELS = {
         "SPACE": "SPACE", "ESCAPE": "ESC", "LEFT": "LEFT", "RIGHT": "RIGHT",
         "HOME": "HOME", "PAGEDOWN": "PgDn", "PAGEUP": "PgUp", "TAB": "TAB",
-        "a": "A: audio", "b": "B: backing", "c": "X/C", "d": "D: run log",
-        "e": "E: skip a rest", "f": "F: frets",
-        "g": "G: hit window", "h": "H: help", "i": "I/O", "j": "J: strings",
-        "k": "K: sync", "l": "L: weakest", "m": "N/M", "n": "N/M",
-        "r": "R: play in another tuning",
-        "o": "I/O", "p": "P: toggle", "s": "Shift+S: sync point",
-        "t": "T: theme", "u": "U: audio track",
-        "v": "V: chords",
-        "w": "W: wait", "x": "X/C", "y": "Y: timing",
+        "a": "A: audio", "b": "B: MIDI backing", "c": "X/C",
+        "d": "D: save a full run log", "e": "E: skip a long rest",
+        "f": "F: fret limit", "g": "G: hit window", "h": "H: this help",
+        "i": "I/O", "j": "J: per-string", "k": "K: measure",
+        "l": "L: loop the weakest", "m": "N/M", "n": "N/M",
+        "o": "I/O", "p": "P: loop on/off",
+        "r": "R / Shift+R", "s": "S opens the sync panel",
+        "t": "T: theme", "u": "U: recorded backing", "v": "V: chord scoring",
+        "w": "W: wait mode", "x": "X/C", "y": "Y: timing report",
+        "z": "Z: vsync",
         "COMMA": ",/.", "PERIOD": ",/.",
         "PLUS": "+/-", "EQUALS": "+/-", "MINUS": "+/-",
         "KP_PLUS": "+/-", "KP_MINUS": "+/-",
@@ -1344,28 +1349,101 @@ class TestFooterCompleteness:
         source = inspect.getsource(PlayingScreen.handle_event)
         return set(re.findall(r"pygame\.K_(\w+)", source))
 
-    def test_every_handled_key_is_in_the_footer(self):
+    def _help_text(self, screen) -> str:
+        return "  ".join(screen.help_lines())
+
+    def test_every_handled_key_is_in_the_help(self):
         screen = PlayingScreen(_make_timeline())
-        footer = "  ".join(screen._footer_lines())
+        text = self._help_text(screen)
         missing = []
         for key in sorted(self._keys_handled()):
-            assert key in self.LABELS, f"new key K_{key} has no footer label"
-            if self.LABELS[key] not in footer:
+            assert key in self.LABELS, f"new key K_{key} has no help label"
+            if self.LABELS[key] not in text:
                 missing.append(key)
         assert missing == [], f"undocumented keys: {missing}"
 
-    def test_footer_keeps_the_keys_when_nothing_is_loaded(self):
+    def test_the_help_keeps_the_keys_when_nothing_is_loaded(self):
         """No backing track still means B is bound, so B stays listed."""
         screen = PlayingScreen(_make_timeline())
         assert screen._midi_player is None
-        footer = "  ".join(screen._footer_lines())
-        assert "B: backing" in footer and "W: wait" in footer
+        text = self._help_text(screen)
+        assert "B: MIDI backing" in text and "W: wait mode" in text
 
-    def test_footer_reports_the_state_it_shows(self):
+
+class TestTheFooterIsTheTwelveWorthWatching:
+    """"Alles in Hilfe verschieben außer diesen Werten (aktiv = blau)."
+
+    A footer entry earns its place by carrying a VALUE that changes while
+    playing -- the tempo you are at, the hit window in force, the view you
+    are in. Twenty-three shortcuts with no values are wallpaper.
+    """
+
+    def _texts(self, screen):
+        return [text for text, _ in screen.footer_segments()]
+
+    def test_it_is_one_line_of_a_dozen(self):
         screen = PlayingScreen(_make_timeline())
-        assert "Paused" in screen._footer_lines()[0]
+        assert 10 <= len(screen.footer_segments()) <= 13
+
+    def test_every_entry_the_player_asked_for_is_there(self):
+        screen = PlayingScreen(_make_timeline())
+        joined = "  ".join(self._texts(screen))
+        for wanted in ("SPACE", "PgDn/PgUp: Tempo", "A: Audio", "B: Backing",
+                       "Shift+B: My Backing", "+/- Size", "G: ",
+                       "Shift+C: Chords", "Shift+T: View", "E: Skip",
+                       "H: help"):
+            assert wanted in joined, f"{wanted} is not in the footer"
+
+    def test_and_nothing_that_belongs_in_the_help(self):
+        screen = PlayingScreen(_make_timeline())
+        joined = "  ".join(self._texts(screen))
+        for gone in ("X/C", "F1-F6", "Y:", "D:", "Z:", "TAB", "I/O",
+                     "Shift+S", "Ctrl+S", "K:", ",/.", "W:", "R:"):
+            assert gone not in joined, f"{gone} is still in the footer"
+
+    def test_each_entry_carries_its_value(self):
+        screen = PlayingScreen(_make_timeline())
+        joined = "  ".join(self._texts(screen))
+        assert f"{screen._timeline.metadata.tempo} BPM (100%)" in joined
+        assert f"{int(screen._config.timing_window_ms)} ms" in joined
+        assert "Standard" in joined
+
+    def test_an_entry_lights_up_when_it_is_not_at_rest(self):
+        screen = PlayingScreen(_make_timeline())
+
+        def audio():
+            return next((text, c) for text, c in screen.footer_segments()
+                        if text.startswith("A: Audio"))
+
+        screen._audio_enabled = True
+        on_text, on_colour = audio()
+        screen._audio_enabled = False
+        off_text, off_colour = audio()
+        assert on_colour == "hud_accent" and off_colour == "hud_text"
+        assert on_text.endswith("on") and off_text.endswith("off")
+
+    def test_the_view_entry_follows_the_view(self):
+        screen = PlayingScreen(_make_timeline())
+        screen._view = "hybrid"
+        assert any("View Hybrid" in text for text in self._texts(screen))
+
+    def test_the_size_entry_means_what_the_view_means(self):
+        """+/- is three different things in three views, and an entry that
+        named only one of them would be a lie in the other two."""
+        screen = PlayingScreen(_make_timeline())
+        screen._view = "hybrid"
+        assert "1.00x" in "".join(self._texts(screen))
+        screen._view = "tab"
+        assert "zoom" in "".join(self._texts(screen))
+
+    def test_it_reports_the_play_state(self):
+        screen = PlayingScreen(_make_timeline())
+        paused = next(c for text, c in screen.footer_segments()
+                      if text.startswith("SPACE"))
         screen.toggle_play()
-        assert "Paused" not in screen._footer_lines()[0]
+        playing = next(c for text, c in screen.footer_segments()
+                       if text.startswith("SPACE"))
+        assert paused != playing
 
 
 class TestTimingOverlay:
@@ -3085,10 +3163,11 @@ class TestSeekingInSteps:
         moved = self._press(screen, pygame.K_RIGHT, pygame.KMOD_SHIFT)
         assert moved > 1_000.0
 
-    def test_the_footer_names_all_three(self):
-        """A key that is bound but undocumented is a key nobody finds."""
-        footer = " ".join(self._screen()._footer_lines())
-        assert "Shift: bar" in footer and "Ctrl: 30s" in footer
+    def test_the_help_names_all_three(self):
+        """A key that is bound but undocumented is a key nobody finds. The
+        footer is the twelve worth watching while playing; H has the rest."""
+        text = "  ".join(self._screen().help_lines())
+        assert "Shift: a bar" in text and "Ctrl: 30 seconds" in text
 
 
 class TestChangingTrackKeepsThePlace:
@@ -3861,9 +3940,24 @@ class TestTheFooterFitsOnTheScreen:
             def __getattr__(self, name):
                 return getattr(self._target, name)
 
-        screen._blit_footer_lines(Recorder(surface), layout,
-                                  screen._footer_lines(), (200, 200, 200))
+        screen._blit_footer_lines(Recorder(surface), layout)
         assert widest and max(widest) <= 1911
+
+    def test_and_it_comes_out_as_one_line(self):
+        """Twelve entries, not twenty-three. If this ever wraps, something
+        was put back that belongs in the help."""
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import PlayingScreen, _Layout
+
+        pygame.init()
+        pygame.display.set_mode((1280, 720))
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        layout = _Layout(screen_w=1280, screen_h=720, lane_height=60.0,
+                         note_h=40.0, hit_zone_x=150.0, usable_width=1100.0,
+                         pixels_per_ms=0.2, visible_window_ms=4000.0)
+        _, rows, _, _ = screen._footer_block(layout)
+        assert len(rows) == 1, f"the footer wrapped onto {len(rows)} lines"
 
 
 class TestSkippingALongRest:
@@ -3980,7 +4074,19 @@ class TestSkippingALongRest:
 
     def test_the_key_is_in_the_footer(self):
         screen = self._with_a_rest()
-        assert any("E:" in line for line in screen._footer_lines())
+        assert any(text.startswith("E: Skip")
+                   for text, _ in screen.footer_segments())
+
+    def test_and_it_lights_up_while_there_is_a_rest_to_skip(self):
+        """Sitting in a hole with nothing to play looks exactly like a
+        picture that has stopped. The line that used to say so is gone with
+        the rest of the left column, so the KEY says it instead."""
+        screen = self._with_a_rest()
+        screen._playback_ms = 0.0
+        quiet = dict(screen.footer_segments())["E: Skip"]
+        screen._playback_ms = screen._rests[0][0] + 500.0
+        assert screen._rest_hud_text()
+        assert dict(screen.footer_segments())["E: Skip"] != quiet
 
     def test_the_rest_list_is_built_once_per_song_and_never_in_a_frame(self):
         """A walk over every note, so it must not run 60 times a second."""
@@ -4069,37 +4175,18 @@ class TestAPressMustBuySomethingVisible:
         assert screen._config.scroll_speed_factor == pytest.approx(0.7)
 
 
-    def test_the_hud_names_the_direction_of_each_key(self):
+    def test_the_help_names_the_direction_of_each_key(self):
         """A player who wants the notes further apart and presses - gets the
-        opposite, and nothing on screen said which way either key goes."""
-        pygame.init()
-        try:
-            screen = self._screen(spacing_ms=300.0)
-            surface = pygame.Surface((1280, 720))
-            drawn = []
+        opposite, and nothing said which way either key goes.
 
-            class _Watched:
-                def __init__(self, font):
-                    self._font = font
-
-                def render(self, text, *a, **k):
-                    drawn.append(text)
-                    return self._font.render(text, *a, **k)
-
-                def __getattr__(self, name):
-                    return getattr(self._font, name)
-
-            real_get_font = scrolling._get_font
-            scrolling._get_font = lambda *a, **k: _Watched(real_get_font(*a, **k))
-            try:
-                screen._playback_ms = 1000.0
-                screen.render(surface)
-            finally:
-                scrolling._get_font = real_get_font
-            line = next((d for d in drawn if d.startswith("Scroll:")), "")
-            assert "further apart" in line and "look-ahead" in line
-        finally:
-            pygame.quit()
+        It used to be said on the scrolling view's own HUD line. That line
+        went with the rest of the left column ("Hit Windows und Scroll
+        ausblenden"), so the sentence has to survive in the help -- the
+        trade itself did not go anywhere.
+        """
+        screen = self._screen(spacing_ms=300.0)
+        text = "  ".join(screen.help_lines())
+        assert "look-ahead" in text and "further apart" in text
 
 
 class TestOneShortPressIsOneStep:
@@ -4177,3 +4264,797 @@ class TestOneShortPressIsOneStep:
             self._press(screen, pygame.K_MINUS)
         moved = before - screen._config.scroll_speed_factor
         assert moved <= 0.1 + 1e-9
+
+
+class TestAFretNumberIsNotBuriedByTheNextNote:
+    """"Ich kann schnelle Toene kaum lesen."
+
+    The pacing is set by the tenth percentile of the onset gaps, so a tenth
+    of every song is by construction tighter than the head it is given. In a
+    fast run the next onset on the same string therefore lands INSIDE the
+    head already drawn -- and the loop drew head-then-number for each note in
+    turn, so the following head covered the number already painted. Measured
+    on the songs the player named, at his 1920x1080: Thunder's "Love Walked
+    In" part-covered 41 fret numbers, 22 of them inside one five second run.
+    That is not blur; the number is behind the next note.
+
+    Asserted as the ORDER the surface is painted in rather than by counting
+    pixels, because a covered number and its neighbour's number sit in the
+    same few pixels -- a pixel count cannot say which of the two it found,
+    and passed on the broken code for exactly that reason. Heads first and
+    numbers second is the property; it changes no geometry and costs no
+    look-ahead.
+    """
+
+    _ROOMY_MS = 200.0
+    _BURST_MS = 60.0
+    _BURST = 6
+
+    class _Recorder:
+        """A surface that remembers what was blitted onto it, in order."""
+
+        def __init__(self, real):
+            self._real = real
+            self.blits = []
+
+        def blit(self, source, dest, *args, **kwargs):
+            self.blits.append(source)
+            return self._real.blit(source, dest, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def _song(self):
+        """A roomy song with one fast run in it, the run under a tenth of it.
+
+        Under a tenth on purpose: the run must NOT be what sets the pacing,
+        because a song whose tenth percentile IS the run gets heads sized for
+        it and never overlaps. The fault lives in the tail the percentile
+        deliberately ignores, which is where a solo lives.
+        """
+        notes, t = [], 0.0
+        for _ in range(100):
+            notes.append(NoteEvent(timestamp_ms=t, duration_ms=80.0,
+                                   midi_note=40, string=6, fret=12))
+            t += self._ROOMY_MS
+        burst_at = t
+        for i in range(self._BURST):
+            notes.append(NoteEvent(timestamp_ms=burst_at + i * self._BURST_MS,
+                                   duration_ms=40.0, midi_note=40,
+                                   string=6, fret=12))
+        end = burst_at + self._BURST * self._BURST_MS + self._ROOMY_MS
+        measures = [MeasureInfo(index=b, start_ms=b * 2000.0,
+                                end_ms=(b + 1) * 2000.0)
+                    for b in range(int(end // 2000) + 2)]
+        return Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=measures), burst_at
+
+    def _draw(self):
+        pygame.init()
+        song, burst_at = self._song()
+        screen = PlayingScreen(song, config=Config())
+        surface = pygame.display.set_mode((1920, 1080))
+        screen.render(surface)                      # sizes the heads
+        layout = screen._layout(surface)
+        # Far enough ahead of the hit line that the whole run is on screen.
+        screen._playback_ms = burst_at - 500.0
+        scrolling._HEAD_CACHE.clear()
+        recorder = self._Recorder(surface)
+        screen._draw_notes(recorder, layout)
+        heads = {id(s) for s in scrolling._HEAD_CACHE.values()}
+        return screen, layout, recorder, heads, burst_at
+
+    def test_the_run_really_does_crowd_its_heads(self):
+        """The premise, so the test below cannot pass by drawing nothing."""
+        screen, layout, _, _, _ = self._draw()
+        head = screen._head_px if screen._head_px is not None else layout.note_h
+        assert self._BURST_MS * layout.pixels_per_ms < head, (
+            "the run was not tight enough to overlap; the test proves nothing")
+
+    def test_no_head_lands_on_a_number_already_drawn(self):
+        _, _, recorder, heads, _ = self._draw()
+        kinds = ["head" if id(s) in heads else "mark" for s in recorder.blits]
+        assert "head" in kinds and "mark" in kinds, "nothing was drawn"
+        last_head = len(kinds) - 1 - kinds[::-1].index("head")
+        first_mark = kinds.index("mark")
+        assert last_head < first_mark, (
+            "a note head was drawn after a fret number, so it covered it")
+
+
+class TestThePlayheadOnPaper:
+    """"Der Balken ist nicht gut sichtbar."
+
+    The tab page is PAPER -- an engraver draws black ink and nothing else,
+    so the page carries a near-white ground of its own. The playhead was
+    borrowing the scrolling board's hit-zone colour, which is white because
+    the board is dark. White on paper is the one line on that screen that
+    cannot be found.
+
+    Asserted as contrast against the paper rather than as a named colour, so
+    a later theme cannot quietly reintroduce the fault by picking a pale
+    accent.
+    """
+
+    def _distance(self, colour, ground):
+        return sum(abs(a - b) for a, b in zip(colour, ground))
+
+    def test_it_reads_against_the_paper_in_every_theme(self):
+        from pickhero.ui.colors import DARK_THEME, LIGHT_THEME
+        from pickhero.ui.tab_view import PAPER
+        for name, theme in (("dark", DARK_THEME), ("light", LIGHT_THEME)):
+            assert self._distance(theme.tab_playhead, PAPER) > 200, (
+                f"the {name} theme's playhead vanishes into the page")
+
+    def test_it_is_not_the_hit_zone_borrowed(self):
+        """The two live on different grounds, so one colour cannot serve both.
+
+        The dark theme's board wants white and its page cannot take it; the
+        rule is that they are separate settings, not that they differ by
+        accident.
+        """
+        from pickhero.ui.colors import DARK_THEME
+        assert DARK_THEME.tab_playhead != DARK_THEME.hit_zone
+
+
+class TestHowEvenlyThePicturesArrived:
+    """A machine with headroom can still hand its frames over raggedly.
+
+    The player's faster laptop draws in 4.2 ms of a 16.7 ms budget, delivers
+    a clean 60, and still reports juddering at a scroll speed whose smear is
+    3.9 px -- a number that does not move with the speed cannot be the smear.
+    So the gap BETWEEN pictures is measured, against its own usual value:
+    a steady 17.4 ms is a different report from an average 16.7 that is
+    really 16.7 and 33.3 in turns, and only the second one judders.
+
+    What this cannot see is written into `record_frame_shown`: without vsync
+    a frame the PANEL held twice never reaches the app. That is the point of
+    splitting the two -- ragged here is the app's fault and fixable without
+    vsync, even here says the fault is the panel and only vsync answers it.
+    """
+
+    def _screen(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._playing = True
+        return screen
+
+    def _show(self, screen, gaps_ms, start=100.0):
+        """Hand the screen a run of pictures with the given gaps."""
+        at = start
+        screen.record_frame_shown(at)
+        for gap in gaps_ms:
+            at += gap / 1000.0
+            screen.record_frame_shown(at)
+
+    def _log(self, screen):
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen._matcher = NoteMatcher(_make_timeline())
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        return buffer.getvalue()
+
+    def test_a_steady_hand_reports_no_unevenness(self):
+        screen = self._screen()
+        self._show(screen, [16.67] * 200)
+        text = self._log(screen)
+        assert "frames_uneven_percent\t0" in text
+        assert "frames_per_second_shown\t60.0" in text
+
+    def test_every_other_frame_held_twice_is_caught(self):
+        """The shape juddering actually has: the same average, half of it late."""
+        screen = self._screen()
+        self._show(screen, [16.67, 33.3] * 100)
+        text = self._log(screen)
+        # Half the gaps are double the other half, so whichever is the median
+        # the other half is well outside a fifth of it.
+        percent = int(text.split("frames_uneven_percent\t")[1].split("\n")[0])
+        assert 45 <= percent <= 55, text
+
+    def test_the_average_alone_would_have_missed_it(self):
+        """Both runs average 25 ms a frame; only one of them judders."""
+        steady, ragged = self._screen(), self._screen()
+        self._show(steady, [25.0] * 200)
+        self._show(ragged, [16.67, 33.3] * 100)
+        assert "frames_uneven_percent\t0" in self._log(steady)
+        assert "frames_uneven_percent\t0" not in self._log(ragged)
+
+    def test_a_pause_is_not_a_stutter(self):
+        """Stopping and starting again must not invent a frame that hung.
+
+        A gap spanning a pause is minutes long and would otherwise be
+        charged to the first frame after it.
+        """
+        screen = self._screen()
+        screen.record_frame_shown(100.0)
+        screen._playing = False
+        screen.record_frame_shown(160.0)          # a minute on a menu
+        screen._playing = True
+        screen.record_frame_shown(160.5)          # the first frame back
+        screen.record_frame_shown(160.5 + 0.01667)
+        assert len(screen._frame_intervals) == 1
+        assert screen._frame_intervals[0] == pytest.approx(16.67, abs=0.1)
+
+    def test_intervals_are_only_counted_while_the_song_runs(self):
+        screen = self._screen()
+        screen._playing = False
+        self._show(screen, [16.67] * 10)
+        assert screen._frame_intervals == []
+
+    def test_a_long_session_does_not_become_a_leak(self):
+        screen = self._screen()
+        self._show(screen, [16.67] * (PlayingScreen.FRAME_SAMPLES + 500))
+        assert len(screen._frame_intervals) == PlayingScreen.FRAME_SAMPLES
+
+    def test_nothing_measured_says_so_rather_than_dividing_by_zero(self):
+        assert "frame_interval_ms\t(nothing measured)" in self._log(self._screen())
+
+    def test_the_loop_actually_hands_the_moment_over(self, monkeypatch):
+        """The measurement is worthless if nothing calls it.
+
+        Everything above drives `record_frame_shown` by hand, which would
+        pass just as happily on a build where App.run never calls it -- the
+        way a whole feature ships doing nothing. So the real loop is run for
+        a few frames.
+        """
+        import pygame
+        from pickhero.ui.app import App
+
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        application = App(Config())
+        screen = self._screen()
+        application._playing_screen = screen
+
+        frames = []
+        real_flip = pygame.display.flip
+
+        def counting_flip(*args, **kwargs):
+            frames.append(1)
+            if len(frames) >= 5:
+                application._running = False
+            return real_flip(*args, **kwargs)
+
+        monkeypatch.setattr(pygame.display, "flip", counting_flip)
+        application.run()
+
+        # Five pictures make four gaps, one per frame, all forward in time.
+        # Deliberately NOT asserted: how long they were. A test box is a
+        # shared machine building fonts and a song list on its first frames,
+        # and pinning a wall-clock number here would fail for reasons that
+        # have nothing to do with whether the loop hands the moment over --
+        # which is the whole and only claim being made.
+        assert len(screen._frame_intervals) == 4
+        assert all(ms > 0 for ms in screen._frame_intervals)
+
+
+class TestSayingWhereTheGuessBegins:
+    """"Thunder synct beim Solo ganz schlecht und liegt weit daneben."
+
+    Read straight off the run log: the points stopped at 3:22 and the solo is
+    at 3:49, so half the song was placed by extrapolating the last segment.
+    The panel already said `measured 0:21-3:21 of 6:21` -- once, in blue, at
+    0:00, four minutes of scrolling before it mattered. A warning about now
+    belongs in now.
+    """
+
+    def _screen(self, points):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._song_key = "song"
+        screen._config.set_mp3_anchors_for("song", points)
+        return screen
+
+    _POINTS = [(22_000.0, 11_110.0), (106_000.0, 10_703.0),
+               (202_000.0, 10_967.0)]
+
+    def test_inside_the_measured_part_it_says_nothing(self):
+        screen = self._screen(self._POINTS)
+        for at in (22_000.0, 100_000.0, 202_000.0):
+            screen._playback_ms = at
+            assert screen._beyond_sync_line() == ""
+
+    def test_past_the_last_point_it_says_so(self):
+        screen = self._screen(self._POINTS)
+        screen._playback_ms = 232_000.0                 # the solo
+        line = screen._beyond_sync_line()
+        assert "past" in line and "3:22" in line and "Shift+S" in line
+
+    def test_before_the_first_point_too(self):
+        """The map extrapolates backwards just as freely."""
+        screen = self._screen(self._POINTS)
+        screen._playback_ms = 5_000.0
+        assert "before" in screen._beyond_sync_line()
+
+    def test_the_size_offered_is_drift_the_song_already_showed(self):
+        """Not a modelled bound, which would be a promise. The recording
+        wandered this far where somebody was listening."""
+        screen = self._screen(self._POINTS)
+        screen._playback_ms = 232_000.0
+        spread = max(o for _, o in self._POINTS) - min(o for _, o in self._POINTS)
+        assert f"{spread:.0f} ms" in screen._beyond_sync_line()
+
+    def test_a_song_nobody_synced_has_no_edge_to_fall_off(self):
+        """One stored offset claims to have been measured nowhere, so there
+        is no span and nothing to warn about."""
+        screen = self._screen([])
+        screen._playback_ms = 232_000.0
+        assert screen._beyond_sync_line() == ""
+
+    def test_and_neither_does_a_single_point(self):
+        screen = self._screen([(22_000.0, 11_110.0)])
+        screen._playback_ms = 232_000.0
+        assert screen._beyond_sync_line() == ""
+
+
+class TestThePageViewShowsTwoRows:
+    """The page filled the window, so the HUD -- text with no ground of its
+    own -- was printed straight over the staff, which is what the player's
+    screenshot showed. Two rows is what a reader uses: the one under the hand
+    and the one arriving.
+    """
+
+    def _page(self, tops, band=0.039):
+        from pickhero.ui.tab_view import TabPage
+        page = TabPage(number=1, surface=None)
+        page.systems = [(t, t + band) for t in tops]
+        return page
+
+    _TOPS = [0.05, 0.157, 0.264, 0.371]
+
+    def test_the_window_spans_exactly_two_rows(self):
+        page = self._page(self._TOPS)
+        top, height = page.row_window(0, 2)
+        # From the page edge to the middle of the gap under the second row.
+        assert top == 0.0
+        assert height == pytest.approx((0.157 + 0.039 + 0.264) / 2)
+
+    def test_it_cuts_through_the_gap_and_never_through_a_row(self):
+        """A window measured from an AVERAGE spacing showed two rows and a
+        third of a third one, with its beams sliced off at the bottom edge --
+        which is a strip of music too short to read, in the room the next row
+        was meant to have."""
+        page = self._page(self._TOPS)
+        top, height = page.row_window(1, 2)
+        bottom = top + height
+        for row_top, row_bottom in page.systems:
+            inside = top <= row_top and row_bottom <= bottom
+            outside = row_bottom <= top or bottom <= row_top
+            assert inside or outside, (row_top, row_bottom, top, bottom)
+
+    def test_the_window_moves_by_a_row_and_holds_between(self):
+        page = self._page(self._TOPS)
+        assert page.row_window(1, 2)[0] > page.row_window(0, 2)[0]
+        assert page.row_window(1, 2) == page.row_window(1, 2)
+
+    def test_the_last_rows_run_to_the_end_of_the_page(self):
+        """There is no row after them to cut in front of."""
+        page = self._page(self._TOPS)
+        top, height = page.row_window(3, 2)
+        assert top + height == pytest.approx(1.0)
+
+    def test_a_row_is_found_from_where_a_note_sits(self):
+        page = self._page(self._TOPS)
+        assert page.system_index(0.157 + 0.02) == 1
+        assert page.system_index(0.371) == 3
+
+    def test_a_y_in_no_row_falls_back_to_the_first(self):
+        """Rather than raising in the middle of a frame."""
+        assert self._page(self._TOPS).system_index(0.9) == 0
+
+
+class TestHandingThePicturesToThePanel:
+    """The app delivers 60.0 a second into a panel Windows calls 59, so one
+    is periodically shown twice however even our own timing is -- and only
+    vsync ends that. It costs SCALED, which fixes the drawing size and
+    letterboxes on resize instead of relaying out, and a driver may refuse it
+    outright. Neither half can be argued from here, so it is a key.
+    """
+
+    def _app(self, monkeypatch):
+        import pygame
+        from pickhero.ui.app import App
+        application = App(Config())
+        calls = []
+
+        def fake_set_mode(size, flags=0, *args, **kwargs):
+            calls.append((size, flags, kwargs.get("vsync", 0)))
+            return pygame.Surface(size)
+
+        monkeypatch.setattr(pygame.display, "set_mode", fake_set_mode)
+        return application, calls
+
+    def test_off_by_default_it_opens_the_plain_window(self, monkeypatch):
+        import pygame
+        application, calls = self._app(monkeypatch)
+        application._apply_display_mode()
+        _, flags, vsync = calls[-1]
+        assert vsync == 0 and not flags & pygame.SCALED
+
+    def test_asked_for_it_asks_the_display_for_it(self, monkeypatch):
+        import pygame
+        application, calls = self._app(monkeypatch)
+        application._config.display.vsync = True
+        application._apply_display_mode()
+        _, flags, vsync = calls[-1]
+        assert vsync == 1 and flags & pygame.SCALED
+
+    def test_a_refusal_still_opens_a_window(self, monkeypatch):
+        """A driver may say no, and the app cannot end up with no window."""
+        import pygame
+        application, calls = self._app(monkeypatch)
+        application._config.display.vsync = True
+        real = pygame.display.set_mode
+
+        def refuse(size, flags=0, *args, **kwargs):
+            if kwargs.get("vsync"):
+                raise pygame.error("vsync not available")
+            return real(size, flags, *args, **kwargs)
+
+        monkeypatch.setattr(pygame.display, "set_mode", refuse)
+        assert application._apply_display_mode() is not None
+        assert application._vsync_refused
+        assert application._config.display.vsync_outcome == "refused"
+
+    def test_a_no_to_the_first_way_is_not_a_no_to_vsync(self, monkeypatch):
+        """The player's driver refused SCALED with RESIZABLE, and the first
+        shape of this took that for the whole answer -- reporting vsync as
+        impossible on a machine that had not been asked properly. Dropping
+        RESIZABLE costs a window that cannot be dragged bigger, which is
+        worth trying before giving up on the pacing altogether."""
+        import pygame
+        application, calls = self._app(monkeypatch)
+        application._config.display.vsync = True
+        plain = pygame.display.set_mode
+
+        def picky(size, flags=0, *args, **kwargs):
+            if kwargs.get("vsync") and flags & pygame.RESIZABLE:
+                raise pygame.error("vsync not available with that")
+            calls.append((size, flags, kwargs.get("vsync", 0)))
+            return pygame.Surface(size)
+
+        monkeypatch.setattr(pygame.display, "set_mode", picky)
+        application._apply_display_mode()
+        _, flags, vsync = calls[-1]
+        assert vsync == 1 and flags & pygame.SCALED
+        assert not flags & pygame.RESIZABLE
+        assert not application._vsync_refused
+        # And the log will say WHICH way it was granted, because the two
+        # cost different things and only one of them can be dragged bigger.
+        assert application._config.display.vsync_outcome == "on, window fixed size"
+
+    def test_the_ways_are_tried_in_the_order_of_what_they_cost(self):
+        """RESIZABLE first: a window that can still be dragged is worth more
+        than one that cannot, so it is only given up when it has to be."""
+        import pygame
+        from pickhero.ui.app import App
+        assert App.VSYNC_FLAGS[0][0] & pygame.RESIZABLE
+        assert not App.VSYNC_FLAGS[-1][0] & pygame.RESIZABLE
+        assert all(f & pygame.SCALED for f, _ in App.VSYNC_FLAGS)
+
+    def test_each_way_carries_the_name_the_log_will_print(self):
+        """"Asked" and "got" turned out to be different things, and a log
+        that cannot tell them apart sent a reading to the wrong conclusion --
+        which is what happened on the first attempt."""
+        from pickhero.ui.app import App
+        names = [name for _, name in App.VSYNC_FLAGS]
+        assert len(set(names)) == len(names)
+        assert all(name and name != "off" for name in names)
+
+    def test_a_resize_cannot_quietly_drop_it(self, monkeypatch):
+        """Every mode change goes through one door. The resize used to call
+        set_mode itself with the plain flags -- and assign the result to a
+        local nobody read, so the loop drew to the surface it already had."""
+        import pygame
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        application, calls = self._app(monkeypatch)
+        application._config.display.vsync = True
+        application._apply_display_mode()
+        # No screen is open: the resize is what is under test, and a menu
+        # would only add a second thing that can fail here.
+        application._state = "between screens"
+        pygame.event.post(pygame.event.Event(pygame.VIDEORESIZE, w=1400,
+                                             h=900, size=(1400, 900)))
+        application._process_events(pygame.display.get_surface())
+        size, flags, vsync = calls[-1]
+        assert size == (1400, 900) and vsync == 1 and flags & pygame.SCALED
+        # And the loop is handed the new surface rather than the old one.
+        assert application._surface is not None
+
+    def test_the_key_flips_it_and_keeps_it(self, monkeypatch):
+        import pygame
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        assert screen._config.display.vsync is False
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_z,
+                                               mod=0))
+        assert screen._config.display.vsync is True
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_z,
+                                               mod=0))
+        assert screen._config.display.vsync is False
+
+    def test_the_help_names_it(self):
+        """A key that is bound and undocumented is a key nobody finds."""
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        assert "Z: vsync" in "  ".join(screen.help_lines())
+
+    def test_the_log_says_which_pacing_a_reading_came_from(self):
+        """Two logs differing in the one thing under test are worth nothing
+        if neither says which was which."""
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._matcher = NoteMatcher(_make_timeline())
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "vsync\toff" in buffer.getvalue()
+        # What the DISPLAY did, not what was asked for. The first shape of
+        # this printed the request, so a run where the driver refused and a
+        # run where it obliged wrote the same word.
+        screen._config.display.vsync = True
+        screen._config.display.vsync_outcome = "refused"
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "vsync\trefused" in buffer.getvalue()
+        screen._config.display.vsync_outcome = "on, window fixed size"
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "vsync\ton, window fixed size" in buffer.getvalue()
+
+
+class TestWaitingForTheFrameExactly:
+    """vsync is refused on this player's machines, so the jitter it would
+    have cured has to be reached without the driver. Measured: gaps of 13.8
+    to 19.5 ms against a 16.7 ms frame, 15 to 18 % of them more than a fifth
+    from the middle. A frame ready late misses its refresh and is held for
+    two, which is judder and not blur.
+
+    The decision is tested and the busy wait is not. A first attempt tested
+    the whole thing by replacing `time.perf_counter` for the process, which
+    stopped the spin from ever reaching its due time and hung the suite --
+    a real busy wait cannot be tested by freezing time.
+    """
+
+    class _Clock:
+        def __init__(self):
+            self.ticks = []
+
+        def tick(self, fps):
+            self.ticks.append(fps)
+
+    def _app(self):
+        from pickhero.ui.app import App
+        return App(Config()), self._Clock()
+
+    def test_off_it_leaves_the_timing_to_the_system(self):
+        application, clock = self._app()
+        application._wait_for_next_frame(clock)
+        assert clock.ticks == [60]
+        assert application._next_frame_at is None
+
+    def test_the_first_frame_has_nothing_to_wait_for(self):
+        application, _ = self._app()
+        due, nap = application._frame_plan(100.0)
+        assert due is None and nap == 0.0
+        assert application._next_frame_at == pytest.approx(
+            100.0 + application.FRAME_S)
+
+    def test_it_sleeps_all_but_the_last_stretch(self):
+        """The spin is what costs, so it covers only what a system timer
+        gets wrong -- the rest of the wait is spent asleep."""
+        application, _ = self._app()
+        application._next_frame_at = 100.0 + application.FRAME_S
+        due, nap = application._frame_plan(100.001)
+        assert due == pytest.approx(100.0 + application.FRAME_S)
+        assert nap == pytest.approx(
+            application.FRAME_S - 0.001 - application.SPIN_S)
+
+    def test_a_frame_that_is_nearly_due_is_all_spin(self):
+        application, _ = self._app()
+        application._next_frame_at = 100.0
+        _, nap = application._frame_plan(100.0 - application.SPIN_S / 2)
+        assert nap == 0.0
+
+    def test_a_frame_already_late_waits_for_nothing(self):
+        application, _ = self._app()
+        application._next_frame_at = 100.0
+        due, nap = application._frame_plan(100.003)
+        assert due == 100.0 and nap == 0.0
+
+    def test_the_due_time_walks_by_whole_frames(self):
+        """From the frame that was DUE, not from now: a frame that ran long
+        is caught up instead of pushing every frame after it."""
+        application, clock = self._app()
+        application._config.display.steady_pace = True
+        due = 100.0
+        application._next_frame_at = due
+        application._frame_plan(due - 0.001)
+        # The plan does not move it; the wait does, once the moment passed.
+        assert application._next_frame_at == due
+
+    def test_a_real_stall_starts_over_instead_of_sprinting(self):
+        """A seek or an engraving loses half a second, and catching that up
+        would run the picture flat out until it had."""
+        application, _ = self._app()
+        application._next_frame_at = 100.0
+        due, nap = application._frame_plan(100.5)
+        assert due is None and nap == 0.0
+        assert application._next_frame_at == pytest.approx(
+            100.5 + application.FRAME_S)
+
+    def test_one_late_frame_is_not_a_stall(self):
+        """Three milliseconds late is the thing being fixed, not a reason to
+        give up on the schedule."""
+        application, _ = self._app()
+        application._next_frame_at = 100.0
+        due, _ = application._frame_plan(100.0 + application.FRAME_S * 3)
+        assert due == 100.0
+
+    def test_the_spin_is_short_enough_to_be_worth_paying(self):
+        """About a tenth of one core. The first estimate of this cost was
+        six times too high and nearly buried the idea."""
+        from pickhero.ui.app import App
+        assert App.SPIN_S / App.FRAME_S < 0.15
+
+    def test_shift_z_flips_it_and_plain_z_does_not(self):
+        import pygame
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_z, mod=pygame.KMOD_LSHIFT))
+        assert screen._config.display.steady_pace is True
+        assert screen._config.display.vsync is False
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_z, mod=0))
+        assert screen._config.display.steady_pace is True
+        assert screen._config.display.vsync is True
+
+    def test_the_log_says_which_pacing_a_reading_came_from(self):
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._matcher = NoteMatcher(_make_timeline())
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "pacing\tsystem timer" in buffer.getvalue()
+        screen._config.display.steady_pace = True
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "pacing\tsteady" in buffer.getvalue()
+
+    def test_the_help_names_it(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        assert "Shift+Z: steady frame pacing" in "  ".join(screen.help_lines())
+
+
+class TestTheSettingUnderTestIsOnScreen:
+    """Three runs in a row were taken to measure a switch that turned out not
+    to have been on: `vsync asked` when it had been refused, `vsync off` when
+    the player believed it on, and `pacing system timer` after being asked to
+    turn the pacing on. Every time, the only places the state appeared were a
+    status note that expires and a log written afterwards.
+
+    A setting under test has to be readable at the moment the player decides
+    to press D, in the same words the log will use.
+    """
+
+    def _screen(self):
+        return PlayingScreen(_make_timeline(), config=Config())
+
+    def test_it_says_what_is_timing_the_pictures(self):
+        screen = self._screen()
+        assert "Pace: system timer" in screen._pacing_line()
+        screen._config.display.steady_pace = True
+        assert "Pace: steady" in screen._pacing_line()
+
+    def test_it_says_what_the_display_did_with_vsync(self):
+        screen = self._screen()
+        screen._config.display.vsync_outcome = "refused"
+        assert "vsync: refused" in screen._pacing_line()
+
+    def test_it_names_the_keys_that_change_them(self):
+        """A state nobody can change from where they read it is a state
+        nobody changes."""
+        line = self._screen()._pacing_line()
+        assert "(Z)" in line and "(Shift+Z)" in line
+
+    def test_the_words_are_the_ones_the_log_uses(self):
+        """A screen that says one thing and a file that says another is how
+        three measurements went to the wrong conclusion."""
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = self._screen()
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._config.display.steady_pace = True
+        screen._config.display.vsync_outcome = "on, window fixed size"
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        log = buffer.getvalue()
+        assert "pacing\tsteady" in log
+        assert "vsync\ton, window fixed size" in log
+        line = screen._pacing_line()
+        assert "steady" in line and "on, window fixed size" in line
+
+    def test_an_experiment_that_is_running_stands_out(self):
+        """An experiment the player has forgotten is running is worse than
+        no experiment."""
+        screen = self._screen()
+        assert not screen._pacing_unusual()
+        screen._config.display.steady_pace = True
+        assert screen._pacing_unusual()
+        screen._config.display.steady_pace = False
+        screen._config.display.vsync = True
+        assert screen._pacing_unusual()
+
+
+class TestAMeasurementIsAboutOneThing:
+    """"Habe mehrfach hin und hergeschaltet. Ich sehe keinen Unterschied."
+
+    Right about the number and wrong about the world. `_frame_ms` and
+    `_frame_intervals` are rolling windows of the last minute of frames, so
+    flipping the pacing inside that minute leaves the log averaging half of
+    one mode with half of the other -- which cannot show a difference
+    however large the difference is. Three runs were spent on this before
+    the buffers were looked at.
+    """
+
+    def _screen(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen._playing = True
+        for i in range(200):
+            screen.record_frame_ms(8.0)
+            screen.record_frame_shown(100.0 + i * 0.0167)
+        return screen
+
+    def test_flipping_the_pacing_starts_the_measurement_again(self):
+        screen = self._screen()
+        assert screen._frame_intervals and screen._frame_ms
+        screen._toggle_steady_pace()
+        assert screen._frame_intervals == [] and screen._frame_ms == []
+
+    def test_and_so_does_flipping_vsync(self):
+        screen = self._screen()
+        screen._toggle_vsync()
+        assert screen._frame_intervals == [] and screen._frame_ms == []
+
+    def test_the_gap_across_the_change_is_not_counted_either(self):
+        """The first frame after the switch has no predecessor any more, so
+        the time spent in the keypress is not charged to it as a stutter."""
+        screen = self._screen()
+        screen._toggle_steady_pace()
+        screen.record_frame_shown(500.0)
+        assert screen._frame_intervals == []
+        screen.record_frame_shown(500.0167)
+        assert len(screen._frame_intervals) == 1
+
+    def test_how_long_the_reported_mode_ran_is_readable(self):
+        """frames_measured doubles as "how much of this mode is in here",
+        so a log taken two seconds after the switch says so itself."""
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = self._screen()
+        screen._matcher = NoteMatcher(_make_timeline())
+        screen._toggle_steady_pace()
+        for i in range(30):
+            screen.record_frame_shown(200.0 + i * 0.0167)
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "frame_intervals_measured\t29" in buffer.getvalue()
+
+
+class TestAHighlightHasToDifferFromWhatItStandsOut_From:
+    """"Was bedeutet wird farbig? Die Zeile ist immer blau im HUD."
+
+    The pacing line was highlighted in `hud_accent`, which is the colour half
+    the panel around it is already drawn in -- so "highlighted" and "normal"
+    were the same blue at a glance, and a state that was meant to be obvious
+    was invisible. The player asked what it was supposed to mean and answered
+    the question in the same sentence.
+    """
+
+    def _distance(self, a, b):
+        return sum(abs(x - y) for x, y in zip(a, b))
+
+    def test_it_differs_from_the_plain_text_and_from_the_accent(self):
+        from pickhero.ui.colors import DARK_THEME, LIGHT_THEME
+        for name, theme in (("dark", DARK_THEME), ("light", LIGHT_THEME)):
+            highlight = theme.feedback_streak
+            assert self._distance(highlight, theme.hud_text) > 150, name
+            assert self._distance(highlight, theme.hud_accent) > 150, name

@@ -26,6 +26,7 @@ that reproduce the measurement, not a model of it.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -88,6 +89,43 @@ MIN_SLOPE_SPAN_S = 30.0
 SIMPLIFY_MS = 25.0
 # Below this many usable windows there is no curve, only noise.
 MIN_WINDOWS = 3
+# A jump between two NEIGHBOURING windows that no drift can explain. They sit
+# STEP_S apart and the fastest drift allowed is MAX_DRIFT_RATE, so drift can
+# move them by at most 0.3 s; a second is three times that. Above it the tab
+# and the recording are not the same piece of music at that moment -- a
+# repeat one of them does not play, a bar the transcriber added, or a window
+# that matched the wrong chorus. Measured on the player's own files: Godsmack
+# jumps 13.1 s between 1:06 and 1:36, and What's Up swings +9.9, -34.4, -6.2,
+# +21.1 across five windows.
+BREAK_S = 1.0
+# What a stretch between two breaks has to be before a line is fitted to it.
+# Below this it is noise pretending to be a section: What's Up produces
+# twenty "sections" of one window each, and a map built from those is worse
+# than no map at all, because it looks measured.
+MIN_SECTION_WINDOWS = 4
+MIN_SECTION_S = 30.0
+# What share of a song's windows has to survive before the answer is worth
+# storing. Fitted on the three songs to hand and nothing more: Bon Jovi keeps
+# 32 of 42 (76 %), Godsmack 29 of 47 (62 %), and What's Up -- four chords
+# repeated for four minutes, where the windows match +9.9, -34.4, -6.2 and
+# +21.1 s -- keeps 5 of 41 (12 %). A third is the gap between them. Below it
+# the map is not thin, it is WRONG: What's Up's came out at -3.02 % drift and
+# 5.1 s of correction, and it looked exactly as measured as the good ones.
+MIN_USABLE_SHARE = 1.0 / 3.0
+# How far the tab and the recording may differ in LENGTH before they are not
+# the same transcription at all. Measured on the player's own files: his old
+# Thunder tab is 6:21 at 156 BPM in 248 bars against a 4:40 recording -- 36 %
+# apart -- and his new one is 4:40 in 91 bars at 78 BPM, matching to a tenth
+# of a second. No offset, rate or map can bridge the first, and a whole
+# session was spent on its sync before anyone compared the two numbers. Ten
+# per cent is far outside the 5 % the drift model allows, so nothing this
+# rejects could have been fitted anyway.
+MAX_LENGTH_MISMATCH = 0.10
+# How far a window may sit from the constant before it is not agreeing with a
+# made per-bar map. Wider than the map's own error -- measured at 80 to 92 ms
+# median against the player's Thunder recording -- and far narrower than a
+# wrong chorus, which is tens of seconds.
+BAR_MAP_AGREE_S = 3.0
 
 
 def decode(path: str | Path, samplerate: int = 44100) -> tuple[np.ndarray, int]:
@@ -348,29 +386,151 @@ def spike_tolerance(residuals: Sequence[float]) -> float:
     return min(OUTLIER_S, max(SPIKE_FLOOR_S, SPIKE_FACTOR * mad))
 
 
+def breaks_in(kept: Sequence[tuple[float, float]]
+              ) -> list[tuple[float, float]]:
+    """(when, by how much) the readings jump, in seconds.
+
+    Not an outlier test. An outlier is one window that disagrees with the
+    rest; a BREAK is the whole curve moving and staying moved, and the two
+    need opposite treatment -- an outlier is dropped, a break is a place to
+    stop fitting and start again.
+
+    Told apart by what drift could do: neighbours are STEP_S apart and drift
+    is bounded, so anything past that budget is not the recording running at
+    a different speed, it is the two of them being different music.
+    """
+    out = []
+    for (at, lag), (next_at, next_lag) in zip(kept, kept[1:]):
+        budget = max(BREAK_S, MAX_DRIFT_RATE * (next_at - at))
+        if abs(next_lag - lag) > budget:
+            out.append((next_at, next_lag - lag))
+    return out
+
+
+def sections(kept: Sequence[tuple[float, float]]
+             ) -> list[list[tuple[float, float]]]:
+    """The readings split where they jump, longest run first in time order."""
+    if not kept:
+        return []
+    at_break = {at for at, _ in breaks_in(kept)}
+    out: list[list[tuple[float, float]]] = [[]]
+    for reading in kept:
+        if reading[0] in at_break and out[-1]:
+            out.append([])
+        out[-1].append(reading)
+    return [part for part in out if part]
+
+
+def big_enough(part: Sequence[tuple[float, float]]) -> bool:
+    """Whether a section is worth fitting a line to."""
+    return (len(part) >= MIN_SECTION_WINDOWS
+            and part[-1][0] - part[0][0] >= MIN_SECTION_S)
+
+
+def merged_sections(parts: Sequence[Sequence[tuple[float, float]]]
+                    ) -> list[list[tuple[float, float]]]:
+    """Fold each section too small to fit into the big one beside it.
+
+    **A break is the curve moving and STAYING moved.** A single window that
+    jumps and comes straight back is an outlier, and splitting there strands
+    the good readings after it in a section too small to fit -- so they are
+    thrown away with it.
+
+    Measured on the player's own file: Bon Jovi's outro has five such jumps
+    of about 14 s, each one window wide. Splitting at all of them cost 12
+    readings and a minute and a half of coverage, and every one of the bad
+    ones is dropped by the section's own spike filter anyway. Godsmack's
+    real breaks survive this, because they are followed by four windows and
+    thirty seconds that agree with each other.
+    """
+    out: list[list[tuple[float, float]]] = []
+    for part in parts:
+        if big_enough(part) or not out:
+            out.append(list(part))
+        else:
+            out[-1] += list(part)
+    # A run of small sections before the first big one has nothing to fold
+    # into, so it is kept and judged on its own -- which usually drops it.
+    if out and not big_enough(out[0]) and len(out) > 1:
+        out[1] = out[0] + out[1]
+        out.pop(0)
+    return out
+
+
 def usable_rows(rows: Iterable[tuple[float, float, float]]
                 ) -> list[tuple[float, float]]:
     """Drop the windows that are not readings, and then the outliers.
 
-    Two filters and they answer different questions: the margin says the
-    window could not tell one chorus from another, and the residual says this
-    one disagrees with all the others. Neither is a threshold on the
-    correlation itself, which would have to be fitted per song and would then
-    be measuring the song.
+    Three filters now, and they answer three different questions.
 
-    The residual filter is scaled to the scatter the song shows rather than
-    fixed, because a fixed one has to be set for the worst case it must catch
-    -- a wrong chorus, tens of seconds away -- and is then blind to a spike of
-    one second on a song whose windows agree to within fifty milliseconds.
+    - The **margin** says the window could not tell one chorus from another.
+    - The **breaks** say the two stopped being the same piece of music here.
+      This one is new, and it is what the whole thing was getting wrong: a
+      single line was fitted to the entire song, so a tab that repeats a
+      section the record does not made every window after the repeat look
+      like an outlier. Measured on the player's own files: Godsmack kept 11
+      of 47 windows and covered 0:00-1:26 of 4:56, with the remaining three
+      and a half minutes extrapolated from a line fitted to the first.
+    - The **residual**, WITHIN a section, says this one window disagrees with
+      the others around it. Scaled to the scatter that section shows rather
+      than fixed, because a fixed one has to be set for the worst case it
+      must catch and is then blind to a spike of one second on a song whose
+      windows agree to fifty milliseconds.
+
+    A section too small to fit is dropped whole rather than fitted: four
+    windows over thirty seconds is the least that can say anything, and
+    below it a "section" is one reading calling itself a trend.
     """
     kept = [(at, lag) for at, lag, margin in rows if margin >= MIN_MARGIN]
     if len(kept) < MIN_WINDOWS:
         return []
-    slope, intercept = _robust_line([a for a, _ in kept], [b for _, b in kept])
-    residuals = [lag - (slope * at + intercept) for at, lag in kept]
-    tolerance = spike_tolerance(residuals)
-    return [(at, lag) for (at, lag), gap in zip(kept, residuals)
-            if abs(gap) <= tolerance]
+    out: list[tuple[float, float]] = []
+    for part in merged_sections(sections(kept)):
+        if not big_enough(part):
+            continue
+        slope, intercept = _robust_line([a for a, _ in part],
+                                        [b for _, b in part])
+        residuals = [lag - (slope * at + intercept) for at, lag in part]
+        tolerance = spike_tolerance(residuals)
+        out += [(at, lag) for (at, lag), gap in zip(part, residuals)
+                if abs(gap) <= tolerance]
+    return out
+
+
+def read_report(rows: Sequence[tuple[float, float, float]]) -> dict:
+    """What the listening could and could not read, as numbers.
+
+    Separate from the points because the app has to be able to SAY what
+    happened. "28 of 51 windows usable" is a number nobody can act on; "the
+    tab and the recording part company at 1:36" is a place to put a point.
+    """
+    by_margin = [(at, lag) for at, lag, margin in rows if margin >= MIN_MARGIN]
+    parts = merged_sections(sections(by_margin))
+    used = [part for part in parts if big_enough(part)]
+    kept = usable_rows(rows)
+    dropped = [(part[0][0], part[-1][0] + WINDOW_S)
+               for part in parts if not big_enough(part)]
+    windows = len(rows)
+    share = len(kept) / windows if windows else 0.0
+    return {
+        "readable": bool(used) and share >= MIN_USABLE_SHARE,
+        "share": share,
+        "windows": len(rows),
+        "ambiguous": len(rows) - len(by_margin),
+        # From the readings the MAP is built on, not from the raw sections.
+        # A section can be big enough to fit and still contain a wrong match
+        # at its edge -- Thunder's first 36 s hold six readings, two at +1.2 s
+        # and the rest at -23.5 s -- and comparing raw endpoints then reported
+        # a 24.9 s break that the stored points do not have. A break the map
+        # does not contain is a line that lies.
+        "breaks": breaks_in(kept),
+        "sections": len(parts),
+        "sections_used": len(used),
+        "unreadable": dropped,
+        "usable": len(kept),
+        "covered": ((kept[0][0], kept[-1][0] + WINDOW_S) if kept else None),
+        "song_s": (rows[-1][0] + WINDOW_S) if rows else 0.0,
+    }
 
 
 def simplify(points: list[tuple[float, float]],
@@ -420,16 +580,200 @@ def points_from_rows(rows: Iterable[tuple[float, float, float]],
     return [(round(a, 1), round(b, 1)) for a, b in thinned]
 
 
-def find_points(timeline: Timeline | str | Path, audio_path: str | Path,
-                progress: Callable[[float, str], bool] | None = None,
-                tolerance_ms: float = SIMPLIFY_MS
-                ) -> tuple[list[tuple[float, float]],
-                           list[tuple[float, float, float]]]:
-    """Measure this recording against this tab. Returns (points, rows).
+def bar_lag(song_ms: float, bar_starts: Sequence[float],
+            bar_times: Sequence[float]) -> float:
+    """Where a made map says this moment is, in seconds, before the constant.
 
-    The rows come back as well as the points, because "how many windows were
-    usable" is the difference between a song this could not read and a song
-    that is already in sync.
+    Piecewise linear between bar lines, which is what a per-bar map IS: the
+    map knows where bar 34 begins and says nothing about the middle of it.
+    """
+    if not bar_starts or not bar_times:
+        return 0.0
+    last = min(len(bar_starts), len(bar_times)) - 1
+    if last < 1:
+        return float(bar_times[0]) - song_ms / 1000.0
+    at = song_ms / 1000.0
+    i = max(0, min(last - 1, bisect_left(bar_starts, song_ms) - 1))
+    run = bar_starts[i + 1] - bar_starts[i]
+    share = 0.0 if run <= 0 else (song_ms - bar_starts[i]) / run
+    where = bar_times[i] + (bar_times[i + 1] - bar_times[i]) * share
+    return where - at
+
+
+def _covers(timeline: Timeline, bar_starts: Sequence[float],
+            bar_times: Sequence[float]) -> bool:
+    """Whether a map of this many bars describes this tab's whole MUSIC.
+
+    Exactly as many bars is the easy case. Fewer is fine too when every bar
+    past the map is EMPTY -- and that is not a corner case, it is What's Up:
+    the tab is 80 bars of which the last ten carry no note on any pitched
+    track, because the export pads the score out to the end of the sheet.
+    Songsterr times the 72 that have music in them, and refusing on the
+    count alone threw away a map that fits perfectly.
+
+    More bars than the tab has is always wrong: there is nowhere to put
+    them.
+    """
+    if len(bar_times) == len(bar_starts):
+        return True
+    if not bar_times or len(bar_times) > len(bar_starts):
+        return False
+    after = bar_starts[len(bar_times)]
+    return all(note.timestamp_ms < after for note in timeline.notes)
+
+
+def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
+                       candidates,
+                       progress: Callable[[float, str], bool] | None = None,
+                       tolerance_ms: float = SIMPLIFY_MS) -> dict:
+    """Fit a made per-bar map to the recording the player actually has.
+
+    `candidates` is every per-bar timeline the service offered, because they
+    are not the same song: What's Up's main video carries 72 points over
+    253 s and its backing videos carry 78 over 278 s, and only one of them is
+    the file in the player's folder. **Which one is a question only the
+    recording can answer**, so each is tried and the one the windows agree
+    about wins. A single list is accepted too, and treated as one candidate.
+
+    The points are times in a VIDEO. If that video and this file are the same
+    master they differ by ONE constant, so the whole job is to find a single
+    number -- and how well the windows agree about it is a free check on
+    whether this map belongs to this recording at all.
+    """
+    if candidates and not isinstance(candidates[0], (list, tuple)):
+        candidates = [candidates]
+    bar_starts = [m.start_ms for m in timeline.measures]
+    report: dict = {
+        "source": "songsterr", "bars": 0, "measures": len(bar_starts),
+        "points": [], "readable": False, "windows": 0, "usable": 0,
+        "ambiguous": 0, "breaks": [], "covered": None, "song_s": 0.0,
+        "wrong_length": False, "sections": 0, "sections_used": 0,
+        "unreadable": [], "share": 0.0, "wrong_bars": False,
+        "offered": [len(c) for c in candidates],
+    }
+    fitting = [c for c in candidates if _covers(timeline, bar_starts, c)]
+    if not fitting or len(bar_starts) < 2:
+        # A map with a different number of bars is a map of a different tab --
+        # a newer revision, or the repeats written out differently. Said
+        # rather than stretched over: stretching it would be silent and wrong
+        # everywhere after the first difference.
+        report["wrong_bars"] = True
+        report["bars"] = max(report["offered"], default=0)
+        return report
+
+    samples, rate = decode(audio_path)
+    if progress is not None and progress(0.05, "listening") is False:
+        raise Cancelled()
+    rec, fps = chroma_of_audio(
+        samples, rate,
+        (lambda f: progress(0.05 + 0.45 * f, "listening"))
+        if progress else None)
+    if len(rec) == 0:
+        return report
+
+    best = report
+    for taken, bar_times in enumerate(fitting):
+        tab = chroma_of_timeline(
+            replace_times(timeline, bar_starts, bar_times), fps)
+        if len(tab) == 0:
+            continue
+        share = (taken + 1) / len(fitting)
+        rows = drift_curve(
+            tab, rec, fps,
+            (lambda f, s=share: progress(0.5 + 0.5 * s * f, "comparing"))
+            if progress else None)
+        found = _fit_one(report, bar_starts, bar_times, rows, tolerance_ms)
+        if found["share"] > best["share"]:
+            best = found
+    return best
+
+
+def _fit_one(base: dict, bar_starts, bar_times, rows, tolerance_ms) -> dict:
+    """One candidate map measured against the recording."""
+    report = dict(base)
+    report["bars"] = len(bar_times)
+    good = [(at, lag) for at, lag, margin in rows if margin >= MIN_MARGIN]
+    report["windows"] = len(rows)
+    report["ambiguous"] = len(rows) - len(good)
+    report["song_s"] = (rows[-1][0] + WINDOW_S) if rows else 0.0
+    if len(good) < MIN_WINDOWS:
+        return report
+
+    # The constant every window should agree on, and how many actually do.
+    lags = sorted(lag for _, lag in good)
+    constant = lags[len(lags) // 2]
+    agreed = [(at, lag) for at, lag in good
+              if abs(lag - constant) <= BAR_MAP_AGREE_S]
+    report["usable"] = len(agreed)
+    report["share"] = len(agreed) / max(1, len(rows))
+    report["constant_s"] = constant
+    report["scatter_ms"] = (
+        1000.0 * float(np.median([abs(lag - constant) for _, lag in agreed]))
+        if agreed else 0.0)
+    report["readable"] = (len(agreed) >= MIN_WINDOWS
+                          and report["share"] >= MIN_USABLE_SHARE)
+    if agreed:
+        report["covered"] = (agreed[0][0], agreed[-1][0] + WINDOW_S)
+    if not report["readable"]:
+        return report
+
+    # The stored points are the MAP's own bar lines, corrected by the one
+    # constant -- so what is kept is Songsterr's measurement, not a smoothing
+    # of ours. Thinned the same way, because a bar the line between its
+    # neighbours already predicts is not worth a point.
+    #
+    # A point is (song ms, offset ms) with the app's usual sign: the
+    # recording is at song_ms - offset_ms. The map puts bar i at `time` in
+    # the VIDEO and the video is at `time + constant` in this file, so the
+    # offset is the song's own bar line minus that. Getting the constant's
+    # sign wrong here reads as a map that is twice the constant out --
+    # measured at 324 ms against readings the report claimed 76 ms of.
+    raw = [(float(start), start - (time + constant) * 1000.0)
+           for start, time in zip(bar_starts, bar_times)]
+    report["points"] = [(round(a, 1), round(b, 1))
+                        for a, b in simplify(raw, tolerance_ms)]
+    return report
+
+
+def replace_times(timeline: Timeline, bar_starts: Sequence[float],
+                  bar_times: Sequence[float]) -> Timeline:
+    """The same music with every note moved to where the map says it is."""
+    from pickhero.tabs.timeline import MeasureInfo, NoteEvent
+
+    def moved(ms: float) -> float:
+        return ms + bar_lag(ms, bar_starts, bar_times) * 1000.0
+
+    notes = []
+    for note in timeline.notes:
+        when = moved(note.timestamp_ms)
+        ends = moved(note.timestamp_ms + note.duration_ms)
+        notes.append(NoteEvent(
+            timestamp_ms=when, duration_ms=max(20.0, ends - when),
+            midi_note=note.midi_note, string=note.string, fret=note.fret,
+            measure=note.measure))
+    last = bar_times[-1] + (bar_times[-1] - bar_times[-2]
+                            if len(bar_times) > 1 else 3.0)
+    measures = [
+        MeasureInfo(index=i, start_ms=bar_times[i] * 1000.0,
+                    end_ms=(bar_times[i + 1] if i + 1 < len(bar_times)
+                            else last) * 1000.0)
+        for i in range(len(bar_times))]
+    return Timeline(notes, timeline.metadata, measures=measures)
+
+
+def measure(timeline: Timeline | str | Path, audio_path: str | Path,
+            progress: Callable[[float, str], bool] | None = None,
+            tolerance_ms: float = SIMPLIFY_MS
+            ) -> tuple[list[tuple[float, float]],
+                       list[tuple[float, float, float]],
+                       tuple[float, float]]:
+    """Measure this recording against this tab.
+
+    Returns (points, rows, (tab seconds, recording seconds)). The rows come
+    back as well as the points, because "how many windows were usable" is the
+    difference between a song this could not read and a song that is already
+    in sync -- and the lengths, because two files of different lengths are
+    not the same transcription and no map can bridge that.
     """
     def stage(share: float, base: float, span: float, what: str):
         if progress is None:
@@ -444,7 +788,82 @@ def find_points(timeline: Timeline | str | Path, audio_path: str | Path,
         tab = chroma_of_timeline(timeline, fps)
     else:
         tab = chroma_of_tab_file(timeline, fps)
+    lengths = (len(tab) / fps, len(samples) / rate)
     if len(tab) == 0 or len(rec) == 0:
-        return [], []
+        return [], [], lengths
     rows = drift_curve(tab, rec, fps, stage(1, 0.5, 0.5, "comparing"))
-    return points_from_rows(rows, tolerance_ms), rows
+    return points_from_rows(rows, tolerance_ms), rows, lengths
+
+
+def find_points(timeline: Timeline | str | Path, audio_path: str | Path,
+                progress: Callable[[float, str], bool] | None = None,
+                tolerance_ms: float = SIMPLIFY_MS
+                ) -> tuple[list[tuple[float, float]],
+                           list[tuple[float, float, float]]]:
+    """Just the points and the rows, for the tools and the tests."""
+    points, rows, _ = measure(timeline, audio_path, progress, tolerance_ms)
+    return points, rows
+
+
+def find(timeline: Timeline | str | Path, audio_path: str | Path,
+         progress: Callable[[float, str], bool] | None = None,
+         tolerance_ms: float = SIMPLIFY_MS) -> dict:
+    """The whole answer in one place: the points, and what to say about them.
+
+    The app needs both, and it needs them to agree -- a report derived from a
+    second measurement could disagree with the map that was stored.
+    """
+    points, rows, (tab_s, rec_s) = measure(
+        timeline, audio_path, progress, tolerance_ms)
+    report = read_report(rows)
+    report["tab_s"] = tab_s
+    report["recording_s"] = rec_s
+    longer = max(tab_s, rec_s, 1e-9)
+    report["length_gap"] = abs(tab_s - rec_s) / longer
+    # A tab of a different length is not a sync problem and no map can fix
+    # it. Said before anything else, because it is the only finding here that
+    # tells the player to go and get a different file.
+    report["wrong_length"] = report["length_gap"] > MAX_LENGTH_MISMATCH
+    if report["wrong_length"]:
+        report["readable"] = False
+    # The RATIO, which is the number that says what to do about it. A tab
+    # whose bars are all the same length is written at one tempo, so a
+    # uniform difference in length is that tempo being wrong -- and the
+    # right tempo is a number the player can act on, where "27 % apart" is
+    # not. Measured on What's Up: 80 bars of 3.692 s (65 BPM) against a 4:13
+    # recording, so the tab is 16.3 % slow and the record is at 75.6.
+    report["length_ratio"] = tab_s / rec_s if rec_s > 0 else 1.0
+    report["points"] = points if report["readable"] else []
+    # The tempo reading is left to the caller: `timeline` here is usually the
+    # FILE, so every track of the band is matched, and the bar grid the
+    # question is about belongs to the one timeline the app has open.
+    return report
+
+
+def written_tempo_gap(timeline: Timeline, recording_s: float) -> dict | None:
+    """What this tab's written tempo would have to be to fit the recording.
+
+    None when the tab's bars are NOT all the same length: then the file
+    carries tempo changes and one number cannot describe the difference.
+
+    This is the fault no offset and no rate can repair. An offset moves the
+    whole song by a constant; a sync map bends it by at most a tenth (see
+    syncmap.MIN_RATE) and the listening refuses to read past a twentieth
+    (MAX_DRIFT_RATE). All three bounds were fitted for a recording of the
+    same performance, and a tab written at the wrong tempo is a different
+    thing entirely -- which is why one sync point fixes the start and the
+    two walk apart again immediately afterwards.
+    """
+    bars = list(timeline.measures)
+    if len(bars) < 3 or recording_s <= 0 or timeline.duration_ms <= 0:
+        return None
+    lengths = [b.start_ms - a.start_ms for a, b in zip(bars, bars[1:])]
+    if max(lengths) - min(lengths) > 1.0:      # a millisecond of rounding
+        return None
+    ratio = (timeline.duration_ms / 1000.0) / recording_s
+    return {
+        "written": timeline.metadata.tempo,
+        "wanted": timeline.metadata.tempo * ratio,
+        "ratio": ratio,
+        "bar_s": lengths[0] / 1000.0,
+    }

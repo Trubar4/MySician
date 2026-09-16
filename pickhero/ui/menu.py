@@ -12,12 +12,14 @@ import pygame
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import Config
 from pickhero.progress import ProgressTracker
+# .gpx is Guitar Pro 6. It was missing from this set for as long as the
+# app had existed, so those files never appeared in the list to be
+# opened. It lives with the loader now: what the app can READ is a
+# property of the reader, and the downloader needs the same answer.
+from pickhero.tabs.loader import GP_EXTENSIONS
 from pickhero.tabs.song_index import SongIndex
 from pickhero.ui.colors import cycle_theme, get_theme
 
-# .gpx is Guitar Pro 6. It was missing here for as long as the app has
-# existed, so those files never even appeared in the list to be opened.
-GP_EXTENSIONS = {".gp3", ".gp4", ".gp5", ".gp", ".gp7", ".gp8", ".gpx"}
 
 # How many items visible at once before scrolling
 VISIBLE_ITEMS = 18
@@ -54,6 +56,29 @@ class MenuScreen:
         # that looks like nothing happened is indistinguishable from a dead
         # key, and this one usually finds exactly one new file.
         self._reload_note: str = ""
+        #: How many songs took settings out of the folder on the last scan.
+        self._adopted: int = 0
+        #: And how many had their settings written back into it.
+        self._backfilled: int = 0
+        #: The last import's report, shown over the list until a key is
+        #: pressed. A multi-line answer, because "23 songs, 140 sittings,
+        #: 4 better scores" is four facts and the note line holds one.
+        self._import_lines: list[str] = []
+        #: The song being renamed and the name being typed, or None. A tab
+        #: downloaded from Songsterr arrives called whatever Songsterr calls
+        #: it, and that name is the song's identity everywhere: `song_key` IS
+        #: the stem, so a tidy-up in Explorer silently orphans the speed, the
+        #: recording, the sync points and the practice history.
+        self._renaming = None
+        self._rename_text: str = ""
+        #: Where the next character goes, 0..len(text). Without one the
+        #: editor could only ever grow and shrink at the end.
+        self._rename_caret: int = 0
+        #: The song DEL is waiting for a second press on, or None. Deleting
+        #: is the one thing on this screen that cannot be undone, and DEL
+        #: sits one row from the arrow keys -- so it asks first, and the
+        #: question names the song and counts the files.
+        self._delete_armed = None
         # How many instruments each song holds and how each is tuned, read on
         # a thread and remembered between sessions. See tabs/song_index.py.
         self._index = SongIndex()
@@ -96,6 +121,24 @@ class MenuScreen:
     def is_searching(self) -> bool:
         """True when search mode is active."""
         return self._search_active
+
+    @property
+    def is_renaming(self) -> bool:
+        """True while a song's name is being typed."""
+        return self._renaming is not None
+
+    @property
+    def is_typing(self) -> bool:
+        """True when a letter belongs to a text box and not to a shortcut.
+
+        `is_searching` used to be that test, and then the rename editor
+        arrived and was not part of it -- so `o` in the middle of typing a
+        name opened the settings screen, `s` the downloader and `d` the
+        device list. The App asks this now, so a text box added later is
+        covered by being a text box rather than by somebody remembering to
+        come back here.
+        """
+        return self._search_active or self.is_renaming
 
     def _apply_filter(self) -> None:
         """Filter _files by search text and tuning, sort, reset selection."""
@@ -158,17 +201,54 @@ class MenuScreen:
             self._config.save()
 
     def scan_files(self) -> None:
-        """Scan songs directory (recursively) for GP files."""
-        self._songs_dir.mkdir(parents=True, exist_ok=True)
-        self._files = sorted(
-            p
-            for p in self._songs_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in GP_EXTENSIONS
-        )
+        """Scan songs directory (recursively) for GP files.
+
+        A folder that cannot be read is an EMPTY LIST and a line saying so,
+        never an exception. This used to call mkdir(parents=True) and die
+        before the first frame when the folder could not be made -- see
+        Config.songs_path, which is where the folder is chosen now.
+        """
+        try:
+            self._songs_dir.mkdir(parents=True, exist_ok=True)
+            found = sorted(
+                p
+                for p in self._songs_dir.rglob("*")
+                if p.is_file() and p.suffix.lower() in GP_EXTENSIONS
+            )
+        except OSError as exc:
+            self._reload_note = (f"Cannot read {self._songs_dir} — "
+                                 f"{exc.strerror or exc}")
+            found = []
+        self._files = found
+        # Counted, not announced from in here. `reload_files` OWNS the note
+        # -- it returns one and the caller displays it -- so a message set
+        # here is either overwritten immediately or, worse, left standing
+        # after the next scan that found nothing.
+        self._adopted = self._adopt_sidecars(found)
+        # And the other direction: a song whose settings only exist in
+        # settings.json gets its file written NOW rather than the next time
+        # it happens to be opened and left. Without this, "every song has
+        # four files" was a promise that came true one song at a time, in
+        # whatever order they were played -- and the player would have had
+        # to visit every one before copying anything anywhere.
+        self._backfilled = self._write_missing_sidecars(found)
+        if self._adopted or self._backfilled:
+            self._reload_note = self._adopted_note()
         self._search_text = ""
         self._search_active = False
         self._index.scan_in_background(self._files)
         self._apply_filter()
+
+    def set_songs_dir(self, folder) -> str:
+        """Look somewhere else from now on. Returns what it found there.
+
+        The search and the cursor are dropped on purpose: they belong to the
+        list that was being looked at, and this is a different one.
+        """
+        self._songs_dir = Path(folder)
+        self._search_text, self._search_active = "", False
+        self._selected = self._scroll_offset = 0
+        return self.reload_files()
 
     def reload_files(self) -> str:
         """Read the folder again without losing the player's place (F5).
@@ -205,23 +285,77 @@ class MenuScreen:
             parts.append(f"{gone} gone")
         if not added and not gone:
             parts.append("nothing changed")
+        if self._adopted:
+            parts.append(f"{self._adopted} picked up settings")
+        if self._backfilled:
+            parts.append(f"{self._backfilled} got a settings file")
         return "Reloaded: " + ", ".join(parts)
 
+    def _blit_import_report(self, surface, w, h, item_font, hint_font,
+                            t) -> None:
+        """What the last import did, over the list until a key is pressed."""
+        line_h = 26
+        block = len(self._import_lines) * line_h + 56
+        top = max(80, h // 2 - block // 2)
+        panel = pygame.Rect(40, top - 20, w - 80, block)
+        pygame.draw.rect(surface, t.menu_bg, panel, border_radius=6)
+        pygame.draw.rect(surface, t.hud_accent, panel, width=1,
+                         border_radius=6)
+        for i, line in enumerate(self._import_lines):
+            font = item_font if i == 0 else hint_font
+            colour = t.hud_accent if i == 0 else t.hud_text
+            drawn = font.render(line, True, colour)
+            surface.blit(drawn, (w // 2 - drawn.get_width() // 2,
+                                 top + i * line_h))
+        hint = hint_font.render("Any key closes this", True, t.hud_text)
+        surface.blit(hint, (w // 2 - hint.get_width() // 2,
+                            top + len(self._import_lines) * line_h + 8))
+
     def _toggle_favourite(self) -> None:
-        """Star the selected song, or take the star off (M)."""
+        """Star the selected song, or take the star off (M).
+
+        One line, because `_set_favourite` is the same work said explicitly
+        and two copies of it would drift.
+        """
+        if self._config is None:
+            return
+        song = self._selected_path()
+        if song is not None:
+            self._set_favourite(not self._config.is_favourite(song.stem))
+
+    def _set_favourite(self, starred: bool) -> None:
+        """Star the selected song, or take the star off. No toggling.
+
+        *"Im Filter kann ich keine Favoriten setzen."*
+
+        `M` toggles, and a toggle is the wrong shape for this: while the
+        filter box is open the note is the last thing being read, so
+        pressing it means finding out afterwards which way it went. Two
+        keys that SAY what they do can be pressed without looking, and
+        pressing the same one twice is harmless.
+
+        Ctrl, not Shift: a Ctrl combination produces no character, so it
+        works mid-word. `Shift+M` is how a capital M is typed, and a filter
+        box that cannot spell Metallica is a filter box.
+        """
         if self._config is None:
             return
         song = self._selected_path()
         if song is None:
+            self.say("Nothing selected")
             return
-        starred = not self._config.is_favourite(song.stem)
+        if self._config.is_favourite(song.stem) == starred:
+            self.say(("Already a favourite: " if starred
+                      else "Not a favourite anyway: ") + song.stem[:40])
+            return
         self._config.set_favourite(song.stem, starred)
         self._config.save()
-        self._reload_note = (("Favourite: " if starred
-                              else "No longer a favourite: ") + song.stem[:40])
+        self._write_sidecar(song)
+        self.say(("Favourite: " if starred else "No longer a favourite: ")
+                 + song.stem[:40])
         if self._favourites_only:
-            # It has just left the list it is being shown in, so the list has
-            # to be rebuilt and the cursor put somewhere that still exists.
+            # It has just left the list it is being shown in, so the list
+            # has to be rebuilt and the cursor put somewhere that exists.
             self._apply_filter()
             self._select_path(song)
 
@@ -301,6 +435,258 @@ class MenuScreen:
             self._selected = min(self._selected, len(files) - 1)
         self._ensure_visible()
 
+    def say(self, text: str) -> None:
+        """Put one line under the list, until the player presses anything.
+
+        The same line reload_files and the favourites use. A screen with one
+        place for a note is a screen where the note is always in the same
+        place.
+        """
+        self._reload_note = text
+
+    def _import_from_folder(self) -> None:
+        """Ctrl+I: take another computer's songs and history from a folder.
+
+        A laptop that cannot have a cloud client installed still has a USB
+        stick, and a stick is a real folder. Nothing is overwritten and a
+        `.bak` is left beside anything rewritten, so this runs in one step
+        rather than asking first -- the report says what happened, which is
+        the thing that actually needs seeing.
+        """
+        if self._config is None:
+            return
+        from pickhero.transfer import import_from
+        from pickhero.ui.filepick import pick_folder
+        self.say("Opening the folder chooser…")
+        chosen = pick_folder("Folder from the other computer",
+                             str(self._songs_dir))
+        # Every key repeat that arrived while the dialog held the app is
+        # still queued, and each one would open it again -- the same bill
+        # the recording chooser already paid.
+        try:
+            pygame.event.clear(pygame.KEYDOWN)
+            pygame.event.clear(pygame.KEYUP)
+        except Exception:
+            pass
+        self._reload_note = ""
+        if not chosen:
+            return                     # cancelled, or no desktop to ask
+        report = import_from(chosen, self._config)
+        self._import_lines = report.lines()
+        if report.songs_added:
+            self.reload_files()        # the new songs have to appear
+
+    def _start_rename(self) -> None:
+        """R: edit the name of the song under the cursor."""
+        path = self._selected_path()
+        if path is None:
+            self.say("Nothing selected")
+            return
+        self._renaming = path
+        self._rename_text = path.stem
+        # At the END, because the usual edit is trimming what Songsterr
+        # called it -- " v3" off the back.
+        self._rename_caret = len(self._rename_text)
+        self._delete_armed = None
+
+    def _handle_rename_key(self, event) -> None:
+        """Type, move, ENTER to keep, ESC to drop it.
+
+        **A caret, not an append.** The first version could only add at the
+        end and rub out from the end, so fixing the FRONT of a name meant
+        deleting the whole thing and typing it again -- and the names that
+        need fixing are Songsterr's, where the artist is at the front. Every
+        key here is what it is in any other text field: arrows move, Home
+        and End jump, Backspace eats behind, Delete eats in front.
+        """
+        from pickhero.tabs.remove import safe_name
+        text, caret = self._rename_text, self._rename_caret
+
+        if event.key == pygame.K_ESCAPE:
+            self._renaming = None
+            self.say("Rename cancelled")
+            return None
+        if event.key == pygame.K_RETURN:
+            self._finish_rename()
+            return None
+        if event.key == pygame.K_LEFT:
+            self._rename_caret = max(0, caret - 1)
+            return None
+        if event.key == pygame.K_RIGHT:
+            self._rename_caret = min(len(text), caret + 1)
+            return None
+        if event.key == pygame.K_HOME:
+            self._rename_caret = 0
+            return None
+        if event.key == pygame.K_END:
+            self._rename_caret = len(text)
+            return None
+        if event.key == pygame.K_BACKSPACE:
+            if caret:
+                self._rename_text = text[:caret - 1] + text[caret:]
+                self._rename_caret = caret - 1
+            return None
+        if event.key == pygame.K_DELETE:
+            # In here it is a text key, and the song list's own DEL never
+            # sees it: the editor owns every key while it is open.
+            self._rename_text = text[:caret] + text[caret + 1:]
+            return None
+
+        ch = event.unicode
+        if ch and ch.isprintable() and ch not in ("\r", "\n", "\t"):
+            # Refused as it is typed, not when ENTER fails. A colon is a
+            # rename that dies with a Windows error nobody can read, and the
+            # place to say so is the moment the key is pressed.
+            if safe_name(ch) or ch == " ":
+                self._rename_text = text[:caret] + ch + text[caret:]
+                self._rename_caret = caret + 1
+            else:
+                self.say(f"{ch} cannot be in a file name")
+        return None
+
+    def _finish_rename(self) -> None:
+        """Move the tab and everything keyed to its name."""
+        from pickhero.tabs.remove import rename_song
+        path, self._renaming = self._renaming, None
+        if path is None:
+            return
+        report = rename_song(path, self._rename_text, self._config)
+        # From the DISK. A rename that half happened must show itself rather
+        # than be claimed as finished.
+        self.reload_files()
+        if report.tab_path is not None:
+            self._select_path(report.tab_path)
+        self.say(report.summary())
+
+    def _delete_selected(self) -> None:
+        """First DEL asks, second DEL does it.
+
+        The question names the song and counts the files, because a tab is
+        not one file any more -- the download screen writes a bar map and an
+        MP3 beside it, and "delete Thunder" meaning three files is worth
+        seeing before it happens rather than after.
+        """
+        from pickhero.tabs.remove import belongings, delete_song
+        path = self._selected_path()
+        if path is None:
+            self.say("Nothing selected")
+            return
+
+        if self._delete_armed != path:
+            self._delete_armed = path
+            count = len(belongings(path))
+            what = f"{count} file" + ("s" if count != 1 else "")
+            self.say(f"Delete {path.stem} and {what}? "
+                     f"DEL again to confirm, any other key cancels. "
+                     f"Your practice history is kept.")
+            return
+
+        self._delete_armed = None
+        report = delete_song(path, self._config)
+        # From the DISK, not from the list in memory. A file that would not
+        # delete is still there, and a list that quietly dropped it would be
+        # claiming a delete that did not happen.
+        self.reload_files()
+        self.say(report.summary())
+
+    def _write_sidecar(self, path) -> None:
+        """Put this song's settings back beside the song. Never raises."""
+        if self._config is None or path is None:
+            return
+        try:
+            from pickhero.tabs import sidecar
+            best = None
+            try:
+                from pickhero.progress import ProgressTracker
+                best = ProgressTracker().get_best(path.stem)
+            except Exception:
+                pass
+            sidecar.write(path, path.stem, self._config, best)
+        except Exception:
+            pass
+
+    def _adopt_sidecars(self, found) -> int:
+        """Take the settings that travelled with the songs.
+
+        Here rather than when a song is opened, because a star has to show
+        in the LIST -- and "my favourites are gone" is what copying the
+        folder to the second laptop used to look like.
+
+        Only what this machine has no answer for; `sidecar.adopt` is the one
+        that decides. Nothing is written back: a folder that is read
+        produces no cloud conflict.
+        """
+        if self._config is None:
+            return 0
+        from pickhero.tabs import sidecar
+        taken = 0
+        for path in found:
+            try:
+                if sidecar.adopt(path, path.stem, self._config):
+                    taken += 1
+            except Exception:
+                continue          # one bad file is not a broken song list
+        if not taken:
+            return 0
+        try:
+            self._config.save()
+        except OSError:
+            return 0
+        return taken
+
+    def _adopted_note(self) -> str:
+        """What the last scan took out of, and put into, the songs folder."""
+        parts = []
+        if self._adopted:
+            parts.append(f"picked up settings for {self._adopted} song"
+                         + ("s" if self._adopted != 1 else ""))
+        if self._backfilled:
+            parts.append(f"wrote settings beside {self._backfilled} song"
+                         + ("s" if self._backfilled != 1 else ""))
+        return "Songs folder: " + ", ".join(parts)
+
+    def _write_missing_sidecars(self, found) -> int:
+        """Give every song that HAS settings a file to carry them in.
+
+        Only where there is no sidecar yet. An existing one is left alone --
+        it may have come from the other machine and be newer than anything
+        here, and overwriting it on a scan would undo an import.
+        """
+        if self._config is None:
+            return 0
+        from pickhero.tabs import sidecar
+        best_of = {}
+        try:
+            from pickhero.progress import ProgressTracker
+            tracker = ProgressTracker()
+            best_of = {p.stem: tracker.get_best(p.stem) for p in found}
+        except Exception:
+            pass
+        written = 0
+        for path in found:
+            try:
+                if sidecar.path_for(path).exists():
+                    continue
+                best = best_of.get(path.stem)
+                if not sidecar.worth_writing(path.stem, self._config, best):
+                    continue
+                if sidecar.write(path, path.stem, self._config, best):
+                    written += 1
+            except Exception:
+                continue          # one bad song is not a broken song list
+        return written
+
+    def copy_text(self) -> str:
+        """The song list as text, with the note under it."""
+        out = ["MySician — songs"]
+        if self._search_text:
+            out.append(f"Search: {self._search_text}")
+        if self._reload_note:
+            out.append(self._reload_note)
+        out += [f"{'> ' if p == self._selected_path() else '  '}{p.stem}"
+                for p in self._display_files]
+        return "\n".join(out)
+
     def handle_event(self, event: pygame.event.Event) -> Path | str | None:
         """Process input. Returns Path (file selected), "escape" (quit), or None."""
         files = self._display_files
@@ -310,6 +696,18 @@ class MenuScreen:
                 # A note is for what just happened, not for the rest of the
                 # session. Any other key means the player has moved on.
                 self._reload_note = ""
+            # The editor owns every key while it is open. Before ESC, before
+            # the search, before DEL -- otherwise typing a song's name is a
+            # minefield of shortcuts, and `d` in "Thunderstruck" deletes it.
+            if self._renaming is not None:
+                return self._handle_rename_key(event)
+
+            if event.key != pygame.K_DELETE:
+                # Moving the cursor, searching, or anything else at all
+                # answers "no". An armed delete must never outlive the
+                # question that armed it, or the second DEL lands on a
+                # different song than the one that was named.
+                self._delete_armed = None
             if event.key == pygame.K_ESCAPE:
                 if self._search_active:
                     self._search_text = ""
@@ -328,6 +726,15 @@ class MenuScreen:
                 self._search_active = True
                 self._search_text = ""
                 self._apply_filter()
+                return None
+
+            # Ctrl+M stars, Ctrl+Shift+M unstars -- and BEFORE the search
+            # guard below, because the whole point is that they work while
+            # the filter box is open. Ctrl produces no character, so nothing
+            # is stolen from the box: Shift+M is how a capital M is typed,
+            # and a filter that cannot spell Metallica is not a filter.
+            if event.key == pygame.K_m and event.mod & pygame.KMOD_CTRL:
+                self._set_favourite(not (event.mod & pygame.KMOD_SHIFT))
                 return None
 
             # M marks, Shift+M filters. A letter is fine here because it is
@@ -352,6 +759,35 @@ class MenuScreen:
             # letter: the search box takes those the moment it is open.
             if event.key == pygame.K_F5:
                 self._reload_note = self.reload_files()
+                return None
+
+            # Any key clears the import report first -- it is a thing that
+            # has been read, not a mode, so nothing should have to be aimed
+            # at it.
+            if self._import_lines:
+                self._import_lines = []
+
+            # Ctrl+I, because the laptop that needs it is the one with only
+            # the .exe on it and no way to run a script. Ctrl so it works
+            # with the filter box open, like Ctrl+M.
+            if event.key == pygame.K_i and event.mod & pygame.KMOD_CTRL:
+                self._import_from_folder()
+                return None
+
+            # R, next to DEL in what it touches: both act on the song under
+            # the cursor and both move more than the file. A letter, so it
+            # stays out of the search box.
+            if event.key == pygame.K_r and not self._search_active:
+                self._start_rename()
+                return None
+
+            # DEL, twice -- and while the filter box is open too. The first
+            # version kept it out of there on the theory that DEL is a
+            # typing key. It is not, in THIS box: backspace is what edits
+            # the search text and DEL does nothing there, while "find the
+            # song, then delete it" is the order somebody actually works in.
+            if event.key == pygame.K_DELETE:
+                self._delete_selected()
                 return None
 
             if event.key == pygame.K_BACKSPACE:
@@ -473,8 +909,34 @@ class MenuScreen:
             label, colour = self._search_text, t.menu_item
         else:
             label, colour = "Search  (F or /)", t.hud_text
-        surface.blit(item_font.render(label, True, colour), (box.x + 8, box.y + 2))
-        if self._reload_note:
+        # Not while renaming: the editor borrows this box, and drawing both
+        # puts two strings on top of each other.
+        if self._renaming is None:
+            surface.blit(item_font.render(label, True, colour),
+                         (box.x + 8, box.y + 2))
+        if self._renaming is not None:
+            # In the search box's place, because it is the same job -- typing
+            # into the one text field this screen has -- and a second box
+            # somewhere else is a second thing to find.
+            pygame.draw.rect(surface, t.menu_selected_bg, box, border_radius=4)
+            pygame.draw.rect(surface, t.hud_accent, box, width=1,
+                             border_radius=4)
+            surface.blit(item_font.render(self._rename_text, True,
+                                          t.hud_accent), (box.x + 8, box.y + 2))
+            # A bar WHERE THE CARET IS, not an underscore stuck on the end.
+            # The trailing "_" was fine while the editor could only append;
+            # with arrow keys it would say the cursor is somewhere it is
+            # not, which is worse than no cursor at all.
+            caret = max(0, min(len(self._rename_text), self._rename_caret))
+            caret_x = box.x + 8 + item_font.size(
+                self._rename_text[:caret])[0]
+            pygame.draw.line(surface, t.hud_accent, (caret_x, box.y + 4),
+                             (caret_x, box.bottom - 4), 2)
+            surface.blit(hint_font.render("Rename — arrows move, ENTER "
+                                          "keeps it, ESC cancels", True,
+                                          t.hud_accent),
+                         (box.right + 12, box.y + 6))
+        elif self._reload_note:
             note_surf = hint_font.render(self._reload_note, True, t.hud_accent)
             surface.blit(note_surf, (box.right + 12, box.y + 6))
         elif self._favourites_only:
@@ -603,12 +1065,15 @@ class MenuScreen:
 
         # Controls hint
         if self._search_active:
-            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  DEL: delete song  |  Ctrl+I: import  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"
             fav = "on" if self._favourites_only else "off"
-            hint = f"F or /: search  |  M: favourite (Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: search online  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+            hint = f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song  |  Ctrl+I: import from another PC  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+        if self._import_lines:
+            self._blit_import_report(surface, w, h, item_font, hint_font, t)
+
         # The build, bottom right and out of the way. It is asked for
         # exactly once per report -- "which version are you running" --
         # and answering it has cost several rounds.

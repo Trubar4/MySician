@@ -9,6 +9,7 @@ what it found.
 
 import pygame
 import pytest
+from pathlib import Path
 
 from pickhero.config import Config
 from pickhero.ui.menu import MenuScreen
@@ -235,6 +236,8 @@ class TestReachingTheTunerWhileSearching:
         app._state = "menu"
         app._return_to = "menu"
         app._tuner_menu = None
+        app._quit_armed = False
+        app._held = set()
         opened = []
         app._open_tuner = lambda came_from: opened.append(came_from)
         return app, opened, pygame
@@ -294,3 +297,356 @@ class TestReachingTheTunerWhileSearching:
             pygame.KEYDOWN, key=pygame.K_u, unicode="u", mod=0))
         assert opened == []
         assert app._menu._search_text == "u"
+
+
+class TestEscapeIsNotOneKeystrokeFromGone:
+    """"ESC reagiert oft zu sensibel und ich fliege aus dem Song und die App
+    schließt sich sofort."
+
+    `pygame.key.set_repeat(300, 40)` is one global setting for every key, so
+    holding escape for a third of a second fires it twice -- and the two
+    presses land on two different screens: the first leaves the song, the
+    second closes the app. One hold, and the player is out of the program.
+    """
+
+    def _app(self, tmp_path):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.app import App
+        from pickhero.ui.menu import MenuScreen
+
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        config = Config()
+        config.songs_dir = str(tmp_path)
+        app = App.__new__(App)
+        app._config = config
+        app._menu = MenuScreen(tmp_path, config=config)
+        app._state = "menu"
+        app._return_to = "menu"
+        app._tuner_menu = None
+        app._running = True
+        app._quit_armed = False
+        app._held = set()
+        return app, pygame
+
+    def _press(self, app, pygame, key=None, mod=0):
+        app._handle_menu_event(pygame.event.Event(
+            pygame.KEYDOWN, key=key or pygame.K_ESCAPE, unicode="", mod=mod))
+
+    def test_one_escape_on_the_song_list_does_not_close_the_app(self,
+                                                                tmp_path):
+        app, pygame = self._app(tmp_path)
+        self._press(app, pygame)
+        assert app._running is True
+        assert "ESC again" in app._menu._reload_note
+
+    def test_a_second_one_does(self, tmp_path):
+        app, pygame = self._app(tmp_path)
+        self._press(app, pygame)
+        self._press(app, pygame)
+        assert app._running is False
+
+    def test_anything_else_in_between_disarms_it(self, tmp_path):
+        """A screen that stays armed is a trap set an hour ago."""
+        app, pygame = self._app(tmp_path)
+        self._press(app, pygame)
+        self._press(app, pygame, key=pygame.K_DOWN)
+        self._press(app, pygame)
+        assert app._running is True
+
+    def test_and_opening_a_song_disarms_it(self, tmp_path):
+        app, pygame = self._app(tmp_path)
+        app._load_song = lambda path: None
+        app._quit_armed = True
+        app._menu.handle_event = lambda event: tmp_path / "x.gp"
+        app._handle_menu_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_RETURN, unicode="", mod=0))
+        assert app._quit_armed is False
+
+
+class TestOneHoldOfEscapeIsOnePress:
+    """The repeat guard, at the one door every screen's events come
+    through -- a screen added later would otherwise have to remember."""
+
+    def _app(self, tmp_path, monkeypatch, events):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.app import App
+
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+        config = Config()
+        config.songs_dir = str(tmp_path)
+        app = App.__new__(App)
+        app._config = config
+        app._menu = None
+        app._state = "nowhere"
+        app._running = True
+        app._held = set()
+        app._quit_armed = False
+        seen = []
+        app._handle_menu_event = lambda e: seen.append(e)
+        monkeypatch.setattr(pygame.event, "get", lambda: list(events))
+        return app, seen, pygame
+
+    def test_a_repeat_while_the_key_is_down_is_dropped(self, tmp_path,
+                                                       monkeypatch):
+        import pygame
+        pygame.init()
+        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE,
+                                  unicode="", mod=0)
+        app, seen, pygame = self._app(tmp_path, monkeypatch, [down, down, down])
+        app._state = "menu"
+        app._process_events(pygame.display.get_surface())
+        assert len(seen) == 1, f"{len(seen)} escapes reached the screen"
+
+    def test_but_a_second_real_press_gets_through(self, tmp_path, monkeypatch):
+        import pygame
+        pygame.init()
+        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE,
+                                  unicode="", mod=0)
+        up = pygame.event.Event(pygame.KEYUP, key=pygame.K_ESCAPE)
+        app, seen, pygame = self._app(tmp_path, monkeypatch, [down, up, down])
+        app._state = "menu"
+        app._process_events(pygame.display.get_surface())
+        assert len([e for e in seen if e.type == pygame.KEYDOWN]) == 2
+
+    def test_space_does_not_repeat_either(self, tmp_path, monkeypatch):
+        """The worst of the three: the repeats arrive while the frame is
+        stalled on loading the recording and are then drained together, so
+        an even number of them leaves the song paused with no sign of why.
+        "Ich klicke space, es zählt von 2 auf 1 und stoppt." """
+        import pygame
+        pygame.init()
+        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE,
+                                  unicode=" ", mod=0)
+        app, seen, pygame = self._app(tmp_path, monkeypatch, [down] * 5)
+        app._state = "menu"
+        app._process_events(pygame.display.get_surface())
+        assert len(seen) == 1, f"{len(seen)} spaces reached the screen"
+
+    def test_other_keys_still_repeat(self, tmp_path, monkeypatch):
+        """Only the toggles are guarded. The arrows and the tempo keys want
+        their repeats, and taking them would be a different bug."""
+        import pygame
+        pygame.init()
+        down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_DOWN,
+                                  unicode="", mod=0)
+        app, seen, pygame = self._app(tmp_path, monkeypatch, [down, down, down])
+        app._state = "menu"
+        app._process_events(pygame.display.get_surface())
+        assert len(seen) == 3
+
+
+class TestAFolderItCannotMakeIsNotACrash:
+    """The app died before it drew a single frame.
+
+        FileNotFoundError: 'C:\\Users\\Admin\\Downloads\\songs'
+        PermissionError: [WinError 5] Zugriff verweigert: 'C:\\Users\\Admin'
+
+    `songs_dir` is relative by default, so it resolves against wherever the
+    app was STARTED from -- and a portable .exe is started from wherever it
+    was downloaded to. Windows reported that folder as not found, and
+    mkdir(parents=True) then walked up and tried to create the user's own
+    home directory.
+    """
+
+    def test_a_folder_that_can_be_made_is_the_one_that_is_used(self, tmp_path):
+        from pickhero.config import Config
+        config = Config()
+        config.songs_dir = str(tmp_path / "songs")
+        assert config.songs_path() == tmp_path / "songs"
+        assert config.songs_path().is_dir()
+
+    def test_one_that_cannot_falls_back_beside_the_settings(self, tmp_path,
+                                                            monkeypatch):
+        """The one directory this app already knows it can write to, because
+        it has been writing settings.json there all along."""
+        import pickhero.config as config_module
+        from pickhero.config import Config
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "cfg")
+        config = Config()
+        config.songs_dir = "/proc/nonexistent/songs"
+        assert config.songs_path() == tmp_path / "cfg" / "songs"
+        assert config.songs_path().is_dir()
+
+    def test_and_neither_working_still_returns_a_path(self, tmp_path,
+                                                      monkeypatch):
+        """A screen saying "no songs here" is a screen; a traceback is not."""
+        import pickhero.config as config_module
+        from pickhero.config import Config
+        monkeypatch.setattr(config_module, "CONFIG_DIR",
+                            Path("/proc/also-nonexistent"))
+        config = Config()
+        config.songs_dir = "/proc/nonexistent/songs"
+        assert config.songs_path() == Path("/proc/nonexistent/songs")
+
+    def test_it_never_raises_whatever_the_folder_does(self, monkeypatch):
+        from pickhero.config import Config
+
+        def denied(self, *a, **k):
+            raise PermissionError(5, "Zugriff verweigert")
+
+        monkeypatch.setattr(Path, "mkdir", denied)
+        Config().songs_path()          # must not raise
+
+    def test_the_menu_shows_an_empty_list_rather_than_dying(self, monkeypatch,
+                                                            tmp_path):
+        from pickhero.config import Config
+        from pickhero.ui.menu import MenuScreen
+
+        def denied(self, *a, **k):
+            raise PermissionError(5, "Zugriff verweigert")
+
+        monkeypatch.setattr(Path, "mkdir", denied)
+        menu = MenuScreen(tmp_path / "nope", config=Config())
+        assert menu._files == []
+        assert "Cannot read" in menu._reload_note
+
+    def test_and_says_which_folder_and_why(self, monkeypatch, tmp_path):
+        from pickhero.config import Config
+        from pickhero.ui.menu import MenuScreen
+
+        def denied(self, *a, **k):
+            raise PermissionError(5, "Zugriff verweigert")
+
+        monkeypatch.setattr(Path, "mkdir", denied)
+        menu = MenuScreen(tmp_path / "downloads" / "songs", config=Config())
+        assert "songs" in menu._reload_note
+        assert "Zugriff verweigert" in menu._reload_note
+
+
+class TestStarringASongWhileFiltering:
+    """*"Im Filter kann ich keine Favoriten setzen. Bitte Sh+M für Favorit
+    und Str+M für kein Favorit."*
+
+    The keys moved from what he asked for, for one concrete reason:
+    **Shift+M is how a capital M is typed**, so a filter box where it means
+    "favourite" cannot spell Metallica. A Ctrl combination produces no
+    character at all and works mid-word -- the same lesson U2 taught the
+    rename editor.
+
+    And set/unset rather than toggle: while the box is open the note is the
+    last thing being read, so a toggle means finding out afterwards which
+    way it went. Two keys that SAY what they do can be pressed without
+    looking.
+    """
+
+    def _menu(self, tmp_path, names=("AC-DC - Thunder", "Metallica - One")):
+        from pickhero.config import Config
+        from pickhero.ui.menu import MenuScreen
+        for name in names:
+            (tmp_path / f"{name}.gp5").write_bytes(b"x")
+        config = Config()
+        config.save = lambda: None
+        screen = MenuScreen(tmp_path, config=config)
+        screen.reload_files()
+        return screen
+
+    def _press(self, screen, key, mod=0, unicode=""):
+        import pygame
+        return screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=key, mod=mod, unicode=unicode))
+
+    def test_ctrl_m_stars_the_selected_song(self, tmp_path):
+        import pygame
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_m, mod=pygame.KMOD_LCTRL)
+        assert screen._config.is_favourite("AC-DC - Thunder")
+
+    def test_ctrl_shift_m_takes_the_star_off(self, tmp_path):
+        import pygame
+        screen = self._menu(tmp_path)
+        screen._config.set_favourite("AC-DC - Thunder", True)
+        self._press(screen, pygame.K_m,
+                    mod=pygame.KMOD_LCTRL | pygame.KMOD_LSHIFT)
+        assert not screen._config.is_favourite("AC-DC - Thunder")
+
+    def test_both_work_with_the_filter_box_open(self, tmp_path):
+        """Which is the whole request."""
+        import pygame
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_f, unicode="f")
+        assert screen._search_active
+        self._press(screen, pygame.K_m, mod=pygame.KMOD_LCTRL)
+        assert screen._config.is_favourite("AC-DC - Thunder")
+        assert screen._search_active, "the filter was closed by starring"
+
+    def test_a_capital_m_can_still_be_typed(self, tmp_path):
+        """The reason the keys are not the ones he named. A filter box that
+        cannot spell Metallica is not a filter box."""
+        import pygame
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_f, unicode="f")
+        screen._search_text = ""
+        for key, ch in ((pygame.K_m, "M"), (pygame.K_e, "e"),
+                        (pygame.K_t, "t")):
+            self._press(screen, key, mod=pygame.KMOD_LSHIFT if ch.isupper()
+                        else 0, unicode=ch)
+        assert screen._search_text == "Met"
+        assert not screen._config.is_favourite("AC-DC - Thunder")
+
+    def test_pressing_it_twice_is_harmless(self, tmp_path):
+        """A key that says what it does can be pressed without looking."""
+        import pygame
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_m, mod=pygame.KMOD_LCTRL)
+        self._press(screen, pygame.K_m, mod=pygame.KMOD_LCTRL)
+        assert screen._config.is_favourite("AC-DC - Thunder")
+        assert "Already a favourite" in screen._reload_note
+
+    def test_and_unstarring_something_that_is_not_starred(self, tmp_path):
+        import pygame
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_m,
+                    mod=pygame.KMOD_LCTRL | pygame.KMOD_LSHIFT)
+        assert "Not a favourite anyway" in screen._reload_note
+
+    def test_plain_m_still_toggles(self, tmp_path):
+        import pygame
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_m, unicode="m")
+        assert screen._config.is_favourite("AC-DC - Thunder")
+        self._press(screen, pygame.K_m, unicode="m")
+        assert not screen._config.is_favourite("AC-DC - Thunder")
+
+    def test_shift_m_still_filters(self, tmp_path):
+        """It was not taken away, which is why Ctrl is used instead."""
+        import pygame
+        screen = self._menu(tmp_path)
+        screen._config.set_favourite("AC-DC - Thunder", True)
+        self._press(screen, pygame.K_m, mod=pygame.KMOD_LSHIFT)
+        assert screen._favourites_only
+        assert [p.stem for p in screen._display_files] == ["AC-DC - Thunder"]
+
+    def test_starring_inside_the_favourites_filter_keeps_the_cursor_alive(
+            self, tmp_path):
+        """The song has just left the list it is being shown in."""
+        import pygame
+        screen = self._menu(tmp_path)
+        screen._config.set_favourite("AC-DC - Thunder", True)
+        self._press(screen, pygame.K_m, mod=pygame.KMOD_LSHIFT)
+        self._press(screen, pygame.K_m,
+                    mod=pygame.KMOD_LCTRL | pygame.KMOD_LSHIFT)
+        assert screen._display_files == []
+        assert screen._selected_path() is None       # and no crash
+
+    def test_the_rename_editor_still_owns_the_key(self, tmp_path):
+        """A text box that owns the letters owns them all."""
+        import pygame
+        screen = self._menu(tmp_path)
+        self._press(screen, pygame.K_r, unicode="r")
+        self._press(screen, pygame.K_m, mod=pygame.KMOD_LCTRL)
+        assert not screen._config.is_favourite("AC-DC - Thunder")
+        assert screen.is_renaming
+
+    def test_the_hints_name_both_keys(self):
+        import inspect
+        from pickhero.ui import menu
+        source = inspect.getsource(menu)
+        searching = [line for line in source.splitlines()
+                     if "Type to search" in line][0]
+        assert "Ctrl+M: favourite" in searching, \
+            "the one screen it was asked for does not mention it"
+        assert "Ctrl+M / Ctrl+Shift+M" in source

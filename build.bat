@@ -38,6 +38,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: ── The audio half of the Songsterr download ───────────────────────────────
+:: yt-dlp pulls the recording the bar map was made against; ffmpeg turns what
+:: YouTube serves (m4a/webm) into something SDL can play. Neither is fatal:
+:: without them the .exe still builds and the download screen says in words
+:: which one is missing.
+
+echo Installing/upgrading yt-dlp...
+pip install --upgrade yt-dlp >nul 2>&1
+if errorlevel 1 echo WARNING: yt-dlp not installed. YouTube audio will be unavailable.
+
+python tools\fetch_ffmpeg.py
+
 :: ── Verify spec file exists ────────────────────────────────────────────────
 
 if not exist "%SPEC%" (
@@ -89,8 +101,9 @@ if exist "%EXE%" (
     echo      your .gp3/.gp4/.gp5/.gp7/.gp8 tab files.
     echo   2. Run MySician.exe to launch the app.
     echo.
-    echo Tip: You can also download tabs from within the app
-    echo      by pressing S on the song selection screen.
+    echo Tip: Press S on the song selection screen to fetch a whole
+    echo      song from Songsterr - the tab, its bar map, and the
+    echo      audio of the recording that map was made against.
 ) else (
     echo WARNING: Build appeared to succeed but %EXE% was not found.
 )
