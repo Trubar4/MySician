@@ -4080,6 +4080,42 @@ pyinstaller pickhero.spec --noconfirm
 # Or use build.bat on Windows
 ```
 
+## Open: The Strip Along The Bottom
+
+Asked for at the end of the session that added the nut and the lead-in, and **not started** — so this is a brief, not a record.
+
+*"Ich hätte gerne eine Anzeige am unteren Bildrand, wo ich im Song stehe. Hier könnten wir auch den %-Wert hinschreiben und aufteilen 82 % (groß)
+und kleiner 90 % timing, 76 % Right Notes. Die Fortschrittsanzeige soll auch zum Spulen verwendet werden können. Sie ist wie eine vereinfachte
+Miniatur des Tabs."*
+
+So: one strip across the bottom that is three things at once — where you are, how it is going, and a way to move.
+
+**The three numbers already exist, and they fall out of the model rather than needing a new one.** `NoteMatcher.get_statistics()` returns `hits`,
+`close`, `misses`, `total`, and `MatchType.CLOSE` means *the right note, played off the beat*. That is exactly the split he drew:
+
+| his label | what it is |
+|---|---|
+| Right Notes | `(hits + close) / total` — the right note was played **at all** |
+| Timing | `hits / (hits + close)` — of the right notes, how many were **on time** |
+| the big number | `hits / total`, which is what `accuracy_percent` already is |
+
+Worth saying to him: the split is free because `CLOSE` was always "right note, wrong moment". Nothing needs re-measuring.
+
+**Three things found while scoping it, each of which will cost a round if rediscovered:**
+
+- **The playing screen has no mouse input at all.** `MOUSEBUTTONDOWN` appears only in `ui/menu.py`. Seeking by clicking the strip means adding
+  pointer handling to `PlayingScreen` for the first time — and it is worth asking whether a player with a guitar in both hands wants to reach for a
+  mouse, when `Ctrl+arrow` already seeks by half a minute and `I`/`O`/`P` already loop.
+- **The strip's height feeds back into the hybrid layout.** This file has already paid for that once: putting bars-per-row in the footer changed the
+  footer's height, which changed the room, which changed the head size, which walked 44.4 → 44.5 px and never settled. The strip must have a height
+  that is a **constant**, never one derived from what it draws.
+- **A minimap of the tab is a loop over the whole song.** `_draw_tab_page` learnt this the hard way — walking every note each frame cost 12.4 ms
+  against a 16.7 ms budget. The strip has to be built **once per song** into a surface and blitted, not recomputed per frame; the only thing that
+  moves is the position marker and, when a note is judged, one column of it.
+
+**Still open, to ask before building:** what the miniature actually draws (note density? one block per bar? the verdicts as they land?), whether the
+numbers are for this run or the song's best, and whether the strip replaces part of the footer's key line or pushes it up.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
