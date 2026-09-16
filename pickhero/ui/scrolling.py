@@ -44,6 +44,7 @@ from pickhero.ui.colors import (
     dimmed,
     get_theme,
     lightened,
+    unsure,
 )
 from pickhero.ui.feedback import FeedbackRenderer
 from pickhero.ui import sheet
@@ -1246,13 +1247,18 @@ class PlayingScreen:
         self._strip_marks: pygame.Surface | None = None
         self._strip_settled_ms: float = 0.0
         self._strip_from_ms: float = 0.0
-        self._strip_judged: int = 0
-        self._strip_seen_ms: float = 0.0
+        self._strip_epoch: int = -1
         # Dragging the marker. The seek is what costs -- every one of them
         # decodes the recording up to that point -- so a drag moves the
         # marker and the song moves once, when the button comes up.
         self._strip_drag: bool = False
         self._strip_preview_ms: float | None = None
+        # The right button draws a LOOP across the strip. The left one is
+        # already spooling, and a modifier would want a hand the player does
+        # not have free -- *"koennte ich das mit der Maus markieren (wie loop
+        # beim spielen) und dann spielen klicken"*.
+        self._strip_loop_from: float | None = None
+        self._strip_loop_to: float | None = None
         # Whether the sync panel is open. Everything about lining sound up
         # against the notes lives in it, and none of it is needed while
         # playing -- which is what the screen is for.
@@ -1400,6 +1406,13 @@ class PlayingScreen:
             self._recommendations = []
         self._playing = not self._playing
         if self._playing:
+            # Playing from HERE re-judges from here, and only from here. What
+            # is behind the playhead was already judged and is the record of
+            # the run -- the thing the player goes back to look at. A seek no
+            # longer throws it away; this is where it is spent, deliberately,
+            # because the notes ahead are about to be played again.
+            if self._matcher:
+                self._matcher.forget_from(max(0.0, self._playback_ms))
             # Only start audio capture when past count-in. If the stream is
             # already open -- which after a pause it now is -- re-anchoring is
             # the whole of what resuming needs, and it does not touch the
@@ -1494,8 +1507,12 @@ class PlayingScreen:
         # completion screen; the run it scored has already been written.
         if self._song_completed and self._playback_ms < self._timeline.duration_ms:
             self._song_completed = False
-        if self._matcher:
-            self._matcher.reset()
+        # The verdicts STAY. Seeking used to reset the matcher, so going back
+        # to see how a passage was judged destroyed the answer on the way --
+        # which is what `hits 0` in a run log taken after spooling has always
+        # meant. They are spent by pressing play, and only from there
+        # forward. The feedback effects are animations and do go: they belong
+        # to a moment the song has left.
         self._feedback.reset()
         for player in self._midi_all():
             player.seek(self._backing_ms(self._playback_ms))
@@ -1534,7 +1551,9 @@ class PlayingScreen:
         # the song has left.
         self._update_mp3()
         if self._matcher:
-            self._matcher.reset()
+            # Same rule as playing: the speed changes what comes next, not
+            # what was already heard.
+            self._matcher.forget_from(max(0.0, self._playback_ms))
         self._feedback.reset()
 
     def _reanchor_audio_clock(self) -> None:
@@ -1767,7 +1786,10 @@ class PlayingScreen:
             self._playback_ms = self._loop_start_ms
             self._last_tick = time.perf_counter()
             if self._matcher:
-                self._matcher.reset()
+                # The loop is a fresh pass over ITS OWN bars and nothing
+                # else. A full reset here threw away everything played
+                # before the loop was switched on, every few seconds.
+                self._matcher.forget_from(self._loop_start_ms)
             self._feedback.reset()
             for player in self._midi_all():
                 player.seek(self._backing_ms(self._loop_start_ms))
@@ -2657,6 +2679,25 @@ class PlayingScreen:
             surface.blit(drawn, (int(x) - drawn.get_width() // 2,
                                  cy - drawn.get_height() // 2))
 
+    def _drained(self, note, colour: tuple[int, int, int]):
+        """The verdict's colour, drained where nothing actually checked it.
+
+        *"Kannst du Dinge, die du nicht bewerten kannst grau machen? Es ist
+        ok, wenn du sie vorerst als gueltig zaehlst ... aber ich wuerde gerne
+        sehen, was du eigentlich nicht beurteilen konntest."* So the verdict
+        keeps its hue and loses its conviction: a drained green is a chord
+        string credited to a strum nobody could confirm, a drained red is a
+        note whose window held a strike the detector could make nothing of.
+        Both still count exactly as they did.
+
+        One implementation for all three views. Three readers of this
+        question would be three answers to it, which is the fault this
+        project has paid for at the repeats, the transpose and the keys.
+        """
+        if self._matcher is not None and self._matcher.unreliable(note):
+            return unsure(colour)
+        return colour
+
     def _sheet_note_colour(self, note, base: tuple[int, int, int]):
         """A note's colour on the sheet. Nothing here is dimmed.
 
@@ -2676,7 +2717,7 @@ class PlayingScreen:
         if self._audio_enabled and self._matcher is not None:
             name = _TAB_VERDICT_COLOURS.get(self._matcher.get_note_state(note))
             if name is not None:
-                return getattr(get_theme(), name)
+                return self._drained(note, getattr(get_theme(), name))
         return base
 
     def sheet_chord_names(self, row, x0: int, width_of) -> list[tuple[int, str]]:
@@ -4161,17 +4202,22 @@ class PlayingScreen:
             # before the green the player reported as distracting. It was not
             # a glitch; it was the app showing a state it had no business
             # showing.
+            verdict_colour = None
             if self._audio_enabled and self._matcher is not None:
-                past_hit_zone = (self._matcher.get_note_state(note)
-                                 is not MatchType.PENDING)
+                state = self._matcher.get_note_state(note)
+                past_hit_zone = state is not MatchType.PENDING
+                name = _TAB_VERDICT_COLOURS.get(state)
+                if name is not None:
+                    verdict_colour = getattr(t, name)
             else:
                 # Nothing is coming to decide it, so the clock is the only
                 # answer there is.
                 past_hit_zone = note.timestamp_ms < self._playback_ms
             if self._audio_enabled:
-                color = self._feedback.get_note_color(
+                color = self._drained(note, self._feedback.get_note_color(
                     note, base_color, self._playback_ms, past_hit_zone,
-                )
+                    verdict_colour,
+                ))
             else:
                 color = dimmed(base_color) if past_hit_zone else base_color
 
@@ -4631,6 +4677,33 @@ class PlayingScreen:
 
     # -- The strip along the bottom ---------------------------------------
 
+    def _take_strip_loop(self) -> None:
+        """Turn a right-drag across the strip into a loop, and go there.
+
+        Three things happen and the fourth deliberately does not: the markers
+        are set, the loop is switched on, and the song jumps to the start of
+        the passage -- **but nothing starts playing.** *"Loop setzen,
+        hinspringen, warten."* A view that began playing the moment the
+        button came up would spend the first seconds of the passage while the
+        fretting hand was still on its way to the mouse, and score them as
+        missed.
+
+        A drag shorter than `_enforce_min_loop` allows is left to that rule;
+        a click without a drag is not a passage and does nothing at all,
+        because the right button is also how a mouse gets put down.
+        """
+        first, last = self._strip_loop_from, self._strip_loop_to
+        self._strip_loop_from = self._strip_loop_to = None
+        if first is None or last is None or abs(last - first) < 1.0:
+            return
+        self._set_loop_start(min(first, last))
+        self._set_loop_end(max(first, last))
+        self._loop_enabled = True
+        if self._playing:
+            self.toggle_play()          # land with the hands free
+        self.seek(self._loop_start_ms)
+        self._say("Loop set — SPACE to play it")
+
     def _strip_rect(self, w: int, h: int) -> pygame.Rect:
         """The whole band: the numbers and the miniature side by side.
 
@@ -4675,20 +4748,10 @@ class PlayingScreen:
         return rect
 
     def _strip_reset(self) -> None:
-        """Throw the verdicts away; the song underneath them is unchanged.
-
-        Starting again from HERE and not from bar 1, which matters twice over.
-        A seek puts every note back to PENDING and the sweep then marks
-        everything behind the playhead missed -- so repainting from the start
-        would show a run nobody played, which is the trap the run log carries
-        too ("`hits 0` is not a detection failure, it is a seek"). And it
-        would walk the whole song on every loop turn, which at a held arrow
-        key is 25 walks a second.
-        """
+        """Drop the painted verdicts; they are rebuilt from the matcher."""
         self._strip_marks = None
         self._strip_settled_ms = self._playback_ms
         self._strip_from_ms = self._playback_ms
-        self._strip_judged = 0
 
     def _strip_base_surface(self, mini: pygame.Rect) -> pygame.Surface:
         """The song as dots, one per note, in its string's colour.
@@ -4731,7 +4794,9 @@ class PlayingScreen:
         if self._matcher is None:
             return None
         name = self._STRIP_VERDICT.get(self._matcher.get_note_state(note))
-        return getattr(get_theme(), name) if name else None
+        if name is None:
+            return None
+        return self._drained(note, getattr(get_theme(), name))
 
     def _draw_strip(self, surface: pygame.Surface, layout: _Layout) -> None:
         """Where you are in the song, how it went, and the way to move.
@@ -4771,17 +4836,18 @@ class PlayingScreen:
         """
         if self._matcher is None or not self._audio_enabled:
             return
-        stats = self._matcher.get_statistics()
-        judged = stats["total"]
-        if judged < self._strip_judged or self._playback_ms < self._strip_seen_ms - 1.0:
-            # A seek, a loop turn or a filter change put every note back to
-            # PENDING. Detected here rather than wired into all five places
-            # that reset the matcher, because a sixth would not know to call.
+        if self._strip_epoch != self._matcher.verdict_epoch:
+            # Verdicts were thrown away -- a seek's are not, but playing on
+            # from a point spends everything ahead of it, and a loop turn
+            # spends its own bars. The layer is rebuilt from what the matcher
+            # ACTUALLY holds rather than cleared, so the part that survived
+            # survives on screen too. One walk of the song per player action,
+            # never per frame.
+            self._strip_epoch = self._matcher.verdict_epoch
             self._strip_reset()
-        self._strip_judged = judged
-        self._strip_seen_ms = self._playback_ms
 
-        if self._strip_marks is None:
+        rebuilding = self._strip_marks is None
+        if rebuilding:
             marks = pygame.Surface(mini.size, pygame.SRCALPHA)
             try:
                 marks = marks.convert_alpha()
@@ -4805,7 +4871,11 @@ class PlayingScreen:
         # bisect, so this never walks from the start of the song -- the loop
         # that did has now been found in this codebase three times, each one
         # arriving as "it stutters, and worse the longer the song has run".
-        if settled_to - self._strip_settled_ms > strip.JUMP_MS:
+        if rebuilding:
+            # Everything the matcher still has a verdict for, once.
+            for note in self._timeline.get_notes_in_range(0.0, float("inf")):
+                paint(note, self._strip_marks, (0, 0))
+        elif settled_to - self._strip_settled_ms > strip.JUMP_MS:
             # The clock jumped rather than ran. Step over it: nothing in there
             # was played, and walking it would be the loop that grows with the
             # song, found in this codebase three times already.
@@ -4833,15 +4903,21 @@ class PlayingScreen:
         another costume, and the strip is the one place that can say "this is
         the piece of the song you are going round in" by showing it.
         """
-        if self._loop_start_ms is None or self._loop_end_ms is None:
-            return
         t = get_theme()
         duration = self._timeline.duration_ms
-        x0 = strip.x_for_ms(self._loop_start_ms, duration, mini.width)
-        x1 = strip.x_for_ms(self._loop_end_ms, duration, mini.width)
+        drawing = self._strip_loop_from is not None
+        if drawing:
+            first, last = self._strip_loop_from, self._strip_loop_to
+            start, end = min(first, last), max(first, last)
+        elif self._loop_start_ms is None or self._loop_end_ms is None:
+            return
+        else:
+            start, end = self._loop_start_ms, self._loop_end_ms
+        x0 = strip.x_for_ms(start, duration, mini.width)
+        x1 = strip.x_for_ms(end, duration, mini.width)
         width = max(1, int(x1 - x0))
         shade = pygame.Surface((width, mini.height), pygame.SRCALPHA)
-        shade.fill(t.loop_region if self._loop_enabled
+        shade.fill(t.loop_region if (self._loop_enabled or drawing)
                    else t.loop_region_disabled)
         surface.blit(shade, (mini.x + int(x0), mini.y))
 
@@ -4907,6 +4983,10 @@ class PlayingScreen:
         mini = self._strip_mini_rect(layout.screen_w, layout.screen_h)
         duration = self._timeline.duration_ms
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 3 and mini.collidepoint(event.pos):
+                at = strip.ms_for_x(event.pos[0] - mini.x, duration, mini.width)
+                self._strip_loop_from = self._strip_loop_to = at
+                return None
             if event.button != 1 or not mini.collidepoint(event.pos):
                 return None
             # A plain click jumps straight away: waiting for the button to
@@ -4917,9 +4997,15 @@ class PlayingScreen:
                                      mini.width))
             return None
         if event.type == pygame.MOUSEMOTION:
-            if self._strip_drag:
+            if self._strip_loop_from is not None:
+                self._strip_loop_to = strip.ms_for_x(
+                    event.pos[0] - mini.x, duration, mini.width)
+            elif self._strip_drag:
                 self._strip_preview_ms = strip.ms_for_x(
                     event.pos[0] - mini.x, duration, mini.width)
+            return None
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 3:
+            self._take_strip_loop()
             return None
         if event.type == pygame.MOUSEBUTTONUP and self._strip_drag:
             self._strip_drag = False
@@ -6364,6 +6450,15 @@ class PlayingScreen:
                 (t.feedback_hit, "Green \u2014 you played the correct note"),
                 (t.feedback_close, "Yellow \u2014 close, off by 1 semitone"),
                 (t.feedback_miss, "Red \u2014 missed, or not played in time"),
+                (unsure(t.feedback_hit),
+                 "Drained \u2014 that verdict rests on nothing about THIS"),
+                (unsure(t.feedback_miss),
+                 "  string. Green: credited because a strum was heard."),
+                (unsure(t.feedback_close),
+                 "  Red: something was struck and could not be read."),
+                "It still counts the same. The colour only says how much",
+                "the app could actually check \u2014 a drained red is not",
+                "evidence that you played it wrong.",
                 ], "body"),
 
             # Every key handle_event answers is here, because the footer is now
@@ -6377,6 +6472,10 @@ class PlayingScreen:
                 "The strip along the bottom is the whole song: click it to",
                 "  jump, drag it to spool. Each dot is a note on its string,",
                 "  and it turns green, yellow or red as you play it.",
+                "RIGHT-drag the strip to mark a passage: it sets the loop and",
+                "  goes there, and waits for SPACE.",
+                "Going back does NOT erase how it went — playing on from a",
+                "  point re-judges from there and keeps what is behind it.",
                 ("PgDn/PgUp: practice speed, kept for this song",
                  f"{meta.tempo} BPM ({int(self._tempo_factor * 100)} %)"),
                 ("A: audio on/off", "on" if self._audio_enabled else "off"),

@@ -4068,6 +4068,7 @@ pickhero/
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
+- `tests/test_review.py` — what could not be judged, that a seek keeps the run, and the right-drag loop
 - Use `pytest`. Keep tests independent of audio hardware (mock sounddevice).
 
 ## Build & Run
@@ -4182,6 +4183,72 @@ costume and the strip is the one place that can say so by showing it.
   strip is drawn from `_draw_hud`, which the board, the sheet and the page all call, which is the same reason the footer and the help
   overlay are not written three times. The test renders each of the three and requires ink in the band, because a view that grew a HUD of
   its own would break it silently and nothing on screen would say which one was missing it.
+
+## What The App Could Not Actually Check
+
+*"Kannst du Dinge, die du nicht bewerten kannst grau machen? Es ist ok, wenn du sie vorerst als gültig zählst, wie bisher auch, aber ich würde
+gerne sehen, was du eigentlich nicht beurteilen konntest (zu schnell) oder nicht gehört hast (in einander klingen oder zu leise)."*
+
+**Nothing new had to be measured, which is the finding.** Both answers were already in the matcher and being thrown away at the door:
+
+- `_credit_proved` has separated "the written pitch was heard" from "a STRUM was heard and this string came with it" since the chapter on
+  eighty percent that does not feel like eighty percent. That is the "zu schnell" case as well: a chord too close to the next one loses its
+  verification window under `MIN_WINDOW_MS`, so it is credited to the strum and nothing convicts or clears the individual strings.
+- The strikes that carry nothing a pitch can be read from — pitchless, or a subharmonic naming the chord in the room rather than the
+  string — are already recognised at the two places that hand them to `_hold_for_rescue`. That is the "ineinander klingen" case exactly.
+
+So `NoteMatcher.unreliable(note)` answers `"strum"`, `"unreadable"` or `None`, and the colour is **drained rather than replaced**: a note keeps
+its hue and loses its conviction. A plain grey would have answered half the question and lost the other half — the verdict still counts, and
+the player said so in the same sentence.
+
+- **`unsure()` drains towards the colour's OWN luminance**, not towards a fixed grey, so a bright verdict and a dark one drain by the same
+  amount instead of the dark one turning black. Tested as a property: the hue that dominates a verdict still dominates it drained, and the
+  three drained verdicts are still three colours.
+- **One helper, three views.** `_drained` is asked by the board, the sheet and the strip. Three readers of one question is the fault this
+  project has paid for at the repeats, at the transpose and at the shifted keys.
+- **A third answer the player asked for is deliberately absent, and it is worth writing down rather than quietly skipping.** "Zu leise"
+  cannot be told from "not played" at the level of ONE note: both are silence where a strike should be. The evidence for it exists only for
+  the RUN (`level_under_gate_percent`, `level_loudest_db`, `input_hears_the_room`), and inventing it per note would be a guess dressed as
+  data. A test pins that a miss with nothing struck stays at full strength.
+
+**And the strikes list is a second structure rather than a read of `strike_trace`.** That trace says of itself that nothing reads it back, and
+that promise is worth more than the few hundred bytes saved by breaking it.
+
+## Going Back Used To Destroy What It Went Back To Look At
+
+*"Einen Rückblick, wie ich gespielt habe, sehe ich nun in der Progress bar. Können wir es so machen, dass ich zurückspringen kann und dann auch
+in groß sehen, wie die Noten bewertet wurden? Sobald ich auf Play gehe, überschreibe ich die vorigen Werte."*
+
+`seek()` called `matcher.reset()`. So the one action that asks "how did that passage go" was the action that deleted the answer — which is
+exactly what `hits 0` in a run log taken after spooling has always meant, and this file has a chapter explaining that number rather than
+fixing it.
+
+- **A seek keeps every verdict now.** Nothing about moving the playhead is evidence about the playing.
+- **`forget_from(ms)` is what spends them**, called when playing RESUMES, and only from the position. Practising four bars twice no longer
+  costs the other four minutes. The price is named rather than hidden: a run that replays a passage is no longer one pass through the song,
+  and its percentage is the best of several attempts at the parts repeated.
+- **A loop turn forgets its own bars and nothing else.** It used to reset the whole matcher every few seconds, so looping four bars threw
+  away everything played before the loop was switched on.
+- **A tempo change does the same.** The speed changes what comes next, not what was already heard.
+
+**And the board did not have the verdicts to show.** This is the half the tests missed and a rendered screenshot caught in one glance: the
+board's colour came from `FeedbackRenderer`'s effects — which are ANIMATIONS, cleared on every seek — so after scrubbing back the sheet and
+the strip carried the run and the board was painted in plain string colours. The record belongs to the matcher and the flash belongs to the
+renderer; `get_note_color` takes the verdict as an argument now and falls back to it when its own effect has gone.
+
+## Marking A Passage With The Mouse
+
+*"Ich brauche auch noch eine Möglichkeit, um zu einer Passage zu springen, damit ich diese dann üben kann. Könnte ich das mit der Maus
+markieren (wie loop beim spielen) und dann spielen klicken?"*
+
+**The right button draws it.** Left-dragging the strip already spools, and a modifier wants a hand the player does not have free with a guitar
+on. Two buttons, two meanings, nothing ambiguous — and the song does not move while the passage is being drawn.
+
+- **It sets the markers, switches the loop on, and goes there — and does not start.** *"Loop setzen, hinspringen, warten."* A view that began
+  playing the moment the button came up would spend the first seconds of the passage while the fretting hand was still on the mouse, and score
+  them as missed. A song already running is paused, so landing always means landing with the hands free.
+- **A right CLICK marks nothing.** The right button is also how a mouse gets put down.
+- **The passage is shaded while it is being drawn**, in the live loop's own colour, so the thing being chosen is visible before it is chosen.
 
 ## What NOT To Do
 

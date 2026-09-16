@@ -68,8 +68,18 @@ class FeedbackRenderer:
         base_color: tuple[int, int, int],
         playback_ms: float,
         is_past: bool,
+        verdict_color: tuple[int, int, int] | None = None,
     ) -> tuple[int, int, int]:
-        """Get the display color for a note event."""
+        """Get the display color for a note event.
+
+        `verdict_color` is what the MATCHER says about this note, and it is
+        what a note wears once its own flash has passed. The colour used to
+        live only in the effects here -- which are animations, cleared on
+        every seek -- so going back to look at how a passage was judged found
+        the board painted in plain string colours while the sheet and the
+        strip still had the verdicts. The record belongs to the matcher; the
+        flash belongs here.
+        """
         key = (event.timestamp_ms, event.string)
         effect = self._effects.get(key)
         if effect is not None:
@@ -79,6 +89,8 @@ class FeedbackRenderer:
                 return color
             # Effect expired but state is permanent — still show color (dimmed)
             return dimmed(color, 0.6)
+        if verdict_color is not None:
+            return dimmed(verdict_color, 0.6)
 
         return dimmed(base_color) if is_past else base_color
 

@@ -6,6 +6,7 @@ hit/close/miss feedback. No pygame dependency — pure logic.
 
 from __future__ import annotations
 
+import bisect
 import math
 import statistics
 from collections import defaultdict
@@ -254,6 +255,21 @@ class NoteMatcher:
         self.close = 0
         self.misses = 0
 
+        # Why a verdict may not be worth what it says -- see `unreliable`.
+        # Empty for a note whose verdict rests on evidence about that note.
+        self._unreliable: dict[tuple[float, int], str] = {}
+        # Strikes that arrived carrying nothing a pitch could be read from,
+        # in the order they arrived. This is a SECOND structure rather than a
+        # read of `strike_trace`, which says of itself that nothing reads it
+        # back -- a promise worth more than the few bytes saved.
+        self._unreadable_strikes: list[float] = []
+
+        # Bumped whenever verdicts are thrown away, so a display that keeps
+        # its own picture of them knows to build it again. A count of judged
+        # notes cannot say it: replaying one passage can put the total back
+        # where it was within a frame.
+        self.verdict_epoch = 0
+
         # Signed timing error of each strike vs the nearest pitch-matching
         # tab note (positive = detected late). Used for latency calibration.
         # Recording is disabled while wait mode pins timestamps, which would
@@ -483,13 +499,19 @@ class NoteMatcher:
         mixes them cannot answer "was I really that good", which is the
         question a six-string chord scoring 94 % raises.
         """
+        key = self._note_key(event)
         self._set_state(event, match_type)
+        self._unreliable.pop(key, None)
         if match_type in (MatchType.HIT, MatchType.CLOSE):
-            self._credit_proved[self._note_key(event)] = proved
+            self._credit_proved[key] = proved
             if proved:
                 self.notes_proved += 1
             else:
+                # Green on the evidence of a STRUM, not of this string. The
+                # player asked to see which of the two a colour rests on:
+                # *"was du eigentlich nicht beurteilen konntest"*.
                 self.notes_by_strum += 1
+                self._unreliable[key] = "strum"
         if match_type == MatchType.HIT:
             self.hits += 1
             self._measure_stats[event.measure]["hits"] += 1
@@ -550,12 +572,49 @@ class NoteMatcher:
                 ))
                 continue
             self._record_match(note, MatchType.MISS)
+            if self._struck_unreadably(note.timestamp_ms):
+                # Something WAS struck here and the detector could make
+                # nothing of it -- ringing neighbours leaving YIN no single
+                # period, or a subharmonic naming the chord in the room
+                # rather than the string. Red either way, because nothing
+                # confirmed the note; but it is not evidence about the
+                # playing, and the screen should not pretend it is.
+                self._unreliable[self._note_key(note)] = "unreadable"
             results.append(MatchResult(
                 match_type=MatchType.MISS,
                 matched_events=[note],
                 semitone_distance=None,
             ))
         return results
+
+    def _struck_unreadably(self, note_ms: float) -> bool:
+        """Did an unreadable strike land inside this note's hit window."""
+        window = self._timing_window_ms
+        i = bisect.bisect_left(self._unreadable_strikes, note_ms - window)
+        return (i < len(self._unreadable_strikes)
+                and self._unreadable_strikes[i] <= note_ms + window)
+
+    def unreliable(self, event: NoteEvent) -> str | None:
+        """What this note's verdict does NOT rest on, or None if it is sound.
+
+        Two answers, and both are measured rather than guessed:
+
+        - ``"strum"`` -- credited green because a STRUM was heard, not this
+          string. Monophonic detection can never report a second chord tone,
+          so most of a six-string chord is credited this way; the chord
+          verifier polices it and can only convict a string whose partials
+          are not masked by a lower one.
+        - ``"unreadable"`` -- marked red with a strike sitting in its window
+          that carried no usable pitch at all.
+
+        **A third one the player asked for is deliberately absent.** "Too
+        quiet" cannot be told from "not played" at the level of one note: both
+        are silence where a strike should be. The run log says it for the RUN
+        (`level_under_gate_percent`, `level_loudest_db`), which is the only
+        place the evidence exists, and inventing it per note would be the
+        guess this project refuses everywhere else.
+        """
+        return self._unreliable.get(self._note_key(event))
 
     def _legato_credit(self, note: NoteEvent) -> MatchType | None:
         """The state a hammered, pulled or slid-into note inherits, if any.
@@ -696,6 +755,7 @@ class NoteMatcher:
                     # the ringing neighbours left YIN no single period. Held
                     # for the audio window, which can still show the written
                     # pitch present.
+                    self._unreadable_strikes.append(adjusted_ms)
                     self._hold_for_rescue(adjusted_ms, ts_note.sample_pos)
                 if credit is not None:
                     results.append(credit)
@@ -774,6 +834,7 @@ class NoteMatcher:
                     if credit is not None:
                         results.append(credit)
                     else:
+                        self._unreadable_strikes.append(adjusted_ms)
                         self._hold_for_rescue(adjusted_ms,
                                               ts_note.sample_pos)
                 self._trace(ts_note, adjusted_ms, playback_ms,
@@ -1549,11 +1610,50 @@ class NoteMatcher:
         weak_runs.sort(key=lambda x: x[2])
         return weak_runs
 
+    def forget_from(self, song_ms: float) -> None:
+        """Put every note at or after `song_ms` back to PENDING.
+
+        Seeking used to call `reset()`, which threw the WHOLE run away -- so
+        going back to hear how a passage was judged destroyed the very thing
+        being looked at, and practising four bars twice cost the other four
+        minutes. *"Sobald ich auf Play gehe, ueberschreibe ich die vorigen
+        Werte"*: only from here, and only when playing resumes.
+
+        What sits BEFORE the point is left exactly as it was, statistics
+        included -- `_undo_match` is what keeps the counters honest while the
+        states are cleared. The cost is named rather than hidden: a run that
+        replays a passage is no longer one run through the song, and its
+        percentage is the best of several attempts at the parts that were
+        repeated.
+        """
+        notes = self._timeline.get_notes_in_range(song_ms, float("inf"))
+        for note in notes:
+            key = self._note_key(note)
+            state = self._note_states.get(key)
+            if state is None or state is MatchType.PENDING:
+                continue
+            self._undo_match(note, state)
+            self._note_states.pop(key, None)
+            self._credit_proved.pop(key, None)
+            self._unreliable.pop(key, None)
+        # The sweep has to look at that stretch again, and anything waiting
+        # on an audio window belongs to the position being left.
+        self._missed_swept_ms = min(self._missed_swept_ms, song_ms)
+        self._pending_verifications.clear()
+        self._pending_rescues.clear()
+        self.verdict_epoch += 1
+
     def reset(self) -> None:
-        """Clear all state. Call on seek/restart."""
+        """Clear all state. Call on restart or when the filter changes.
+
+        NOT on a seek any more -- see `forget_from`.
+        """
         # Every note is PENDING again, so the missed-note sweep has to start
         # from the beginning again too. See _mark_missed_notes.
         self._missed_swept_ms = 0.0
+        self.verdict_epoch += 1
+        self._unreliable.clear()
+        self._unreadable_strikes.clear()
         self._note_states.clear()
         self.hits = 0
         self.close = 0

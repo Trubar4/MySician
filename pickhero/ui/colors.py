@@ -210,6 +210,33 @@ STRING_COLORS: dict[int, tuple[int, int, int]] = {
 OPEN_STRING_COLOR: tuple[int, int, int] = (150, 155, 165)
 
 
+# How far a verdict nobody could check is drained towards its own grey, and
+# how much darker it is drawn. Fitted by eye against the three feedback
+# colours and the board they sit on: enough that the difference is obvious
+# side by side, little enough that green still reads as green.
+#
+# It MUTES rather than replaces, because the player asked for both facts at
+# once: *"Es ist ok, wenn du sie vorerst als gueltig zaehlst ... aber ich
+# wuerde gerne sehen, was du eigentlich nicht beurteilen konntest."* A note
+# painted plain grey would say the second and lose the first.
+UNSURE_MIX = 0.62
+UNSURE_DIM = 0.78
+
+
+def unsure(color: tuple[int, int, int]) -> tuple[int, int, int]:
+    """The same verdict, drained: it stands, but nothing checked it.
+
+    Towards the colour's OWN luminance rather than towards a fixed grey, so
+    a bright verdict and a dark one drain by the same amount instead of the
+    dark one turning black.
+    """
+    grey = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
+    return tuple(
+        max(0, min(255, int((c + (grey - c) * UNSURE_MIX) * UNSURE_DIM)))
+        for c in color
+    )
+
+
 def dimmed(color: tuple[int, int, int], factor: float = 0.4) -> tuple[int, int, int]:
     """Darken a color by multiplying each channel by factor."""
     return (
