@@ -18,7 +18,7 @@ STRINGS = 6
 # that circle -- which is the feedback loop this project has already caught
 # once, when bars-per-row went into the footer and the sheet's head size
 # walked 44.4 -> 44.5 px and never settled.
-STRIP_HEIGHT = 46
+STRIP_HEIGHT = 37
 STRIP_GAP = 8
 STRIP_BAND = STRIP_HEIGHT + STRIP_GAP
 STRIP_SIDE_PAD = 12
@@ -35,8 +35,17 @@ STRIP_SIDE_PAD = 12
 # the sync panel and at the completion overlay. A test asserts the room.
 STRIP_NUMBERS_W = 190
 
-# A dot is three pixels because two is a speck and four fills a lane: at six
-# lanes in 26 px of band there are about four pixels of room each.
+# The six rows do not fill the band; they sit in the middle of it. Two
+# reasons, and the player named the first: *"die Saiten naeher zusammenruecken,
+# das ist bei Yousician auch so"*. Spread over the whole height the rows read
+# as six separate lists of dots; clustered they read as ONE object -- the song
+# -- which is what a miniature is for. And the margin it leaves is where the
+# playhead and the loop shading are legible instead of buried among the notes.
+ROW_SPREAD = 0.66
+
+# A dot is three pixels because two is a speck and four closes the gap between
+# the rows: at 0.66 of a 37 px band the rows sit 4.1 px apart, so three leaves
+# about a pixel of dark between them and the six colours still read as six.
 DOT_PX = 3
 
 # How long a verdict can still change after the note has gone past. The hit
@@ -110,8 +119,12 @@ def row_y(string: int, height: int) -> float:
     The same way up as the board and the sheet: string 6, the low E, is the
     bottom row. A miniature of the tab that flipped it would ask the player to
     turn the picture over in their head between one glance and the next.
+
+    The six rows occupy `ROW_SPREAD` of the band, centred, rather than all of
+    it -- see the constant.
     """
-    return (string - 0.5) * height / STRINGS
+    band = height * ROW_SPREAD
+    return (height - band) / 2.0 + (string - 0.5) * band / STRINGS
 
 
 def dot(note, duration_ms: float, width: int, height: int) -> tuple[int, int]:

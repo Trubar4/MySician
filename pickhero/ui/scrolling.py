@@ -5027,19 +5027,13 @@ class PlayingScreen:
         surface.blit(time_surf, (w - time_surf.get_width() - 12, 12))
         right_y = 12 + time_surf.get_height() + 2
 
-        # As big as the clock, and for the same reason: it is the other
-        # number worth reading from across the room. The H/C/M breakdown it
-        # used to carry went with the rest of the arithmetic -- the
-        # percentage is the answer, and Y gives the whole report.
-        if self._audio_enabled and self._matcher is not None:
-            stats = self._matcher.get_statistics()
-            if stats["total"] > 0:
-                accuracy = stats["accuracy_percent"]
-                acc_surf = big_font.render(
-                    f"{accuracy:.0f}%", True,
-                    t.feedback_hit if accuracy >= 80 else t.hud_text)
-                surface.blit(acc_surf, (w - acc_surf.get_width() - 12, right_y))
-                right_y += acc_surf.get_height() + 2
+        # The score used to be here, as big as the clock. It is in the strip
+        # along the bottom now, next to the two numbers it is MADE of -- and
+        # a percentage in two places is exactly the wallpaper the player's own
+        # rule was written against: a line earns its place by saying something
+        # that changes and that nothing else on screen says. The strip says it
+        # better, because "82 %" alone cannot answer "was it my fingers or my
+        # timing".
         if self._audio_enabled and self._feedback.streak >= 3:
             # Beside the other number that says how it is going, rather than
             # across the top of the music where nothing else is now. Drawn

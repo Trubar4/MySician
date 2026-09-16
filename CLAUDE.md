@@ -4166,10 +4166,22 @@ the note is judged, so the strip is the record of the run as well as the positio
 waren"*, one view further out. The looped stretch is shaded, because a loop silently repeating eight bars is the fret-filter trap in another
 costume and the strip is the one place that can say so by showing it.
 
-**Open, and it is one word from the player:** the big percentage is now on screen twice, top right and in the strip. That is against his own
-rule -- *a line earns its place by saying something that CHANGES and that nothing else on screen says* -- and the top-right one is the
-duplicate, since the strip carries the split the number is made of. It was left standing because he was asked and chose to keep the footer and
-the top-right column as they were; taking it out is a one-line change whenever he says so.
+### Three corrections from living with it
+
+- **The score is in one place now.** *"Prozentzahl rechts oben entfernen bitte."* It had been on screen twice for one build, and that was
+  against his own rule -- *a line earns its place by saying something that CHANGES and that nothing else on screen says.* The top-right one
+  was the duplicate: the strip carries the two numbers it is MADE of, and "82 %" on its own cannot answer "was it my fingers or my timing".
+  The clock, the gate and the streak stay up there; only the percentage went.
+- **The band is a fifth shorter and the rows sit together** (`STRIP_HEIGHT` 46 -> 37, `ROW_SPREAD` 0.66). *"Die Saiten naeher
+  zusammenruecken, das ist bei Yousician auch so."* Spread over the whole height the six rows read as six separate lists of dots; clustered
+  they read as ONE object, which is what a miniature is for -- and the margin it leaves is where the playhead and the loop shading are
+  legible instead of buried among the notes. **Tighter is the ask; merged into a single ribbon is not**, so the test asserts the row pitch
+  still clears `DOT_PX`: at 0.66 of 37 px the rows sit 4.1 px apart against a 3 px dot, so the six colours still say which string. The nine
+  pixels come back to the music, since the band is what `_layout` and `_tab_room` take out of it.
+- **It is in all three views, and that is now asserted rather than inferred.** *"Bitte in alle 3 Seiten einbauen."* It always was -- the
+  strip is drawn from `_draw_hud`, which the board, the sheet and the page all call, which is the same reason the footer and the help
+  overlay are not written three times. The test renders each of the three and requires ink in the band, because a view that grew a HUD of
+  its own would break it silently and nothing on screen would say which one was missing it.
 
 ## What NOT To Do
 

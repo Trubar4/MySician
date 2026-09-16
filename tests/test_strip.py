@@ -168,6 +168,22 @@ class TestItIsReallyOnTheScreen:
         assert rect.bottom <= footer_top
         assert rect.top > 0 and rect.bottom <= layout.screen_h
 
+    def test_it_is_drawn_in_all_three_views(self, display):
+        # *"Bitte in alle 3 Seiten einbauen."* It is drawn from `_draw_hud`,
+        # which all three call -- so this holds by construction today and is
+        # asserted because a view that drew its own HUD would break it
+        # silently, and nothing else on screen would say which view was
+        # missing it.
+        for view in ("standard", "hybrid", "tab"):
+            screen, surface = _screen(), _surface()
+            screen._view = view
+            screen.render(surface)
+            mini = screen._strip_mini_rect(1280, 800)
+            band = {tuple(surface.get_at((x, y))[:3])
+                    for x in range(mini.x + 1, mini.right - 1, 3)
+                    for y in range(mini.y + 1, mini.bottom - 1, 2)}
+            assert len(band) > 2, f"{view}: the strip drew nothing"
+
     def test_the_music_does_not_reach_into_it(self, display):
         # Both the board and the page. Text and dots over a staff is the
         # fault this file has written up twice.
@@ -195,6 +211,27 @@ class TestItIsReallyOnTheScreen:
         # Its own ground, the dots on it, and the marker: a band of one
         # colour is a band nothing was drawn into.
         assert len(band) > 2, f"the strip drew nothing: {band}"
+
+
+class TestTheRowsSitTogether:
+    """*"Die Saiten naeher zusammenruecken. Das ist bei Yousician auch so."*"""
+
+    def test_the_rows_do_not_fill_the_band(self, display):
+        # Clustered, so the strip reads as ONE object -- and so the margin it
+        # leaves has room for the playhead and the loop shading to be seen.
+        rows = [strip.row_y(s, strip.STRIP_HEIGHT) for s in range(1, 7)]
+        span = rows[-1] - rows[0]
+        assert span < strip.STRIP_HEIGHT * 0.75
+        # Centred: as much dark above the top row as below the bottom one.
+        assert rows[0] == pytest.approx(strip.STRIP_HEIGHT - rows[-1], abs=0.5)
+
+    def test_but_six_rows_are_still_six(self, display):
+        # Tighter is the ask; merged into one ribbon is not. Every row has to
+        # keep a pixel of dark between it and its neighbour, or the colours
+        # stop saying which string.
+        rows = [strip.row_y(s, strip.STRIP_HEIGHT) for s in range(1, 7)]
+        pitch = min(b - a for a, b in zip(rows, rows[1:]))
+        assert pitch > strip.DOT_PX
 
 
 class TestTheMiniatureHoldsStill:
