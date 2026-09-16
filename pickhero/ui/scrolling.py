@@ -455,7 +455,33 @@ VIEW_NAMES = {
 }
 # Room either side of the sheet, so the first and last note of a row are not
 # against the window edge.
+# The sheet's left and right margin. A FRACTION of the width, not a fixed
+# 24 px: *"damit meine Augen nicht ganz bis an den Rand fahren müssen"*. Three
+# and a half percent is about 1.2 cm on a 1920-wide screen and a shade over
+# 1 cm on a laptop -- inside the 1 to 2 cm asked for, and it scales with the
+# screen instead of being right on one of them. The music narrows by exactly
+# that much, which is the trade he offered.
+SHEET_SIDE_PAD_FRACTION = 0.035
 SHEET_SIDE_PAD = 24
+
+# ── The nut ─────────────────────────────────────────────────────────────────
+# The open-string names, drawn on the playhead, one per string. Called the
+# NUT because that is the part of a guitar where the open strings are named
+# and this is the same fact in the same order -- it just rides with the
+# playhead instead of sitting at the top of the neck.
+#
+# It answers one question and it is the question a player asks constantly:
+# *"damit man besser weiß, ob man auf Saite D oder G ist"*. The value never
+# changes during a song, which is why it can sit still and be read at a
+# glance rather than being another thing that moves.
+#
+# See-through on purpose. The notes underneath are the ones being PLAYED, and
+# a label that hides them would take away more than it gives.
+NUT_ALPHA = 165
+NUT_RING_ALPHA = 220
+# Of the lane height. Big enough for a letter and a sharp sign, small enough
+# that two circles never touch.
+NUT_RADIUS_FRACTION = 0.40
 # A move longer than this many rows is a seek, not a page turn, and arrives
 # rather than sliding. In ROWS because a row is whatever the head size makes
 # it -- see _slide_sheet.
@@ -673,6 +699,44 @@ def _head_surface(width: int, height: int, colour, border) -> pygame.Surface:
     pygame.draw.rect(head, border, rect, width=2, border_radius=corner)
     _HEAD_CACHE[key] = head
     return head
+
+
+#: One translucent disc, kept because all six are identical and building six
+#: SRCALPHA surfaces a frame is sixty a second for a picture that never
+#: changes. Keyed on the two things that can change it.
+_NUT_DISC_CACHE: dict[tuple, "pygame.Surface"] = {}
+
+
+def _nut_disc(radius: int, fill, ring) -> "pygame.Surface":
+    """The see-through disc a nut letter sits on."""
+    key = (radius, tuple(fill), tuple(ring))
+    got = _NUT_DISC_CACHE.get(key)
+    if got is not None:
+        return got
+    if len(_NUT_DISC_CACHE) > 16:
+        _NUT_DISC_CACHE.clear()
+    size = 2 * radius + 2
+    disc = pygame.Surface((size, size), pygame.SRCALPHA)
+    try:
+        disc = disc.convert_alpha()
+    except pygame.error:
+        pass                          # no display yet; the surface still works
+    centre = (radius + 1, radius + 1)
+    pygame.draw.circle(disc, (*fill, NUT_ALPHA), centre, radius)
+    pygame.draw.circle(disc, (*ring, NUT_RING_ALPHA), centre, radius, 2)
+    _NUT_DISC_CACHE[key] = disc
+    return disc
+
+
+def nut_letters(tuning: dict[int, int] | None) -> list[str]:
+    """Open-string names from the TOP row down, as the screen stacks them.
+
+    `tuning_notes` reads low to high because that is the order a player
+    tunes in. The lanes are drawn the other way up -- lane 0 is the high e --
+    so the one place these two orders meet is here, once, rather than in
+    every caller with a `5 - i` in it.
+    """
+    return list(reversed(tuning_notes(tuning))) if tuning else []
 
 
 def clear_font_cache() -> None:
@@ -2247,7 +2311,8 @@ class PlayingScreen:
         w, _ = surface.get_size()
         top, room = self._tab_room(layout)
         head = self._sheet_head_px(room)
-        content_w = max(1, w - 2 * SHEET_SIDE_PAD)
+        pad = self._sheet_pad(w)
+        content_w = max(1, w - 2 * pad)
         rows = self._sheet_layout(content_w, head)
         if not rows:
             return
@@ -2266,7 +2331,7 @@ class PlayingScreen:
         surface.set_clip(pygame.Rect(0, top, w, room))
         showing = sheet.rows_that_fit(room, head, self._sheet_strip()) + 1
         for index in range(current, min(len(rows), current + showing)):
-            self._draw_sheet_row(surface, rows[index], SHEET_SIDE_PAD,
+            self._draw_sheet_row(surface, rows[index], pad,
                                  top + index * pitch - scroll, head,
                                  content_w, index == current, strip)
         surface.set_clip(was)
@@ -2284,6 +2349,22 @@ class PlayingScreen:
                 "this bar is too dense to part at this size — press -",
                 True, t.feedback_close)
             surface.blit(warn, (w // 2 - warn.get_width() // 2, int(top) - 22))
+
+    @staticmethod
+    def _sheet_pad(screen_w: int) -> int:
+        """The sheet's left and right margin, in pixels.
+
+        A fraction of the width rather than a fixed number, because a
+        margin is about the DISTANCE THE EYE TRAVELS and that is measured in
+        centimetres on a real screen -- 24 px is comfortable on a laptop and
+        a hairline on a desk monitor. Never below what it used to be, so no
+        screen gets a narrower margin than before.
+
+        Horizontal only, so it cannot feed back into the layout the way the
+        footer once did: the pad changes how many bars fit on a row, and the
+        row HEIGHT -- which is what decides the head size -- is untouched.
+        """
+        return max(SHEET_SIDE_PAD, int(screen_w * SHEET_SIDE_PAD_FRACTION))
 
     def _draw_sheet_row(self, surface: pygame.Surface, row, x0: int,
                         y: float, head: float, content_w: int,
@@ -2419,6 +2500,38 @@ class PlayingScreen:
             x = int(x0 + row.x_at(self._playback_ms))
             pygame.draw.line(surface, t.tab_playhead, (x, int(y)),
                              (x, int(lanes_top + band_h)), TAB_PLAYHEAD_PX)
+            # Only on the row being played: six letters on every row would
+            # be a column of labelling down the page, and the question they
+            # answer is about the hand, which is on one row at a time.
+            self._draw_nut(surface, x, lanes_top, lane_h)
+
+    def _draw_nut(self, surface: pygame.Surface, x: float,
+                  lanes_top: float, lane_h: float) -> None:
+        """The open-string names, on the playhead, one per string.
+
+        The tuning does not change while a song runs, so this is the one
+        thing on screen that can be read without watching it -- which is
+        what makes it useful for the question it answers: *"bin ich auf
+        Saite D oder G?"*
+
+        Drawn over the music and see-through, because the notes underneath
+        are the ones being played. A label that hid them would cost more
+        than it gives.
+        """
+        letters = nut_letters(self._timeline.metadata.tuning)
+        if len(letters) != 6 or lane_h <= 0:
+            return
+        t = get_theme()
+        radius = max(7, int(NUT_RADIUS_FRACTION * lane_h))
+        disc = _nut_disc(radius, t.lane_bg_even, t.hud_text)
+        font = _get_font("arial", max(10, int(radius * 1.1)), bold=True)
+        left = int(x) - radius - 1
+        for i, letter in enumerate(letters):
+            cy = int(lanes_top + (i + 0.5) * lane_h)
+            surface.blit(disc, (left, cy - radius - 1))
+            drawn = font.render(letter, True, t.hud_text)
+            surface.blit(drawn, (int(x) - drawn.get_width() // 2,
+                                 cy - drawn.get_height() // 2))
 
     def _sheet_note_colour(self, note, base: tuple[int, int, int]):
         """A note's colour on the sheet. Nothing here is dimmed.
@@ -3793,6 +3906,10 @@ class PlayingScreen:
             band = pygame.Surface((int(slack_px * 2), height), pygame.SRCALPHA)
             band.fill((*t.hit_zone, 28))
             surface.blit(band, (x - int(slack_px), top))
+        # The same six letters as the sheet's, in the same place relative to
+        # the music: the line where the note is due. Here it never moves,
+        # which is the easier half of the job.
+        self._draw_nut(surface, x, layout.lane_top, layout.lane_height)
 
         # It stands PROUD of the board, top and bottom. Ending flush with the
         # edge, the line is one more vertical among the fret wires; running

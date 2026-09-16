@@ -692,3 +692,89 @@ class TestTheLoopIsVisibleOnTheSheet:
         screen.render(pygame.Surface((1280, 800)))
         row = screen._sheet_rows[0]
         assert row.x_at(200_000.0) == row.xs[-1]
+
+
+class TestTheNut:
+    """The open-string names, on the playhead, one per string.
+
+    *"Es geht darum, dass der Balken die aktuelle Stimmung der Saite anzeigt.
+    Der Wert je Saite ändert sich während dem ganzen Song nicht. Die
+    Notenköpfe auf dem Balken sind durchsichtig, da ich ja die Noten
+    darunter spielen muss. Es ist nur eine zusätzliche Orientierung, damit
+    man besser weiß, ob man auf Saite D oder G ist."*
+
+    Called the nut because that is the part of a guitar where the open
+    strings are named, in this order. This one rides with the playhead.
+    """
+
+    def test_the_letters_read_top_down_as_the_lanes_are_drawn(self):
+        from pickhero.audio.note_utils import STANDARD_TUNING
+        from pickhero.ui.scrolling import nut_letters
+        # Lane 0 is the high e, and `tuning_notes` reads low to high -- the
+        # one place those two orders meet is this function.
+        assert nut_letters(STANDARD_TUNING) == ["E", "B", "G", "D", "A", "E"]
+
+    def test_a_dropped_tuning_says_what_is_really_there(self):
+        from pickhero.ui.scrolling import nut_letters
+        drop_d = {6: 38, 5: 45, 4: 50, 3: 55, 2: 59, 1: 64}
+        assert nut_letters(drop_d)[-1] == "D"
+
+    def test_no_tuning_is_no_letters_and_not_a_crash(self):
+        from pickhero.ui.scrolling import nut_letters
+        assert nut_letters(None) == [] and nut_letters({}) == []
+
+    def test_the_disc_is_see_through(self):
+        """The notes underneath are the ones being played, and a label that
+        hid them would cost more than it gives."""
+        from pickhero.ui.scrolling import NUT_ALPHA, _nut_disc
+        assert 0 < NUT_ALPHA < 255
+        disc = _nut_disc(12, (20, 20, 20), (200, 200, 200))
+        assert disc.get_at((13, 13))[3] == NUT_ALPHA
+
+    def test_the_disc_is_built_once_and_kept(self):
+        """All six are identical, and six SRCALPHA surfaces a frame is sixty
+        a second for a picture that never changes."""
+        from pickhero.ui.scrolling import _nut_disc
+        first = _nut_disc(11, (1, 2, 3), (4, 5, 6))
+        assert _nut_disc(11, (1, 2, 3), (4, 5, 6)) is first
+
+
+class TestTheSheetMargin:
+    """*"Links und rechts am Rand ein Abstand von 1-2 cm, damit meine Augen
+    nicht ganz bis an den Rand fahren müssen."*"""
+
+    def _pad(self, width):
+        from pickhero.ui.scrolling import PlayingScreen
+        return PlayingScreen._sheet_pad(width)
+
+    def test_it_grows_with_the_screen(self):
+        """A margin is about the distance the EYE travels, which is measured
+        in centimetres on a real screen -- 24 px is comfortable on a laptop
+        and a hairline on a desk monitor."""
+        assert self._pad(3840) > self._pad(1920) > self._pad(1280)
+
+    def test_it_is_roughly_a_centimetre_on_a_normal_screen(self):
+        # ~56 px to the centimetre at 1920 across a 34 cm panel.
+        assert 1.0 <= self._pad(1920) / 56.0 <= 2.0
+
+    def test_no_screen_gets_less_than_it_had_before(self):
+        from pickhero.ui.scrolling import SHEET_SIDE_PAD
+        assert self._pad(320) >= SHEET_SIDE_PAD
+        assert self._pad(1024) >= SHEET_SIDE_PAD
+
+    def test_it_cannot_feed_back_into_the_head_size(self):
+        """The footer once changed its own height by saying how many bars
+        were on a row, and the head size walked 44.4 -> 44.5 px chasing it.
+
+        Asserted on the SIGNATURE, not by reading the source for words -- a
+        grep for "head" finds the docstring explaining why there is none.
+        The pad takes a width and nothing else, so it cannot see the layout
+        it feeds, which is what makes the loop impossible rather than
+        merely absent today.
+        """
+        import inspect
+        from pickhero.ui.scrolling import PlayingScreen
+        taken = list(inspect.signature(PlayingScreen._sheet_pad).parameters)
+        assert taken == ["screen_w"], "the pad can see more than the width"
+        assert isinstance(inspect.getattr_static(PlayingScreen, "_sheet_pad"),
+                          staticmethod), "it can reach self, so it can loop"

@@ -3278,6 +3278,43 @@ cents flat got no answer at all — the screen simply sat there saying "Play a s
 - **An octave is still refused.** The window is ±900 cents — wide enough for any string a person would actually try to tune, and stopping short of
   1200 keeps YIN's octave error out. A reading an octave up is the detector being wrong, not the string being wrong.
 
+### The Nut Rides With The Playhead
+
+*"Es geht darum, dass der Balken die aktuelle Stimmung der Saite anzeigt. Der Wert je Saite ändert sich während dem ganzen Song nicht. Es ist nur
+eine zusätzliche Orientierung, damit man besser weiß, ob man auf Saite D oder G ist."*
+
+**I read his first sketch as a progress bar and built a plan for one.** It was a drawing over a screenshot, not a feature, and it meant the opposite
+of what I took it for: not something that CHANGES with the song, but the one thing on screen that never does. Six letters on the playhead saying
+which string each lane is. He had to stop me — and the lesson is that a mock-up drawn over a screenshot says what it should LOOK like and nothing
+about what it MEANS, so the meaning has to be asked for rather than inferred.
+
+It is called the **nut** because that is the part of a guitar where the open strings are named, in exactly this order. This one rides with the
+playhead instead of sitting at the top of the neck — moving in the hybrid view, standing still in the standard one, which is the easier half.
+
+Three things it has to get right:
+
+- **See-through.** The notes underneath are the ones being played, so a label that hid them would cost more than it gives.
+- **Only the row being played**, in hybrid. Six letters on every row would be a column of labelling down the page, and the question they answer is
+  about the hand, which is on one row at a time.
+- **`nut_letters` is where the two orders meet.** `tuning_notes` reads low to high because that is how a player tunes; the lanes are drawn the other
+  way up, lane 0 being the high e. Reversing it once here beats a `5 - i` in every caller.
+
+All six discs are identical, so one is built and blitted six times — six SRCALPHA surfaces a frame is sixty a second for a picture that never
+changes.
+
+### A Margin Is Measured In Centimetres, Not Pixels
+
+*"Links und rechts am Rand ein Abstand von 1-2 cm, damit meine Augen nicht ganz bis an den Rand fahren müssen."*
+
+`SHEET_SIDE_PAD = 24` was comfortable on the laptop it was written on and a hairline on a desk monitor, because a margin is about **the distance the
+eye travels** and that is a physical measurement. It is a fraction of the width now — 3.5 %, about 1.2 cm at 1920 — and never less than the 24 px it
+used to be, so no screen ends up worse off.
+
+The reason this is safe where the footer was not: **it is horizontal.** The footer once changed its own height by saying how many bars were on a row,
+which changed the room, which changed the head size, which walked 44.4 → 44.5 px. This changes how many bars fit on a row and leaves the row HEIGHT
+alone. The test asserts that on the signature rather than by grepping the source — `_sheet_pad` is a staticmethod taking a width and nothing else, so
+it cannot see the layout it feeds. That makes the loop impossible rather than merely absent today.
+
 ### What this is not
 
 It is still a windowed search, and a window has no idea what the window before it found. That is what lets one match the third chorus
