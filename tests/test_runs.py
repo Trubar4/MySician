@@ -247,3 +247,45 @@ def test_a_history_that_cannot_be_read_does_not_take_the_import_down(tmp_path):
     there.write_text("x")
     runs.path_for(there).write_text("{not json", encoding="utf-8")
     assert runs.merge_files(here, there) == 0
+
+
+# -- where a run went wrong -------------------------------------------------
+
+class TestErrorNests:
+
+    def test_neighbouring_bars_are_one_passage(self):
+        # Four notes a bar, wrong in bars 0 and 1: one nest, not two.
+        notes = "m..m" "m..." + "h" * 8
+        bars = [0] * 4 + [1] * 4 + [2] * 4 + [3] * 4
+        assert runs.error_nests(notes, bars) == [(0, 1, 3)]
+
+    def test_one_clean_bar_is_bridged_and_two_are_not(self):
+        bars = [b for b in range(6) for _ in range(2)]
+        one = "m." + ".." + "m." + "h" * 6        # bars 0 and 2
+        assert runs.error_nests(one, bars) == [(0, 2, 2)]
+        two = "m." + ".." + ".." + "m." + "hhhh"  # bars 0 and 3
+        assert runs.error_nests(two, bars) == [(0, 0, 1), (3, 3, 1)]
+
+    def test_nothing_wrong_is_no_nests(self):
+        assert runs.error_nests("hhcc", [0, 0, 1, 1]) == []
+
+    def test_a_close_is_not_a_mistake_here_either(self):
+        # The same rule as common_errors: a CLOSE is the right note off the
+        # beat, and looping a bar for it would say it was wrong.
+        assert runs.error_nests("cccc", [0, 0, 1, 1]) == []
+
+    def test_a_drained_verdict_does_not_call_a_passage_wrong(self):
+        # `M` is the app saying it could not tell. Sending the player to
+        # practise a bar on that is convicting on absence of evidence.
+        assert runs.error_nests("MMMM", [0, 0, 1, 1]) == []
+
+    def test_they_come_out_in_bar_order_with_their_counts(self):
+        notes = "m" "m" "." "." "m" "." "." "." "." "m" "m"
+        bars = [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8]
+        assert runs.error_nests(notes, bars) == [(0, 0, 2), (3, 3, 1),
+                                                 (8, 8, 2)]
+
+    def test_a_note_with_no_bar_is_left_out_rather_than_guessed(self):
+        # A verdict string longer than the bars it was given describes notes
+        # this timeline does not have.
+        assert runs.error_nests("hhmm", [0, 0]) == []

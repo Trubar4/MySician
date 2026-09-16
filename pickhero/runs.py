@@ -244,6 +244,55 @@ def merge(mine: list[Run], theirs: list[Run]) -> tuple[list[Run], int]:
     return both, len(added)
 
 
+#: How many clean bars may sit INSIDE one nest. A four-bar phrase with one
+#: good bar in the middle is one passage to practise; two clean bars is a
+#: place you can stop, so the errors either side are two problems.
+#:
+#: **Not fitted against real data, and it cannot be yet** -- the run history
+#: starts the day it ships, so there is nothing to measure a gap distribution
+#: on. It is reasoned from what a practice loop IS, and it is one constant to
+#: re-fit once a real history exists, which is the honest state to leave it in.
+NEST_BRIDGE_BARS = 1
+
+
+def error_nests(notes: str, bars, bridge: int = NEST_BRIDGE_BARS
+                ) -> list[tuple[int, int, int]]:
+    """Where a run went wrong, grouped into passages worth looping.
+
+    Takes the verdict string and the bar number of every note -- integers and
+    nothing else, so this is tested without a timeline and without a screen.
+    Returns `(first_bar, last_bar, how many notes were wrong)`, in bar order.
+
+    **Grouped by the tab's own BARS rather than by a number of milliseconds.**
+    A bar is what a player counts in and what a loop is set in, and it is
+    read off the file rather than chosen here -- the same reason the board's
+    bar lines are drawn on real bar boundaries instead of at a pixel spacing.
+    """
+    wrong: dict[int, int] = {}
+    for i, char in enumerate(notes):
+        if i >= len(bars) or not is_error(char):
+            continue
+        wrong[bars[i]] = wrong.get(bars[i], 0) + 1
+    if not wrong:
+        return []
+    out: list[tuple[int, int, int]] = []
+    first = last = None
+    count = 0
+    for bar in sorted(wrong):
+        if first is None:
+            first = last = bar
+            count = wrong[bar]
+        elif bar - last <= bridge + 1:
+            last = bar
+            count += wrong[bar]
+        else:
+            out.append((first, last, count))
+            first = last = bar
+            count = wrong[bar]
+    out.append((first, last, count))
+    return out
+
+
 def merge_files(mine_path, theirs_path) -> int:
     """Pull the other machine's runs into this tab's file. Never raises.
 

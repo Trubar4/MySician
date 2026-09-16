@@ -4755,6 +4755,12 @@ class PlayingScreen:
         strip under the song and the comparison of two runs -- and a second
         copy would be a second answer to what marking one means.
         """
+        # The old END has to go first. `_set_loop_start` swaps the two when
+        # the new start is past the end still standing, so marking a LATER
+        # passage than the one already looped came out as a loop from the old
+        # end to the new start -- a stretch nobody chose. Found by walking
+        # from one mistake to the next one after it.
+        self._loop_end_ms = None
         self._set_loop_start(start_ms)
         self._set_loop_end(end_ms)
         self._loop_enabled = True
@@ -6574,6 +6580,8 @@ class PlayingScreen:
                 "  is room. RIGHT-drag either one to mark a passage.",
                 "  Two rows nobody played: the best each note has ever been,",
                 "  and the mistakes you make in more than half your runs.",
+                "  N loops the next place that run went wrong, and waits —",
+                "  press it again for the one after it.",
                 ("PgDn/PgUp: practice speed, kept for this song",
                  f"{meta.tempo} BPM ({int(self._tempo_factor * 100)} %)"),
                 ("A: audio on/off", "on" if self._audio_enabled else "off"),

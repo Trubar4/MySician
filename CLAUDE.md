@@ -4382,6 +4382,38 @@ beside a take: a number is only readable next to what it is a number of.
 5.51 ms and the biggest comparison 5.70 ms, against a 16.7 ms budget. Every bar is built once per size and kept, and the loop over the song's
 notes runs when a bar is built and never in a frame — which is the loop this codebase has now found growing with the song four times.
 
+### N Walks The Places It Went Wrong
+
+*"Ja bitte"* — to the offer that "Frequent errors" says a passage went badly and leaves the player to FIND it by reading pixels. On the
+player's own song that row is 16 notes scattered over 12 places in four minutes, at about four pixels each in the whole-song view. The
+statistic was there and the passage was not.
+
+`N` loops the next one and waits: the same landing as a right-drag — loop set, jump, hands free, `SPACE` plays it — because `take_passage`
+is one implementation and a second answer to "mark a passage" is how two of them come to mean different things.
+
+- **Grouped by the tab's OWN bars**, not by a number of milliseconds. A bar is what a player counts in, what a loop is set in, and what
+  the weakest-section report already names; it is read off the file rather than chosen here, the same reason the board's bar lines sit on
+  real bar boundaries instead of at a pixel spacing. `error_nests` takes the verdict string and a bar number per note — integers and
+  nothing else — so it is tested without a timeline and without a screen.
+- **`NEST_BRIDGE_BARS` is reasoned, not fitted, and that is said out loud.** One clean bar between two wrong ones is part of the same
+  passage to practise; two are two passages. There is nothing to fit it against — the run history starts the day it ships — so it is one
+  constant to re-measure once a real history exists, and it is named rather than buried.
+- **Only a MISS starts a nest.** A `CLOSE` is the right note played off the beat, which the timing percentage already answers, and a
+  drained verdict (`M`) is the app saying it could not tell. Sending the player to practise a bar on either would be convicting on
+  absence of evidence — the presumption of innocence this file runs on, one level up.
+- **It walks the run being LOOKED at**: the row under the cursor in the list, the top one of a comparison. Including the two pretend runs,
+  which is the point — "most frequent errors" is the row worth practising and it is the one that cannot say where its clusters are.
+- **The overlay stays up and the comparison follows.** Closing it would make every step cost a `Shift+D`; and zoomed in, a nest three bars
+  long is off screen more often than not, so the view is centred on it — the position only, never the zoom, which is the player's. In the
+  whole-song view nothing moves, because the whole song is already shown.
+- **The sentence is said in the overlay's own footer**, not only through `say()`: the panel covers the HUD, so the status note is behind
+  it while this is up — a sentence nobody can see is the fault this project has now shipped four times. Room for it is reserved whether or
+  not there is one, so pressing `N` cannot resize the panel the list is being read in.
+
+**And it found a bug in the key it borrowed.** `take_passage` set the loop start before clearing the old end, and `_set_loop_start` swaps
+the two when the new start is past an end still standing — so marking a LATER passage than the one already looped came out as a loop from
+the old end to the new start, a stretch nobody chose. It was there for the right-drag too, and nobody had dragged twice.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

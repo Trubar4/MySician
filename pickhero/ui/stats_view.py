@@ -244,6 +244,14 @@ class StatsOverlay:
         self._bar_rects: list[tuple[int, pygame.Rect]] = []
         self._drag_from: float | None = None
         self._drag_to: float | None = None
+        # Where a run went wrong, and which of those the player is standing
+        # in. Read off the run under the cursor, once, and kept until that
+        # run changes -- the loop walks every note of the song.
+        self._nests: list[tuple[int, int, int]] = []
+        self._nest_of = ""
+        self._nest_at = -1
+        self._nest_note = ""
+        self._note_bars: tuple[list[int], list] | None = None
 
     # -- opening and closing ------------------------------------------------
 
@@ -265,6 +273,9 @@ class StatsOverlay:
         self.selected = []
         self.cursor = self.first = 0
         self._bars.clear()
+        self._nest_of = ""
+        self._nest_at = -1
+        self._nest_note = ""
         self._history = []
         path = getattr(self._screen, "_song_path", "")
         if path:
@@ -366,6 +377,12 @@ class StatsOverlay:
                 self.mode = "list"
             else:
                 self.close()
+            return True
+        if key == pygame.K_n:
+            # In both modes, because the question is the same one: a list
+            # that says a run went badly and a comparison that draws it both
+            # leave the player to FIND the passage by reading pixels.
+            self._go_to_nest()
             return True
         if self.mode == "list":
             if key == pygame.K_DOWN:
@@ -485,6 +502,106 @@ class StatsOverlay:
             return                  # a right click is also how a mouse is put down
         self.close()
         self._screen.take_passage(min(first, last), max(first, last))
+
+    # -- walking the places it went wrong -----------------------------------
+
+    def _nest_source(self):
+        """Whose errors N walks: the run being LOOKED at.
+
+        In the list that is the row under the cursor -- including the two
+        pretend runs, which is the point: "most frequent errors" is the one
+        worth practising and it cannot say by itself where its clusters are.
+        In a comparison it is the first of the two picked, because the
+        comparison is drawn with that one on top and a key that walked the
+        other would be answering about the bar the eye is not on.
+        """
+        if self.mode == "compare" and self.selected:
+            index = self.selected[0]
+        else:
+            index = self.cursor
+        if not (0 <= index < len(self._entries)):
+            return None
+        entry = self._entries[index]
+        return entry.run if entry.fits else None
+
+    def _bars_of_notes(self) -> tuple[list[int], list]:
+        """Which bar each note is written in, and the bars themselves.
+
+        The bar is the unit a player counts in and the unit a loop is set in,
+        so the nests are grouped by the tab's OWN bars rather than by a number
+        of milliseconds nobody fitted. Built once per song: it walks every
+        note, and this is the loop that has been found growing with the song
+        four times in this codebase.
+
+        A tab that parsed without measure info falls back to one note per
+        group -- less than the bars can do, and more than a key that silently
+        does nothing.
+        """
+        if self._note_bars is None:
+            notes = self._screen._timeline.notes
+            measures = list(getattr(self._screen._timeline, "measures", [])
+                            or [])
+            if measures:
+                bars: list[int] = []
+                at = 0
+                for note in notes:
+                    while (at + 1 < len(measures)
+                           and note.timestamp_ms >= measures[at + 1].start_ms):
+                        at += 1
+                    bars.append(at)
+            else:
+                bars = list(range(len(notes)))
+            self._note_bars = (bars, measures)
+        return self._note_bars
+
+    def _nest_span(self, first: int, last: int) -> tuple[float, float, str]:
+        """A nest as (from ms, to ms, what to call it)."""
+        _, measures = self._bars_of_notes()
+        if measures:
+            start, end = measures[first].start_ms, measures[last].end_ms
+            low, high = measures[first].index + 1, measures[last].index + 1
+            where = f"bar {low}" if low == high else f"bars {low}-{high}"
+            return start, end, where
+        notes = self._screen._timeline.notes
+        start = notes[first].timestamp_ms
+        end = notes[last].timestamp_ms + notes[last].duration_ms
+        return start, end, f"{format_ms(start)}-{format_ms(end)}"
+
+    def _go_to_nest(self) -> None:
+        """Set the loop over the next place this run went wrong, and wait.
+
+        The same landing as a right-drag: loop, jump, hands free. The overlay
+        STAYS UP, because walking a list is what this key is for and closing
+        it would make every step cost a Shift+D -- and because the bar under
+        the comparison then shows where the loop landed.
+        """
+        run = self._nest_source()
+        if run is None:
+            self._nest_note = "Nothing here to walk through"
+            return
+        if run.notes != self._nest_of:
+            bars, _ = self._bars_of_notes()
+            self._nests = runs_mod.error_nests(run.notes, bars)
+            self._nest_of = run.notes
+            self._nest_at = -1
+        if not self._nests:
+            self._nest_note = "Nothing went wrong in that run"
+            return
+        self._nest_at = (self._nest_at + 1) % len(self._nests)
+        first, last, wrong = self._nests[self._nest_at]
+        start, end, where = self._nest_span(first, last)
+        if self.mode == "compare":
+            # Bring it into the picture. Zoomed in, a nest three bars long is
+            # off screen more often than not, and a key whose effect is a
+            # two-pixel playhead nobody can find is a key that looks dead.
+            # Only the position moves: the zoom is the player's.
+            seen = self.window()
+            self.view_from_ms = (start + end) / 2.0 - (seen[1] - seen[0]) / 2.0
+        self._screen.take_passage(start, end)
+        self._nest_note = (f"{self._nest_at + 1} of {len(self._nests)}: "
+                           f"{where}, {wrong} note{'' if wrong == 1 else 's'} "
+                           "wrong - SPACE plays the loop")
+        self._screen.say(self._nest_note)
 
     # -- the bars -----------------------------------------------------------
 
@@ -686,7 +803,11 @@ class StatsOverlay:
         # Exactly what the header and the footer take, so the room left over
         # is a whole number of rows. A guess one row short is a run missing
         # from the bottom of the list with nothing to say it is there.
-        chrome = title.get_height() + tiny.get_height() + 48
+        # Two small lines at the foot: the keys, and what the last N
+        # press landed on. The room for the second is reserved whether
+        # or not there is one, so pressing N cannot resize the panel
+        # the list is being read in.
+        chrome = title.get_height() + tiny.get_height() * 2 + 48
         wanted = chrome + max(1, len(self._entries)) * ROW_H
         panel = pygame.Rect(panel.x, panel.y, panel.width,
                             max(140, min(panel.height, wanted)))
@@ -751,9 +872,8 @@ class StatsOverlay:
                 "No runs recorded yet — play the song and leave it",
                 True, theme.hud_text), (x, y))
         foot = ("SPACE or click picks two · ENTER compares · S sorts · "
-                "ESC closes")
-        surface.blit(tiny.render(foot, True, theme.hud_accent),
-                     (x, panel.bottom - tiny.get_height() - 8))
+                "N loops the next mistake · ESC closes")
+        self._blit_foot(surface, panel, x, panel.right - 12 - x, foot)
 
     def _draw_compare(self, surface: pygame.Surface,
                       panel: pygame.Rect) -> None:
@@ -766,7 +886,9 @@ class StatsOverlay:
         x = panel.x + 12
         width = panel.width - 24
         top = panel.y + 10
-        foot_h = tiny.get_height() + 12
+        # Two lines: the keys, and room for what N last landed on --
+        # reserved either way, so pressing it cannot resize the bars.
+        foot_h = tiny.get_height() * 2 + 14
         room = panel.bottom - top - foot_h
         label_h = small.get_height() + tiny.get_height() + 6
         ladder = size_ladder(strip.STRIP_HEIGHT,
@@ -805,10 +927,26 @@ class StatsOverlay:
                 if self.zoom else "the whole song")
         foot = (f"+/- size ({self.size + 1}/{len(ladder)}) · "
                 f"UP/DOWN zoom, LEFT/RIGHT move — showing {seen} · "
-                "right-drag marks a passage to practise · ESC back")
+                "right-drag or N marks a passage to practise · ESC back")
+        self._blit_foot(surface, panel, x, width, foot)
+
+    def _blit_foot(self, surface: pygame.Surface, panel: pygame.Rect,
+                   x: int, width: int, foot: str) -> None:
+        """The keys, and above them what the last N press landed on.
+
+        The overlay covers the HUD, so the screen's own status note is behind
+        the panel while this is up -- a sentence nobody can see is the fault
+        this project has now shipped four times. It is said here as well.
+        """
+        tiny = self._font("arial", 12)
+        line = panel.bottom - tiny.get_height() - 8
         surface.blit(tiny.render(self.fit(tiny, foot, width), True,
-                                 theme.hud_accent),
-                     (x, panel.bottom - tiny.get_height() - 8))
+                                 get_theme().hud_accent), (x, line))
+        if self._nest_note:
+            surface.blit(
+                tiny.render(self.fit(tiny, self._nest_note, width), True,
+                            get_theme().hud_text),
+                (x, line - tiny.get_height() - 2))
 
     def _draw_bars_of_music(self, surface: pygame.Surface, rect: pygame.Rect,
                             view: tuple[float, float]) -> None:
@@ -854,11 +992,16 @@ class StatsOverlay:
         theme = get_theme()
         start, end = view
         span = max(1.0, end - start)
-        if self._drag_from is not None and self._drag_to is not None:
-            x0 = strip.x_for_ms(min(self._drag_from, self._drag_to) - start,
-                                span, rect.width)
-            x1 = strip.x_for_ms(max(self._drag_from, self._drag_to) - start,
-                                span, rect.width)
+        # The passage being drawn, or -- once the button is up and N has set
+        # one -- the loop that is actually in force. Without the second, the
+        # key that sets a loop shows only where the playhead landed, and how
+        # far the passage REACHES is the thing being chosen.
+        marked = (self._drag_from, self._drag_to)
+        if marked[0] is None and self._screen._loop_enabled:
+            marked = (self._screen._loop_start_ms, self._screen._loop_end_ms)
+        if marked[0] is not None and marked[1] is not None:
+            x0 = strip.x_for_ms(min(marked) - start, span, rect.width)
+            x1 = strip.x_for_ms(max(marked) - start, span, rect.width)
             shade = pygame.Surface((max(1, int(x1 - x0)), rect.height),
                                    pygame.SRCALPHA)
             shade.fill(theme.loop_region)

@@ -285,6 +285,16 @@ class TestPickingTwo:
 
 class TestMarkingAPassage:
 
+    def test_marking_a_later_passage_replaces_the_one_before_it(
+            self, display, tmp_path):
+        # Setting the start past an end still standing used to swap the two,
+        # so the second passage came out as the gap between them.
+        screen = _screen(_song(), tmp_path)
+        screen.take_passage(0.0, BAR_MS)
+        screen.take_passage(8 * BAR_MS, 9 * BAR_MS)
+        assert screen._loop_start_ms == pytest.approx(8 * BAR_MS)
+        assert screen._loop_end_ms == pytest.approx(9 * BAR_MS)
+
     def test_a_right_drag_sets_the_loop_goes_there_and_waits(
             self, display, tmp_path):
         song = _song()
@@ -704,3 +714,173 @@ class TestPoolingTwoMachines:
         import_songs(stick, here, report)
         assert report.runs_added == 1
         assert len(runs.load(here / "song.gp5")) == 1
+
+
+# -- walking the places it went wrong ---------------------------------------
+
+class TestJumpingToTheNextMistake:
+
+    def _with_errors(self, tmp_path):
+        """A song whose second bar and whose sixth bar were played wrong."""
+        song = _song()
+        screen = _screen(song, tmp_path)
+        marks = ["h"] * len(song.notes)
+        for i in (4, 5, 20):            # bar 1 twice, bar 5 once
+            marks[i] = "m"
+        runs.append(screen._song_path,
+                    _run("".join(marks), "2026-09-01T10:00:00+00:00"))
+        screen._stats.show()
+        return screen, screen._stats
+
+    def _comparing(self, tmp_path):
+        """The same run, with a second evening so two can be stacked."""
+        screen, overlay = self._with_errors(tmp_path)
+        runs.append(screen._song_path,
+                    _run("h" * len(screen._timeline.notes),
+                         "2026-09-02T10:00:00+00:00"))
+        overlay.show()
+        wrong = next(i for i, e in enumerate(overlay._entries)
+                     if e.run.kind == "run"
+                     and runs.MISS in e.run.notes)
+        clean = next(i for i, e in enumerate(overlay._entries)
+                     if e.run.kind == "run" and i != wrong)
+        overlay._pick(wrong)
+        overlay._pick(clean)
+        overlay._compare()
+        assert overlay.mode == "compare"
+        return screen, overlay
+
+    def _to_the_run(self, overlay):
+        """Put the cursor on the evening rather than on a pretend run."""
+        overlay.cursor = next(i for i, e in enumerate(overlay._entries)
+                              if e.run.kind == "run")
+
+    def test_it_loops_the_first_nest_and_waits(self, display, tmp_path):
+        screen, overlay = self._with_errors(tmp_path)
+        self._to_the_run(overlay)
+        overlay.handle_event(_key(pygame.K_n))
+        assert screen._loop_enabled
+        assert screen._loop_start_ms == pytest.approx(BAR_MS)
+        assert screen._loop_end_ms == pytest.approx(2 * BAR_MS)
+        assert screen._playback_ms == pytest.approx(BAR_MS)
+        assert not screen._playing        # land with the hands free
+
+    def test_pressing_it_again_goes_to_the_next_one(self, display, tmp_path):
+        screen, overlay = self._with_errors(tmp_path)
+        self._to_the_run(overlay)
+        overlay.handle_event(_key(pygame.K_n))
+        overlay.handle_event(_key(pygame.K_n))
+        assert screen._loop_start_ms == pytest.approx(5 * BAR_MS)
+
+    def test_and_comes_back_round_to_the_first(self, display, tmp_path):
+        screen, overlay = self._with_errors(tmp_path)
+        self._to_the_run(overlay)
+        for _ in range(3):
+            overlay.handle_event(_key(pygame.K_n))
+        assert screen._loop_start_ms == pytest.approx(BAR_MS)
+
+    def test_the_overlay_stays_up(self, display, tmp_path):
+        # Walking a list is what the key is for; closing would make every
+        # step cost a Shift+D.
+        screen, overlay = self._with_errors(tmp_path)
+        self._to_the_run(overlay)
+        overlay.handle_event(_key(pygame.K_n))
+        assert overlay.open
+
+    def test_it_says_which_nest_of_how_many_and_where(self, display,
+                                                      tmp_path):
+        screen, overlay = self._with_errors(tmp_path)
+        self._to_the_run(overlay)
+        overlay.handle_event(_key(pygame.K_n))
+        said = overlay._nest_note
+        assert "1 of 2" in said
+        assert "bar 2" in said          # numbered from 1, the way a player counts
+        assert "2 notes wrong" in said
+
+    def test_a_clean_run_says_so_and_sets_no_loop(self, display, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        runs.append(screen._song_path,
+                    _run("h" * len(song.notes), "2026-09-01T10:00:00+00:00"))
+        screen._stats.show()
+        overlay = screen._stats
+        self._to_the_run(overlay)
+        overlay.handle_event(_key(pygame.K_n))
+        assert not screen._loop_enabled
+        assert "Nothing went wrong" in overlay._nest_note
+
+    def test_it_walks_the_run_under_the_cursor(self, display, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        early = ["h"] * len(song.notes)
+        early[0] = "m"                              # bar 0
+        late = ["h"] * len(song.notes)
+        late[36] = "m"                              # bar 9
+        runs.append(screen._song_path,
+                    _run("".join(early), "2026-09-01T10:00:00+00:00"))
+        runs.append(screen._song_path,
+                    _run("".join(late), "2026-09-02T10:00:00+00:00"))
+        screen._stats.show()
+        overlay = screen._stats
+        evenings = [i for i, e in enumerate(overlay._entries)
+                    if e.run.kind == "run"]
+        overlay.cursor = evenings[0]                # newest first: the late one
+        overlay.handle_event(_key(pygame.K_n))
+        assert screen._loop_start_ms == pytest.approx(9 * BAR_MS)
+        overlay.cursor = evenings[1]
+        overlay.handle_event(_key(pygame.K_n))
+        assert screen._loop_start_ms == pytest.approx(0.0)
+
+    def test_in_a_comparison_it_walks_the_top_one(self, display, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        a = ["h"] * len(song.notes)
+        a[0] = "m"
+        b = ["h"] * len(song.notes)
+        b[36] = "m"
+        runs.append(screen._song_path,
+                    _run("".join(a), "2026-09-02T10:00:00+00:00"))
+        runs.append(screen._song_path,
+                    _run("".join(b), "2026-09-01T10:00:00+00:00"))
+        overlay = screen._stats
+        overlay.show()
+        evenings = [i for i, e in enumerate(overlay._entries)
+                    if e.run.kind == "run"]
+        overlay._pick(evenings[0])
+        overlay._pick(evenings[1])
+        overlay._compare()
+        assert overlay.mode == "compare"
+        overlay.handle_event(_key(pygame.K_n))
+        assert screen._loop_start_ms == pytest.approx(0.0)
+
+    def test_a_zoomed_comparison_follows_it(self, display, tmp_path):
+        screen, overlay = self._comparing(tmp_path)
+        overlay.set_zoom(3)
+        overlay.view_from_ms = 0.0
+        overlay.handle_event(_key(pygame.K_n))
+        overlay.handle_event(_key(pygame.K_n))       # the nest at bar 5
+        seen = overlay.window()
+        assert seen[0] <= 5 * BAR_MS <= seen[1]
+
+    def test_but_the_whole_song_view_stays_where_it_is(self, display,
+                                                       tmp_path):
+        # Zoom is the player's; N only moves along the song.
+        screen, overlay = self._comparing(tmp_path)
+        overlay.handle_event(_key(pygame.K_n))
+        assert overlay.zoom == 0
+
+    def test_the_song_does_not_move_while_the_list_is_only_being_read(
+            self, display, tmp_path):
+        screen, overlay = self._with_errors(tmp_path)
+        self._to_the_run(overlay)
+        overlay.handle_event(_key(pygame.K_DOWN))
+        assert not screen._loop_enabled
+
+    def test_it_is_on_screen(self, display, tmp_path):
+        screen, overlay = self._with_errors(tmp_path)
+        self._to_the_run(overlay)
+        overlay.handle_event(_key(pygame.K_n))
+        surface = pygame.display.get_surface()
+        surface.fill((0, 0, 0))
+        overlay.draw(surface)
+        assert pygame.transform.average_color(surface)[:3] != (0, 0, 0)
