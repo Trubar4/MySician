@@ -140,6 +140,7 @@ def _capture(sample_rate=SR):
     cap._ring = _AudioRing(int(sample_rate * RING_SECONDS))
     cap._pending_windows = []
     cap.strike_queue = queue.Queue()
+    cap.windows_dropped_short = 0
     return cap
 
 
@@ -334,3 +335,27 @@ class TestMatcherVerification:
             matcher._pending_verifications[i] = []
         matcher.process_strike_windows([_window(5000)])
         assert len(matcher._pending_verifications) <= 32
+
+
+class TestCountingTheWindowsThatNeverArrive:
+    """One judged beside none dropped is a quiet song; one beside thirty is
+    the answer to *"bei Akkorden wird nur ein Ton erkannt und alles ist
+    gruen"* -- the verifier was never asked, which is a different fault from
+    a verifier that looked and found nothing.
+    """
+
+    def test_a_strike_whose_window_is_cut_away_is_counted(self):
+        cap = _capture()
+        _fill(cap, _ms(1000))
+        cap._pending_windows.append([0.0, 0, _ms(400)])
+        cap._limit_pending_windows(_ms(100))      # the next onset, too soon
+        assert cap._pending_windows == []
+        assert cap.windows_dropped_short == 1
+
+    def test_a_window_that_survives_is_not_counted(self):
+        cap = _capture()
+        _fill(cap, _ms(1000))
+        cap._pending_windows.append([0.0, 0, _ms(400)])
+        cap._limit_pending_windows(_ms(900))
+        assert cap._pending_windows
+        assert cap.windows_dropped_short == 0

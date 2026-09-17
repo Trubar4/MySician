@@ -4490,6 +4490,82 @@ the next redraw — and everything else on that screen (ENTER, DEL, `R`, the tun
 its cursor answers a question nobody asked. It works with the search box open, because finding a song and browsing what the filter left
 are the same job.
 
+### The Run Worth Keeping Was The One Being Destroyed
+
+*"Ich habe das Gefühl, dass nicht alle Durchgänge in den Statistiken gelandet sind."* He was right, and his own three files
+said so without any guessing:
+
+| | |
+|---|---|
+| `progress.json`, Kid Rock | 3 attempts — 46.3 %, 81.2 %, **83.9 %** over 490 notes |
+| `<song>.runs.json` | **one** run, **128** of 490 notes judged |
+| `practice_log.jsonl`, the same two sittings | `accuracy: null` |
+
+Three files describing one evening, and each of them says something different. The timestamps settle it: the sitting began at
+20:27:13, `progress` recorded 83.9 % at **20:32:30** — 317 s into a 311.8 s song, so at the last bar — and the run was stored at
+20:35:01, after he had gone back and played the bars from 0:40 to 1:37 again.
+
+**`forget_from` spends the verdicts from the seek onward, and the run was only ever written at the door.** So the complete pass
+existed, was scored, went into `progress` — and was then overwritten by the drilling that follows finishing a song, which is the
+most ordinary thing a player does. The one pass worth keeping is the easiest one in the app to destroy.
+
+- **The run is banked where `progress` already records: at the last bar.** Leaving writes another only when the verdicts have
+  CHANGED since (`_run_stored`), so finishing and walking away is one run rather than two.
+- **And the diary asked a question that a seek answers wrongly.** `close_session` took its score from `_song_completed`, which is
+  cleared by seeking off the end AND by pressing "loop the weakest section" on the completion screen — both of which happen
+  seconds after a song is finished. `_finished_stats` is captured at the last bar instead, so an evening that scored 84 % stops
+  writing `accuracy: null`.
+- **`started` was the moment the run was SAVED**, not when it began: `runs.make` defaulted to `now` and the only caller ran at the
+  door. On this sitting that is 20:35 for playing that started at 20:27. The screen carries the run's own start now, and banking a
+  run sets the next one's — the next pass begins where the last was kept. `runs.now_iso` is the one owner of the format, because a
+  file holding one local stamp beside one UTC stamp sorts by whichever digits are larger, and `common_errors` reads the LAST run
+  off that sort.
+
+The three sittings before the feature existed are genuinely gone and nothing can bring them back. Everything after this is kept.
+
+### What A Run Log Says About Detection, And What It Cannot
+
+*"Es wird unglaublich viel nicht erkannt oder es wird bei Powerchords nur ein Ton erkannt und alles wird grün."* Both halves are
+in the log, and the first one is not what it feels like.
+
+**On that run the app credited 84 % of what he reached** — 108 hits, 6 close, 14 missed, of 128 notes. And the 197 strikes are
+**1.54 per written note**: the microphone was hearing MORE than the tab asks for, not less.
+
+**Every single one of the 14 red notes had a strike within 300 ms.** Not one was silence. What the detector reported instead:
+
+| the pitch that came back, against the note the tab writes there | of the 50 clean unmatched strikes |
+|---|---|
+| **a fourth or a fifth away** | **24** |
+| nothing written within 300 ms | 11 |
+| the same note, already credited to an earlier strike | 3 |
+| everything else (a tone, a third, a sixth…) | 12 |
+
+A fourth and a fifth are the interval between adjacent guitar strings and the two notes of a power chord. **Monophonic YIN is
+reporting the neighbouring string** — the tab writes one voice of a chord and he sounds the whole thing. Only **2 of the 14** red
+notes ever had their own pitch class heard at all, so this is not the matcher throwing a good reading away; the right pitch mostly
+never arrived. That is the polyphony this file has measured twice before, on the material where it bites hardest.
+
+**The chord half is visible too, in three numbers.** `chord_windows_judged 1`, `strings_taken_back 1`, on a run that reached two
+written chords. The one chord the verifier got to judge, it convicted a string on. The other — five strings at 1:34 — was credited
+green from a single strike carrying no pitch, and its verification window was killed by the strum's OWN second onset **93 ms
+later**. Three onsets 93 ms apart for one strum, at `onset_threshold 0.05`.
+
+- **So the log now counts the windows that never arrive** (`windows_dropped_short`), beside the ones that were judged. One judged
+  and none dropped is a quiet song; one judged and thirty dropped is the whole answer, and until now the two were the same line.
+- **What was NOT changed, and why.** The obvious move is to let a clean pitch a fourth away be held for the rescue, the way a
+  subharmonic is. That is refused: *an ordinary wrong pitch stays wrong* is this file's own rule, and loosening it turns wrong
+  notes green — which is the other half of what he reported in the same sentence. A rule that fixes one complaint by making the
+  other worse is not a fix.
+- **And nothing here licenses a threshold.** One song, two chords, no recording of what was actually played. Every chord constant
+  in this file was fitted against `record_reference.py --play-along` takes, and the honest next step is one of those **on a song
+  where the power chords are** — not another measurement of a log that cannot say what the hands did.
+
+**Two things the log cleared on the way past.** `level_room_db -54.7` with the gate at `-50` by hand is not a setting mistake: the
+automatic rule is `room + 6 dB` capped at `MAX_GATE_DB`, which lands on the same −50. His signal chain has a floor 15 to 30 dB
+louder than the takes the gate was fitted against, and no value in the app reaches under that. And `build unknown build` — the
+stamp did not survive into whatever he is running, so which version wrote this log is not knowable, which is the one question that
+line exists to answer.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

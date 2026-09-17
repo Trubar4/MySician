@@ -283,6 +283,12 @@ class AudioCapture:
         # harmless number and a serious one look identical, which is the
         # fault this project keeps paying for.
         self.dropped_while_busy = 0
+        # Strikes that lost their verification window entirely, because the
+        # next onset came before `MIN_WINDOW_MS` of audio had arrived. The
+        # count that was missing beside `chord_windows_judged`: a verifier
+        # that judged one chord in a song looks identical to a verifier that
+        # was never asked, and the two are fixed in different places.
+        self.windows_dropped_short = 0
         self.busy = False
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
@@ -395,6 +401,8 @@ class AudioCapture:
             entry[2] = min(int(entry[2]), limit - start)
             if entry[2] >= floor:
                 kept.append(entry)
+            else:
+                self.windows_dropped_short += 1
         self._pending_windows = kept
 
     def _emit_ready_windows(self) -> None:
@@ -494,6 +502,7 @@ class AudioCapture:
         self._channel_energy = None
         self.dropped_buffers = 0
         self.dropped_while_busy = 0
+        self.windows_dropped_short = 0
 
         # Drain any leftover notes
         while not self.note_queue.empty():

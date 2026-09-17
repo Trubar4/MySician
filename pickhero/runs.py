@@ -147,11 +147,27 @@ class Run:
                 "note_count": self.note_count}
 
 
+def now_iso() -> str:
+    """The moment a run begins, in the one format this file sorts by.
+
+    UTC and nothing else: `common_errors` reads the LAST run off a string
+    sort, and a file holding one local timestamp beside one UTC timestamp
+    sorts by whichever digits happen to be larger.
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
 def make(notes: str, seconds: float, tempo_percent: int, track: int,
          started: str = "") -> Run:
-    """A run of the song that has just been played."""
+    """A run of the song that has just been played.
+
+    `started` is when the run BEGAN. Left out it is now, which is right only
+    for a caller with nothing better -- the app passes the real one, because
+    a run written when the song is left would otherwise be stamped minutes
+    after the playing it describes.
+    """
     return Run(notes=notes,
-               started=started or datetime.now(timezone.utc).isoformat(),
+               started=started or now_iso(),
                seconds=seconds, tempo_percent=tempo_percent, track=track,
                note_count=len(notes))
 

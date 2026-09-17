@@ -992,3 +992,83 @@ class TestWhyThereIsNoErrorsRow:
         surface.fill((0, 0, 0))
         overlay.draw(surface)
         assert pygame.transform.average_color(surface)[:3] != (0, 0, 0)
+
+
+# -- a completed run has to survive the practising that follows it ----------
+
+class TestTheCompletedRunIsBanked:
+    """*"Ich habe das Gefuehl, dass nicht alle Durchgaenge in den Statistiken
+    gelandet sind."*
+
+    He was right, and his own files said so: `progress.json` held 83.9 % over
+    490 notes for a sitting whose stored run judged 128. Finishing a song and
+    then going back to drill a passage is the ordinary thing to do, and
+    `forget_from` spends every verdict from the seek onward -- so the pass
+    worth keeping was the one destroyed, every time.
+    """
+
+    def _screen(self, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        return song, screen
+
+    def _play(self, screen, song, upto):
+        for note in song.notes[:upto]:
+            screen._matcher._record_match(note, MatchType.HIT, proved=True)
+
+    def test_leaving_twice_over_stores_one_run(self, display, tmp_path):
+        song, screen = self._screen(tmp_path)
+        self._play(screen, song, 10)
+        screen._write_run()
+        screen._write_run()
+        assert len(runs.load(screen._song_path)) == 1
+
+    def test_a_second_pass_is_a_second_run_and_the_first_is_kept(
+            self, display, tmp_path):
+        song, screen = self._screen(tmp_path)
+        self._play(screen, song, len(song.notes))
+        screen._write_run()                       # the completed pass
+        screen._matcher.reset()
+        self._play(screen, song, 8)               # then he drills a passage
+        screen._write_run()
+        kept = runs.load(screen._song_path)
+        assert len(kept) == 2
+        assert kept[0].counts()["total"] == len(song.notes)
+        assert kept[1].counts()["total"] == 8
+
+    def test_a_run_is_stamped_when_it_began(self, display, tmp_path):
+        song, screen = self._screen(tmp_path)
+        screen._run_started = "2026-09-16T18:27:13+00:00"
+        self._play(screen, song, 5)
+        screen._write_run()
+        assert runs.load(screen._song_path)[0].started.startswith(
+            "2026-09-16T18:27:13")
+
+    def test_and_the_next_run_starts_where_the_last_one_was_banked(
+            self, display, tmp_path):
+        song, screen = self._screen(tmp_path)
+        screen._run_started = "2026-09-16T18:27:13+00:00"
+        self._play(screen, song, 5)
+        screen._write_run()
+        assert screen._run_started != "2026-09-16T18:27:13+00:00"
+
+    def test_the_diary_keeps_the_score_of_the_finished_pass(self, display,
+                                                            tmp_path):
+        # A seek off the end clears `_song_completed`, which is right for the
+        # completion screen and wrote `accuracy: null` for an evening that
+        # had just scored 84 %.
+        song, screen = self._screen(tmp_path)
+        self._play(screen, song, len(song.notes))
+        screen._finished_stats = dict(screen._matcher.get_statistics())
+        screen._song_completed = False             # he went back to practise
+        screen._session_seconds = 60.0
+        written = {}
+        import pickhero.practice_log as diary
+        screen_append = diary.append
+        try:
+            diary.append = lambda s: written.update(vars(s)) or True
+            screen.close_session()
+        finally:
+            diary.append = screen_append
+        assert written["accuracy"] == pytest.approx(100.0)
+        assert written["notes_written"] == len(song.notes)

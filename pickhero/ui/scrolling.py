@@ -1102,6 +1102,20 @@ class PlayingScreen:
         # tempo change, which the matcher's own counters do not -- it is reset
         # by all three.
         self._session_started = practice_log.now_iso()
+        # When the run now being played BEGAN, in the runs file's own format.
+        # Not the moment it is written: a run banked when the song is left
+        # carries a timestamp minutes after the playing it describes, and a
+        # player looking for "the one at half eight" would not find it.
+        self._run_started = runs.now_iso()
+        # What the last run BANKED this sitting said, so leaving does not
+        # store a second copy of a run already kept.
+        self._run_stored: str | None = None
+        # The statistics at the moment the song was FINISHED. A seek off the
+        # end clears `_song_completed` -- which is right for the completion
+        # screen and wrong for the diary, because finishing a song and then
+        # going back to practise a passage is the normal thing to do and used
+        # to write `accuracy: null` for an evening that had just scored 84 %.
+        self._finished_stats: dict | None = None
         self._session_seconds = 0.0
         self._session_strikes = 0
         self._session_written = False
@@ -1853,6 +1867,12 @@ class PlayingScreen:
                         )
                         self._weakest_sections = weakest
                         self._song_completed = True
+                        # The complete pass, banked HERE. `progress` has
+                        # always recorded at this moment; the run history
+                        # did not, and a seek back into the song then spent
+                        # the very verdicts that made this score.
+                        self._finished_stats = dict(stats)
+                        self._write_run()
                     # Written whether or not anything scored: a run that
                     # scored nothing is the one most worth reading.
                     self._export_run_log()
@@ -6398,6 +6418,15 @@ class PlayingScreen:
         fh.write(f"notes_credited_to_a_strum\t{matcher.notes_by_strum}\n")
         fh.write(f"strings_taken_back\t{matcher.chord_strings_corrected}\n")
         fh.write(f"chord_windows_judged\t{matcher.chord_verifications}\n")
+        # And the half that was missing: how many strikes never got a window
+        # at all, because the next onset arrived inside the 200 ms the
+        # verifier needs. On dense strumming that is most of them -- and a
+        # chord credited from one strike with NOTHING checking it is exactly
+        # the *"bei Akkorden wird nur ein Ton erkannt und alles ist gruen"*
+        # the player reports. One judged beside none dropped is a quiet
+        # song; one judged beside thirty dropped is the answer.
+        fh.write(f"windows_dropped_short\t"
+                 f"{getattr(capture, 'windows_dropped_short', 0)}\n")
         fh.write(f"rescued_notes\t{matcher.rescued_notes}\n")
         # Where the rescues that did NOT happen were lost. Held but never
         # asked means the audio window never arrived (a strike too close to
@@ -7275,25 +7304,41 @@ class PlayingScreen:
             marks.append((kind, checked))
         return runs.make(runs.encode(marks), self._session_seconds,
                          int(round(self._tempo_factor * 100)),
-                         int(self._track_index or 0))
+                         int(self._track_index or 0),
+                         started=self._run_started)
 
     def _write_run(self) -> None:
-        """Keep this run beside the tab, if it judged anything at all.
+        """Bank the run as it stands, if it says anything new.
 
-        Where the sitting is written, and for the same reason: leaving the
-        song is the end of the run and either route out can be the last one.
-        A song opened and left without a note being judged writes nothing --
-        `worth_keeping` -- so a history does not fill up with the evenings
-        somebody looked at a tab and put the guitar down again.
+        Called at the two ends a run really has: reaching the last bar, and
+        leaving the song. **The completed pass is the one worth keeping and
+        the easiest to destroy** -- finishing a song and then going back to
+        drill a passage is the ordinary thing to do, and `forget_from` spends
+        every verdict from the seek onward, so what was left at the door was
+        the drilling rather than the pass. Measured on the player's own
+        files: a run that scored 84 % over 490 notes was stored as 128 notes
+        of the bars he went back to, and `progress.json` held a score the
+        history had no run for.
+
+        A song opened and left without a note being judged writes nothing
+        (`worth_keeping`), and neither does a second call saying exactly what
+        the first one did -- leaving straight after the last bar is one run,
+        not two.
         """
         if not self._song_path:
             return
+        run = self.current_run()
+        if run.notes == self._run_stored:
+            return
         try:
-            runs.append(self._song_path, self.current_run())
+            runs.append(self._song_path, run)
         except Exception:
             # A history that cannot be written is a slower day, not a broken
             # song -- the sidecar's rule, one file along.
             pass
+        self._run_stored = run.notes
+        # Whatever is played from here is the NEXT run, and it starts now.
+        self._run_started = runs.now_iso()
 
     def close_session(self) -> bool:
         """Write this sitting to the practice diary. Once, whenever it ends.
@@ -7307,8 +7352,13 @@ class PlayingScreen:
             return False
         self._session_written = True
         self._write_run()
-        stats = (self._matcher.get_statistics()
-                 if (self._matcher is not None and self._song_completed) else None)
+        # The score of the COMPLETED pass, which outlives the completion
+        # screen: `_song_completed` is cleared by a seek off the end and by
+        # looping the weakest section, so asking it here wrote `null` for
+        # evenings that had finished the song minutes earlier.
+        stats = self._finished_stats
+        if stats is None and self._matcher is not None and self._song_completed:
+            stats = self._matcher.get_statistics()
         session = practice_log.Session(
             started=self._session_started,
             song=self._song_key,
