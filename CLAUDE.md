@@ -4611,6 +4611,16 @@ The first play-along takes of a song with power chords in it, recorded because t
 
 **And the tool that reads a run log as a tab could not read one.** `notes_from_run_log` matched the header line whole — and the log then grew `bar`, `fret`, `tech` and `chord` for the coach, so the one tool whose purpose is scoring a take of a song that is not in `songs/` had been inert since. It reads the header by NAME now. **A reader pinned to a column ORDER is a reader that stops working the next time the writer says more** — and this one failed silently, which is why nobody noticed.
 
+### And The Stamp Made The Confusion It Was Built To End
+
+*"Auf NB1 mache ich normal git pull und python -m pickhero — reicht das nicht?"* It does, and it was quietly reporting the wrong version while doing it.
+
+`build.bat` writes the stamp **into the checkout** (`pickhero/_build_stamp.txt`, gitignored for exactly that reason), and `build_stamp()` preferred it wherever it was found. So any tree that had ever been built named the commit it was built at for ever after: pull, run from source, read `build` in the run log, and it says a version from days ago. **That is the "is it fixed or did it not reach the machine" question this whole feature exists to answer**, reintroduced by the feature.
+
+- **The stamp only counts inside a built EXE.** `_frozen()` asks `sys.frozen` or `_MEIPASS` — does this process carry a stamp of its own, or is the file beside the module a leftover from a build run here.
+- **A checkout asks git first and the stamp second**, because a source tree copied without its `.git` has nothing else to say and a stale answer beats "unknown build".
+- **The test that pinned the bug said so in its docstring** — *"a bundle that also happens to sit in a git tree is still a bundle"* — which is true of an EXE and false of the tree it was built in. Inverted, and it fails on the old code.
+
 ## The Marker Built To Stop The Drift Drifted
 
 *"Wie kann ich meine Beispielaufnahmen ins aktuelle Branch hochladen?"* — asked because the recorder had just told him to switch to a branch nobody was reading. Its own docstring says why that matters, having been written after it happened twice:

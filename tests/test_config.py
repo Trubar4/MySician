@@ -42,12 +42,35 @@ class TestTheBuildStamp:
         stamp = build_stamp()
         assert isinstance(stamp, str) and stamp
 
-    def test_a_bundled_stamp_wins(self, tmp_path, monkeypatch):
-        """What a built EXE carries. It beats the checkout, because a bundle
-        that also happens to sit in a git tree is still a bundle."""
+    def test_a_bundled_stamp_wins_in_a_built_EXE(self, monkeypatch):
+        """What a built EXE carries is what it is."""
         import pickhero.build_info as build_info
 
+        monkeypatch.setattr(build_info, "_frozen", lambda: True)
         monkeypatch.setattr(build_info, "_bundled", lambda: "abc12345 built X")
+        monkeypatch.setattr(build_info, "_from_git", lambda: "ffff0000 (checkout)")
+        assert build_info.build_stamp() == "abc12345 built X"
+
+    def test_and_LOSES_in_a_checkout(self, monkeypatch):
+        """`build.bat` writes the stamp into the tree, so any checkout that
+        has ever been built carries one. Believing it there means `git pull`
+        and `python -m pickhero` go on naming the commit it was BUILT at --
+        the confusion the stamp exists to end, caused by the stamp."""
+        import pickhero.build_info as build_info
+
+        monkeypatch.setattr(build_info, "_frozen", lambda: False)
+        monkeypatch.setattr(build_info, "_bundled", lambda: "abc12345 built X")
+        monkeypatch.setattr(build_info, "_from_git", lambda: "ffff0000 (checkout)")
+        assert build_info.build_stamp() == "ffff0000 (checkout)"
+
+    def test_but_a_tree_with_no_git_still_says_something(self, monkeypatch):
+        """A source tree copied without `.git` has nothing else to offer, and
+        a stale answer beats "unknown build"."""
+        import pickhero.build_info as build_info
+
+        monkeypatch.setattr(build_info, "_frozen", lambda: False)
+        monkeypatch.setattr(build_info, "_bundled", lambda: "abc12345 built X")
+        monkeypatch.setattr(build_info, "_from_git", lambda: "")
         assert build_info.build_stamp() == "abc12345 built X"
 
     def test_a_checkout_names_the_commit(self):
