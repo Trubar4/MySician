@@ -4566,6 +4566,23 @@ louder than the takes the gate was fitted against, and no value in the app reach
 stamp did not survive into whatever he is running, so which version wrote this log is not knowable, which is the one question that
 line exists to answer.
 
+## The Build File Nothing Ever Ran
+
+`pickhero.spec` is Python, and the only machine that executes it is the one doing a Windows release. So when the ffmpeg bundling was added it went in six lines ABOVE `binaries = []`:
+
+```python
+for _ffmpeg in glob.glob(os.path.join("tools", "ffmpeg*")):
+    binaries.append((_ffmpeg, "."))      # line 47
+...
+binaries = []                            # line 54
+```
+
+**Two faults in three lines, and the suite could not see either.** It raises `NameError` before PyInstaller reads a single module — and had it not raised, line 54 would have thrown the entry away, so ffmpeg would have been silently absent from the EXE and the downloaded audio would have landed on disk and not played. Which is this project's oldest failure mode, in the one file no test had ever opened.
+
+- **The check is on the PROPERTY, not the line.** `tests/test_spec.py` parses the spec and requires every name it reads at module level to be bound above the line that reads it. Grepping for `binaries.append` would pass the next arrangement of the same mistake.
+- **It fails on the unfixed spec** — verified, because a test that cannot fail is the thing it is meant to catch.
+- **A file that only runs on the build machine is a file that is only tested there**, and "there" is a laptop belonging to somebody who is not writing the code. Everything in the tree that is Python gets read by something in the suite now.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
