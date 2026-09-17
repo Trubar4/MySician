@@ -4566,6 +4566,19 @@ louder than the takes the gate was fitted against, and no value in the app reach
 stamp did not survive into whatever he is running, so which version wrote this log is not knowable, which is the one question that
 line exists to answer.
 
+## The Marker Built To Stop The Drift Drifted
+
+*"Wie kann ich meine Beispielaufnahmen ins aktuelle Branch hochladen?"* — asked because the recorder had just told him to switch to a branch nobody was reading. Its own docstring says why that matters, having been written after it happened twice:
+
+> A recording pushed to a branch nobody is reading is a recording that does not exist.
+
+The fix at the time was `UPLOAD_BRANCH`, a file in the repo naming the branch, *"kept up to date by whoever is working on it"*. Nobody did. **It still named a branch from two sessions earlier**, so the hint printed a switch AWAY from the branch the recordings were wanted on — the same fault the marker exists to prevent, one level up, and worse than the checkout it replaced: the checkout was at least right this time.
+
+- **The fallback was better than the thing it fell back from.** With no marker the tool takes the most recently committed `origin/claude/*` branch, which here is the right answer. A hand-kept file is only as fresh as somebody's memory, and it was competing with a fact the remote already holds.
+- **So the marker is CHECKED rather than believed.** A work branch with newer commits than the one it names wins; the marker still decides a tie and the case where the remote lists nothing. Neither source is trusted outright, because a branch is a fact and a note about a branch is not.
+- **Being overruled is said out loud** — *"UPLOAD_BRANCH still says 'X', which has older commits"*. A name nobody expected is worse than no name, and a silent correction is how the next stale marker goes unnoticed for a fortnight.
+- **The rule is a pure function** (`pick_upload_branch`), so the nine cases are asserted without a git repo. What talks to git is the half that only lists refs.
+
 ## The Build File Nothing Ever Ran
 
 `pickhero.spec` is Python, and the only machine that executes it is the one doing a Windows release. So when the ffmpeg bundling was added it went in six lines ABOVE `binaries = []`:

@@ -562,17 +562,51 @@ def current_branch(default="<dein-branch>"):
     return name if name and name != "HEAD" else default
 
 
+def pick_upload_branch(named, branches, here):
+    """Which branch these recordings belong on, from the facts about them.
+
+    `named` is what `UPLOAD_BRANCH` says or None; `branches` is
+    [(name, committed_at)] for the remote's work branches, newest first;
+    `here` is what is checked out.
+
+    The marker exists because the CHECKOUT drifts, and it then went stale
+    itself: it named a branch from the session before last while the work
+    had moved on, so the hint told the player to switch AWAY from the branch
+    being read -- the very fault it was written to prevent, one level up.
+    A hand-kept file is only as fresh as somebody's memory.
+
+    So the marker is checked against the remote rather than believed: a work
+    branch with NEWER commits than the one it names is the branch being
+    worked on, and it wins. The marker still decides where the remote cannot
+    -- no branches listed, or a tie -- and being overruled is SAID rather
+    than done quietly, because a name nobody expected is worse than no name.
+
+    Returns (branch, switch_needed, note).
+    """
+    by_name = dict(branches)
+    freshest = branches[0][0] if branches else None
+    note = None
+    if named and freshest and freshest != named:
+        if named not in by_name:
+            branch = freshest
+            note = f"UPLOAD_BRANCH names '{named}', which is not on the remote"
+        elif by_name[freshest] > by_name[named]:
+            branch = freshest
+            note = f"UPLOAD_BRANCH still says '{named}', which has older commits"
+        else:
+            branch = named
+    else:
+        branch = named or freshest
+    if not branch:
+        return (here or "<dein-branch>"), False, None
+    return branch, branch != here, note
+
+
 def upload_branch():
-    """The branch these recordings belong on, which is not always this one.
+    """The branch these recordings belong on, read off the repo.
 
-    The checkout drifts. A recording pushed to a branch nobody is reading is
-    a recording that does not exist, and it has happened twice: the hint used
-    to name whatever was checked out, which is exactly the thing that was
-    wrong. So the branch is read from the repo itself -- UPLOAD_BRANCH, kept
-    up to date by whoever is working on it -- and only falls back to the
-    checkout when the file is missing.
-
-    Returns (branch, switch_needed).
+    See `pick_upload_branch` for the rule; this is the half that talks to
+    git, so the deciding is testable without one.
     """
     _git("fetch", "--quiet", "origin", timeout=60)
     named = None
@@ -583,17 +617,15 @@ def upload_branch():
             if line and not line.startswith("#"):
                 named = line
                 break
-    if not named:
-        # No marker (an old checkout, which is the case this has to survive):
-        # the most recently updated work branch on the remote is the best
-        # guess available, and still better than the local one.
-        listing = _git("for-each-ref", "--sort=-committerdate", "--count=1",
-                       "--format=%(refname:strip=3)", "refs/remotes/origin/claude")
-        named = listing or None
-    here = current_branch(default="")
-    if not named:
-        return here or "<dein-branch>", False
-    return named, named != here
+    listing = _git("for-each-ref", "--sort=-committerdate",
+                   "--format=%(refname:strip=3)%09%(committerdate:unix)",
+                   "refs/remotes/origin/claude") or ""
+    branches = []
+    for line in listing.splitlines():
+        name, _, when = line.partition("\t")
+        if name and when.isdigit():
+            branches.append((name, int(when)))
+    return pick_upload_branch(named, branches, current_branch(default=""))
 
 
 def countdown(n=3):
@@ -840,8 +872,10 @@ def main():
     print("=" * 72)
     if manifest["takes"]:
         rel = out_dir.relative_to(REPO_ROOT) if out_dir.is_relative_to(REPO_ROOT) else out_dir
-        branch, switch_needed = upload_branch()
+        branch, switch_needed, why = upload_branch()
         print("\nZum Hochladen, damit ich sie analysieren kann:\n")
+        if why:
+            print(f"  ! {why} -- '{branch}' ist neuer und wird genommen.\n")
         if switch_needed:
             print(f"  ! Du bist gerade auf '{current_branch()}',")
             print(f"    die Aufnahmen gehoeren aber auf '{branch}'.")
