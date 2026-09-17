@@ -66,6 +66,18 @@ BAR_NUMBER_PX = 58
 #: as a note, and two of them a bar apart stop looking like two notes.
 MAX_DOT_PX = 22
 
+#: A dot at least this tall carries its fret number. *"Koennen wir in der
+#: hoechsten Zoom-Stufe nicht sogar alles anzeigen mit Bundnummern?"* --
+#: measured rather than guessed: at this height a two-digit label is 12 px
+#: of type, six to a digit, which is the narrowest a digit can be and still
+#: have a stroke to read. Below it the number would be ink where a dot says
+#: more, so the dot stays a dot.
+FRET_DIGIT_PX = 11
+
+#: How much of the room between two notes on one string a label may take.
+#: Under one, because a label that filled the gap would touch the next one.
+LABEL_SHARE = 0.9
+
 #: At most this many bar surfaces are kept. Two in the comparison, a screenful
 #: in the list; past that the oldest go, because a bar is redrawn in a
 #: millisecond and a cache of every size ever asked for is a leak.
@@ -398,22 +410,26 @@ class StatsOverlay:
             elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self._compare()
             return True
-        # compare. Two axes and two key pairs, because they answer different
-        # questions: +/- is how BIG the bars are drawn (the player's own
-        # spec, from the strip's height up to the screen's), and the arrows
-        # are which part of the song is under them.
+        # compare. Three axes, and +/- is the ZOOM -- *"+/- innerhalb Stats
+        # Vergleich von 2 Durchgaengen zoomt das Griffbrett"*. It used to be
+        # the bar's height, which made one key mean two things depending on
+        # the view it was pressed in: that is the fault this project has now
+        # paid for at the shifted shortcuts and at the scroll knob, and the
+        # player read it exactly right. The height moved to UP/DOWN, which
+        # keeps the setting he asked for without a modifier -- and Shift and
+        # a German keyboard do not agree about what lives on the + key.
         if key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
-            self.size = min(self.size + 1, SIZE_STEPS - 1)
+            self.set_zoom(self.zoom + 1)
         elif key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-            self.size = max(0, self.size - 1)
+            self.set_zoom(self.zoom - 1)
         elif key == pygame.K_LEFT:
             self.scroll(-1)
         elif key == pygame.K_RIGHT:
             self.scroll(+1)
         elif key == pygame.K_UP:
-            self.set_zoom(self.zoom + 1)
+            self.size = min(self.size + 1, SIZE_STEPS - 1)
         elif key == pygame.K_DOWN:
-            self.set_zoom(self.zoom - 1)
+            self.size = max(0, self.size - 1)
         elif key == pygame.K_HOME:
             self.view_from_ms = 0.0
         return True
@@ -637,6 +653,31 @@ class StatsOverlay:
     _COLOUR = {runs_mod.HIT: "feedback_hit", runs_mod.CLOSE: "feedback_close",
                runs_mod.MISS: "feedback_miss"}
 
+    def row_gap(self, spots) -> float:
+        """How far apart two notes on ONE string sit here, in pixels.
+
+        The tenth percentile, so a couple of freak-close pairs cannot speak
+        for the rest -- the same rule and the same reason as
+        `_spacing_percentile` on the scrolling board. One implementation,
+        because the dot size and the fret label are two questions with one
+        answer: a label is only safe in the room a dot was sized against.
+
+        `inf` where nothing on any string has a neighbour to measure.
+        """
+        gaps: list[int] = []
+        last: dict[int, int] = {}
+        for note, spot in zip(self._screen._timeline.notes, spots):
+            if spot is None:
+                continue
+            was = last.get(note.string)
+            if was is not None and spot[0] > was:
+                gaps.append(spot[0] - was)
+            last[note.string] = spot[0]
+        if not gaps:
+            return float("inf")
+        gaps.sort()
+        return float(gaps[max(0, int(len(gaps) * 0.10) - 1)])
+
     def dot_size(self, spots, h: int) -> int:
         """How big a dot may be drawn, measured rather than fitted.
 
@@ -654,19 +695,7 @@ class StatsOverlay:
         there is room and it grows, which is the whole point of zooming.
         """
         pitch = h * strip.row_spread_for(h) / strip.STRINGS
-        gaps: list[int] = []
-        last: dict[int, int] = {}
-        for note, spot in zip(self._screen._timeline.notes, spots):
-            if spot is None:
-                continue
-            was = last.get(note.string)
-            if was is not None and spot[0] > was:
-                gaps.append(spot[0] - was)
-            last[note.string] = spot[0]
-        room = float("inf")
-        if gaps:
-            gaps.sort()
-            room = gaps[max(0, int(len(gaps) * 0.10) - 1)]
+        room = self.row_gap(spots)
         # Zoomed all the way out the horizontal limit is a pixel or two, and
         # a dot that small stops reading as a note at all. There it is allowed
         # to touch its neighbour, because what the whole song says is DENSITY
@@ -712,14 +741,19 @@ class StatsOverlay:
                 y = int(strip.row_y(string, h, spread))
                 surface.fill(theme.lane_line, (0, y, w, 1))
         dot = self.dot_size(spots, h)
-        drawn: set[tuple[int, int]] = set()
+        # What ended up UNDER each dot, so a fret number drawn over it can
+        # be given an ink that reads on it. The two layers disagree all the
+        # time -- a bright verdict wants black where its string wanted white
+        # -- so it has to be the colour actually painted, not the one the
+        # note was born with.
+        under: dict[tuple[int, int], tuple] = {}
         for i, note in enumerate(notes):
             spot = spots[i]
             if spot is None:
                 continue
-            if spot in drawn:
+            if spot in under:
                 continue
-            drawn.add(spot)
+            under[spot] = STRING_COLORS[note.string]
             surface.fill(STRING_COLORS[note.string],
                          (spot[0], spot[1] - dot // 2, dot, dot))
         for i, char in enumerate(run.notes):
@@ -732,11 +766,60 @@ class StatsOverlay:
             if char.isupper():
                 colour = unsure(colour)
             x, y = spots[i]
+            under[(x, y)] = colour
             surface.fill(colour, (x, y - dot // 2, dot, dot))
+        self._label_frets(surface, spots, dot, self.row_gap(spots), under)
         if len(self._bars) >= MAX_BARS:
             self._bars.clear()
         self._bars[key] = surface
         return surface
+
+    @staticmethod
+    def _ink(colour) -> tuple[int, int, int]:
+        """Black or white on this dot, whichever can be read on it.
+
+        The dot under a fret number is a verdict, and the verdicts run from
+        a bright green to a drained red -- one fixed ink would disappear on
+        half of them. Luminance decides, the way it does for any label on a
+        colour that is not the designer's to choose.
+        """
+        r, g, b = colour[:3]
+        return (16, 16, 16) if (r * 299 + g * 587 + b * 114) / 1000 > 140 \
+            else (240, 240, 240)
+
+    def _label_frets(self, surface: pygame.Surface, spots, dot: int,
+                     gap: float, under: dict) -> None:
+        """The fret number inside each dot, once there is room for it.
+
+        *"In der hoechsten Zoom-Stufe alles anzeigen mit Bundnummern."* Two
+        conditions, and both are measured rather than felt: the dot has to be
+        `FRET_DIGIT_PX` tall for a digit to have a stroke, and the label has
+        to fit the room between two notes on one string -- which is the same
+        `row_gap` the dot was sized against, so a number can never reach the
+        note beside it.
+
+        A label is rendered once per VALUE, not once per note: a song has
+        two dozen frets in it and a couple of thousand notes.
+        """
+        if dot < FRET_DIGIT_PX:
+            return
+        font = self._font("arial", dot)
+        cut = gap * LABEL_SHARE
+        made: dict[tuple[int, tuple], pygame.Surface | None] = {}
+        done: set[tuple[int, int]] = set()
+        for note, spot in zip(self._screen._timeline.notes, spots):
+            if spot is None or spot in done:
+                continue
+            done.add(spot)
+            key = (note.fret, self._ink(under.get(spot, (0, 0, 0))))
+            if key not in made:
+                shape = font.render(str(note.fret), True, key[1])
+                made[key] = shape if shape.get_width() <= cut else None
+            shape = made[key]
+            if shape is None:
+                continue
+            surface.blit(shape, (spot[0] + dot // 2 - shape.get_width() // 2,
+                                 spot[1] - shape.get_height() // 2))
 
     # -- drawing ------------------------------------------------------------
 
@@ -807,7 +890,7 @@ class StatsOverlay:
         # press landed on. The room for the second is reserved whether
         # or not there is one, so pressing N cannot resize the panel
         # the list is being read in.
-        chrome = title.get_height() + tiny.get_height() * 2 + 48
+        chrome = title.get_height() + tiny.get_height() * 3 + 48
         wanted = chrome + max(1, len(self._entries)) * ROW_H
         panel = pygame.Rect(panel.x, panel.y, panel.width,
                             max(140, min(panel.height, wanted)))
@@ -824,7 +907,21 @@ class StatsOverlay:
         sort_says = ("newest first (S sorts by score)" if self.sort == "date"
                      else "best first (S sorts by date)")
         surface.blit(tiny.render(sort_says, True, theme.hud_accent), (x, y))
-        y += tiny.get_height() + 8
+        y += tiny.get_height() + 2
+        # Why the second pretend run is not there. A row that is simply
+        # missing cannot be told from a feature that does not work, and the
+        # player asked the question outright -- *"Wie viele Laeufe brauche
+        # ich um haeufige Fehler zu sehen?"* The room is taken either way,
+        # so the list does not jump the moment the row appears.
+        missing = ("" if any(e.run.kind == "errors" for e in self._entries)
+                   else runs_mod.why_no_errors(
+                       [e.run for e in self._entries
+                        if e.run.kind == "run" and e.fits]))
+        if missing:
+            surface.blit(tiny.render(self.fit(tiny, missing,
+                                              panel.right - 12 - x),
+                                     True, theme.hud_text), (x, y))
+        y += tiny.get_height() + 6
 
         bottom = panel.bottom - 28
         rows = visible_rows(bottom - y)
@@ -925,9 +1022,10 @@ class StatsOverlay:
             y += bar_h + 14
         seen = (f"{format_ms(view[0])}–{format_ms(view[1])}"
                 if self.zoom else "the whole song")
-        foot = (f"+/- size ({self.size + 1}/{len(ladder)}) · "
-                f"UP/DOWN zoom, LEFT/RIGHT move — showing {seen} · "
-                "right-drag or N marks a passage to practise · ESC back")
+        foot = (f"+/- zoom ({self.zoom + 1}/{ZOOM_STEPS}) · "
+                f"UP/DOWN bar size ({self.size + 1}/{len(ladder)}) · "
+                f"LEFT/RIGHT move — showing {seen} · "
+                "right-drag or N marks a passage · ESC back")
         self._blit_foot(surface, panel, x, width, foot)
 
     def _blit_foot(self, surface: pygame.Surface, panel: pygame.Rect,

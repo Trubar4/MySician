@@ -358,9 +358,35 @@ def common_errors(runs: list[Run]) -> Run | None:
     if len(runs) < 2:
         return None
     width = max(len(r.notes) for r in runs)
-    last = runs[-1].notes
     out = [NOTHING] * width
     found = 0
+    for i, verdict in enumerate(_verdicts(runs, width)):
+        if verdict is _ERRORS_HERE:
+            out[i] = MISS
+            found += 1
+    if not found:
+        return None
+    return Run(notes="".join(out), kind="errors", note_count=width,
+               label=f"wrong in over half of {len(runs)} runs, and still wrong last time")
+
+
+#: What `_verdicts` answers per note. Not strings, so a typo in a caller is
+#: an error rather than a silently false comparison.
+_ERRORS_HERE = object()         # wrong in over half of them, still wrong
+_NOT_ENOUGH = object()          # fewer than two runs could judge it at all
+_FIXED = object()               # it went wrong, and the last run got it right
+_FINE = object()                # judged, and not wrong often enough
+
+
+def _verdicts(runs: list[Run], width: int):
+    """The rule behind "frequent errors", once, for every note.
+
+    Both the row and the sentence that explains its absence read this, so
+    the picture and the reason for the picture cannot disagree -- which is
+    the fault this project has paid for at the repeats, at the transpose and
+    at the shifted keys.
+    """
+    last = runs[-1].notes
     for i in range(width):
         votes = 0
         wrong = 0
@@ -371,13 +397,42 @@ def common_errors(runs: list[Run]) -> Run | None:
             votes += 1
             if is_error(char):
                 wrong += 1
-        if votes < 2 or wrong * 2 <= votes:
-            continue
-        if i < len(last) and last[i] in (HIT, CLOSE):
-            continue                # not any more, it isn't
-        out[i] = MISS
-        found += 1
-    if not found:
-        return None
-    return Run(notes="".join(out), kind="errors", note_count=width,
-               label=f"wrong in over half of {len(runs)} runs, and still wrong last time")
+        if votes < 2:
+            yield _NOT_ENOUGH
+        elif wrong * 2 <= votes:
+            yield _FINE
+        elif i < len(last) and last[i] in (HIT, CLOSE):
+            yield _FIXED            # not any more, it isn't
+        else:
+            yield _ERRORS_HERE
+
+
+def why_no_errors(runs: list[Run]) -> str:
+    """Why there is no "frequent errors" row, in one sentence.
+
+    A row that is simply absent cannot be told from a feature that does not
+    work -- this project's oldest lesson, and the player asked the question
+    outright: *"Wie viele Laeufe brauche ich um haeufige Fehler zu sehen?"*
+    The answer is TWO, and the reason it often takes more is the third rule:
+    a verdict nothing could check does not vote, and on a strummed song most
+    of the red is exactly that. So the sentence names the number of notes
+    that abstained rather than leaving it to be guessed at.
+
+    Empty where the row IS there, so the caller has one thing to check.
+    """
+    runs = [r for r in runs if r.notes]
+    if len(runs) < 2:
+        return ("Frequent errors needs two runs of this track — "
+                f"there {'is 1' if len(runs) == 1 else 'are none'} so far")
+    width = max(len(r.notes) for r in runs)
+    counts = {_ERRORS_HERE: 0, _NOT_ENOUGH: 0, _FIXED: 0, _FINE: 0}
+    for verdict in _verdicts(runs, width):
+        counts[verdict] += 1
+    if counts[_ERRORS_HERE]:
+        return ""
+    if counts[_FIXED]:
+        return (f"No frequent errors — the {counts[_FIXED]} that kept going "
+                "wrong all went right last time")
+    return ("No note went wrong in over half of these runs. "
+            f"{counts[_NOT_ENOUGH]} of {width} could not be judged twice — "
+            "a strum nobody could check does not vote either way")

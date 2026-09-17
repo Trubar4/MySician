@@ -210,6 +210,48 @@ class Row:
         share = (ms - self.times[i]) / span
         return self.xs[i] + (self.xs[i + 1] - self.xs[i]) * share
 
+    def ms_at(self, x: float) -> float:
+        """Which moment sits at this x -- the inverse of `x_at`.
+
+        Both directions read the SAME anchors, so a click lands exactly
+        where the playhead would have stood for that moment. Two separate
+        mappings would disagree by however much the layout squeezed a bar,
+        which is most of a row on anything dense.
+        """
+        if x <= self.xs[0]:
+            return self.times[0]
+        if x >= self.xs[-1]:
+            return self.times[-1]
+        i = max(0, bisect_right(self.xs, x) - 1)
+        i = min(i, len(self.xs) - 2)
+        span = self.xs[i + 1] - self.xs[i]
+        if span <= 0:
+            return self.times[i]
+        share = (x - self.xs[i]) / span
+        return self.times[i] + (self.times[i + 1] - self.times[i]) * share
+
+    def moment_at(self, x: float) -> float:
+        """The moment the player POINTED AT: the nearest anchor to this x.
+
+        A raw `ms_at` is a position, and a position inside a note head is
+        already a hundred milliseconds past the note -- clicking a note would
+        land just after it, which is the one place it is no use. The anchors
+        are the moments this row gave room to (every onset, and the bar's own
+        edges), so the nearest one is the thing that was aimed at.
+
+        Nearest in X rather than in time, because that is what the eye
+        judged: on a squeezed bar two anchors far apart in time sit a few
+        pixels apart, and the pixels are what the hand aimed with.
+        """
+        if x <= self.xs[0]:
+            return self.times[0]
+        if x >= self.xs[-1]:
+            return self.times[-1]
+        i = max(0, bisect_right(self.xs, x) - 1)
+        i = min(i, len(self.xs) - 2)
+        near = i if x - self.xs[i] <= self.xs[i + 1] - x else i + 1
+        return self.times[near]
+
     def holds(self, ms: float) -> bool:
         """Whether this moment belongs to this row."""
         return self.start_ms <= ms < self.end_ms

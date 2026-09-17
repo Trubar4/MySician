@@ -268,17 +268,31 @@ class TestPickingTwo:
         screen._stats._pick(0)
         assert screen._stats.selected == []
 
-    def test_plus_and_minus_walk_the_sizes(self, display, tmp_path):
+    def test_plus_and_minus_zoom(self, display, tmp_path):
+        # *"+/- innerhalb Stats Vergleich zoomt das Griffbrett."* The same
+        # key means the same thing here as in every other view.
+        overlay = self._with_history(tmp_path)._stats
+        overlay._pick(0)
+        overlay._pick(1)
+        overlay._compare()
+        assert overlay.zoom == 0
+        overlay.handle_event(_key(pygame.K_PLUS))
+        assert overlay.zoom == 1
+        overlay.handle_event(_key(pygame.K_MINUS))
+        overlay.handle_event(_key(pygame.K_MINUS))
+        assert overlay.zoom == 0          # an end of the list is a sentence
+
+    def test_up_and_down_walk_the_sizes(self, display, tmp_path):
         overlay = self._with_history(tmp_path)._stats
         overlay._pick(0)
         overlay._pick(1)
         overlay._compare()
         overlay.size = 0
-        overlay.handle_event(_key(pygame.K_PLUS))
+        overlay.handle_event(_key(pygame.K_UP))
         assert overlay.size == 1
-        overlay.handle_event(_key(pygame.K_MINUS))
-        overlay.handle_event(_key(pygame.K_MINUS))
-        assert overlay.size == 0          # an end of the list is a sentence
+        overlay.handle_event(_key(pygame.K_DOWN))
+        overlay.handle_event(_key(pygame.K_DOWN))
+        assert overlay.size == 0
 
 
 # -- marking a passage ------------------------------------------------------
@@ -880,6 +894,100 @@ class TestJumpingToTheNextMistake:
         screen, overlay = self._with_errors(tmp_path)
         self._to_the_run(overlay)
         overlay.handle_event(_key(pygame.K_n))
+        surface = pygame.display.get_surface()
+        surface.fill((0, 0, 0))
+        overlay.draw(surface)
+        assert pygame.transform.average_color(surface)[:3] != (0, 0, 0)
+
+
+# -- the fret number in the dot ---------------------------------------------
+
+class TestFretNumbersInTheDots:
+    """*"In der hoechsten Zoom-Stufe alles anzeigen mit Bundnummern."*
+
+    The rule is tested rather than one song's density: two conditions, and
+    each one is asserted by asking `_label_frets` to break it.
+    """
+
+    def _overlay(self, tmp_path):
+        song = _song(bars=40)
+        screen = _screen(song, tmp_path)
+        overlay = screen._stats
+        overlay.show()
+        return screen, overlay
+
+    @staticmethod
+    def _ink(surface) -> int:
+        """How many colours are on it -- digits are antialiased, dots flat."""
+        w, h = surface.get_size()
+        return len({surface.get_at((x, y))[:3]
+                    for x in range(0, w, 2) for y in range(0, h, 2)})
+
+    def _bare(self, overlay, screen, dot, gap):
+        surface = pygame.Surface((400, 240))
+        surface.fill((0, 0, 0))
+        spots = [(20 + i * 40, 120) for i in
+                 range(len(screen._timeline.notes))]
+        before = self._ink(surface)
+        overlay._label_frets(surface, spots, dot, gap,
+                             {s: (255, 255, 255) for s in spots})
+        return before, self._ink(surface)
+
+    def test_a_dot_big_enough_gets_its_number(self, display, tmp_path):
+        screen, overlay = self._overlay(tmp_path)
+        before, after = self._bare(overlay, screen,
+                                   stats_view.FRET_DIGIT_PX + 6, 60.0)
+        assert after > before
+
+    def test_a_dot_too_small_for_a_digit_gets_none(self, display, tmp_path):
+        # Below this a digit has no stroke left to read, so the dot stays a
+        # dot rather than becoming ink that says less.
+        screen, overlay = self._overlay(tmp_path)
+        before, after = self._bare(overlay, screen,
+                                   stats_view.FRET_DIGIT_PX - 1, 60.0)
+        assert after == before
+
+    def test_a_label_that_would_reach_its_neighbour_is_not_drawn(
+            self, display, tmp_path):
+        # The room it may take is the room the DOT was sized against, so the
+        # two cannot disagree about whether there is any.
+        screen, overlay = self._overlay(tmp_path)
+        before, after = self._bare(overlay, screen,
+                                   stats_view.FRET_DIGIT_PX + 6, 2.0)
+        assert after == before
+
+    def test_the_ink_reads_on_whatever_is_under_it(self, display, tmp_path):
+        # A bright verdict wants black where its string wanted white, so the
+        # colour actually painted is what decides -- not the note's own.
+        screen, overlay = self._overlay(tmp_path)
+        assert overlay._ink((255, 240, 130)) == (16, 16, 16)
+        assert overlay._ink((40, 40, 60)) == (240, 240, 240)
+
+    def test_zoomed_in_a_real_bar_carries_them(self, display, tmp_path):
+        screen, overlay = self._overlay(tmp_path)
+        run = _run("h" * len(screen._timeline.notes),
+                   "2026-09-01T10:00:00+00:00")
+        overlay.set_zoom(stats_view.ZOOM_STEPS - 1)
+        bar = overlay.bar(run, 1200, 240, overlay.window())
+        spots = overlay._note_positions(1200, 240, *overlay.window())
+        assert overlay.dot_size(spots, 240) >= stats_view.FRET_DIGIT_PX
+        assert self._ink(bar) > 4        # more than ground, dots and lines
+
+
+class TestWhyThereIsNoErrorsRow:
+
+    def test_the_list_says_it(self, display, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        runs.append(screen._song_path,
+                    _run("h" * len(song.notes), "2026-09-01T10:00:00+00:00"))
+        overlay = screen._stats
+        overlay.show()
+        assert not any(e.run.kind == "errors" for e in overlay._entries)
+        said = runs.why_no_errors([e.run for e in overlay._entries
+                                   if e.run.kind == "run" and e.fits])
+        assert "two runs" in said
+        # And it really reaches the surface rather than only the string.
         surface = pygame.display.get_surface()
         surface.fill((0, 0, 0))
         overlay.draw(surface)

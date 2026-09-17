@@ -650,3 +650,61 @@ class TestStarringASongWhileFiltering:
         assert "Ctrl+M: favourite" in searching, \
             "the one screen it was asked for does not mention it"
         assert "Ctrl+M / Ctrl+Shift+M" in source
+
+
+def _wheel(y):
+    return pygame.event.Event(pygame.MOUSEWHEEL, y=y, x=0, flipped=False)
+
+
+class TestTheMouseWheel:
+    """*"Songuebersicht: Koennen wir scrollen mit Mausrad erlauben?"*"""
+
+    def _many(self, songs):
+        for i in range(40):
+            (songs / f"song{i:02d}.gp5").write_bytes(b"x")
+        return MenuScreen(songs, config=Config())
+
+    def test_a_notch_down_moves_the_cursor(self, songs):
+        menu = self._many(songs)
+        menu.handle_event(_wheel(-1))
+        assert menu._selected == 3          # WHEEL_ROWS
+
+    def test_and_back_up_again(self, songs):
+        menu = self._many(songs)
+        menu.handle_event(_wheel(-3))
+        menu.handle_event(_wheel(+3))
+        assert menu._selected == 0
+
+    def test_it_stops_at_both_ends(self, songs):
+        menu = self._many(songs)
+        for _ in range(50):
+            menu.handle_event(_wheel(-1))
+        assert menu._selected == len(menu._display_files) - 1
+        for _ in range(50):
+            menu.handle_event(_wheel(+1))
+        assert menu._selected == 0
+
+    def test_it_moves_the_cursor_rather_than_a_view_of_its_own(self, songs):
+        # The scroll offset is derived from the selection on every frame, so
+        # a wheel that only moved the view would be dragged straight back.
+        menu = self._many(songs)
+        for _ in range(4):
+            menu.handle_event(_wheel(-1))
+        pygame.init()
+        pygame.display.set_mode((1280, 800))
+        menu.render(pygame.display.get_surface())
+        assert menu._scroll_offset <= menu._selected
+        assert menu._selected < menu._scroll_offset + 18
+        pygame.display.quit()
+
+    def test_it_works_while_the_search_box_is_open(self, songs):
+        # Finding a song and browsing what the filter left are the same job.
+        menu = self._many(songs)
+        menu.handle_event(_key(pygame.K_f))
+        menu.handle_event(_wheel(-1))
+        assert menu._selected == 3
+
+    def test_it_does_nothing_on_an_empty_folder(self, tmp_path):
+        menu = MenuScreen(tmp_path, config=Config())
+        menu.handle_event(_wheel(-1))
+        assert menu._selected == 0

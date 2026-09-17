@@ -335,3 +335,41 @@ class TestANoteIsAsLongAsItSounds:
                       {"slide_to_next": True}, {}):
             for note in self._placed([extra, {}], gap_ms=120.0):
                 assert note.width >= HEAD
+
+
+class TestReadingAPositionBack:
+    """*"Klick auf Griffbrett in hybrid View, um an eine Stelle zu springen."*
+
+    The sheet is the one view where a pixel is not a time, so the click has
+    to be read back through the very anchors the layout was built from.
+    """
+
+    def _row(self):
+        return lay_out(_song([[0.0, 1000.0], [i * 125.0 for i in range(16)]]),
+                       WIDTH, HEAD)[0]
+
+    def test_it_is_the_inverse_of_the_playhead(self):
+        row = self._row()
+        for placed in row.notes:
+            back = row.ms_at(row.x_at(placed.note.timestamp_ms))
+            assert back == pytest.approx(placed.note.timestamp_ms, abs=0.5)
+
+    def test_a_click_past_either_end_stays_in_the_row(self):
+        row = self._row()
+        assert row.ms_at(-500.0) == row.times[0]
+        assert row.ms_at(WIDTH * 3) == row.times[-1]
+
+    def test_clicking_a_note_lands_on_it_not_just_after_it(self):
+        # A raw position inside a head is already past the note, which is
+        # the one place it is no use.
+        row = self._row()
+        for placed in row.notes:
+            middle = placed.x + placed.width / 2
+            assert row.moment_at(middle) == pytest.approx(
+                placed.note.timestamp_ms, abs=0.5)
+
+    def test_it_snaps_to_the_nearer_of_the_two_it_sits_between(self):
+        row = self._row()
+        a, b = row.xs[0], row.xs[1]
+        assert row.moment_at(a + (b - a) * 0.1) == row.times[0]
+        assert row.moment_at(a + (b - a) * 0.9) == row.times[1]

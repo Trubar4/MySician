@@ -24,6 +24,11 @@ from pickhero.ui.colors import cycle_theme, get_theme
 # How many items visible at once before scrolling
 VISIBLE_ITEMS = 18
 
+#: Rows one notch of the mouse wheel moves. Three is what every list on this
+#: machine does, and a list is read by comparing neighbours -- a wheel that
+#: jumped a screenful would be a second Page Down rather than a way to browse.
+WHEEL_ROWS = 3
+
 SORT_MODES = ["name_asc", "name_za", "accuracy", "last_played"]
 SORT_LABELS = {
     "name_asc": "Name A-Z",
@@ -858,6 +863,20 @@ class MenuScreen:
                     self._search_text += ch
                     self._apply_filter()
                     return None
+
+        elif event.type == pygame.MOUSEWHEEL:
+            # The wheel moves the CURSOR, not a view of its own. The scroll
+            # offset is derived from the selection on every frame, so a wheel
+            # that only moved the view would be dragged straight back by the
+            # next redraw -- and everything else on this screen (ENTER, DEL,
+            # R, the tuner) acts on the selected song, so a list scrolled
+            # away from its cursor answers a question nobody asked.
+            if files:
+                self._reload_note = ""
+                step = -event.y * WHEEL_ROWS
+                self._selected = max(0, min(len(files) - 1,
+                                            self._selected + step))
+            return None
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             idx = self._hit_test(event.pos)

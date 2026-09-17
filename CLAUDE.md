@@ -4414,6 +4414,82 @@ is one implementation and a second answer to "mark a passage" is how two of them
 the two when the new start is past an end still standing — so marking a LATER passage than the one already looped came out as a loop from
 the old end to the new start, a stretch nobody chose. It was there for the right-drag too, and nobody had dragged twice.
 
+### Clicking The Sheet Goes There
+
+*"Klick auf Griffbrett in hybrid View, um an eine Stelle zu springen."*
+
+The sheet is the one view where this is exact, and for the reason the view exists at all: **x owes nothing to the clock there**, so a
+pixel is not a time and cannot simply be divided by a speed. `Row.ms_at` reads the click back through the very anchors the layout was
+built from, which is what makes the mapping the inverse of the playhead rather than a second opinion about it — two mappings would
+disagree by however much the layout squeezed a bar, which is most of a row on anything dense.
+
+- **It snaps to the moment aimed at, not to the pixel** (`Row.moment_at`). Measured before it was changed: clicking the MIDDLE of a note
+  head reads **68 to 328 ms past** that note, because a head is a hundred milliseconds wide in time and the note's own moment is its
+  leading edge. So a click on a note landed just after it — the one place it is no use. The anchors are every onset the row gave room to
+  plus the bar's own edges, so the nearest one is what the hand was aiming at. Nearest in X rather than in time, because the pixels are
+  what the eye judged: on a squeezed bar two anchors far apart in time sit a few pixels apart.
+- **It does not start or stop the song**, the same as a click on the strip — the two are one gesture at two sizes.
+- **The geometry comes from the frame that was DRAWN** (`_sheet_hit`), not from working it out again in the handler: the scroll offset
+  comes out of the glide, and asking it a second time would step it.
+- The scrolling board is untouched. There a pixel really is a time, and nobody asked.
+
+### Two Keys Meaning Two Things, And The Player Read It Right
+
+*"Beim Vergleich bei + kann ich nicht mehr so weit zoomen, dass die Takte angezeigt werden."*
+
+Measured first, and the bars were never missing: on his own song they appear from zoom step 2 (51 px apart), are numbered from step 3,
+and at step 5 four and a half bars fill the width at 408 px apart. **They were on UP/DOWN.** `+`/`-` was the bar HEIGHT — his own spec,
+and a key that meant something different from `+`/`-` in every other view of the app. That is the fault this file has now paid for at the
+shifted shortcuts and at the scroll knob, and it is the reason a measurement that says "it works" still describes a broken feature.
+
+- **`+`/`-` zooms now** — *"+/- innerhalb Stats Vergleich von 2 Durchgängen zoomt das Griffbrett"* — and the bar height moved to
+  **UP/DOWN**, which keeps the setting he asked for. Not onto Shift: on a German keyboard `+` is unshifted and `Shift` gives `*`, so a
+  shifted `+` is a key that does not exist on the machine this ships to.
+- **The footer names both, with the position in each ladder**, because a knob whose ends are not named is the other half of the same
+  fault.
+
+### A Fret Number Fits In A Dot Or It Is Not Drawn
+
+*"Können wir in der höchsten Zoom-Stufe nicht sogar alles anzeigen mit Bundnummern in Noten?"*
+
+Two conditions, both measured rather than felt, and the dot is not made bigger to satisfy either:
+
+- **`FRET_DIGIT_PX` is 11.** At that height a two-digit label is 12 px of type — six pixels a digit, which is the narrowest a digit can be
+  and still have a stroke. Below it the number would be ink where a dot says more.
+- **The label may take `LABEL_SHARE` (0.9) of the room between two notes on ONE string**, which is the same `row_gap` the dot was sized
+  against. One measurement with two readers, so a number can never reach the note beside it — and `row_gap` was extracted out of
+  `dot_size` for exactly that, rather than counted twice.
+- **The ink is read off the colour actually PAINTED**, not off the note's string. They disagree constantly: the string colours sit at
+  luminance 106-174 and the verdicts at 151-232, so a bright green wants black where its own string wanted white. `under` records what
+  each layer put down, and a label is rendered once per (fret, ink) pair — two dozen frets and two inks against a couple of thousand notes.
+- **Measured on the player's song**: numbers appear at zoom 4 and 5 (dot 15 and 22 px, gaps 25 and 50 px), and the bar is still built in
+  1.9 ms. No new zoom steps were added — *"Nur Bundnummern, keine neuen Stufen."*
+
+### How Many Runs For "Frequent Errors"
+
+*"Wie viele Läufe brauche ich um häufige Fehler zu sehen?"* **Two** — and the row can stay away for much longer than that, which is the
+half nothing on screen could say.
+
+The rule needs a note wrong in more than half of the runs that REACHED it, and still wrong in the last. With two runs that means wrong in
+both. What keeps it empty is the third rule: **a drained verdict abstains** (*"ja ausschließen"*), and on a strummed song most of the red
+is exactly that — the run logs put it at 65-90 % across three complete runs of two real songs. So the player can miss the same bar three
+evenings running and see no row at all, with nothing to say why.
+
+- **The list says which rule kept it away**: not enough runs and how many there are, everything that kept going wrong went right last
+  time, or "no note went wrong in over half of these runs — N of M could not be judged twice". The number of abstentions is the useful
+  half and it was the one being left to be guessed at.
+- **`_verdicts` is the rule, once.** The row and the sentence read the same generator, so the picture and the reason for the picture
+  cannot disagree — the "four readers of one plan" fault, in the one place where being wrong would be invisible.
+- **The room for the line is reserved whether or not there is one**, so the list does not jump the moment a second run lands.
+
+### The Song List Takes The Mouse Wheel
+
+*"Songübersicht: Können wir scrollen mit Mausrad erlauben?"* Three rows a notch, and it moves the **cursor** rather than a view of its
+own: `_scroll_offset` is derived from the selection on every frame, so a wheel that only moved the view would be dragged straight back by
+the next redraw — and everything else on that screen (ENTER, DEL, `R`, the tuner) acts on the selected song, so a list scrolled away from
+its cursor answers a question nobody asked. It works with the search box open, because finding a song and browsing what the filter left
+are the same job.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

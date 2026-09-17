@@ -1238,6 +1238,10 @@ class PlayingScreen:
         # is exactly the loop this display has had to move out of a frame
         # three times.
         self._sheet_rows: list = []
+        # (top, room, pad, pitch, scroll, first row, rows showing,
+        # rows) of the last hybrid frame -- what a click is read
+        # against. None until one has been drawn.
+        self._sheet_hit: tuple | None = None
         self._sheet_next: dict = {}
         self._sheet_key: tuple = ()
         self._sheet_zoom: int = sheet.ZOOM_DEFAULT
@@ -1894,6 +1898,14 @@ class PlayingScreen:
         # means anything to. It is checked before the keyboard gate below,
         # which returns None for every event that is not a key -- which is why
         # a pointer never reached this screen at all until now.
+        # Clicking the sheet goes there. A plain jump and nothing else --
+        # the play state is left exactly as it was, the same as a click on
+        # the strip, because the two are the same gesture at two sizes.
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            at = self._sheet_ms_at(event.pos)
+            if at is not None:
+                self.seek(at)
+                return None
         if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION,
                           pygame.MOUSEBUTTONUP):
             return self._handle_strip_mouse(event)
@@ -2482,6 +2494,11 @@ class PlayingScreen:
         was = surface.get_clip()
         surface.set_clip(pygame.Rect(0, top, w, room))
         showing = sheet.rows_that_fit(room, head, self._sheet_strip()) + 1
+        # What a click has to be read against. Kept from the frame that was
+        # DRAWN rather than worked out again in the handler: `scroll` comes
+        # out of the glide, and asking it a second time would step it.
+        self._sheet_hit = (int(top), int(room), pad, pitch, scroll,
+                           current, showing, rows)
         for index in range(current, min(len(rows), current + showing)):
             self._draw_sheet_row(surface, rows[index], pad,
                                  top + index * pitch - scroll, head,
@@ -5033,6 +5050,27 @@ class PlayingScreen:
             surface.blit(small.render(text, True, t.hud_text), (x, y))
             y += small.get_height() + 2
 
+    def _sheet_ms_at(self, pos) -> float | None:
+        """Which moment the player clicked on the sheet, or None if not on it.
+
+        *"Klick auf Griffbrett in hybrid View, um an eine Stelle zu
+        springen."* The sheet is the one view where this is worth having and
+        the one where it is exact: x owes nothing to the clock there, so a
+        pixel is not a time -- `Row.ms_at` reads back the very anchors the
+        layout was built from, which is why a click lands where the playhead
+        would have stood rather than near it.
+        """
+        if self._sheet_hit is None or self._view != "hybrid":
+            return None
+        top, room, pad, pitch, scroll, first, showing, rows = self._sheet_hit
+        x, y = pos
+        if not (top <= y < top + room) or not rows or pitch <= 0:
+            return None
+        index = int((y + scroll - top) // pitch)
+        if not (first <= index < min(len(rows), first + showing)):
+            return None            # the sliver of the row past the clip edge
+        return rows[index].moment_at(x - pad)
+
     def _handle_strip_mouse(self, event) -> None:
         """Click and drag the strip to spool.
 
@@ -6575,9 +6613,10 @@ class PlayingScreen:
                 ("Shift+D (or Stats, top right): every run of this song,",
                  "kept beside the tab"),
                 "  Pick two with SPACE or the mouse, ENTER stacks them.",
-                "  +/- sizes the bars, UP/DOWN zoom into the song and",
+                "  +/- zoom into the song, UP/DOWN size the bars and",
                 "  LEFT/RIGHT move along it — bar numbers appear once there",
-                "  is room. RIGHT-drag either one to mark a passage.",
+                "  is room, and fret numbers once a dot is big enough.",
+                "  RIGHT-drag either one to mark a passage.",
                 "  Two rows nobody played: the best each note has ever been,",
                 "  and the mistakes you make in more than half your runs.",
                 "  N loops the next place that run went wrong, and waits —",
@@ -6602,6 +6641,9 @@ class PlayingScreen:
                 "+/-: note size on the sheet and the page.  On the board",
                 "  it is a trade: + pushes the notes further apart and shows",
                 "  less of the song, - buys look-ahead by moving them in.",
+                "CLICK the sheet to go there. It lands on the note you",
+                "  pointed at, and leaves the song playing or paused as",
+                "  it was.",
                 ("Shift+C: chord view — grips and a block per chord",
                  "on" if self._chord_mode else "off"),
                 ("V: chord scoring", "one string is enough"

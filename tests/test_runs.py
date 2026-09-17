@@ -289,3 +289,45 @@ class TestErrorNests:
         # A verdict string longer than the bars it was given describes notes
         # this timeline does not have.
         assert runs.error_nests("hhmm", [0, 0]) == []
+
+
+# -- why there is no "frequent errors" row ----------------------------------
+
+class TestSayingWhyTheRowIsMissing:
+    """*"Wie viele Laeufe brauche ich um haeufige Fehler zu sehen?"*
+
+    Two. A row that is simply absent cannot be told from a feature that does
+    not work, so the list says which of the three rules kept it away.
+    """
+
+    def _runs(self, *notes):
+        return [runs.make(v, 60.0, 100, 0,
+                          started=f"2026-09-{i + 1:02d}T20:00:00+00:00")
+                for i, v in enumerate(notes)]
+
+    def test_one_run_is_not_enough_and_says_the_number(self):
+        said = runs.why_no_errors(self._runs("mmmm"))
+        assert "two runs" in said and "1 so far" in said
+
+    def test_two_runs_are_enough(self):
+        history = self._runs("mhhh", "mhhh")
+        assert runs.common_errors(history) is not None
+        assert runs.why_no_errors(history) == ""
+
+    def test_drained_verdicts_are_named_rather_than_left_to_be_guessed(self):
+        # The case the player is actually in: most of the red on a strummed
+        # song is a verdict nothing could check, and those abstain.
+        said = runs.why_no_errors(self._runs("MMMM", "MMMM"))
+        assert "4 of 4" in said
+
+    def test_fixed_is_fixed_says_so(self):
+        said = runs.why_no_errors(self._runs("mhhh", "mhhh", "hhhh"))
+        assert "went right last time" in said
+
+    def test_the_sentence_and_the_row_read_one_rule(self):
+        # Whatever the history, exactly one of the two speaks.
+        for notes in (("mhhh", "mhhh"), ("MMMM", "MMMM"), ("hhhh",),
+                      ("mhhh", "mhhh", "hhhh"), ("mhhh", "hhhh")):
+            history = self._runs(*notes)
+            assert (runs.common_errors(history) is None) == bool(
+                runs.why_no_errors(history))

@@ -399,3 +399,58 @@ class TestTheVerdictsLandOnTheStrip:
         x, y = strip.dot(target, song.duration_ms, mini.width, mini.height)
         got = surface.get_at((mini.x + x + 1, mini.y + y))[:3]
         assert got == get_theme().feedback_hit
+
+
+class TestClickingTheSheet:
+    """*"Klick auf Griffbrett in hybrid View, um an eine Stelle zu springen."*
+
+    A pixel on the sheet is not a time -- x owes nothing to the clock there
+    -- so the click is read back through the layout's own anchors. What is
+    asserted is that it lands on what was pointed at, and that it reaches
+    only the view it was asked for.
+    """
+
+    def _hybrid(self, display):
+        screen = _screen()
+        screen._set_view("hybrid")
+        screen._playback_ms = 20000.0
+        screen.render(pygame.display.get_surface())
+        return screen
+
+    def _middle_of_the_played_row(self, screen):
+        top, room, pad, pitch, scroll, first, showing, rows = screen._sheet_hit
+        y = int(top + first * pitch - scroll + pitch / 2)
+        return rows[first], pad, y
+
+    def test_a_click_goes_to_the_note_under_it(self, display):
+        screen = self._hybrid(display)
+        row, pad, y = self._middle_of_the_played_row(screen)
+        for placed in row.notes[:4]:
+            x = int(pad + placed.x + placed.width / 2)
+            screen.handle_event(pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN, button=1, pos=(x, y)))
+            assert screen._playback_ms == pytest.approx(
+                placed.note.timestamp_ms, abs=1.0)
+
+    def test_it_does_not_start_or_stop_the_song(self, display):
+        # A click on the strip does not either, and the two are the same
+        # gesture at two sizes.
+        screen = self._hybrid(display)
+        row, pad, y = self._middle_of_the_played_row(screen)
+        was = screen._playing
+        screen.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, button=1, pos=(int(pad + row.notes[2].x), y)))
+        assert screen._playing is was
+
+    def test_above_and_below_the_music_it_does_nothing(self, display):
+        screen = self._hybrid(display)
+        top, room, pad, pitch, scroll, first, showing, rows = screen._sheet_hit
+        assert screen._sheet_ms_at((600, top - 4)) is None
+        assert screen._sheet_ms_at((600, top + room + 4)) is None
+
+    def test_the_scrolling_view_is_untouched(self, display):
+        # There a pixel IS a time, the board scrolls under a fixed hit line,
+        # and a click was never asked for.
+        screen = self._hybrid(display)
+        screen._set_view("standard")
+        assert screen._sheet_ms_at((600, 400)) is None
