@@ -288,3 +288,52 @@ class TestMarkingAPassageWithTheMouse:
         screen.handle_event(pygame.event.Event(
             pygame.MOUSEBUTTONUP, button=3, pos=pos))
         assert screen._loop_start_ms is None
+
+
+class TestSpoolingIsNotPlayingBadly:
+    """*Spooling to the last bar was banked as a run, at 9.2 %.*
+
+    Measured on the player's own files: 91 seeks, `clock_song_s 44.6` over a
+    208 s song, `played_to_the_end True` -- and 1331 of 1475 notes marked
+    MISS, because the missed-note sweep marks everything behind the playhead.
+    That stood in `progress.json` as an attempt beside two real passes at
+    90 %. Music a seek skipped was never in front of the player.
+    """
+
+    def _screen(self, tmp_path):
+        song = _song(bars=20, per_bar=4)
+        tab = tmp_path / "song.gp5"
+        tab.write_text("x")
+        screen = PlayingScreen(song, config=Config(), song_key="song",
+                               song_path=str(tab))
+        screen._matcher = NoteMatcher(song)
+        screen._audio_enabled = True
+        return screen, song
+
+    def test_notes_a_seek_jumped_over_stay_unreached(self, tmp_path):
+        screen, song = self._screen(tmp_path)
+        screen.seek(song.duration_ms)
+        screen._matcher.process_detected_notes([], song.duration_ms)
+        states = [screen._matcher.get_note_state(n) for n in song.notes]
+        assert all(s is MatchType.PENDING for s in states)
+        assert screen._matcher.get_statistics()["total"] == 0
+
+    def test_and_a_note_the_playhead_really_passed_is_still_missed(self, tmp_path):
+        screen, song = self._screen(tmp_path)
+        screen._matcher.process_detected_notes([], 3 * BAR_MS)
+        assert screen._matcher.get_statistics()["misses"] > 0
+
+    def test_a_seek_BACK_still_lets_the_sweep_judge_again(self, tmp_path):
+        screen, song = self._screen(tmp_path)
+        screen._matcher.process_detected_notes([], 3 * BAR_MS)
+        before = screen._matcher.get_statistics()["misses"]
+        screen.seek(0.0)
+        screen._matcher.forget_from(0.0)
+        screen._matcher.process_detected_notes([], 3 * BAR_MS)
+        assert screen._matcher.get_statistics()["misses"] == before
+
+    def test_so_spooling_to_the_end_banks_nothing(self, tmp_path):
+        screen, song = self._screen(tmp_path)
+        screen.seek(song.duration_ms)
+        screen._matcher.process_detected_notes([], song.duration_ms)
+        assert screen.unbanked_run() is None

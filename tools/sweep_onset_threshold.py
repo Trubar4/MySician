@@ -73,15 +73,30 @@ def strikes_at(audio, rate, threshold):
 
 
 def notes_from_run_log(path: Path):
-    """(timestamp_ms, midi) for every written note a run log lists."""
+    """(timestamp_ms, midi) for every written note a run log lists.
+
+    The header is read by NAME. This matched the whole line once -- and the
+    log then grew `bar`, `fret`, `tech` and `chord` for the coach, so the one
+    tool whose purpose is scoring a take of a song that is not in `songs/`
+    could not read a single log written since. A reader pinned to a column
+    ORDER is a reader that stops working the next time the writer says more.
+    """
     lines = Path(path).read_text(encoding="utf-8").splitlines()
-    start = lines.index("note_ms\tstring\tmidi\tverdict") + 1
+    for start, line in enumerate(lines):
+        head = line.split("\t")
+        if head[0] == "note_ms" and "midi" in head:
+            break
+    else:
+        raise ValueError(f"{path} has no written-note table")
+    ms, midi = head.index("note_ms"), head.index("midi")
     out = []
-    for line in lines[start:]:
+    for line in lines[start + 1:]:
         if not line.strip():
             continue
         parts = line.split("\t")
-        out.append((float(parts[0]), int(parts[2])))
+        if len(parts) <= midi:
+            break
+        out.append((float(parts[ms]), int(parts[midi])))
     return sorted(set(out))
 
 

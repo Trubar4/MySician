@@ -4566,6 +4566,51 @@ louder than the takes the gate was fitted against, and no value in the app reach
 stamp did not survive into whatever he is running, so which version wrote this log is not knowable, which is the one question that
 line exists to answer.
 
+### The Same Run, Twice, And A Run Nobody Played
+
+*"Diese beiden Runs schauen gleich aus."* They were the same run. Two faults sat next to each other in the banking that was built last session.
+
+**Banking offered the run a second time.** `_write_run` has always refused to store a run identical to the last one it stored — and the stats list asked its OWN question, so the moment a run was banked at the last bar the live matcher put the very same verdicts up again, labelled "not saved yet". On his screenshot: `A 19:41 91 % T98 % R93 %` over `B 18:59 91 % T98 % R93 %`, the same bar drawn twice, one of them the banked run and the other the matcher it was read from. `unbanked_run()` is the screen's one answer now; `_write_run` and the list read it.
+
+**And spooling to the last bar was banked as a run.** From his own files:
+
+| | |
+|---|---|
+| `seeks` | **91** |
+| `clock_song_s` / `song_ms` | **44.6 s** of a **208 s** song |
+| `played_to_the_end` | True |
+| verdicts | 135 hits, **1331 misses** |
+| what `progress.json` recorded | an attempt at **9.2 %**, beside two real passes at 90 % |
+
+He scrolled through the song; `_mark_missed_notes` marks every PENDING note behind the playhead as MISS, so the whole song went red and the completion path banked it. **Music a seek jumped over was never in front of the player.** `matcher.skip_to` carries the sweep's mark forward so those notes stay PENDING, which every reader already understands as not reached — `.` in the run history, nothing in the strip, and a score over what was actually played. A backward seek is `forget_from`'s business and is untouched.
+
+- **The mark is carried to where the sweep's CUTOFF will be, not to the position.** Set to the position it sits ahead of the cutoff, which the sweep reads as the song having moved BACKWARDS — and it then starts again from zero and undoes the whole thing. The first version did exactly that and the test caught it.
+- **Notes still inside the window at the seek target are judged normally.** They are in front of the player; only what was skipped is spared.
+
+## What The Detector Does On A Real Metal Song
+
+The first play-along takes of a song with power chords in it, recorded because the chapter above could only report a log and not what the hands did. Three takes of the same 60 seconds, read through the real detector against the tab reconstructed from the run log:
+
+| take | picks heard | **right pitch** |
+|---|---|---|
+| played correctly, 18:46 | 100 % | **88 %** |
+| **played deliberately wrong, 18:51** | 84 % | **7 %** |
+| played correctly, 19:38 | 99 % | **98 %** |
+
+**A twelve-fold separation, and it answers the complaint that started this.** *"Bei Powerchords wird nur ein Ton erkannt und alles wird grün"* is not what happens on this song: the wrong take scored **14 %** in the app and reads **7 %** at the detector. Of its verdicts, 360 are CLOSE against 82 hits — a one-fret error coming back as the neighbouring semitone, which is the app catching it rather than missing it.
+
+**The noise gate is NOT the lever, and the run that suggested it was measuring two things.** Swept offline over all three takes at a fixed onset threshold:
+
+| gate | correct 18:46 | wrong 18:51 | correct 19:38 |
+|---|---|---|---|
+| −80 … −45 dB | **88 %** right | **8 %** | **98 %** |
+| −40 dB | 87 % | 1 % | 80 % |
+| −30 dB | 66 % | 0 % | 0 % |
+
+**Flat from −80 to −45 and then a cliff**, on every take — the same shape `sweep_noise_gate.py` found. So pressing `X` twice (−50 → −60 dB) changed `level_under_gate_percent` from 29 to 18 and changed what the detector reads **not at all**; the 88 % against 98 % is the two takes, not the gate. The app's scores either side (89.8 % and 91.3 %) sit inside his own run-to-run spread on correct takes. Nothing here is a finding about the gate, and saying otherwise would be the third time this file caught itself crediting whichever variable had just moved.
+
+**And the tool that reads a run log as a tab could not read one.** `notes_from_run_log` matched the header line whole — and the log then grew `bar`, `fret`, `tech` and `chord` for the coach, so the one tool whose purpose is scoring a take of a song that is not in `songs/` had been inert since. It reads the header by NAME now. **A reader pinned to a column ORDER is a reader that stops working the next time the writer says more** — and this one failed silently, which is why nobody noticed.
+
 ## The Marker Built To Stop The Drift Drifted
 
 *"Wie kann ich meine Beispielaufnahmen ins aktuelle Branch hochladen?"* — asked because the recorder had just told him to switch to a branch nobody was reading. Its own docstring says why that matters, having been written after it happened twice:

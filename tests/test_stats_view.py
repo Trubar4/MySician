@@ -1072,3 +1072,47 @@ class TestTheCompletedRunIsBanked:
             diary.append = screen_append
         assert written["accuracy"] == pytest.approx(100.0)
         assert written["notes_written"] == len(song.notes)
+
+
+# -- the run that was shown twice -------------------------------------------
+
+class TestTheBankedRunIsNotOfferedAgain:
+    """*"Diese beiden Runs schauen gleich aus."* They were the same run.
+
+    Banking at the last bar stores it and starts the next run's clock; the
+    list then asked its own question and put the live matcher's verdicts up
+    a second time, labelled "not saved yet". Two rows, one run, identical
+    bars and identical percentages.
+    """
+
+    def _played(self, tmp_path):
+        song = _song(bars=2, per_bar=2)
+        screen = _screen(song, tmp_path)
+        for note in song.notes:
+            screen._matcher._record_match(note, MatchType.HIT)
+        return screen
+
+    def test_it_is_offered_before_it_is_banked(self, tmp_path):
+        screen = self._played(tmp_path)
+        assert screen.unbanked_run() is not None
+
+    def test_and_not_after(self, tmp_path):
+        screen = self._played(tmp_path)
+        screen._write_run()
+        assert screen.unbanked_run() is None
+
+    def test_so_the_list_holds_it_once(self, display, tmp_path):
+        screen = self._played(tmp_path)
+        screen._write_run()
+        overlay = screen._stats
+        overlay.toggle()
+        evenings = [r for r in overlay._entries if r.run.kind == "run"]
+        assert len(evenings) == 1
+        assert evenings[0].detail.find("not saved yet") < 0
+
+    def test_and_offers_it_again_once_more_was_played(self, tmp_path):
+        screen = self._played(tmp_path)
+        screen._write_run()
+        screen._matcher._record_match(screen._timeline.notes[0],
+                                      MatchType.MISS)
+        assert screen.unbanked_run() is not None

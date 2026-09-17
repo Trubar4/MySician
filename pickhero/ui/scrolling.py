@@ -1539,7 +1539,13 @@ class PlayingScreen:
         # stutter follows -- and a run log that cannot say how much spooling
         # a run contained cannot correlate anything with it.
         self._seeks += 1
+        was = self._playback_ms
         self._playback_ms = max(0.0, min(ms, self._timeline.duration_ms))
+        # Spooling FORWARD is not playing badly. The notes it jumps over were
+        # never in front of the player, so they stay unreached rather than
+        # being swept up as misses -- see `matcher.skip_to`.
+        if self._matcher is not None and self._playback_ms > was:
+            self._matcher.skip_to(self._playback_ms)
         # Reaching the last bar put the completion screen up and nothing took
         # it down again, so an arrow key moved the song under a picture that
         # went on showing the score -- the player had to leave and start over
@@ -7307,6 +7313,21 @@ class PlayingScreen:
                          int(self._track_index or 0),
                          started=self._run_started)
 
+    def unbanked_run(self) -> "runs.Run | None":
+        """This run, unless the history already holds exactly it.
+
+        Two readers, one question. `_write_run` has always refused to store a
+        run identical to the last one it stored; the stats list asked its own
+        question and so showed the run TWICE the moment it was banked at the
+        last bar -- two rows, the same bar, the same percentages, one of them
+        labelled "not saved yet". Reported from a screenshot where the two
+        were indistinguishable, because they were the same run.
+        """
+        run = self.current_run()
+        if run.notes == self._run_stored or not runs.worth_keeping(run):
+            return None
+        return run
+
     def _write_run(self) -> None:
         """Bank the run as it stands, if it says anything new.
 
@@ -7327,8 +7348,8 @@ class PlayingScreen:
         """
         if not self._song_path:
             return
-        run = self.current_run()
-        if run.notes == self._run_stored:
+        run = self.unbanked_run()
+        if run is None:
             return
         try:
             runs.append(self._song_path, run)

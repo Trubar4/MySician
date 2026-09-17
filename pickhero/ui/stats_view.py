@@ -310,11 +310,17 @@ class StatsOverlay:
         self._drag_from = self._drag_to = None
 
     def _this_run(self):
+        """The run in progress, or None when the history already holds it.
+
+        `unbanked_run` is the screen's own answer, so the list cannot offer a
+        row `_write_run` has already stored -- which is what put the banked
+        pass and the live one side by side, identical.
+        """
         try:
-            run = self._screen.current_run()
+            run = self._screen.unbanked_run()
         except Exception:
             return None
-        if not runs_mod.worth_keeping(run):
+        if run is None:
             return None
         run.label = "this run, not saved yet"
         return run

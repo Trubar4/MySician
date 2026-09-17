@@ -1643,6 +1643,32 @@ class NoteMatcher:
         self._pending_rescues.clear()
         self.verdict_epoch += 1
 
+    def skip_to(self, song_ms: float) -> None:
+        """The song jumped FORWARD: what it jumped over was never offered.
+
+        `_mark_missed_notes` marks every PENDING note behind the playhead as
+        MISS, which is right for music that went past in front of the player
+        and wrong for music a seek skipped. Spooling to the last bar
+        therefore painted a whole song red and banked it as a run: measured
+        on the player's own files, **44.6 s of playing over a 208 s song,
+        stored as an attempt at 9.2 %** and sitting in `progress.json` beside
+        two real passes at 90 %.
+
+        A skipped note stays PENDING, which every reader already understands
+        as "not reached" -- the run history writes it as `.`, the strip draws
+        nothing, and the score is over what was actually played. Backwards is
+        `forget_from`'s business and is left alone.
+        """
+        # Carried to where the sweep's own CUTOFF will be at that position,
+        # not to the position: the mark is compared against the cutoff, and a
+        # mark ahead of it reads as the song having moved backwards, which
+        # puts the sweep back to zero and undoes exactly this. Notes still
+        # inside the window at the seek target are judged normally -- they
+        # are in front of the player.
+        self._missed_swept_ms = max(
+            self._missed_swept_ms,
+            song_ms - self._timing_window_ms - self._late_window_ms)
+
     def reset(self) -> None:
         """Clear all state. Call on restart or when the filter changes.
 
