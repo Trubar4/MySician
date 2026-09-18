@@ -66,8 +66,16 @@ _ERROR = MISS
 
 
 def path_for(tab_path) -> Path:
-    """Where this tab's runs live: beside it, under its own name."""
+    """Where this tab's runs live: beside it, under its own name.
+
+    Given the history file itself it answers itself, so a caller that
+    already HAS the file can ask about it without inventing a tab beside it.
+    An export folder is exactly that: the histories with no tabs, because
+    the tabs are already on the other computer.
+    """
     tab = Path(tab_path)
+    if tab.name.endswith(SUFFIX):
+        return tab
     return tab.with_name(tab.stem + SUFFIX)
 
 

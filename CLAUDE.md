@@ -4651,6 +4651,46 @@ binaries = []                            # line 54
 - **It fails on the unfixed spec** — verified, because a test that cannot fail is the thing it is meant to catch.
 - **A file that only runs on the build machine is a file that is only tested there**, and "there" is a laptop belonging to somebody who is not writing the code. Everything in the tree that is Python gets read by something in the suite now.
 
+### A Folder Of Histories Looked Like An Empty Folder
+
+*"Wenn ich im Sync\\songs nur die .mysician.json und die .runs.json ablege, geht es nicht. Da gp, mp3 und songsterr schon auf NB2 sind, sehe
+ich keinen Grund, diese jedes Mal mitzukopieren."*
+
+Both halves right. A tab is 0.4 to 3.9 MB and a recording is four to eight; the thing actually being moved is **one character per note** --
+`MAX_RUNS` is 50, so a 1800-note song carries at most ~90 KB of history, and a sitting is one line of JSON. Carrying the megabytes back and
+forth to move the kilobytes is the wrong shape.
+
+**And the import could not read what he sent, for a reason that was never written down.** `import_songs` walked TABS (`find_songs`, which
+globs `GP_EXTENSIONS`) and hung every belonging off the tab it found. A folder holding `<song>.runs.json` and nothing beside it therefore
+held no songs, and the report said *"Nothing new"* -- the same sentence it says for a folder that really is empty. Two states, one line, and
+the one that means "you did it right and I cannot see it" is the one that costs an evening.
+
+- **A tab makes a song. So does a belonging whose tab is already HERE.** `songs_under` is keyed by STEM now, not by tab, and the second rule
+  is the whole feature: the tabs are on the other computer already, which is the premise.
+- **A stray file still cannot invent one.** A `.mp3` or a `.json` whose tab this machine has never seen is left alone -- nothing can say
+  which song it is a belonging OF, and copying it into the songs folder would make a phantom the list has to explain.
+- **`runs.path_for` answers about itself.** Given `Song.runs.json` it returns it rather than `Song.runs.runs.json`; `Path.stem` cannot see a
+  two-part suffix, and the alternative was inventing a tab path that does not exist just to ask a question about a file already in hand.
+- **A song is NEW when its TAB arrived.** Counting a folder of histories as "3 new songs" would be a count of something else, so the report
+  says *"N files added beside songs you already have"* -- and `Report.anything` includes them, or an import that worked perfectly reports
+  "Nothing new".
+
+**`Ctrl+E` writes that folder**, mirroring `Ctrl+I` in every respect -- same chooser, same panel, same key-repeat drain -- and what it writes
+is exactly what an import reads: `practice_log.jsonl`, `progress.json`, `settings.json`, and `songs/<stem>.runs.json` plus
+`<stem>.mysician.json`. No tab, no recording, no bar map. The round trip is one test, because a format with two readers and no test between
+them is how the sidecar and the practice log each drifted once.
+
+**The date cutoff he asked for was measured away rather than built.** *"Idealerweise kann ich ein Datum wählen, bis zu dem es zurückgeht."*
+The arithmetic says it buys nothing: the whole history over every song is **1-2 MB** against 4-8 MB for one recording, so "without MP3, gp and
+songsterr" has already taken 99 % of it -- and the import is idempotent, so exporting the same evenings twice changes nothing the second time.
+It would also have cost a trap: `runs.json` stamps in **UTC** and `practice_log.jsonl` in **local time**, so one chosen day compared as a
+string against both loses a couple of hours at the boundary on one of them. Put to the player with the numbers, he took the version with no
+filter at all.
+
+**What is NOT built, said out loud:** `tools/merge_stats.py` gets no `--export`. It still does the sittings, the best scores and the settings
+by hand and knows nothing about songs or runs, so an export from there would write a folder its own `--from` could not fully read back. Half a
+front end is worse than one.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

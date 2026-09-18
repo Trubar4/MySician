@@ -271,23 +271,23 @@ class TestTheKey:
         assert screen._display_files == []
         self._press(screen, pygame.K_i, mod=pygame.KMOD_LCTRL)
         assert [p.stem for p in screen._display_files] == ["AC-DC - Thunder"]
-        assert any("1 new song" in line for line in screen._import_lines)
+        assert any("1 new song" in line for line in screen._transfer_lines)
 
     def test_the_report_is_cleared_by_any_key(self, tmp_path, monkeypatch):
         import pygame
         _song(tmp_path / "stick")
         screen = self._menu(tmp_path, tmp_path / "stick", monkeypatch)
         self._press(screen, pygame.K_i, mod=pygame.KMOD_LCTRL)
-        assert screen._import_lines
+        assert screen._transfer_lines
         self._press(screen, pygame.K_DOWN)
-        assert screen._import_lines == []
+        assert screen._transfer_lines == []
 
     def test_cancelling_the_chooser_does_nothing(self, tmp_path,
                                                  monkeypatch):
         import pygame
         screen = self._menu(tmp_path, "", monkeypatch)
         self._press(screen, pygame.K_i, mod=pygame.KMOD_LCTRL)
-        assert screen._import_lines == []
+        assert screen._transfer_lines == []
 
     def test_it_works_with_the_filter_box_open(self, tmp_path, monkeypatch):
         """Ctrl, like Ctrl+M, so it reaches through the text box."""
@@ -296,7 +296,7 @@ class TestTheKey:
         screen = self._menu(tmp_path, tmp_path / "stick", monkeypatch)
         self._press(screen, pygame.K_f, unicode="f")
         self._press(screen, pygame.K_i, mod=pygame.KMOD_LCTRL)
-        assert screen._import_lines
+        assert screen._transfer_lines
 
     def test_both_hints_name_it(self):
         import inspect
@@ -394,3 +394,234 @@ class TestChoosingTheSongsFolder:
         app = self._app(tmp_path, elsewhere, monkeypatch)
         app._choose_songs_folder()
         assert app._config.transpose_for("AC-DC - Thunder") == 2
+
+
+# ── History without the tabs ────────────────────────────────────────────────
+
+def _runs_file(folder, stem, marks, started):
+    """A `.runs.json` beside a tab that may or may not be there."""
+    from pickhero import runs
+    folder.mkdir(parents=True, exist_ok=True)
+    runs.save(folder / f"{stem}.gp5",
+              [runs.Run(notes=marks, started=started, seconds=60.0,
+                        note_count=len(marks))])
+    return folder / f"{stem}.runs.json"
+
+
+class TestAFolderOfHistoriesWithNoTabs:
+    """*"Da gp, mp3, songsterr schon auf NB2 sind, sehe ich keinen Grund
+    diese jedes Mal mitzukopieren."*
+
+    He is right, and it did not work: the import walked TABS, so a folder
+    holding `<song>.runs.json` and nothing beside it was read as an empty
+    folder and reported as one. Every test here fails on that version.
+    """
+
+    def test_the_runs_are_merged_into_the_tab_we_already_have(self, tmp_path):
+        from pickhero import runs
+        songs, config = _here(tmp_path)
+        _song(songs)                      # the whole song, already here
+        _runs_file(songs, "AC-DC - Thunder", "hh",
+                   "2026-09-01T20:00:00+00:00")
+        _runs_file(tmp_path / "stick" / "songs", "AC-DC - Thunder", "cc",
+                   "2026-09-02T20:00:00+00:00")
+        report = transfer.import_from(tmp_path / "stick", config)
+        assert report.runs_added == 1
+        stored = [r.notes for r in runs.load(songs / "AC-DC - Thunder.gp5")]
+        assert stored == ["hh", "cc"]
+
+    def test_the_settings_arrive_where_there_are_none(self, tmp_path):
+        songs, config = _here(tmp_path)
+        (songs / "AC-DC - Thunder.gp5").write_bytes(b"gp")
+        (tmp_path / "stick" / "songs").mkdir(parents=True)
+        (tmp_path / "stick" / "songs"
+         / "AC-DC - Thunder.mysician.json").write_text("{}", encoding="utf-8")
+        transfer.import_from(tmp_path / "stick", config)
+        assert (songs / "AC-DC - Thunder.mysician.json").is_file()
+
+    def test_it_does_not_claim_a_new_song(self, tmp_path):
+        """No tab arrived, so nothing new is playable. Saying "1 new song"
+        would be a count of something else."""
+        songs, config = _here(tmp_path)
+        _song(songs)
+        _runs_file(songs, "AC-DC - Thunder", "hh", "2026-09-01T20:00:00+00:00")
+        _runs_file(tmp_path / "stick", "AC-DC - Thunder", "cc",
+                   "2026-09-02T20:00:00+00:00")
+        report = transfer.import_from(tmp_path / "stick", config)
+        assert report.songs_added == []
+        assert report.anything                    # and NOT "Nothing new"
+        assert not any("Nothing new" in line for line in report.lines())
+
+    def test_a_stray_file_cannot_invent_a_song(self, tmp_path):
+        """Nothing here has a tab for it, so nothing can say which song it
+        is a belonging OF. It is left alone rather than copied in."""
+        songs, config = _here(tmp_path)
+        stick = tmp_path / "stick"
+        stick.mkdir()
+        (stick / "holiday snaps.mp3").write_bytes(b"not a song")
+        _runs_file(stick, "A Song Nobody Has", "hh",
+                   "2026-09-02T20:00:00+00:00")
+        report = transfer.import_from(stick, config)
+        assert list(songs.iterdir()) == []
+        assert report.files_added == 0
+
+    def test_running_it_twice_changes_nothing(self, tmp_path):
+        from pickhero import runs
+        songs, config = _here(tmp_path)
+        _song(songs)
+        _runs_file(songs, "AC-DC - Thunder", "hh", "2026-09-01T20:00:00+00:00")
+        _runs_file(tmp_path / "stick", "AC-DC - Thunder", "cc",
+                   "2026-09-02T20:00:00+00:00")
+        transfer.import_from(tmp_path / "stick", config)
+        again = transfer.import_from(tmp_path / "stick", config)
+        assert again.runs_added == 0
+        assert len(runs.load(songs / "AC-DC - Thunder.gp5")) == 2
+
+    def test_the_history_file_answers_about_itself(self):
+        """`path_for` given the history returns it, so a caller holding one
+        does not have to invent a tab beside it."""
+        from pathlib import Path
+        from pickhero import runs
+        here = Path("/x/Song.runs.json")
+        assert runs.path_for(here) == here
+        assert runs.path_for(Path("/x/Song.gp5")) == here
+
+
+class TestWritingTheFolderToCarry:
+    """*"Am liebsten waere mir ein Button oder Key in der Uebersicht, um alle
+    History/Rundaten (ohne MP3, gp, songsterr) in einen Ordner zu
+    schreiben."*"""
+
+    def _played(self, tmp_path):
+        songs, config = _here(tmp_path)
+        _song(songs)
+        _runs_file(songs, "AC-DC - Thunder", "hhc",
+                   "2026-09-01T20:00:00+00:00")
+        mine = tmp_path / "mine" / ".pickhero"
+        mine.mkdir(parents=True)
+        practice_log.write(mine / "practice_log.jsonl",
+                           [_session("2026-09-01T20:00:00")])
+        (mine / "progress.json").write_text(
+            json.dumps({"AC-DC - Thunder": {"best_accuracy": 0.9}}),
+            encoding="utf-8")
+        return songs, config, mine
+
+    def test_what_it_writes_and_what_it_leaves_behind(self, tmp_path):
+        songs, config, mine = self._played(tmp_path)
+        out = tmp_path / "stick"
+        report = transfer.export_to(out, config, into=mine)
+        written = sorted(p.name for p in out.rglob("*") if p.is_file())
+        assert written == ["AC-DC - Thunder.mysician.json",
+                           "AC-DC - Thunder.runs.json",
+                           "practice_log.jsonl", "progress.json"]
+        assert report.songs == ["AC-DC - Thunder"]
+        assert report.runs == 1
+        assert report.sittings == 1
+
+    def test_no_tab_no_recording_no_bar_map(self, tmp_path):
+        """The megabytes are already on the other computer."""
+        songs, config, mine = self._played(tmp_path)
+        out = tmp_path / "stick"
+        transfer.export_to(out, config, into=mine)
+        names = [p.name for p in out.rglob("*") if p.is_file()]
+        assert not any(n.endswith((".gp5", ".mp3", ".songsterr.json"))
+                       for n in names)
+
+    def test_the_other_machine_reads_it_back(self, tmp_path):
+        """The round trip, which is the whole point: what this writes is
+        what Ctrl+I reads."""
+        from pickhero import runs
+        songs, config, mine = self._played(tmp_path)
+        out = tmp_path / "stick"
+        transfer.export_to(out, config, into=mine)
+
+        # NB2: the same song, a different evening, nothing else shared.
+        theirs = tmp_path / "nb2" / "songs"
+        theirs.mkdir(parents=True)
+        (theirs / "AC-DC - Thunder.gp5").write_bytes(b"gp")
+        _runs_file(theirs, "AC-DC - Thunder", "mmm",
+                   "2026-08-30T20:00:00+00:00")
+        other = Config()
+        other.songs_dir = str(theirs)
+        other.save = lambda: None
+        report = transfer.import_from(out, other,
+                                      into=tmp_path / "nb2" / ".pickhero")
+        assert report.runs_added == 1
+        assert [r.notes for r in runs.load(theirs / "AC-DC - Thunder.gp5")] \
+            == ["mmm", "hhc"]
+        assert report.sittings_added == 1
+        assert (theirs / "AC-DC - Thunder.gp5").read_bytes() == b"gp"
+
+    def test_it_refuses_this_machines_own_folders(self, tmp_path):
+        songs, config, mine = self._played(tmp_path)
+        for folder in (songs, mine):
+            report = transfer.export_to(folder, config, into=mine)
+            assert report.problems and not report.songs
+
+    def test_a_machine_that_has_played_nothing_says_so(self, tmp_path):
+        songs, config = _here(tmp_path)
+        empty = tmp_path / "mine" / ".pickhero"
+        empty.mkdir(parents=True)
+        report = transfer.export_to(tmp_path / "stick", config, into=empty)
+        assert any("Nothing to write" in line for line in report.lines())
+
+    def test_the_report_says_the_folder_is_only_half_a_song(self, tmp_path):
+        songs, config, mine = self._played(tmp_path)
+        said = " ".join(transfer.export_to(tmp_path / "stick", config,
+                                           into=mine).lines())
+        assert "press Ctrl+I there" in said
+
+
+class TestTheExportKey:
+
+    def _menu(self, tmp_path, chosen, monkeypatch):
+        from pickhero.ui.menu import MenuScreen
+        songs, config = _here(tmp_path)
+        _song(songs)
+        _runs_file(songs, "AC-DC - Thunder", "hh", "2026-09-01T20:00:00+00:00")
+        monkeypatch.setattr("pickhero.ui.filepick.pick_folder",
+                            lambda *a, **k: str(chosen))
+        return MenuScreen(songs, config=config)
+
+    def _press(self, screen, key, mod=0, unicode=""):
+        import pygame
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, key=key,
+                                               mod=mod, unicode=unicode))
+
+    def test_ctrl_e_writes_the_folder_and_reports(self, tmp_path,
+                                                 monkeypatch):
+        import pygame
+        out = tmp_path / "stick"
+        screen = self._menu(tmp_path, out, monkeypatch)
+        self._press(screen, pygame.K_e, mod=pygame.KMOD_LCTRL)
+        assert (out / "songs" / "AC-DC - Thunder.runs.json").is_file()
+        assert screen._transfer_lines
+
+    def test_cancelling_the_chooser_does_nothing(self, tmp_path, monkeypatch):
+        import pygame
+        screen = self._menu(tmp_path, "", monkeypatch)
+        self._press(screen, pygame.K_e, mod=pygame.KMOD_LCTRL)
+        assert screen._transfer_lines == []
+
+    def test_a_plain_e_is_not_it(self, tmp_path, monkeypatch):
+        """It types an "e" into the filter box, like any other letter."""
+        import pygame
+        out = tmp_path / "stick"
+        screen = self._menu(tmp_path, out, monkeypatch)
+        self._press(screen, pygame.K_e, unicode="e")
+        assert not out.exists()
+
+    def test_it_works_with_the_filter_box_open(self, tmp_path, monkeypatch):
+        import pygame
+        out = tmp_path / "stick"
+        screen = self._menu(tmp_path, out, monkeypatch)
+        self._press(screen, pygame.K_f, unicode="f")
+        self._press(screen, pygame.K_e, mod=pygame.KMOD_LCTRL)
+        assert screen._transfer_lines
+
+    def test_both_hints_name_it(self):
+        import inspect
+        from pickhero.ui import menu
+        for line in inspect.getsource(menu).splitlines():
+            if "Type to search" in line or "F or /: search" in line:
+                assert "Ctrl+E" in line

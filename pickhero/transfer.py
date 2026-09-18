@@ -175,6 +175,81 @@ def find_songs(folder) -> list[Path]:
         return []
 
 
+def belonging_stem(path) -> str | None:
+    """The song this file belongs to, or None if it belongs to no song.
+
+    A belonging is named `<stem><suffix>`, and `.runs.json` is not something
+    `Path.suffix` can see -- it would read the stem as "<name>.runs". So the
+    known suffixes are matched whole, longest first.
+    """
+    from pickhero.tabs.remove import AUDIO_SUFFIXES
+    from pickhero.tabs.sidecar import SUFFIX as SETTINGS_SUFFIX
+    from pickhero.tabs.songsterr import CACHE_SUFFIX
+    from pickhero.runs import SUFFIX as RUNS_SUFFIX
+    name = Path(path).name
+    known = sorted((RUNS_SUFFIX, SETTINGS_SUFFIX, CACHE_SUFFIX)
+                   + tuple(AUDIO_SUFFIXES), key=len, reverse=True)
+    for suffix in known:
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return name[:-len(suffix)]
+    return None
+
+
+def tab_named(folder, stem: str) -> Path | None:
+    """This machine's tab for that song, whatever generation it is."""
+    from pickhero.tabs.loader import GP_EXTENSIONS
+    for extension in sorted(GP_EXTENSIONS):
+        candidate = Path(folder) / (stem + extension)
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def songs_under(source, target) -> dict:
+    """{stem: the files under `source` that belong to it}.
+
+    **A tab makes a song. So does a belonging whose tab is already HERE.**
+    That second half is what an export folder is -- the history without the
+    tabs, because the tabs are on the other computer already and there is no
+    reason to carry a megabyte of them back and forth to move a few hundred
+    bytes of verdicts: *"Da gp, mp3, songsterr schon auf NB2 sind, sehe ich
+    keinen Grund diese jedes Mal mitzukopieren."* Until now the import walked
+    TABS, so a folder holding `<song>.runs.json` and nothing else was read as
+    an empty folder and said so.
+
+    What it deliberately will not do is let a stray file invent a song: a
+    recording or a `.json` whose tab this machine has never seen is left
+    alone, because nothing can say which song it is a belonging OF.
+    """
+    from pickhero.tabs.remove import belongings
+    root, here = Path(source), Path(target)
+    try:
+        mine = here.resolve()
+    except OSError:
+        mine = here
+    found: dict = {}
+    for tab in find_songs(root):
+        if tab.parent.resolve() == mine:
+            continue                      # already looking at our own folder
+        found[tab.stem] = belongings(tab)
+    try:
+        loose = sorted(p for p in root.rglob("*") if p.is_file())
+    except OSError:
+        loose = []
+    for path in loose:
+        stem = belonging_stem(path)
+        if stem is None or stem in found:
+            continue
+        if path.parent.resolve() == mine:
+            continue
+        if tab_named(here, stem) is None:
+            continue           # no tab anywhere for it: a stray file, not a song
+        # `belongings` finds everything beside a tab by stem; the tab named
+        # here does not exist, so it is not in the list, which is the point.
+        found[stem] = belongings(path.with_name(stem + ".gp5"))
+    return found
+
+
 @dataclass
 class Report:
     """What an import did, or would do."""
@@ -191,8 +266,9 @@ class Report:
 
     @property
     def anything(self) -> bool:
-        return bool(self.songs_added or self.sittings_added or self.runs_added
-                    or self.bests_improved or self.settings_changed)
+        return bool(self.songs_added or self.files_added or self.sittings_added
+                    or self.runs_added or self.bests_improved
+                    or self.settings_changed)
 
     def lines(self) -> list[str]:
         """One line per kind of thing, for the screen."""
@@ -204,6 +280,12 @@ class Report:
                        + f" ({self.files_added} files): "
                        + ", ".join(self.songs_added[:4])
                        + (" …" if len(self.songs_added) > 4 else ""))
+        elif self.files_added:
+            # No tab arrived, so these are belongings of songs already here
+            # -- which is what an export folder holds.
+            out.append(f"{self.files_added} file"
+                       + ("s" if self.files_added != 1 else "")
+                       + " added beside songs you already have")
         if self.sittings_added:
             out.append(f"{self.sittings_added} practice sittings")
         if self.runs_added:
@@ -233,22 +315,25 @@ def import_songs(source, songs_dir, report: Report) -> None:
     song silently replacing the one being practised here.
     """
     from pickhero import runs as runs_mod
-    from pickhero.tabs.remove import belongings
+    from pickhero.tabs.loader import GP_EXTENSIONS
     target = Path(songs_dir)
-    for tab in find_songs(source):
-        if Path(tab).parent.resolve() == target.resolve():
-            continue                      # already looking at our own folder
+    for stem, files in sorted(songs_under(source, target).items()):
         # The runs are the one belonging that MERGES rather than being kept
         # or copied whole: a history is a list, and two lists of different
         # evenings have a union. Everything else beside a tab is a single
         # answer, where "what this machine has wins" is the only safe rule.
-        report.runs_added += _merge_runs(tab, target, report, runs_mod)
-        wanted = [p for p in belongings(tab)
-                  if not (target / p.name).exists()]
+        report.runs_added += _merge_runs(stem, files, target, report, runs_mod)
+        wanted = [p for p in files if not (target / p.name).exists()]
         if not wanted:
             continue
+        # A song is NEW when its tab arrived. A folder of nothing but
+        # histories adds files to songs this machine already has, and
+        # calling that "3 new songs" would be a count of something else.
+        arrived = any(p.suffix.lower() in GP_EXTENSIONS
+                      for p in wanted)
         if report.dry_run:
-            report.songs_added.append(tab.stem)
+            if arrived:
+                report.songs_added.append(stem)
             report.files_added += len(wanted)
             continue
         copied = 0
@@ -259,32 +344,35 @@ def import_songs(source, songs_dir, report: Report) -> None:
                 copied += 1
             except OSError as exc:
                 report.problems.append(f"{path.name}: {exc.strerror or exc}")
-        if copied:
-            report.songs_added.append(tab.stem)
-            report.files_added += copied
+        if copied and arrived:
+            report.songs_added.append(stem)
+        report.files_added += copied
 
 
-def _merge_runs(tab, target: Path, report: Report, runs_mod) -> int:
+def _merge_runs(stem: str, files, target: Path, report: Report,
+                runs_mod) -> int:
     """Take the other machine's runs of a song this one already has.
 
-    Only where the tab is REALLY the same file by name -- the rule every
+    Only where the tab is REALLY the same song by name -- the rule every
     belonging here follows. A song this machine has never seen is copied
     whole by the loop above, runs and all, and needs nothing from here.
     """
-    if not runs_mod.path_for(tab).is_file():
+    theirs = next((p for p in files
+                   if p.name.endswith(runs_mod.SUFFIX)), None)
+    if theirs is None or not theirs.is_file():
         return 0
-    here = target / Path(tab).name              # the same tab, in our folder
-    if not here.is_file() or not runs_mod.path_for(here).is_file():
+    here = tab_named(target, stem)        # the same song, in our folder
+    if here is None or not runs_mod.path_for(here).is_file():
         # Nothing of ours to merge INTO: a song this machine has never seen,
         # or one it has never played. The ordinary file loop copies the
         # history over whole, which is the same answer by a cheaper route --
         # and running both would count it twice.
         return 0
     if report.dry_run:
-        _, would = runs_mod.merge(runs_mod.load(here), runs_mod.load(tab))
+        _, would = runs_mod.merge(runs_mod.load(here), runs_mod.load(theirs))
         return would
     backup(runs_mod.path_for(here))
-    return runs_mod.merge_files(here, tab)
+    return runs_mod.merge_files(here, theirs)
 
 
 def import_from(source, config=None, dry_run: bool = False,
@@ -357,3 +445,138 @@ def import_from(source, config=None, dry_run: bool = False,
     except OSError as exc:
         report.problems.append(f"Could not write: {exc.strerror or exc}")
     return report
+
+
+# ── The other direction: writing a folder to carry ──────────────────────────
+
+#: Where an export puts the song histories. A folder of its own, so the
+#: import finds them exactly where it finds a real songs folder's -- and so
+#: nothing an export writes can land beside the practice diary and be read
+#: as part of it.
+EXPORT_SONGS = "songs"
+
+
+@dataclass
+class Export:
+    """What was written out, for the same panel the import report uses."""
+
+    target: str = ""
+    songs: list = field(default_factory=list)
+    runs: int = 0
+    sittings: int = 0
+    bests: int = 0
+    settings: bool = False
+    problems: list = field(default_factory=list)
+
+    @property
+    def anything(self) -> bool:
+        return bool(self.songs or self.sittings or self.bests
+                    or self.settings)
+
+    def lines(self) -> list[str]:
+        out = [f"Wrote your history to {self.target}"]
+        if self.songs:
+            out.append(f"{self.runs} run" + ("s" if self.runs != 1 else "")
+                       + f" over {len(self.songs)} song"
+                       + ("s" if len(self.songs) != 1 else "")
+                       + ": " + ", ".join(self.songs[:4])
+                       + (" …" if len(self.songs) > 4 else ""))
+        if self.sittings:
+            out.append(f"{self.sittings} practice sittings")
+        if self.bests:
+            out.append(f"best scores for {self.bests} song"
+                       + ("s" if self.bests != 1 else ""))
+        if not self.anything:
+            out.append("Nothing to write — no runs and no practice diary "
+                       "on this machine yet.")
+        out += self.problems
+        out.append("No tabs, recordings or bar maps — take this folder to "
+                   "the other computer and press Ctrl+I there.")
+        return out
+
+
+def export_to(folder, config=None, into: Path | None = None) -> Export:
+    """Write everything this machine knows about PLAYING, and nothing else.
+
+    *"Am liebsten waere mir ein Button oder Key in der Uebersicht, um alle
+    History/Rundaten (ohne MP3, gp, songsterr) in einen Ordner zu schreiben,
+    den ich dann kopieren kann."*
+
+    Hand-copying the two files he named did not work, and the reason is that
+    the import walked TABS: a folder holding `<song>.runs.json` and nothing
+    beside it looked empty. `songs_under` reads it now, and this writes the
+    folder that reads back.
+
+    **The tabs, the recordings and the bar maps are deliberately absent.**
+    They are the megabytes and they are already on the other machine. What
+    is left is a couple of hundred kilobytes: a run is one character per
+    note, capped at `runs.MAX_RUNS`, and a sitting is one line of JSON.
+
+    Never raises. A folder that cannot be written is a report saying which
+    file and why -- an export that half-succeeded in silence is worse than
+    one that did not run.
+    """
+    from pickhero import runs as runs_mod
+    from pickhero.tabs.sidecar import SUFFIX as SETTINGS_SUFFIX
+
+    root = Path(folder)
+    out = Export(target=str(root))
+    songs_dir = Path(config.songs_path()) if config is not None else None
+    home = Path(into) if into is not None else CONFIG_DIR
+
+    if songs_dir is not None:
+        try:
+            if root.resolve() == songs_dir.resolve():
+                out.problems.append("That is this machine's own songs folder.")
+                return out
+        except OSError:
+            pass
+    try:
+        if root.resolve() == home.resolve():
+            out.problems.append("That is this machine's own settings folder.")
+            return out
+    except OSError:
+        pass
+
+    try:
+        (root / EXPORT_SONGS).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        out.problems.append(f"Could not write there: {exc.strerror or exc}")
+        return out
+
+    # ── the per-song history ───────────────────────────────────────────────
+    if songs_dir is not None:
+        for tab in sorted(find_songs(songs_dir)):
+            history = runs_mod.path_for(tab)
+            sidecar = tab.with_name(tab.stem + SETTINGS_SUFFIX)
+            taken = 0
+            for path in (history, sidecar):
+                if not path.is_file():
+                    continue
+                try:
+                    shutil.copy2(path, root / EXPORT_SONGS / path.name)
+                    taken += 1
+                except OSError as exc:
+                    out.problems.append(
+                        f"{path.name}: {exc.strerror or exc}")
+            if taken:
+                out.songs.append(tab.stem)
+                out.runs += len(runs_mod.load(tab))
+
+    # ── the diary, the best scores and the leftover settings ───────────────
+    for name in ("practice_log.jsonl", "progress.json", "settings.json"):
+        source = home / name
+        if not source.is_file():
+            continue
+        try:
+            shutil.copy2(source, root / name)
+        except OSError as exc:
+            out.problems.append(f"{name}: {exc.strerror or exc}")
+            continue
+        if name == "practice_log.jsonl":
+            out.sittings = len(practice_log.read(source))
+        elif name == "progress.json":
+            out.bests = len(read_json(source))
+        else:
+            out.settings = True
+    return out
