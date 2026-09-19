@@ -5211,3 +5211,117 @@ class TestTheAnchorDoesNotMeasureTheSeek:
         song, offset, moved = screen._anchor_moves[-1]
         assert song == pytest.approx(60_000.0)
         assert offset == pytest.approx(screen._matcher.audio_offset_ms)
+
+
+class TestTheGraceIsDerivedNotGuessed:
+    """The base of the late window was the literal 150, with a comment saying
+    it "covers the onset collector delay" -- and nothing printed either
+    number, so whether it did was not a question the app could answer.
+
+    It is (COLLECT_FRAMES + 1) hops plus a frame now, which at 44.1 kHz and a
+    512 hop is 168 ms. The old 150 was close, and close by luck: at a 48 kHz
+    device the same constants give a different answer.
+    """
+
+    def _screen(self, **audio):
+        config = Config()
+        for name, value in audio.items():
+            setattr(config.audio, name, value)
+        return PlayingScreen(_make_timeline(), config=config)
+
+    def test_it_is_the_collector_the_block_and_a_frame(self):
+        from pickhero.audio.input import OnsetPitchCollector
+        from pickhero.ui.scrolling import FRAME_BUDGET_MS
+        screen = self._screen(sample_rate=44100, hop_size=512)
+        expected = ((OnsetPitchCollector.COLLECT_FRAMES + 1) * 512 / 44100
+                    * 1000.0 + FRAME_BUDGET_MS)
+        assert screen._strike_delay_ms() == pytest.approx(expected)
+        assert screen._strike_delay_ms() == pytest.approx(167.6, abs=0.5)
+
+    def test_a_different_device_gets_a_different_answer(self):
+        """A USB interface that only accepts 48 kHz in Windows shared mode is
+        the commonest device this app meets, and it makes the delay shorter.
+        A constant cannot follow that."""
+        at_44 = self._screen(sample_rate=44100, hop_size=512)._strike_delay_ms()
+        at_48 = self._screen(sample_rate=48000, hop_size=512)._strike_delay_ms()
+        assert at_48 < at_44
+        bigger_hop = self._screen(sample_rate=44100,
+                                  hop_size=1024)._strike_delay_ms()
+        assert bigger_hop > at_44
+
+    def test_the_compensated_latency_is_paid_back_whole(self):
+        """It moves `adjusted_ms` earlier by exactly that much, so the note
+        has to stay alive by exactly that much. Arithmetic, not leniency --
+        capping it would make every strike late on a machine that needs a
+        big offset, which is the fault rather than the guard against it."""
+        screen = self._screen()
+        screen._config.audio_latency_offset_ms = -400.0
+        base = min(300.0, max(150.0, screen._strike_delay_ms()))
+        assert screen._late_window_ms() == pytest.approx(base + 400.0)
+
+    def test_the_pipeline_term_is_capped_where_the_reach_starts_to_grow(self):
+        """Measured on a real take: up to a 300 ms late window the furthest a
+        strike ever reached was exactly `timing_window`. At 325 one credited
+        a note 183 ms away, at 500 one 322 ms away."""
+        from pickhero.ui.scrolling import MAX_PIPELINE_GRACE_MS
+        screen = self._screen(sample_rate=8000, hop_size=4096)  # absurd device
+        assert screen._strike_delay_ms() > MAX_PIPELINE_GRACE_MS
+        assert screen._late_window_ms() == pytest.approx(MAX_PIPELINE_GRACE_MS)
+
+    def test_it_never_drops_under_what_shipped(self):
+        """150 ms is the value this was measured safe at; no device may end
+        up with less grace than that."""
+        screen = self._screen(sample_rate=192000, hop_size=64)
+        assert screen._strike_delay_ms() < 150.0
+        assert screen._late_window_ms() == pytest.approx(150.0)
+
+
+class TestTheLogSaysHowStaleTheStrikesWere:
+    """`late_window_ms` says what the app ALLOWS. Nothing said what it
+    needed, so a run whose strikes arrived 455 ms late looked exactly like
+    one whose strikes arrived 280 ms late -- and those two scored 11 % and
+    95 % of the same riff.
+    """
+
+    def _screen_with(self, delays):
+        from pickhero.matcher import NoteMatcher, StrikeTrace
+        config = Config()
+        config.timing_window_ms = 150.0
+        screen = PlayingScreen(_make_timeline(), config=config)
+        screen._matcher = NoteMatcher(_make_timeline(), late_window_ms=259.0)
+        for i, d in enumerate(delays):
+            screen._matcher.strike_trace.append(StrikeTrace(
+                strike_ms=float(i), adjusted_ms=float(i),
+                playback_ms=float(i) + d, midi_note=40, confidence=1.0,
+                unpitched=False, subharmonic=False, outcome="hit",
+                note_ms=None, semitones=0))
+        return screen
+
+    def _log(self, screen):
+        import io
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        return buffer.getvalue()
+
+    def test_a_healthy_run_reports_its_spare(self):
+        text = self._log(self._screen_with([280.0] * 100))
+        assert "strike_delay_median\t280" in text
+        assert "strike_delay_budget\t409" in text
+        assert "strike_delay_over_budget_percent\t0" in text
+
+    def test_the_run_that_lost_the_notes_says_so_in_one_line(self):
+        """455 ms against a 409 ms budget: every strike arrives to find its
+        note already marked missed."""
+        text = self._log(self._screen_with([455.0] * 100))
+        assert "strike_delay_median\t455" in text
+        assert "strike_delay_over_budget_percent\t100" in text
+        assert "100 of 100 strikes arrived after their note" in text
+
+    def test_the_spare_is_signed_so_a_shortfall_reads_as_one(self):
+        assert "+129 ms spare" in self._log(self._screen_with([280.0] * 10))
+        assert "-46 ms spare" in self._log(self._screen_with([455.0] * 10))
+
+    def test_a_run_with_no_strikes_says_nothing_rather_than_zero(self):
+        """Nothing heard is not the same as nothing late, and a zero there
+        would claim the pipeline was perfect on a run with no audio at all."""
+        assert "strike_delay_median" not in self._log(self._screen_with([]))

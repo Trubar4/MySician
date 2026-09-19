@@ -4744,6 +4744,48 @@ not: `adjusted_ms − strike_ms` IS `audio_offset_ms`, in every row of a table t
 an answer for months without anyone subtracting two of its columns** — which is the same fault as a feature that cannot be seen working, one
 level up, and it cost the first half of this diagnosis.
 
+### The Grace Period Was A Guess That Happened To Be Close
+
+With the anchor reproducible, the other half of the 409 ms budget is worth reading rather than assuming. `_late_window_ms` was
+`150.0 + max(0, -sync_offset)`, with a comment saying the base "covers the onset collector delay" — **and nothing anywhere printed either
+number**, so whether it did was not a question the app could answer.
+
+It is not a constant. It is three things that are all known:
+
+```
+(COLLECT_FRAMES + 1) x hop / rate   the collector waits 12 hops before it emits
+                                    anything at all, plus the callback block
++ one frame                         queued by the capture thread, drained by update()
+= 168 ms   at 44.1 kHz and a 512 hop, against an assumed 150
+```
+
+**Eighteen milliseconds under, at the commonest configuration this app meets** — and close by luck rather than by arithmetic: at a 48 kHz
+device (which is what a USB interface gives in Windows shared mode) the same constants say 155, and at a different `COLLECT_FRAMES` they say
+something else again, from a file nobody would think to open from here.
+
+- **One frame at the DISPLAY's budget, not the measured interval.** A grace period that moved with the frame rate would make two runs of the
+  same song incomparable, which is the one thing a diagnostic must not do.
+- **The pipeline term is capped at `MAX_PIPELINE_GRACE_MS` (300) and the compensated latency is not**, because they are different kinds of
+  thing. Measured on the player's take, at every late window **up to 300 the furthest a strike ever reached was exactly `timing_window`**
+  (150 ms) — so under the cap the window decides PATIENCE and nothing else. At 325 a strike credited a note 183 ms away and at 500 one 322 ms
+  away, through the chord-sibling rule. A compensated latency is arithmetic: it moves `adjusted_ms` earlier by exactly that much, so the note
+  has to stay alive by exactly that much, and capping it would make every strike late on a machine that needs a big offset.
+- **Floored at the 150 that shipped.** No device may end up with less grace than the value this was measured safe at.
+
+**And on the run that prompted it, this changes nothing**, which is the honest half: at a 284 ms staleness the score is 1140 of 1318 at a
+259 ms window and 1140 at 277. The player's own `K` calibration of −109 ms had already carried him over the line. **The window was never the
+fault** — that was the anchor, and saying otherwise would be this file crediting whichever variable had just moved, for the fourth time.
+
+**What it buys is that the next run answers the question instead of a session doing it by hand.** The log carries `strike_delay_median`,
+`strike_delay_worst_tenth`, `strike_delay_budget` (with the spare, signed) and `strike_delay_over_budget_percent` — the share of strikes that
+arrived to find their note already marked missed, next to the count it is a share of. On the run that started this it would have read
+**`over_budget_percent 60`** on line four of the log.
+
+**The measurement of the reach measured itself first, which is the sixth time.** `process_detected_notes` runs `_mark_missed_notes` at its
+top, so the first probe attributed the sweep's results to the strike that happened to be in hand and reported a 7625 ms reach at every
+setting — including the shipped one, where the real answer is a flat 150. The tell was a control that came back broken: a reach that does not
+respond to the knob under test is not a reading of that knob.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

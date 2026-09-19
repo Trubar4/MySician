@@ -402,6 +402,20 @@ MAX_FRAME_STALL_S = 0.25
 #: count and the worst move are printed whole.
 MAX_LOGGED_ANCHORS = 20
 
+#: One frame of the game loop, in the strike's journey from the capture
+#: thread to the matcher. The 60 Hz budget rather than what the machine
+#: really managed: a grace period that moved with the frame rate would make
+#: two runs of the same song incomparable.
+FRAME_BUDGET_MS = 1000.0 / 60.0
+
+#: The most the pipeline term of the late window may grow to. Measured on a
+#: real take: up to a 300 ms late window the furthest a strike ever reached
+#: was exactly `timing_window` (150 ms) -- so the window decides patience and
+#: nothing else. At 325 a strike credited a note 183 ms away and at 500 one
+#: 322 ms away, through the chord-sibling rule. That is leniency, and it is
+#: not what this term is for.
+MAX_PIPELINE_GRACE_MS = 300.0
+
 # When a recording is playing, IT is the clock and the picture is pulled to
 # it. Two numbers decide how that pull feels.
 #
@@ -6336,6 +6350,42 @@ class PlayingScreen:
         self._run_log_note = f"Run written to {path}{where}"
         self._say(self._run_log_note)
 
+    def _write_strike_delay(self, fh, matcher) -> None:
+        """How stale the strikes really were, beside the budget they had.
+
+        The two numbers this pair replaces were an assumption and a
+        percentage. `late_window_ms` says what the app allows; nothing said
+        what it needed, so a run whose strikes arrived 455 ms late looked
+        exactly like one whose strikes arrived 280 ms late, and the 455 one
+        scored 11 % of its notes against 95 %.
+
+        `budget` is `hit_window + late_window`: past it `_mark_missed_notes`
+        has already resolved the note, so the strike arrives to find nothing
+        left to credit. **`over_budget_percent` is the number that matters**
+        -- not because it is a percentage but because it is a percentage OF
+        something the next line names.
+
+        Same rule as strikes-heard beside notes-credited, and as the practice
+        speed beside a take: a number is only readable next to what it is a
+        number of.
+        """
+        delays = sorted(t.playback_ms - t.adjusted_ms
+                        for t in matcher.strike_trace)
+        if not delays:
+            return
+        budget = self._config.timing_window_ms + matcher.late_window_ms
+        over = sum(1 for d in delays if d > budget)
+        median = delays[len(delays) // 2]
+        worst_tenth = delays[int(len(delays) * 0.9)]
+        fh.write(f"strike_delay_median\t{median:.0f}\n")
+        fh.write(f"strike_delay_worst_tenth\t{worst_tenth:.0f}\n")
+        fh.write(f"strike_delay_budget\t{budget:.0f}"
+                 f"\t{budget - worst_tenth:+.0f} ms spare at the worst tenth\n")
+        fh.write(f"strike_delay_over_budget_percent"
+                 f"\t{100 * over / len(delays):.0f}"
+                 f"\t({over} of {len(delays)} strikes arrived after their note"
+                 f" had been marked missed)\n")
+
     def _write_run_log(self, fh) -> None:
         """The body of the run log. Split out so a test can read it back."""
         matcher = self._matcher
@@ -6373,6 +6423,7 @@ class PlayingScreen:
         fh.write(f"sync_offset_ms\t{self._config.audio_latency_offset_ms:.0f}\n")
         fh.write(f"audio_offset_ms\t{matcher.audio_offset_ms:.1f}\n")
         fh.write(f"late_window_ms\t{matcher.late_window_ms:.0f}\n")
+        self._write_strike_delay(fh, matcher)
         fh.write(f"audio_anchor_ms\t{self._audio_anchor_ms:.1f}\n")
         fh.write(f"audio_anchor_song_ms\t{self._audio_anchor_song_ms:.1f}\n")
         # Every anchor this run took, and how far each one moved the offset.
@@ -7028,14 +7079,65 @@ class PlayingScreen:
         """
         return self._config.audio_latency_offset_ms * self._tempo_factor
 
-    def _late_window_ms(self) -> float:
-        """Grace period for late-arriving strike notes.
+    def _strike_delay_ms(self) -> float:
+        """How long a strike takes to reach the matcher after the sound.
 
-        Base 150 ms covers the onset collector delay; a compensated input
-        latency delays the strike's real-world arrival by the same amount
-        on top, so misses must be marked correspondingly later.
+        **Derived from the things that make it, not fitted.** The base was
+        the literal 150 with a comment saying it "covers the onset collector
+        delay" -- and nothing anywhere printed either number, so whether it
+        did was not a question the app could answer. Measured on a real run
+        it was out: the delay is the collector's own wait plus a block plus a
+        frame, which at 44.1 kHz and a 512 hop is
+
+            (12 + 1) x 512 / 44100 = 151 ms, + one frame = ~168 ms
+
+        against an assumed 150. Close, and close by luck rather than by
+        arithmetic -- at a 48 kHz device or a different hop it moves, and at
+        `COLLECT_FRAMES` it moves with a constant nobody would think to look
+        at from here.
+
+        One frame, because the strike is queued by the capture thread and
+        drained by the next `update()`. The display's budget rather than the
+        measured interval: a window that moved with the frame rate would make
+        two runs of the same song incomparable, which is the one thing a
+        diagnostic must not do.
         """
-        return 150.0 + max(0.0, -self._sync_offset_song_ms())
+        # Imported here, not at the top: pulling audio/ in reaches
+        # sounddevice and aubio, and this module is the one that must come up
+        # on a machine where neither is installed.
+        from pickhero.audio.input import OnsetPitchCollector
+        capture = self._audio_capture
+        rate = float(getattr(capture, "_sample_rate", 0)
+                     or self._config.audio.sample_rate)
+        hop = float(self._config.audio.hop_size)
+        collector = (OnsetPitchCollector.COLLECT_FRAMES + 1) * hop / rate
+        return collector * 1000.0 + FRAME_BUDGET_MS
+
+    def _late_window_ms(self) -> float:
+        """How long a written note is kept alive waiting for its strike.
+
+        Two terms, and they are different KINDS of thing:
+
+        - **the pipeline** (`_strike_delay_ms`), which is how late the
+          evidence physically arrives. Capped at `MAX_PIPELINE_GRACE_MS`,
+          because measured on the player's own take the strike's reach stays
+          at exactly `timing_window` up to a 300 ms late window and grows
+          past it -- at 325 a strike credited a note 183 ms away, at 500 one
+          322 ms away. Under the cap this is pure PATIENCE: it decides
+          whether the note was still PENDING, never how far a strike may
+          look.
+        - **a compensated input latency**, which moves `adjusted_ms` earlier
+          by exactly that much and therefore has to keep the note alive by
+          exactly that much. Not capped: it is arithmetic, and refusing to
+          pay it back would make every strike late on a machine that needs
+          a big offset -- which is the fault, not the guard against it.
+
+        Floored at the 150 ms that shipped, so no device can end up with less
+        grace than the value this was measured safe at.
+        """
+        pipeline = min(MAX_PIPELINE_GRACE_MS,
+                       max(150.0, self._strike_delay_ms()))
+        return pipeline + max(0.0, -self._sync_offset_song_ms())
 
     def _make_chord_verifier(self):
         """Per-string chord verifier, or None when the setting is off."""
