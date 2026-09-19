@@ -1754,7 +1754,14 @@ class TestAudioClockAnchor:
         return screen
 
     def _song_position(self, screen, strike_ms):
-        """Where the app decides a strike stamped at strike_ms happened."""
+        """Where the app decides a strike stamped at strike_ms happened.
+
+        The anchor is asked for at the change and TAKEN on the next frame,
+        where both clocks describe the present -- so the frame is part of
+        what is being tested, and asking before one has run would be asking
+        about a value the app never uses.
+        """
+        screen._apply_audio_anchor()
         return strike_ms * screen._tempo_factor + screen._matcher.audio_offset_ms
 
     def test_a_strike_keeps_its_place_across_a_speed_change(self):
@@ -2083,6 +2090,7 @@ class TestPausingIsNotStoppingEverything:
         screen._matcher = NoteMatcher(_make_timeline())
         screen.toggle_play()                 # play
         assert starts == []
+        screen._apply_audio_anchor()         # what the next frame does
         assert screen._audio_anchor_ms == pytest.approx(4000.0)
 
     def test_a_closed_device_is_still_opened(self):
@@ -3282,6 +3290,7 @@ class TestSeekingDoesNotReopenTheDevice:
         """Leaving the device alone must not mean leaving the clock wrong."""
         screen = self._screen()
         screen.seek(12000.0)
+        screen._apply_audio_anchor()         # what the next frame does
         # A strike stamped at the capture's current position must read as the
         # song position the player can see.
         adjusted = 20_000.0 * screen._tempo_factor + screen._matcher.audio_offset_ms
@@ -5062,3 +5071,143 @@ class TestAHighlightHasToDifferFromWhatItStandsOut_From:
             highlight = theme.feedback_streak
             assert self._distance(highlight, theme.hud_text) > 150, name
             assert self._distance(highlight, theme.hud_accent) > 150, name
+
+
+class TestTheAnchorDoesNotMeasureTheSeek:
+    """*"Bei diesem Lauf wurde sehr wenig erkannt."*
+
+    It was, by the detector: 559 strikes for 484 written picks, on the grid
+    to within 20 ms. What lost 591 notes is how STALE each strike was when
+    the matcher saw it -- `playback_ms - adjusted_ms` in the run log. That
+    sat at 280 ms for a minute, then at 455 for a minute, then at 16, and it
+    changed only where an anchor was taken. Sixteen is impossible: the onset
+    collector waits 139 ms before it emits anything at all.
+
+    `hit_window + late_window` is 409 ms, and past it `_mark_missed_notes`
+    has already resolved the note. The 280 ms block scored 95 % of its
+    notes; the 455 ms block, same riff, same pitches, same detector, scored
+    11 %.
+
+    The anchor pairs `elapsed_ms()` -- the ring's counter, running in the
+    capture thread -- with `_playback_ms`, which only moves when a frame
+    advances it. Anything that happens between the two readings and the
+    moment the song clock restarts is baked into the offset for the whole
+    block. These tests assert that it is not.
+    """
+
+    class _Capture:
+        """A ring counter that runs whether or not the app is looking."""
+
+        def __init__(self, clock):
+            self._clock = clock
+
+        def is_running(self): return True
+        def elapsed_ms(self): return self._clock[0]
+        def get_notes(self): return []
+        def get_strike_windows(self): return []
+        def get_signal_db(self): return -60.0
+        def get_tuner_data(self, raw=False): return (0.0, 0.0)
+
+    class _SlowBacking:
+        """A backing whose seek costs real time, the way a decoder does."""
+
+        def __init__(self, clock, cost_ms):
+            self._clock, self._cost = clock, cost_ms
+
+        def seek(self, ms): self._clock[0] += self._cost
+        def pause(self): pass
+        def update(self, ms): pass
+        def stop(self): pass
+
+    @staticmethod
+    def _song():
+        # Long enough that the positions below are inside it: a seek past the
+        # end is clamped, and toggle_play restarts from the beginning there.
+        return _make_timeline(notes=[NoteEvent(1000, 500, 64, 1, 5),
+                                     NoteEvent(90_000, 500, 64, 1, 5)])
+
+    def _screen(self, clock):
+        from pickhero.matcher import NoteMatcher
+        config = Config()
+        config.count_in_beats = 0
+        song = self._song()
+        screen = PlayingScreen(song, config=config)
+        screen._count_in_ms = 0.0
+        screen._audio_enabled = True
+        screen._audio_capture = self._Capture(clock)
+        screen._matcher = NoteMatcher(song)
+        return screen
+
+    @staticmethod
+    def _reads_as(screen, clock):
+        """Where a strike stamped at the ring's CURRENT position lands."""
+        return clock[0] * screen._tempo_factor + screen._matcher.audio_offset_ms
+
+    def test_resuming_does_not_charge_its_own_slow_work_to_every_strike(self):
+        """`toggle_play` anchors first and starts the clock LAST, on purpose:
+        the recording's seek must not be charged to the song. That is right
+        for the picture and it displaced every strike by the same amount --
+        +168 ms on the player's run, which is 40 % of the whole budget."""
+        clock = [10_000.0]
+        screen = self._screen(clock)
+        screen._midi_player = self._SlowBacking(clock, 300.0)
+        screen._playback_ms = 40_000.0
+        screen.toggle_play()                     # resume: 300 ms of work
+        screen._apply_audio_anchor()             # what the next frame does
+        assert self._reads_as(screen, clock) == pytest.approx(40_000.0, abs=1.0)
+
+    def test_a_seek_does_not_either(self):
+        """`seek()` anchors LAST, after the recording has moved -- and the
+        next frame then charges that same work to the song clock, which is
+        the other sign: a 16 ms pipeline in the log."""
+        clock = [10_000.0]
+        screen = self._screen(clock)
+        screen._midi_player = self._SlowBacking(clock, 300.0)
+        screen._playing = True
+        screen.seek(40_000.0)
+        screen._apply_audio_anchor()
+        assert self._reads_as(screen, clock) == pytest.approx(40_000.0, abs=1.0)
+
+    def test_it_holds_however_long_the_work_takes(self):
+        """The whole point: the anchor must not be a measurement of whatever
+        the machine was busy with. A value fitted to one seek is a value that
+        is wrong at the next."""
+        for cost in (0.0, 50.0, 300.0, 1500.0):
+            clock = [10_000.0]
+            screen = self._screen(clock)
+            screen._midi_player = self._SlowBacking(clock, cost)
+            screen._playback_ms = 40_000.0
+            screen.toggle_play()
+            screen._apply_audio_anchor()
+            assert self._reads_as(screen, clock) == pytest.approx(
+                40_000.0, abs=1.0), f"{cost} ms of work moved the strikes"
+
+    def test_the_anchor_is_not_taken_at_the_call(self):
+        """It is asked for there and taken on the frame. Asserted because
+        that IS the fix: taken at the call, it is paired with a song clock
+        that has not moved yet."""
+        clock = [10_000.0]
+        screen = self._screen(clock)
+        screen._playing = True
+        before = screen._matcher.audio_offset_ms
+        screen.seek(40_000.0)
+        assert screen._reanchor_due
+        assert screen._matcher.audio_offset_ms == before
+        screen._apply_audio_anchor()
+        assert not screen._reanchor_due
+        assert screen._matcher.audio_offset_ms != before
+
+    def test_the_run_log_says_what_every_anchor_did(self):
+        """A run with 112 seeks used a different offset in every block, and
+        the log printed one number at the end. Reconstructing the rest by
+        hand out of the strike table cost a whole session."""
+        clock = [10_000.0]
+        screen = self._screen(clock)
+        screen._playing = True
+        for target in (20_000.0, 40_000.0, 60_000.0):
+            screen.seek(target)
+            screen._apply_audio_anchor()
+        assert len(screen._anchor_moves) == 3
+        song, offset, moved = screen._anchor_moves[-1]
+        assert song == pytest.approx(60_000.0)
+        assert offset == pytest.approx(screen._matcher.audio_offset_ms)

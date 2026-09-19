@@ -4691,6 +4691,59 @@ filter at all.
 by hand and knows nothing about songs or runs, so an export from there would write a folder its own `--from` could not fully read back. Half a
 front end is worse than one.
 
+## The Anchor Was Measuring The Seek
+
+*"Bei diesem Lauf wurde sehr wenig erkannt. Siehst du Gründe?"* The detector had almost nothing to do with it. On that run (Bad Omens, "Just
+Pretend", Drop C, 1318 written notes, 56 % scored):
+
+| | |
+|---|---|
+| written picks (a chord counted as one) | **484** |
+| strikes the microphone produced | **559** |
+| strike against the nearest written onset, in the worst section | **−6 to −23 ms** |
+| `dropped_buffers` | 0, level −2.6 / −7.6 dB, room −54.9 |
+
+More strikes than picks, on the grid. And 591 notes red.
+
+**What lost them is how STALE each strike was when the matcher saw it** — `playback_ms − adjusted_ms`, which the log has carried per strike all
+along and which nobody had ever subtracted:
+
+| song time | staleness | strikes that matched nothing |
+|---|---|---|
+| 0:50–1:50 | **275–290 ms** | **0–8 %** |
+| 2:20–3:20 | **452–455 ms** | **68–93 %** |
+
+That is not a correlation. `hit_window` (150) + `late_window` (259) = **409 ms**, and past it `_mark_missed_notes` has already resolved the note:
+the strike arrives to find its note marked MISS 45 ms ago. Same riff, same pitches, same detector, 95 % against 11 %.
+
+**The offset was stable to ±10 ms WITHIN each block** — that is `_follow_recording`'s pull, which carries the anchor correctly and is innocent.
+What jumped was the value each re-anchor SET: 29742 at 1:12, 46029 at 2:14, 62861 at 3:46, giving staleness of 280, 455 and **16** ms. Sixteen
+is impossible — `OnsetPitchCollector` waits `COLLECT_FRAMES` (139 ms) before it emits anything at all. **So the anchor was not measuring the
+pipeline. It was measuring whatever the machine had just been busy with.**
+
+- **`elapsed_ms()` is the ring's sample counter**, running in the capture thread in real time. **`_playback_ms` only moves when a frame advances
+  it.** Pairing them anywhere but on the frame pairs "audio time NOW" with "song time as of the last frame", and everything in between is baked
+  into the offset for the whole block.
+- **Both signs appear, which is what named the mechanism.** `toggle_play` anchors FIRST and starts the clock LAST — deliberately, so the
+  recording's seek is not charged to the song (that fix has its own chapter) — so the resume work lands as extra staleness: **+168 ms** at 2:14.
+  `seek()` anchors LAST, after the recording has moved, and the next frame then charges that same work to the song clock: **−432 ms** at 3:46,
+  which is how a 16 ms pipeline got printed. `_start_audio` is the third instance: it reads the counter, then builds a `NoteMatcher` over the
+  whole song, then computes the offset from the reading it took before.
+- **The anchor is asked for now and TAKEN on the next frame** (`_reanchor_audio_clock` arms, `_apply_audio_anchor` takes), at the one instant in
+  `update()` where the clock has been advanced, wait mode has settled it, and nothing has been matched against it yet. One door for all four
+  callers, so re-ordering a resume sequence later cannot reintroduce it.
+- **Measured on the player's own strikes, replayed through the real matcher**: as it happened **737 of 1318 (56 %)**; with the staleness at the
+  284 ms the healthy blocks showed, **1140 (86 %)**. The app's own count was 709, so the replay is faithful to within 4 %.
+- **The test asserts the property, at four different costs of slow work** (0, 50, 300 and 1500 ms): a strike stamped at the ring's current
+  position must read as the song position now, whatever the machine was doing. All five fail on the unfixed code.
+- **The log carries every anchor now** (`audio_anchors`, `audio_anchor_at`), not just the last one. A run with 112 seeks used a different offset
+  in every block and printed one number at the end; reconstructing the rest by hand out of the strike table is what this session was.
+
+**And a correction to my own last write-up.** I told the player the decisive number was missing from the log and would have to be added. It was
+not: `adjusted_ms − strike_ms` IS `audio_offset_ms`, in every row of a table that has been written since the run log existed. **A log can carry
+an answer for months without anyone subtracting two of its columns** — which is the same fault as a feature that cannot be seen working, one
+level up, and it cost the first half of this diagnosis.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

@@ -396,6 +396,12 @@ FRAME_EVEN_FRACTION = 0.2
 # only teleports the picture.
 MAX_FRAME_STALL_S = 0.25
 
+#: How many of a run's audio anchors the log spells out. A song with a held
+#: arrow key takes one per seek and a hundred of them are a wall of text; the
+#: last twenty are the ones near whatever the log is being read about, and the
+#: count and the worst move are printed whole.
+MAX_LOGGED_ANCHORS = 20
+
 # When a recording is playing, IT is the clock and the picture is pulled to
 # it. Two numbers decide how that pull feels.
 #
@@ -1035,6 +1041,14 @@ class PlayingScreen:
         # for the rest of the song and cannot be corrected by K.
         self._audio_anchor_ms: float = 0.0       # audio clock at the anchor
         self._audio_anchor_song_ms: float = 0.0  # song clock at the anchor
+        # An anchor asked for, not yet taken. It is taken on the next frame,
+        # where the two clocks really do describe the same instant -- see
+        # _apply_audio_anchor.
+        self._reanchor_due: bool = False
+        # What every anchor this run did: (song_ms, new offset, how far it
+        # moved). A value that is re-rolled at every seek cannot be debugged
+        # from the one printed at the end.
+        self._anchor_moves: list[tuple[float, float, float]] = []
 
         self._playback_ms: float = 0.0
         self._playing = False
@@ -1604,24 +1618,74 @@ class PlayingScreen:
         self._feedback.reset()
 
     def _reanchor_audio_clock(self) -> None:
-        """Agree audio time and song time on the present moment.
+        """Ask for the two clocks to be agreed -- on the NEXT frame, not here.
 
-        Strikes already waiting in the queue were stamped before the change
-        and would be read with the new factor, so they are dropped: a handful
-        of strikes at the moment the speed is touched, against every strike
-        afterwards landing where it was played.
+        **Taken here, the anchor bakes in whatever happens between it and the
+        moment the song clock restarts**, and that is the fault this defers.
+        `elapsed_ms()` is the ring's sample counter, which runs in the
+        capture thread in real time; `_playback_ms` only moves when a frame
+        advances it. Pairing them at an arbitrary point in a seek or a resume
+        pairs "audio time NOW" with "song time as of the last frame", and the
+        difference is however long the slow work in between took.
+
+        Measured on the player's own run (Bad Omens, 112 seeks): the offset
+        was stable to +/-10 ms WITHIN each block -- that is the sync pull,
+        which carries the anchor correctly -- and jumped at every re-anchor.
+        The delay from a strike being stamped to the matcher seeing it came
+        out at **280 ms** in one block, **455** in the next and **16** in the
+        last. Sixteen is impossible: the onset collector alone waits 139 ms
+        before it emits anything. So the anchor was not measuring the
+        pipeline, it was measuring the seek.
+
+        Both signs appear, which is what named the mechanism:
+
+        - `toggle_play` anchors FIRST and starts the clock LAST (deliberately
+          -- the recording's seek must not be charged to the song), so the
+          resume work lands as extra lag: +168 ms at 2:14 on that run.
+        - `seek()` anchors LAST, after the recording has been seeked, and the
+          next frame then charges that same work to the song clock: -432 ms
+          at 3:46, which is how a 16 ms pipeline got printed.
+
+        At 409 ms (`hit_window` + `late_window`) the note is already swept to
+        MISS before its strike arrives, so the block at 455 ms scored 11 % of
+        its notes against 95 % for the block at 280.
+
+        The strikes in hand are still dropped here: they were stamped before
+        the change and belong to a moment the song has left.
         """
         if self._audio_capture is None or self._matcher is None:
             return
         self._audio_capture.get_notes()
         self._audio_capture.get_strike_windows()
+        self._reanchor_due = True
+
+    def _apply_audio_anchor(self) -> None:
+        """Pair the clocks, at the one instant both describe the present.
+
+        Called from `update()` after `_playback_ms` has been advanced for
+        this frame and before anything is matched against it. Nothing slow
+        sits between the two readings here, which is the whole point.
+        """
+        if not self._reanchor_due:
+            return
+        self._reanchor_due = False
+        if self._audio_capture is None or self._matcher is None:
+            return
+        # Whatever the device heard while the slow work was going on belongs
+        # to no moment in the song either.
+        self._audio_capture.get_notes()
+        self._audio_capture.get_strike_windows()
         self._audio_anchor_ms = self._audio_capture.elapsed_ms()
         self._audio_anchor_song_ms = self._playback_ms
+        was = self._matcher.audio_offset_ms
         self._matcher.audio_offset_ms = (
             self._audio_anchor_song_ms
             - self._audio_anchor_ms * self._tempo_factor
             + self._sync_offset_song_ms()
         )
+        self._anchor_moves.append((self._playback_ms,
+                                   self._matcher.audio_offset_ms,
+                                   self._matcher.audio_offset_ms - was))
 
     def set_noise_gate_db(self, db: float) -> None:
         """Set the noise gate, clamped to the useful range and rounded.
@@ -1785,6 +1849,11 @@ class PlayingScreen:
                     self._start_audio()
                 for player in self._midi_all():
                     player.seek(0)
+
+        # The one instant in the frame where song time and audio time both
+        # describe the present: the clock has been advanced, wait mode has
+        # settled it, and nothing has been matched against it yet.
+        self._apply_audio_anchor()
 
         # Process audio matching (only during actual song, not count-in)
         if (self._playback_ms >= 0
@@ -6306,6 +6375,22 @@ class PlayingScreen:
         fh.write(f"late_window_ms\t{matcher.late_window_ms:.0f}\n")
         fh.write(f"audio_anchor_ms\t{self._audio_anchor_ms:.1f}\n")
         fh.write(f"audio_anchor_song_ms\t{self._audio_anchor_song_ms:.1f}\n")
+        # Every anchor this run took, and how far each one moved the offset.
+        # The offset that matters is the one in force when a strike arrives,
+        # and a run with 112 seeks used a different one in every block: the
+        # single value printed above cannot say that, and a whole session
+        # went on reconstructing it by hand from the strike table.
+        if self._anchor_moves:
+            # The first anchor of a run moves the offset from nothing, which
+            # is not a move; the worst is over the ones that re-set a value
+            # already in use.
+            moved = [abs(d) for _, _, d in self._anchor_moves[1:]]
+            worst = f"\tworst move {max(moved):.0f} ms" if moved else ""
+            fh.write(f"audio_anchors\t{len(self._anchor_moves)}{worst}\n")
+            shown = self._anchor_moves[-MAX_LOGGED_ANCHORS:]
+            fh.write("audio_anchor_at\t" + "  ".join(
+                f"{ms / 1000:.0f}s:{off:.0f}ms({d:+.0f})"
+                for ms, off, d in shown) + "\n")
         fh.write(f"sample_rate\t{getattr(capture, '_sample_rate', ac.sample_rate)}\n")
         describe = getattr(capture, "describe_device", None)
         fh.write(f"input_device\t{describe() if describe else '(unknown)'}\n")
@@ -7260,6 +7345,13 @@ class PlayingScreen:
                 chord_verifier=self._make_chord_verifier(),
                 bend_check=getattr(self._config, "bend_check", True),
             )
+            # Building a matcher walks the whole song (the bend plans and the
+            # pitch ranges), and the counter above was read before that. Same
+            # fault as the seek and the resume, third instance -- so it goes
+            # through the same door: the next frame takes the anchor for real,
+            # with both clocks current. Here it is a starting value, not the
+            # answer.
+            self._reanchor_due = True
             self._feedback.reset()
         except Exception as e:
             print(f"Audio start failed: {e}")
