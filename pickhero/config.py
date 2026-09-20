@@ -225,6 +225,11 @@ class Config:
     # moves is the pitch the app expects to hear and the pitch of the
     # recording. Bounded to the tunings that are actually reachable this way.
     song_transpose: dict = field(default_factory=dict)
+    # Two tracks of one file played as one part, per song: a list of track
+    # indices, most important first. A lead guitar that sits out the verses
+    # is a track with holes in it; the rhythm guitar fills them, bar by bar.
+    # See `tabs/merge.py` for why the unit is a bar and not a note.
+    song_track_merges: dict = field(default_factory=dict)
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     # Song keys the player has starred. A list rather than a set because it
@@ -243,11 +248,10 @@ class Config:
         """Drop every setting held against one song. Returns what it dropped.
 
         **Found rather than listed.** Every per-song setting in this class is
-        a dict named `song_something`, and there are nine of them -- speed,
-        recording, offset, rate, Songsterr id, sync source, anchors,
-        transpose, backing offset. A hand-written list here would be correct
-        on the day it was written and quietly wrong the first time a tenth
-        was added, leaving a deleted song's settings to land on the next song
+        a dict named `song_something` -- speed, recording, offset, rate,
+        Songsterr id, sync source, anchors, transpose, backing offset, track
+        merge. A hand-written list here would be correct on the day it was
+        written and quietly wrong the first time another was added, leaving a deleted song's settings to land on the next song
         that happens to take its name. So the fields are walked.
 
         The practice history is NOT touched. It lives in its own files
@@ -294,6 +298,32 @@ class Config:
             self.favourites[self.favourites.index(old_key)] = new_key
             moved.append("favourites")
         return moved
+
+    def track_merge_for(self, song_key: str) -> list:
+        """The tracks this song is played as, most important first.
+
+        Empty means the ordinary single-track song, which is nearly every
+        song -- so a merge is never written for one (an entry saying "no
+        merge" is a setting that would then travel to the other machine and
+        say nothing).
+        """
+        if not song_key:
+            return []
+        stored = self.song_track_merges.get(song_key) or []
+        try:
+            return [int(i) for i in stored]
+        except (TypeError, ValueError):
+            return []
+
+    def set_track_merge_for(self, song_key: str, tracks) -> None:
+        """Remember a merge, or forget it when fewer than two tracks are given."""
+        if not song_key:
+            return
+        chosen = [int(i) for i in (tracks or [])]
+        if len(chosen) < 2:
+            self.song_track_merges.pop(song_key, None)
+        else:
+            self.song_track_merges[song_key] = chosen
 
     def set_favourite(self, song_key: str, favourite: bool) -> None:
         """Star a song, or take the star off. Idempotent either way."""

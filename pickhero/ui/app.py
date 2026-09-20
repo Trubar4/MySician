@@ -53,6 +53,9 @@ class App:
         self._load_error: str | None = None
         self._current_song_path: Path | None = None
         self._current_track_index: int | None = None
+        # The tracks this song is being played as, most important first.
+        self._current_merge: list = []
+        self._merge_note: str | None = None
         # The last file's track list. See _tracks_of.
         self._tracks_cache_key: str | None = None
         self._tracks_cache: list[dict] = []
@@ -477,14 +480,25 @@ class App:
                 self._config.save()
             self._load_song(self._current_song_path,
                             self._current_track_index,
-                            resume_at_ms=self._playing_screen.position_ms())
+                            resume_at_ms=self._playing_screen.position_ms(),
+                            merge=list(self._current_merge))
             return
         if isinstance(result, tuple) and result[0] == "select_track":
             # Stay where the song is. The screen is rebuilt from scratch, so
             # the position has to be carried over by hand.
             where = self._playing_screen.position_ms()
+            self._remember_merge([])
             self._load_song(self._current_song_path, result[1],
-                            resume_at_ms=where)
+                            resume_at_ms=where, merge=[])
+            return
+        if isinstance(result, tuple) and result[0] == "select_merge":
+            # Two tracks played as one part. Remembered per song, because it
+            # is a property of the ARRANGEMENT and not of this sitting -- a
+            # lead that sits out the verses sits out of them tomorrow too.
+            where = self._playing_screen.position_ms()
+            self._remember_merge(result[1])
+            self._load_song(self._current_song_path, result[1][0],
+                            resume_at_ms=where, merge=result[1])
             return
         if result == "menu":
             self._playing_screen.stop_audio()      # writes the sitting
@@ -663,8 +677,34 @@ class App:
                       (0, y - 4, surface.get_width(), surf.get_height() + 8))
         surface.blit(surf, (12, y))
 
+    def _remember_merge(self, tracks: list, song_key: str | None = None) -> None:
+        """Store (or clear) a song's merge. Fewer than two tracks is no merge."""
+        setter = getattr(self._config, "set_track_merge_for", None)
+        if song_key is None and self._current_song_path is not None:
+            song_key = self._current_song_path.stem
+        if setter is None or not song_key:
+            return
+        setter(song_key, tracks)
+        self._config.save()
+
+    def _merged_timeline(self, path: Path, merge: list):
+        """The merged plan, or None with a reason the caller can say.
+
+        A merge that cannot be honoured falls back to its PRIMARY rather than
+        to nothing: the player asked for that track plus a filler, and the
+        track alone is most of what they asked for. Silence here would be a
+        song that opens as a different track for a reason nobody can see.
+        """
+        from pickhero.tabs import merge as merge_mod
+        parts = [load_gp_file(path, i) for i in merge]
+        reason = merge_mod.refuse_reason(parts)
+        if reason is not None:
+            return None, reason
+        return merge_mod.merge_by_bar(parts), None
+
     def _load_song(self, path: Path, track_index: int | None = None,
-                   resume_at_ms: float | None = None) -> None:
+                   resume_at_ms: float | None = None,
+                   merge: list | None = None) -> None:
         """Load a GP file and switch to playing state.
 
         `resume_at_ms` keeps the position across an instrument change. The
@@ -683,8 +723,39 @@ class App:
         """
         if self._playing_screen is not None:
             self._playing_screen.stop_audio()
+
+        # Two tracks played as one part. Read from the song's own settings
+        # when the caller has not said -- which is how OPENING a song picks
+        # its merge up, while changing instrument by hand does not inherit
+        # one. `_gpif_root` caches the parse, so loading two tracks of one
+        # file is one unpack and two extractions.
+        if merge is None:
+            merge = (self._config.track_merge_for(path.stem)
+                     if track_index is None else [])
+        known = {t["index"] for t in self._tracks_of(path)}
+        merge = [int(i) for i in merge if int(i) in known]
+        if len(merge) < 2:
+            merge = []
+
         try:
-            timeline = load_gp_file(path, track_index)
+            if merge:
+                timeline, refused = self._merged_timeline(path, merge)
+                if timeline is None:
+                    # Fall back to the PRIMARY, not to whatever the caller
+                    # asked for before the merge -- the player asked for that
+                    # track plus a filler, and the track alone is most of it.
+                    # And forget the merge: kept, it would refuse again at
+                    # every open, saying the same sentence for ever.
+                    self._merge_note = f"tracks not combined: {refused}"
+                    self._remember_merge([], path.stem)
+                    track_index = merge[0]
+                    merge = []
+                    timeline = load_gp_file(path, track_index)
+                else:
+                    self._merge_note = None
+            else:
+                self._merge_note = None
+                timeline = load_gp_file(path, track_index)
         except Exception as e:
             # Show it, do not just log it: returning to the menu in silence
             # looks like the song was ignored rather than that it failed.
@@ -710,11 +781,15 @@ class App:
         timeline = timeline.transposed(transpose)
 
         # Extract backing track (everything EXCEPT the track being played)
+        # -- which for a merge is every track it was built from, or the
+        # filler would be heard twice: once under the hands and once in the
+        # backing.
         chosen = timeline.metadata.track_index
+        playing = set(merge) if merge else {chosen}
         backing_track = None
         try:
             backing_track = extract_backing_track(
-                path, exclude_track_indices={chosen},
+                path, exclude_track_indices=playing,
             )
         except Exception as e:
             print(f"Backing track extraction failed: {e}")
@@ -725,7 +800,7 @@ class App:
         # other way round -- no second code path to keep in step.
         guide_track = None
         try:
-            others = {t["index"] for t in self._tracks_of(path)} - {chosen}
+            others = {t["index"] for t in self._tracks_of(path)} - playing
             if others or chosen is not None:
                 guide_track = extract_backing_track(
                     path, exclude_track_indices=others,
@@ -749,9 +824,12 @@ class App:
         self._state = "playing"
         self._current_song_path = path
         self._current_track_index = timeline.metadata.track_index
+        self._current_merge = list(merge)
         self._playing_screen.set_track_options(
-            self._track_options(path), timeline.metadata.track_index
+            self._track_options(path), timeline.metadata.track_index, merge
         )
+        if self._merge_note:
+            self._playing_screen.say(self._merge_note)
 
         if resume_at_ms is not None:
             # Clamped, because the new track may be shorter than the old one.

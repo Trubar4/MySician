@@ -5325,3 +5325,111 @@ class TestTheLogSaysHowStaleTheStrikesWere:
         """Nothing heard is not the same as nothing late, and a zero there
         would claim the pipeline was perfect on a run with no audio at all."""
         assert "strike_delay_median" not in self._log(self._screen_with([]))
+
+
+class TestThePickerCombinesTwoTracks:
+    """M marks a row into the merge, and the press ORDER is the priority.
+
+    *"Spur 3 ist die Hauptspur. Immer wenn sie leer ist, füll sie mit Spur 2
+    auf."* -- so the panel has to say which one wins, not merely which two
+    were marked.
+    """
+
+    def _screen(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen.set_track_options([(0, "1. Rhythm"), (1, "2. Lead"),
+                                  (2, "3. Bass")], 1)
+        screen._track_menu_open = True
+        return screen
+
+    def _press(self, screen, key):
+        return screen._handle_track_menu_event(
+            pygame.event.Event(pygame.KEYDOWN, key=key, mod=0, unicode=""))
+
+    def test_a_plain_song_marks_nothing(self):
+        screen = self._screen()
+        assert screen._merge_picked == []
+        assert screen._merge_line() == ""
+
+    def test_m_marks_the_row_under_the_cursor(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_m)          # cursor sits on the current track
+        assert screen._merge_picked == [1]
+
+    def test_pressing_m_again_takes_it_out(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_m)
+        self._press(screen, pygame.K_m)
+        assert screen._merge_picked == []
+
+    def test_the_order_of_the_presses_is_the_priority(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_m)          # 2. Lead first -- the main part
+        self._press(screen, pygame.K_UP)
+        self._press(screen, pygame.K_m)          # 1. Rhythm second -- the filler
+        assert screen._merge_picked == [1, 0]
+        result = self._press(screen, pygame.K_RETURN)
+        assert result == ("select_merge", [1, 0])
+
+    def test_one_marked_row_is_not_a_merge(self):
+        """Enter on a single mark still picks a track, because one track is
+        what that is."""
+        screen = self._screen()
+        self._press(screen, pygame.K_UP)
+        self._press(screen, pygame.K_m)
+        assert self._press(screen, pygame.K_RETURN) == ("select_track", 0)
+
+    def test_the_line_says_which_one_wins(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_m)
+        self._press(screen, pygame.K_UP)
+        self._press(screen, pygame.K_m)
+        line = screen._merge_line()
+        assert "2. Lead" in line
+        assert line.index("2. Lead") < line.index("1. Rhythm")
+        assert "filled from" in line
+
+    def test_a_single_mark_says_it_needs_a_second(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_m)
+        assert "M" in screen._merge_line()
+
+    def test_re_picking_the_same_merge_reloads_nothing(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen.set_track_options([(0, "1. Rhythm"), (1, "2. Lead")], 1, [1, 0])
+        screen._track_menu_open = True
+        assert screen._merge_picked == [1, 0]
+        assert self._press(screen, pygame.K_RETURN) is None
+
+    def test_leaving_a_merge_for_its_own_lead_track_is_still_a_change(self):
+        """Enter on the lead track of a live merge has to reload: the index
+        is unchanged and the ARRANGEMENT is not."""
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen.set_track_options([(0, "1. Rhythm"), (1, "2. Lead")], 1, [1, 0])
+        screen._track_menu_open = True
+        self._press(screen, pygame.K_m)          # unmark 2. Lead
+        self._press(screen, pygame.K_UP)
+        self._press(screen, pygame.K_m)          # unmark 1. Rhythm
+        assert self._press(screen, pygame.K_RETURN) == ("select_track", 0)
+
+    def test_a_run_of_a_merge_is_not_a_run_of_its_lead_track(self):
+        screen = PlayingScreen(_make_timeline(), config=Config())
+        screen.set_track_options([(0, "1. Rhythm"), (1, "2. Lead")], 1)
+        plain = screen.run_track_id()
+        screen.set_track_options([(0, "1. Rhythm"), (1, "2. Lead")], 1, [1, 0])
+        assert screen.run_track_id() != plain
+        assert screen.run_track_id() < 0
+
+    def test_the_panel_does_not_resize_when_a_row_is_marked(self):
+        """The room for the merge line is always there. A panel that grew
+        under the cursor is the feedback loop the footer already paid for."""
+        import inspect
+        from pickhero.ui.scrolling import track_menu_box
+        # Asserted on the SIGNATURE, so the loop is impossible rather than
+        # merely absent today: it takes the row widths and how many rows,
+        # and cannot see the sentence M puts under them.
+        taken = list(inspect.signature(track_menu_box).parameters)
+        assert taken == ["row_widths", "rows"]
+        # And the line it reserves room for really fits under the last row.
+        _, height = track_menu_box([100], 3)
+        assert height >= scrolling.TRACK_MENU_ROW_H * 3 + 52 + 18

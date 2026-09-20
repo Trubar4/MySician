@@ -396,6 +396,11 @@ FRAME_EVEN_FRACTION = 0.2
 # only teleports the picture.
 MAX_FRAME_STALL_S = 0.25
 
+#: The track picker's geometry. See track_menu_box.
+TRACK_MENU_ROW_H = 28
+TRACK_MENU_MIN_WIDTH = 300
+TRACK_MENU_NOTE_H = 22
+
 #: How many of a run's audio anchors the log spells out. A song with a held
 #: arrow key takes one per seek and a hundred of them are a wall of text; the
 #: last twenty are the ones near whatever the log is being read about, and the
@@ -1022,6 +1027,19 @@ def _technique_flags(note) -> str:
     return flags or "-"
 
 
+def track_menu_box(row_widths: list, rows: int) -> tuple[int, int]:
+    """How big the track picker is, from the rows alone.
+
+    **Deliberately blind to the merge line.** Pressing M adds a sentence
+    under the list, and a panel sized from what it DRAWS would then grow
+    under the cursor -- the feedback loop `test_a_second_frame_lays_nothing_out`
+    caught when bars-per-row went into the footer, one screen along. The room
+    for that line is always there, so the list never moves.
+    """
+    width = max(list(row_widths) + [TRACK_MENU_MIN_WIDTH]) + 56
+    return width, TRACK_MENU_ROW_H * rows + 52 + TRACK_MENU_NOTE_H
+
+
 class PlayingScreen:
     """Scrolling tab display with playback clock and optional audio matching."""
 
@@ -1433,6 +1451,10 @@ class PlayingScreen:
         # Track picker: [(index, label)], filled in by the app on load
         self._track_options: list[tuple[int, str]] = []
         self._track_index: int | None = None
+        # The tracks this song is played as, most important first, and what
+        # the picker has marked while it is open. Empty is the ordinary song.
+        self._merge_tracks: list[int] = []
+        self._merge_picked: list[int] = []
         self._track_menu_open: bool = False
         self._track_menu_cursor: int = 0
 
@@ -3731,20 +3753,45 @@ class PlayingScreen:
             player.seek(self._backing_ms(self._playback_ms))
 
     def set_track_options(self, options: list[tuple[int, str]],
-                          current: int | None) -> None:
-        """Tell the screen which tracks exist, so it can offer them."""
+                          current: int | None,
+                          merge: list | None = None) -> None:
+        """Tell the screen which tracks exist, so it can offer them.
+
+        `merge` is the tracks this song is being played as, most important
+        first, or empty for the ordinary single-track song. `_track_index`
+        stays the PRIMARY whichever it is, so the picker's `*` marks a row
+        that exists -- what the merge changes is which rows carry a number.
+        """
         self._track_options = list(options)
         self._track_index = current
+        self._merge_tracks = [int(i) for i in (merge or [])]
+        self._merge_picked = list(self._merge_tracks)
         self._track_menu_cursor = next(
             (i for i, (idx, _) in enumerate(self._track_options) if idx == current), 0
         )
 
+    def run_track_id(self) -> int:
+        """The track a run of this arrangement is recorded under.
+
+        A merged part is not the notes of the track it leads with, so it
+        cannot share that track's id: a stored run carries its track, and
+        `runs.py` refuses to DRAW a run of another track against these notes
+        -- which is exactly right here and only works if the two are told
+        apart. See `tabs/merge.merged_track_id`.
+        """
+        if len(self._merge_tracks) >= 2:
+            from pickhero.tabs.merge import merged_track_id
+            return merged_track_id(int(self._merge_tracks[0]))
+        return int(self._track_index or 0)
+
     def _open_track_menu(self) -> None:
         if len(self._track_options) > 1:
             self._track_menu_open = not self._track_menu_open
+            if self._track_menu_open:
+                self._merge_picked = list(self._merge_tracks)
 
     def _handle_track_menu_event(self, event: pygame.event.Event):
-        """Arrow keys and Enter while the picker is open. Returns a result or None."""
+        """Arrow keys, M and Enter while the picker is open. Returns a result or None."""
         if event.type != pygame.KEYDOWN:
             return None
         count = len(self._track_options)
@@ -3754,10 +3801,27 @@ class PlayingScreen:
             self._track_menu_cursor = (self._track_menu_cursor - 1) % count
         elif event.key in (pygame.K_DOWN, pygame.K_RIGHT):
             self._track_menu_cursor = (self._track_menu_cursor + 1) % count
+        elif event.key == pygame.K_m:
+            # The press ORDER is the priority, which is the whole of what the
+            # player asked for -- *"Spur 3 ist die Hauptspur"*. So a row is
+            # appended rather than inserted, and pressing M again takes it
+            # out, because a list you can only add to is one wrong press from
+            # having to close the panel and start again.
+            idx = self._track_options[self._track_menu_cursor][0]
+            if idx in self._merge_picked:
+                self._merge_picked.remove(idx)
+            else:
+                self._merge_picked.append(idx)
         elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
             self._track_menu_open = False
+            if len(self._merge_picked) >= 2:
+                if self._merge_picked != self._merge_tracks:
+                    return ("select_merge", list(self._merge_picked))
+                return None
             chosen = self._track_options[self._track_menu_cursor][0]
-            if chosen != self._track_index:
+            if chosen != self._track_index or self._merge_tracks:
+                # Leaving a merge for a plain track is a change even when the
+                # index is the one it led with.
                 return ("select_track", chosen)
         return None
 
@@ -3766,24 +3830,53 @@ class PlayingScreen:
         font = _get_font("arial", 18)
         title = _get_font("arial", 15)
         rows = [label for _, label in self._track_options]
-        width = max([font.size(r)[0] for r in rows] + [240]) + 40
-        row_h = 28
-        height = row_h * len(rows) + 52
+        note = self._merge_line()
+        row_h = TRACK_MENU_ROW_H
+        width, height = track_menu_box([font.size(r)[0] for r in rows], len(rows))
         x = int(surface.get_width() / 2 - width / 2)
         y = int(surface.get_height() / 2 - height / 2)
 
         pygame.draw.rect(surface, t.menu_bg, (x, y, width, height))
         pygame.draw.rect(surface, t.hud_accent, (x, y, width, height), 2)
-        surface.blit(title.render("Track  (up/down, Enter, Esc)", True, t.hud_text),
-                     (x + 16, y + 12))
+        surface.blit(title.render("Track  (up/down, M combines, Enter, Esc)",
+                                  True, t.hud_text), (x + 16, y + 12))
         for i, (idx, label) in enumerate(self._track_options):
             row_y = y + 40 + i * row_h
             if i == self._track_menu_cursor:
                 pygame.draw.rect(surface, t.menu_selected_bg,
                                  (x + 8, row_y - 2, width - 16, row_h))
-            mark = "*" if idx == self._track_index else " "
+            # The PRIORITY, not a tick: 1) is the main part and every later
+            # number only fills the bars nobody before it played. A tick
+            # would say which tracks and not which wins, which is the one
+            # thing about a merge that has to be readable.
+            if idx in self._merge_picked:
+                mark = f"{self._merge_picked.index(idx) + 1})"
+            elif idx == self._track_index:
+                mark = " * "
+            else:
+                mark = "   "
             surface.blit(font.render(f"{mark} {label}", True, t.hud_text),
                          (x + 16, row_y))
+        if note:
+            surface.blit(title.render(note, True, t.hud_accent),
+                         (x + 16, y + 40 + row_h * len(rows) + 4))
+
+    def _merge_line(self) -> str:
+        """What Enter will do with the marked rows, in words.
+
+        A panel that shows marks and not their consequence is a panel the
+        player has to press Enter to understand -- and Enter here reloads the
+        song.
+        """
+        picked = self._merge_picked
+        if not picked:
+            return ""
+        names = {idx: label for idx, label in self._track_options}
+        if len(picked) < 2:
+            return f"merge: {names.get(picked[0], picked[0])} — mark a second track with M"
+        first = names.get(picked[0], picked[0])
+        rest = ", ".join(str(names.get(i, i)) for i in picked[1:])
+        return f"merge: {first} — empty bars filled from {rest}"
 
     def _cycle_timing_window(self) -> None:
         """Step through how much timing slack a hit gets (G)."""
@@ -6802,7 +6895,7 @@ class PlayingScreen:
                 ("I/O: loop markers     P: loop on/off",
                  self._loop_hud_text() or "no loop set"),
                 "L: loop the weakest part",
-                ("TAB: choose track", meta.track_name or "—"),
+                ("TAB: choose track (M combines two)", meta.track_name or "—"),
                 "H: this help",
                 ], "small"),
 
@@ -7504,7 +7597,7 @@ class PlayingScreen:
             marks.append((kind, checked))
         return runs.make(runs.encode(marks), self._session_seconds,
                          int(round(self._tempo_factor * 100)),
-                         int(self._track_index or 0),
+                         self.run_track_id(),
                          started=self._run_started)
 
     def unbanked_run(self) -> "runs.Run | None":

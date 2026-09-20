@@ -4786,6 +4786,57 @@ top, so the first probe attributed the sweep's results to the strike that happen
 setting — including the shipped one, where the real answer is a flat 150. The tell was a control that came back broken: a reach that does not
 respond to the knob under test is not a reading of that knob.
 
+## Two Tracks Played As One Part
+
+*"Ich möchte 2 Spuren aus einem GP in eine neue kombinieren. Spur 3 ist die Hauptspur. Immer wenn sie leer ist, füll sie mit Spur 2 auf. Wo
+beide Töne haben, gewinnt Spur 3."*
+
+A lead guitar that sits out the verses is a track with holes in it, and the rhythm guitar is what fills them. The question the request leaves
+open is what "gewinnt" wins, and that was measured before anything was built, on the player's own file (Bad Omens, "Just Pretend"):
+
+| | |
+|---|---|
+| bars with a note on either track | 81 |
+| bars the lead sits out entirely | **25** |
+| bars only the lead plays | 14 |
+| bars both of them play | 42 |
+| **notes wanting the SAME STRING at the same millisecond** | **184** |
+
+**That last row decides the rule.** A guitar cannot play two notes on one string, and GP5 cannot even write it down — the played-strings byte
+has one bit per string, so one note is written, never read back, and every byte after it is garbage. `tools/retune.py` paid for that once with
+a file that would not open at all. So note-by-note interleaving is not a stricter version of this feature, it is a broken one.
+
+- **The bar is the unit.** A bar the primary plays is the primary's, whole; a bar it does not play at all is taken from the next track in the
+  list. Nothing is ever interleaved inside a bar, so **no moment can end up with two notes on one string** — by construction, not by a check.
+  On that file: 563 + 1318 notes in, 957 out, **0 collisions**.
+- **The cost is named rather than hidden: in all 42 shared bars the filler's notes are dropped**, 8 of the lead's against 24 of the rhythm's in
+  the chorus. That is exactly where a solo is *meant* to replace the riff — and it is also the shape a wrong merge has, and counting cannot tell
+  the two apart. What can be told apart is a bar the primary barely touches, and there is **one** on this file (bar 132, one note against
+  three). So the rule is right for this song and would be wrong for a tab where the lead answers the riff bar by bar; those numbers are how to
+  tell, not a guarantee.
+- **The press ORDER is the priority.** `M` in the track picker appends a row and `M` again takes it out, so the panel shows `1)` and `2)` and
+  not a tick — a tick says which tracks and not which wins, which is the one thing about a merge that has to be readable. The panel also says
+  what Enter will DO (`merge: Lead — empty bars filled from Rhythm`), because Enter here reloads the song.
+- **The tuning is the one thing that must agree.** A `NoteEvent` carries its string and its fret and the picture is drawn from them, so merging
+  a bass into a guitar puts fret numbers on the board that are perfectly readable and a lie about what to press. The refusal is not theoretical:
+  the first end-to-end run of this picked tracks 0 and 2 of that file and track 2 is the **bass** — caught by the rule, not by me.
+- **A refused merge falls back to its PRIMARY and forgets itself.** The player asked for that track plus a filler, and the track alone is most of
+  what they asked for; silence would be a song that opens as a different track for a reason nobody can see. And a refusal that stayed stored
+  would say the same sentence at every open for ever.
+- **The backing excludes BOTH tracks**, or the filler is heard twice — once under the hands and once in the backing. One `playing` set feeds the
+  backing and the guide, rather than each working it out.
+- **A run of a merge is not a run of its lead track.** `merged_track_id` is negative, because a real index never is. A stored run carries its
+  track and `runs.py` already refuses to DRAW a run of another track against these notes — which is exactly right here and only works if the two
+  are told apart. `_track_index` stays the primary, so the picker's `*` still marks a row that exists.
+- **Remembered per song** (`song_track_merges`), because it is a property of the ARRANGEMENT and not of this sitting: a lead that sits out the
+  verses sits out of them tomorrow too. It is a dict named `song_something`, so `forget_song`, `rename_song`, the sidecar and `merge_stats` pick
+  it up without anyone writing the name down — the fourth reader rule, which is the only reason four readers are safe.
+- **`track_menu_box` cannot see the merge line.** The panel reserves the room whether or not there is a sentence, and the size is computed from
+  the rows alone — asserted on the SIGNATURE, so the loop is impossible rather than merely absent today. A panel that grew under the cursor is
+  the 44.4 → 44.5 px walk the footer already paid for.
+- **`tabs/merge.py` is arithmetic and nothing else** — no file reading, no pygame — so the rule is tested on bare timelines, and so the app and
+  any tool that wants it cannot have two ideas of what a merge is.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
