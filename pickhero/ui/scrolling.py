@@ -1409,6 +1409,11 @@ class PlayingScreen:
         # the picker has marked while it is open. Empty is the ordinary song.
         self._merge_tracks: list[int] = []
         self._merge_picked: list[int] = []
+        # The easier reading, and what it would cost on THIS song. Both are
+        # told to the screen rather than worked out here: the arithmetic
+        # lives in tabs/simplify.py and the timeline arrives already made.
+        self._simplified: bool = False
+        self._simplify_drops: tuple[int, int] = (0, 0)
         self._track_menu_open: bool = False
         self._track_menu_cursor: int = 0
 
@@ -2109,6 +2114,12 @@ class PlayingScreen:
                 self._toggle_steady_pace()
             else:
                 self._toggle_vsync()
+        elif event.key == pygame.K_q:
+            # The only plain letter this screen had left, and it is given to
+            # an ARRANGEMENT rather than to a mode of an existing key: `E` is
+            # already Skip here, and one key meaning two things depending on
+            # where you are is the fault this file has paid for three times.
+            return ("simplify", not self._simplified)
         elif event.key == pygame.K_e:
             self._skip_rest()
         elif event.key == pygame.K_v:
@@ -3706,6 +3717,17 @@ class PlayingScreen:
         for player in self._midi_all():
             player.seek(self._backing_ms(self._playback_ms))
 
+    def set_simplify(self, simple: bool, drops: tuple[int, int]) -> None:
+        """Say whether this song is the easier reading, and what it drops.
+
+        `drops` is (notes an easier reading leaves out, notes written) of the
+        FULL song, so the panel can answer "is it worth it here" before the
+        song is reloaded -- on a solo the honest answer is "two notes", and
+        a player is better off reading that than discovering it.
+        """
+        self._simplified = bool(simple)
+        self._simplify_drops = drops
+
     def set_track_options(self, options: list[tuple[int, str]],
                           current: int | None,
                           merge: list | None = None) -> None:
@@ -3811,6 +3833,9 @@ class PlayingScreen:
                 mark = "   "
             surface.blit(font.render(f"{mark} {label}", True, t.hud_text),
                          (x + 16, row_y))
+        # Both notes are drawn in a block whose room is reserved either way,
+        # so pressing M or E cannot resize the panel the list is being read
+        # in -- see track_menu_box.
         if note:
             surface.blit(title.render(note, True, t.hud_accent),
                          (x + 16, y + 40 + row_h * len(rows) + 4))
@@ -4797,7 +4822,19 @@ class PlayingScreen:
             ("E: Skip", on if self._rest_hud_text() else off),
             ("S: Sync", sync_colour),
             ("H: help", on if self._show_help else off),
-        ]
+        ] + ([("Q: Simple on", on)] if self._simplified else [])
+
+    def _simplify_help(self) -> str:
+        """What Q is set to AND what it is worth on this song."""
+        drop, total = self._simplify_drops
+        if not total:
+            return "—"
+        share = f"{100 * drop / total:.0f} %"
+        if self._simplified:
+            return f"on — {drop} of {total} notes left out ({share})"
+        if not drop:
+            return "off — nothing is doubled here"
+        return f"off — would leave out {drop} of {total} ({share})"
 
     @staticmethod
     def _fit_line(font, text: str, width: int, colour) -> pygame.Surface:
@@ -6850,6 +6887,8 @@ class PlayingScreen:
                  self._loop_hud_text() or "no loop set"),
                 "L: loop the weakest part",
                 ("TAB: choose track (M combines two)", meta.track_name or "—"),
+                ("Q: the easier reading — drops notes a lower string is "
+                 "already sounding", self._simplify_help()),
                 "H: this help",
                 ], "small"),
 

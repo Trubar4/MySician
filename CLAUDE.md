@@ -4884,6 +4884,84 @@ invents state, and a sidecar beside every song in the folder to carry it.
   each fixed to do. Without it the new key would have been invisible on the very screen it lives on, which is this project's own definition of a
   feature that does not exist.
 
+## The Easier Reading, And The Half Of It That Is Not Cheap
+
+*"Kann man Tabs vereinfachen, ohne dass sie wirklich schlechter klingen beim mitspielen? Weißt du die Strategie von Yousician?"*
+
+**Yousician arranges by hand and says so in the exercise name**: `basic` is a simplified version, `main` is the core without the tricky
+details, `full` is what is on the recording — with a second axis for the ROLE (`basic riff`, `main melody`, `chords`, `lead`), up to six
+exercises a song, and a filter for the easiest or hardest level. They are separate written arrangements, and the level does **not** move while
+you play. Rocksmith is the other model: every PHRASE authored in about twenty levels, each phrase raised and lowered on its own as you play it.
+
+**Measured on the player's own six songs before anything was built**, and the answer is that there are two axes and only one of them is cheap:
+
+| | notes | picks | notes/pick | octave doublings | on the beat |
+|---|---|---|---|---|---|
+| Godsmack, "Awake" | 2561 | 883 | **2.90** | **34 %** | 35 % |
+| 4 Non Blondes | 480 | 280 | 1.71 | 21 % | 39 % |
+| Bon Jovi, "I'd Die For You" | 746 | 488 | 1.53 | 5 % | 50 % |
+| Kid Rock | 490 | 444 | 1.10 | 5 % | 75 % |
+| Thunder, "Love Walked In" | 167 | 163 | **1.02** | **1 %** | 29 % |
+
+- **An octave doubling is a pitch class a LOWER string is already sounding at that moment**, and dropping one removes a note and **not one
+  pick**. On the metal song that is 867 notes gone and 883 strums unchanged: the picking hand does what it did and the fretting hand holds a
+  smaller shape. **729 of those changes are three strings becoming two** — the classic three-note power chord becoming the two-note one, which
+  is the simplification every guitarist already knows.
+- **The fifth is NOT that, and reading it as one was the first mistake here.** Measured together with the octaves they came to 60 % and looked
+  like a free lunch; a power chord without its fifth is a single note. `chord_verify` cannot confirm either — their partials are a subset of a
+  lower note's — but **"the app cannot hear it" and "the ear cannot hear it" are different claims**, and only the first is established.
+- **The rhythm is untouched on purpose.** Thunder's solo is 1.02 notes a pick. There is no fat on it, and the only way to make it easier is to
+  take PICKS away, which is a different arrangement rather than a reduction of this one — which is exactly what Yousician's `basic` is, and it
+  is not this. **So the songs where this is nearly free are the ones that were not the problem**, and the fast solo the player actually
+  struggles with gets two notes lighter. The footer says `Q: Simple —` there rather than pretending otherwise.
+
+**Four properties, because nobody here can listen.** Nothing in `tabs/simplify.py` claims a sound; what it claims is that the result is a
+SUBSET of what was written in which every moment keeps its pitch classes, keeps its bass, keeps its chord name, and the song keeps every one
+of its picks. All four hold on all six songs, asserted rather than assumed — and `test_it_really_does_something_on_a_chord_song` is what stops
+a rule that holds them by removing nothing.
+
+- **The stroke nearly broke the headline, and the measurement is what caught it.** A full open chord loses its inner strings too, so strings
+  6-5-3 is a sweep that has to MISS the fourth — harder than the chord it replaces. On Kid Rock that turned 0 gapped strums into **5**.
+  Five moments in four hundred is small, and a headline that is false five times is what this project writes chapters about: the removals are
+  taken from the OUTSIDE in now and each is kept only while what is left is one unbroken sweep. Cost: five notes. An open E major therefore
+  comes down to four strings and not three.
+- **Three things are never touched**, and each is a bug avoided rather than a nicety: a note carrying a technique (a bend is the music rather
+  than the harmony), a note some earlier note hammers or slides INTO (the tab carries no link to it — `_legato_credit` walks to the next note
+  on the string, so removing a target hands the credit to the wrong note), and a DEAD note (it sounds no pitch, so it can be neither a doubling
+  nor the reason for one).
+- **My own two expectations were wrong and the tests said so.** Three E's do not become two, they become **one**: the rule keeps the lowest
+  instance of each pitch class and nothing else. And the fixture built to prove "one note removed" had three E's in it.
+- **The backing and the guide are untouched.** They are extracted from the FILE, so the band plays the whole song while you play the reduction
+  — which is the Yousician situation exactly: `basic` against the full recording.
+- **`Q`, which was the only plain letter this screen had left.** Not a mode of an existing key: `E` is already Skip here, and one key meaning
+  two things depending on where you are is the fault this file has paid for three times. It is remembered per song (`song_simplify`), it earns
+  a footer slot **only while it is on** — an entry that would say "off" on every song ever played is the wallpaper the footer was cut down to
+  remove — and `H` carries what it is worth on this song (`on — 867 of 2561 notes left out (34 %)`).
+- **A run of the easier reading is not a run of the full song, and that needed no new code.** `Run.fits` already compares `note_count`, so the
+  two are listed together and neither is drawn against the other's notes.
+
+## The Filter Box Would Not Let Go
+
+*"Brauche eine Möglichkeit, dass der Textfilter F aktiv ist und ich rausklicke und dann alle anderen Tasten funktionieren, ohne dass ich weiter
+in den Filter schreibe. Rausklicken entweder per Maus oder mit Pfeiltasten fahren -> schon kann ich U für Stimmen, M für Favorit, Str+N für Neu
+nutzen."*
+
+**The two states were always separate and nothing ever put one down without the other.** `_search_text` is the filter; `_search_active` is only
+"the box owns the letters". Every route out of the box cleared both — so a filtered list could not be tuned from (`U`), starred (`M`) or sorted
+(`N`) without retyping the filter afterwards. The feature was three lines away the whole time and the state to hold it already existed.
+
+- **A key that acts on the LIST lets go of the box** (`LIST_KEYS`: up, down, page up, page down, home, end), in one place rather than in six,
+  because a navigation key added later would otherwise have to remember. `ENTER` is deliberately not in the set: it leaves the screen, so
+  dropping the focus first would be a state nobody is ever in.
+- **A click in the box takes the letters, a click anywhere else gives them back** — what every text field on every screen does, and the half
+  that was asked for by name.
+- **`F` RESUMES rather than clears.** Leaving to press `U` and coming back to narrow the filter further is the whole workflow; clearing would
+  make the way out a one-way door.
+- **`ESC` empties a filter that has been let go**, instead of reaching the quit prompt — a trap on the one screen the player arrives at with
+  ESC already under their finger, and the second guard that key has needed.
+- **The box says which state it is in.** The caret and the fill are the signal, and the way back is named (`bon   (F edits)`): a filter you
+  cannot get back into is one you have to retype.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

@@ -234,6 +234,10 @@ class Config:
     # hand. An entry is an OVERRIDE, not a record: a song with no entry is
     # new exactly while it has never been played. See `is_new`.
     song_new: dict = field(default_factory=dict)
+    # Songs the player has asked for the easier reading of: the same tab with
+    # its octave doublings left out. See `tabs/simplify.py` for what that
+    # costs and what it deliberately does not touch.
+    song_simplify: dict = field(default_factory=dict)
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     # Song keys the player has starred. A list rather than a set because it
@@ -354,6 +358,24 @@ class Config:
             return False
         self.song_new[song_key] = True
         return True
+
+    def simplify_for(self, song_key: str) -> bool:
+        """Is this song being played in its easier reading?"""
+        return bool(self.song_simplify.get(song_key)) if song_key else False
+
+    def set_simplify_for(self, song_key: str, simple: bool) -> None:
+        """Ask for the easier reading, or go back to what was written.
+
+        The full song is the default and is never written down: an entry
+        saying "as written" says nothing, and would travel to the other
+        laptop to say it again.
+        """
+        if not song_key:
+            return
+        if simple:
+            self.song_simplify[song_key] = True
+        else:
+            self.song_simplify.pop(song_key, None)
 
     def track_merge_for(self, song_key: str) -> list:
         """The tracks this song is played as, most important first.

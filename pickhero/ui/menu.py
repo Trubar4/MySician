@@ -22,6 +22,11 @@ from pickhero.ui.colors import cycle_theme, get_theme
 from pickhero.ui.footer import wrap_on_bars
 from pickhero.ui.keys import shift_held
 
+#: The keys that act on the LIST rather than on the text in the box. Pressing
+#: one lets go of the box without touching the filter it is holding.
+LIST_KEYS = (pygame.K_UP, pygame.K_DOWN, pygame.K_PAGEUP, pygame.K_PAGEDOWN,
+             pygame.K_HOME, pygame.K_END)
+
 
 # How many items visible at once before scrolling
 VISIBLE_ITEMS = 18
@@ -95,6 +100,9 @@ class MenuScreen:
         #: The footer as it was last drawn, so a test can ask
         #: whether every key it names really fits the window.
         self._last_hint: str = ""
+        #: Where the search box was last drawn, so a click can be told to be
+        #: inside or outside it. Set by render, the way the list rows are.
+        self._search_box = None
         self._search_text: str = ""
         self._search_active: bool = False
         self._filtered_files: list[Path] = []
@@ -821,7 +829,11 @@ class MenuScreen:
                 # different song than the one that was named.
                 self._delete_armed = None
             if event.key == pygame.K_ESCAPE:
-                if self._search_active:
+                # A filter left standing with the box let go is still a
+                # filter, and ESC is what everybody presses to drop it. It
+                # used to reach the quit prompt instead, which is a trap on
+                # a screen the player arrives at with ESC under their finger.
+                if self._search_active or self._search_text:
                     self._search_text = ""
                     self._search_active = False
                     self._apply_filter()
@@ -835,8 +847,11 @@ class MenuScreen:
                     event.key == pygame.K_f
                     or event.unicode == "/"
                     or (event.key == pygame.K_f and event.mod & pygame.KMOD_CTRL)):
+                # It RESUMES rather than clears. Leaving the box to press U
+                # or M and coming back to narrow the filter further is the
+                # whole workflow this was asked for; clearing it would make
+                # the way back out a one-way door. ESC is what empties it.
                 self._search_active = True
-                self._search_text = ""
                 self._apply_filter()
                 return None
 
@@ -922,6 +937,23 @@ class MenuScreen:
                         self._apply_filter()
                 return None
 
+            # Moving through the list LETS GO of the box, and the filter
+            # stays standing.
+            #
+            # *"Brauche eine Möglichkeit, dass der Textfilter F aktiv ist und
+            # ich rausklicke und dann alle anderen Tasten funktionieren."*
+            # The two states were always separate -- `_search_text` is the
+            # filter and `_search_active` is only "the box owns the
+            # letters" -- and nothing anywhere set the second one down
+            # without also throwing the first one away. So a filtered list
+            # could not be tuned from (`U`), starred (`M`) or sorted (`N`)
+            # without clearing the filter first.
+            #
+            # One place rather than six, because a navigation key added
+            # later would otherwise have to remember.
+            if self._search_active and event.key in LIST_KEYS:
+                self._search_active = False
+
             # Navigation keys
             if event.key == pygame.K_UP:
                 if files:
@@ -1002,6 +1034,12 @@ class MenuScreen:
             return None
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            # Clicking the box takes the letters, clicking anything else
+            # gives them back -- which is what every text field on every
+            # screen does, and is the half of this the player asked for by
+            # name (*"Rausklicken entweder per Maus oder mit Pfeiltasten"*).
+            if self._search_box is not None:
+                self._search_active = self._search_box.collidepoint(event.pos)
             idx = self._hit_test(event.pos)
             if idx is not None and files:
                 now = pygame.time.get_ticks()
@@ -1041,6 +1079,7 @@ class MenuScreen:
         # mode for a long time and was asked for as a missing feature, which is
         # what a feature nobody can see amounts to.
         box = pygame.Rect(list_left - 8, 88, min(420, list_width), 26)
+        self._search_box = box          # what a click is tested against
         pygame.draw.rect(surface, t.menu_selected_bg if self._search_active
                          else t.menu_bg, box, border_radius=4)
         pygame.draw.rect(surface, t.hud_accent if self._search_active
@@ -1048,7 +1087,10 @@ class MenuScreen:
         if self._search_active:
             label, colour = f"{self._search_text}_", t.hud_accent
         elif self._search_text:
-            label, colour = self._search_text, t.menu_item
+            # The caret is gone and so is the fill, which is the signal --
+            # and the way BACK is named, because a filter you cannot get
+            # back into is one you have to retype.
+            label, colour = f"{self._search_text}   (F edits)", t.menu_item
         else:
             label, colour = "Search  (F or /)", t.hud_text
         # Not while renaming: the editor borrows this box, and drawing both
@@ -1218,7 +1260,7 @@ class MenuScreen:
         # its sync panel and its completion overlay have each been fixed
         # for once already.
         if self._search_active:
-            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+N: not new (Ctrl+Shift+N: new)  |  DEL: delete song  |  Ctrl+I: import  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  UP/DOWN or a click: leave the box, keep the filter  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+N: not new (Ctrl+Shift+N: new)  |  DEL: delete song  |  Ctrl+I: import  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"

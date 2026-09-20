@@ -116,6 +116,7 @@ a = Analysis(
         "pickhero.build_info",
         "pickhero.recommendations",
         "pickhero.tabs.merge",
+        "pickhero.tabs.simplify",
         "pickhero.tabs.youtube",
         "pickhero.ui.chord_view",
     ],

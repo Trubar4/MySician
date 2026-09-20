@@ -56,6 +56,8 @@ class App:
         # The tracks this song is being played as, most important first.
         self._current_merge: list = []
         self._merge_note: str | None = None
+        #: (notes an easier reading would drop, notes written) for this song.
+        self._simplify_drops: tuple[int, int] = (0, 0)
         # The last file's track list. See _tracks_of.
         self._tracks_cache_key: str | None = None
         self._tracks_cache: list[dict] = []
@@ -491,6 +493,20 @@ class App:
             self._load_song(self._current_song_path, result[1],
                             resume_at_ms=where, merge=[])
             return
+        if isinstance(result, tuple) and result[0] == "simplify":
+            # The easier reading, remembered per song: a lead that sits out
+            # the verses is the same tomorrow, and so is a chord voicing you
+            # cannot yet reach.
+            where = self._playing_screen.position_ms()
+            setter = getattr(self._config, "set_simplify_for", None)
+            if setter is not None:
+                setter(self._current_song_path.stem, result[1])
+                self._config.save()
+            self._load_song(self._current_song_path,
+                            self._current_track_index,
+                            resume_at_ms=where,
+                            merge=list(self._current_merge))
+            return
         if isinstance(result, tuple) and result[0] == "select_merge":
             # Two tracks played as one part. Remembered per song, because it
             # is a property of the ARRANGEMENT and not of this sitting -- a
@@ -802,6 +818,20 @@ class App:
             transpose = getter(path.stem)
         timeline = timeline.transposed(transpose)
 
+        # The easier reading, if this song is set to it: the same tab with
+        # its octave doublings left out. Applied HERE, beside the transpose,
+        # so the matcher and the picture are made from one plan -- and NOT
+        # applied to the backing or the guide, which are extracted from the
+        # file below and go on playing the song as it was written.
+        from pickhero.tabs.simplify import how_much, simplified
+        self._simplify_drops = how_much(timeline)
+        simple = False
+        getter = getattr(self._config, "simplify_for", None)
+        if getter is not None:
+            simple = getter(path.stem)
+        if simple:
+            timeline = simplified(timeline)
+
         # Extract backing track (everything EXCEPT the track being played)
         # -- which for a merge is every track it was built from, or the
         # filler would be heard twice: once under the hands and once in the
@@ -850,6 +880,7 @@ class App:
         self._playing_screen.set_track_options(
             self._track_options(path), timeline.metadata.track_index, merge
         )
+        self._playing_screen.set_simplify(simple, self._simplify_drops)
         if self._merge_note:
             self._playing_screen.say(self._merge_note)
 

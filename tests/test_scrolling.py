@@ -1335,7 +1335,7 @@ class TestEveryKeyIsWrittenDownSomewhere:
         "f": "F: fret limit", "g": "G: hit window", "h": "H: this help",
         "i": "I/O", "j": "J: per-string", "k": "K: measure",
         "l": "L: loop the weakest", "m": "N/M", "n": "N/M",
-        "o": "I/O", "p": "P: loop on/off",
+        "o": "I/O", "p": "P: loop on/off", "q": "Q: the easier reading",
         "r": "R / Shift+R", "s": "S opens the sync panel",
         "t": "T: theme", "u": "U: recorded backing", "v": "V: chord scoring",
         "w": "W: wait mode", "x": "X/C", "y": "Y: timing report",
@@ -1388,6 +1388,18 @@ class TestTheFooterIsTheTwelveWorthWatching:
     def test_it_is_one_line_of_a_dozen(self):
         screen = PlayingScreen(_make_timeline())
         assert 10 <= len(screen.footer_segments()) <= 13
+
+    def test_a_setting_at_rest_does_not_take_a_slot(self):
+        """The cap is the feature. An entry that would say "off" on every
+        song ever played is the wallpaper this footer was cut down to
+        remove -- so the easier reading appears only while it is ON, which
+        is the one state nothing else on screen says."""
+        screen = PlayingScreen(_make_timeline())
+        at_rest = len(screen.footer_segments())
+        assert not any("Simple" in text for text, _ in screen.footer_segments())
+        screen.set_simplify(True, (867, 2561))
+        assert any("Simple" in text for text, _ in screen.footer_segments())
+        assert len(screen.footer_segments()) == at_rest + 1
 
     def test_every_entry_the_player_asked_for_is_there(self):
         screen = PlayingScreen(_make_timeline())
