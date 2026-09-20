@@ -108,6 +108,16 @@ a = Analysis(
         "pickhero.ui.clipboard",
         "pickhero.tabs.sidecar",
         "pickhero.tabs.remove",
+        # The rest of the lazily-imported half, found by reading the tree
+        # rather than by remembering: tests/test_spec.py fails when a
+        # pickhero module that is only ever imported inside a function is
+        # not named here.
+        "pickhero.audio.autosync",
+        "pickhero.build_info",
+        "pickhero.recommendations",
+        "pickhero.tabs.merge",
+        "pickhero.tabs.youtube",
+        "pickhero.ui.chord_view",
     ],
     hookspath=[],
     hooksconfig={},

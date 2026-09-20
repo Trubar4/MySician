@@ -19,6 +19,8 @@ from pickhero.progress import ProgressTracker
 from pickhero.tabs.loader import GP_EXTENSIONS
 from pickhero.tabs.song_index import SongIndex
 from pickhero.ui.colors import cycle_theme, get_theme
+from pickhero.ui.footer import wrap_on_bars
+from pickhero.ui.keys import shift_held
 
 
 # How many items visible at once before scrolling
@@ -89,6 +91,10 @@ class MenuScreen:
         self._index = SongIndex()
         self._tuning_filter: str = ""
         self._favourites_only: bool = False
+        self._new_only: bool = False
+        #: The footer as it was last drawn, so a test can ask
+        #: whether every key it names really fits the window.
+        self._last_hint: str = ""
         self._search_text: str = ""
         self._search_active: bool = False
         self._filtered_files: list[Path] = []
@@ -158,6 +164,10 @@ class MenuScreen:
             self._filtered_files = [
                 p for p in self._filtered_files
                 if self._config.is_favourite(p.stem)
+            ]
+        if self._new_only and self._config is not None:
+            self._filtered_files = [
+                p for p in self._filtered_files if self._is_new(p)
             ]
         if self._tuning_filter:
             # A song still being indexed is kept OUT rather than shown: while
@@ -319,6 +329,70 @@ class MenuScreen:
         hint = hint_font.render("Any key closes this", True, t.hud_text)
         surface.blit(hint, (w // 2 - hint.get_width() // 2,
                             top + len(self._transfer_lines) * line_h + 8))
+
+    def _is_new(self, path) -> bool:
+        """Is this song still one the player has not started?
+
+        One implementation, asked by the row, the filter and both keys. The
+        rule itself lives on the config; what belongs here is the only thing
+        this screen knows that it does not -- whether the song was ever
+        played.
+        """
+        if self._config is None or path is None:
+            return False
+        record = self._progress.get_best(path.stem) if self._progress else None
+        played = record is not None and record.attempts > 0
+        return self._config.is_new(path.stem, played)
+
+    def _set_new(self, new: bool) -> None:
+        """Mark the selected song new, or take the mark off (Ctrl+N / Ctrl+Shift+N).
+
+        Ctrl and not Shift, for the reason `Ctrl+M` is: `Shift+N` is how a
+        capital N is typed, and a filter box that cannot spell "Nirvana" is
+        not a filter box. The plain `N` is the sort key and stays there --
+        a shortcut that has been under the player's fingers for months is
+        not worth taking for a mnemonic.
+
+        Set and unset rather than a toggle, again like the favourite: while
+        the filter box is open the note under it is the last thing being
+        read, so a toggle means finding out afterwards which way it went.
+        """
+        if self._config is None:
+            return
+        song = self._selected_path()
+        if song is None:
+            self.say("Nothing selected")
+            return
+        if self._is_new(song) == new:
+            self.say(("Already new: " if new
+                      else "Not marked new anyway: ") + song.stem[:40])
+            return
+        self._config.set_new(song.stem, new)
+        self._config.save()
+        self._write_sidecar(song)
+        self.say(("Marked new: " if new else "No longer new: ")
+                 + song.stem[:40])
+        if self._new_only:
+            # It has just left the list it is being shown in, so the list has
+            # to be rebuilt and the cursor put somewhere that exists.
+            self._apply_filter()
+            self._select_path(song)
+
+    def _toggle_new_only(self) -> None:
+        """Show only the songs still marked new, or all of them again (Shift+N).
+
+        Refuses when nothing is new: a filter that empties the list looks
+        exactly like a list that has lost its songs.
+        """
+        if self._config is None:
+            return
+        if not self._new_only and not any(self._is_new(p) for p in self._files):
+            self._reload_note = "Nothing is marked new"
+            return
+        selected = self._selected_path()
+        self._new_only = not self._new_only
+        self._apply_filter()
+        self._select_path(selected)
 
     def _toggle_favourite(self) -> None:
         """Star the selected song, or take the star off (M).
@@ -771,6 +845,10 @@ class MenuScreen:
             # the filter box is open. Ctrl produces no character, so nothing
             # is stolen from the box: Shift+M is how a capital M is typed,
             # and a filter that cannot spell Metallica is not a filter.
+            if event.key == pygame.K_n and event.mod & pygame.KMOD_CTRL:
+                self._set_new(bool(event.mod & pygame.KMOD_SHIFT))
+                return None
+
             if event.key == pygame.K_m and event.mod & pygame.KMOD_CTRL:
                 self._set_favourite(not (event.mod & pygame.KMOD_SHIFT))
                 return None
@@ -779,7 +857,7 @@ class MenuScreen:
             # only reached when the search box is closed -- and "merken" is
             # what the player calls it.
             if event.key == pygame.K_m and not self._search_active:
-                if event.mod & pygame.KMOD_SHIFT:
+                if shift_held(event):
                     self._toggle_favourites_only()
                 else:
                     self._toggle_favourite()
@@ -882,9 +960,15 @@ class MenuScreen:
                     self._ensure_visible()
                 return None
 
-            # N key: cycle sort mode (only when not searching)
+            # N key: sort, or Shift+N for the songs still marked new.
+            # Tested before the plain key, because an `if` chain is read in
+            # order and a shifted key placed after its unshifted twin is
+            # never reached -- which is how the chord view once shipped inert.
             if event.key == pygame.K_n and not self._search_active:
-                self._cycle_sort()
+                if shift_held(event):
+                    self._toggle_new_only()
+                else:
+                    self._cycle_sort()
                 return None
 
             # T key: toggle theme (only when not searching)
@@ -1001,6 +1085,10 @@ class MenuScreen:
             label = f"* favourites — {len(files)} of {len(self._files)} songs"
             surface.blit(hint_font.render(label, True, t.hud_accent),
                          (box.right + 12, box.y + 6))
+        elif self._new_only:
+            label = f"NEW — {len(files)} of {len(self._files)} songs"
+            surface.blit(hint_font.render(label, True, t.hud_accent),
+                         (box.right + 12, box.y + 6))
         elif self._tuning_filter:
             # A filter nobody can see is a list that has lost songs. It says
             # what is being shown AND how many, next to the box that is the
@@ -1033,6 +1121,8 @@ class MenuScreen:
                     bits.append(f'"{self._search_text}"')
                 if self._favourites_only:
                     bits.append("favourites")
+                if self._new_only:
+                    bits.append("new")
                 if self._tuning_filter:
                     bits.append(self._tuning_filter)
                 empty_msg = f"No songs match {' + '.join(bits)}" if bits else \
@@ -1085,13 +1175,23 @@ class MenuScreen:
 
                 # The star sits LEFT of the name, in a column of its own, so
                 # the eye scans one edge instead of hunting along each row --
-                # and so a long title cannot push it off the screen.
+                # and so a long title cannot push it off the screen. NEW goes
+                # in the same column and after it, for the same reason: one
+                # edge to scan, and a long title can push neither off.
                 star_w = 0
                 if self._config is not None and self._config.is_favourite(
                         files[i].stem):
                     star = item_font.render("*", True, t.hud_accent)
                     surface.blit(star, (list_left, y + 4))
                     star_w = star.get_width() + 6
+                if self._is_new(files[i]):
+                    # In the streak colour rather than the accent: the accent
+                    # is what the star and half the header are already drawn
+                    # in, and a mark that shares its colour with a mark
+                    # beside it says nothing the position did not.
+                    tag = hint_font.render("NEW", True, t.feedback_streak)
+                    surface.blit(tag, (list_left + star_w, y + 8))
+                    star_w += tag.get_width() + 8
 
                 # Show relative path for subfolder files, just name for root
                 rel = files[i].relative_to(self._songs_dir)
@@ -1111,24 +1211,42 @@ class MenuScreen:
                 y_bottom = list_top + VISIBLE_ITEMS * item_h + 4
                 surface.blit(arrow, (w // 2 - arrow.get_width() // 2, y_bottom))
 
-        # Current audio device
-        dev_text = f"Audio: {self._device_name}"
-        dev_surf = hint_font.render(dev_text, True, t.hud_text)
-        surface.blit(dev_surf, (w // 2 - dev_surf.get_width() // 2, h - 72))
-
-        # Scoring hint
-        score_hint = "Press A during playback to enable scoring"
-        score_surf = hint_font.render(score_hint, True, t.hud_text)
-        surface.blit(score_surf, (w // 2 - score_surf.get_width() // 2, h - 56))
-
-        # Controls hint
+        # Controls hint. Drawn FIRST and reporting the y it starts at, so
+        # everything else along the bottom stacks upward from it -- a
+        # second wrapped line pushes the block up instead of through the
+        # lines above it. The same rule the playing screen's footer,
+        # its sync panel and its completion overlay have each been fixed
+        # for once already.
         if self._search_active:
-            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  DEL: delete song  |  Ctrl+I: import  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            hint = "Type to search  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+N: not new (Ctrl+Shift+N: new)  |  DEL: delete song  |  Ctrl+I: import  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"
             fav = "on" if self._favourites_only else "off"
-            hint = f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song  |  Ctrl+I: import from another PC  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+            new_f = "on" if self._new_only else "off"
+            hint = f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  Ctrl+N / Ctrl+Shift+N: not new / new (Shift+N: only, {new_f})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song  |  Ctrl+I: import from another PC  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+        # It measured 2554 px on a 1920 window before a single entry was
+        # added to it, so both ends were simply not there -- which is how a
+        # new shortcut looks exactly like one that never shipped.
+        self._last_hint = hint          # what the test reads back
+        lines = wrap_on_bars(hint, hint_font, w - 24)
+        line_h = hint_font.get_height() + 2
+        footer_top = h - 36 - (len(lines) - 1) * line_h
+        for n, one in enumerate(lines):
+            surf = hint_font.render(one, True, t.hud_text)
+            surface.blit(surf, (w // 2 - surf.get_width() // 2,
+                                footer_top + n * line_h))
+
+        score_hint = "Press A during playback to enable scoring"
+        score_surf = hint_font.render(score_hint, True, t.hud_text)
+        surface.blit(score_surf, (w // 2 - score_surf.get_width() // 2,
+                                  footer_top - 20))
+
+        dev_text = f"Audio: {self._device_name}"
+        dev_surf = hint_font.render(dev_text, True, t.hud_text)
+        surface.blit(dev_surf, (w // 2 - dev_surf.get_width() // 2,
+                                footer_top - 36))
+
         if self._transfer_lines:
             self._blit_transfer_report(surface, w, h, item_font, hint_font, t)
 
@@ -1140,9 +1258,6 @@ class MenuScreen:
             build_stamp(), True, t.lane_line)
         surface.blit(stamp, (w - stamp.get_width() - 8,
                              h - stamp.get_height() - 2))
-        hint_surf = hint_font.render(hint, True, t.hud_text)
-        surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
-
         # Store layout for hit testing
         self._list_top = list_top
         self._item_h = item_h

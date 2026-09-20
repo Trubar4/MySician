@@ -677,6 +677,21 @@ class App:
                       (0, y - 4, surface.get_width(), surf.get_height() + 8))
         surface.blit(surf, (12, y))
 
+    def _pin_new(self, song_key: str) -> None:
+        """Freeze this song's NEW mark, if it has one and nothing said so yet.
+
+        Never raises and never writes for a song that has already been
+        played: see `Config.pin_new` for why only one direction is pinned.
+        """
+        try:
+            record = self._progress.get_best(song_key)
+            played = record is not None and record.attempts > 0
+            if self._config.pin_new(song_key, played):
+                self._config.save()
+        except Exception:
+            pass          # a settings file that will not write is not a
+                          # reason a song cannot be opened
+
     def _remember_merge(self, tracks: list, song_key: str | None = None) -> None:
         """Store (or clear) a song's merge. Fewer than two tracks is no merge."""
         setter = getattr(self._config, "set_track_merge_for", None)
@@ -723,6 +738,13 @@ class App:
         """
         if self._playing_screen is not None:
             self._playing_screen.stop_audio()
+
+        # Pin the NEW mark before the song can be played. `_load_song` is the
+        # one door every song goes through, and it is reached before a single
+        # attempt can be recorded -- so a song that is new right now stays
+        # marked new however long it is practised, which is what the player
+        # asked for: *"Es geht nur weg, wenn ich es von Hand entferne."*
+        self._pin_new(path.stem)
 
         # Two tracks played as one part. Read from the song's own settings
         # when the caller has not said -- which is how OPENING a song picks

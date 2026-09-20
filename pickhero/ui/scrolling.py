@@ -38,6 +38,8 @@ from pickhero.audio.note_utils import (
     freq_to_cents_deviation, is_standard_tuning, midi_to_name, tuning_name,
     tuning_notes,
 )
+from pickhero.ui.footer import wrap_on_bars as _wrap_on_bars
+from pickhero.ui.keys import shift_held  # noqa: F401  (re-exported)
 from pickhero.ui.colors import (
     OPEN_STRING_COLOR,
     STRING_COLORS,
@@ -844,54 +846,6 @@ def clear_font_cache() -> None:
     _get_font.cache_clear()
     _HEAD_CACHE.clear()
     _BLOCK_CACHE.clear()
-
-
-def shift_held(event) -> bool:
-    """Was SHIFT down for this key press -- however the keyboard says so.
-
-    Three signals, because one was not enough on the player's machine: a key
-    arrived carrying a capital letter with no shift bit in `event.mod` at
-    all, and the shortcut fell through to its unshifted twin. The event's own
-    modifiers are the normal answer, the live keyboard state catches a stale
-    one, and the CHARACTER catches the rest -- a capital letter is what was
-    typed, whatever the layout did to say it.
-
-    `pygame.key.get_mods()` needs the video system and raises without it, so
-    it is guarded: a key handler that can raise takes the app down with it.
-    """
-    if getattr(event, "mod", 0) & pygame.KMOD_SHIFT:
-        return True
-    try:
-        if pygame.key.get_mods() & pygame.KMOD_SHIFT:
-            return True
-    except pygame.error:
-        pass
-    letter = getattr(event, "unicode", "") or ""
-    return len(letter) == 1 and letter.isalpha() and letter.isupper()
-
-
-def _wrap_on_bars(line: str, font, width: int) -> list[str]:
-    """Break one footer line into as many as it takes to fit `width`.
-
-    At the "|" the entries already carry, so a shortcut is never split down
-    the middle. A single entry wider than the screen is left alone -- there
-    is nothing to be done about it here, and shortening the text is a
-    decision for whoever wrote it.
-    """
-    if font.size(line)[0] <= width:
-        return [line]
-    out: list[str] = []
-    current = ""
-    for part in line.split("|"):
-        candidate = part if not current else f"{current}|{part}"
-        if current and font.size(candidate)[0] > width:
-            out.append(current.strip())
-            current = part
-        else:
-            current = candidate
-    if current.strip():
-        out.append(current.strip())
-    return out or [line]
 
 
 def format_time(ms: float) -> str:

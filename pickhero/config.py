@@ -230,6 +230,10 @@ class Config:
     # is a track with holes in it; the rhythm guitar fills them, bar by bar.
     # See `tabs/merge.py` for why the unit is a bar and not a note.
     song_track_merges: dict = field(default_factory=dict)
+    # Whether this song still counts as NEW, where the player has said so by
+    # hand. An entry is an OVERRIDE, not a record: a song with no entry is
+    # new exactly while it has never been played. See `is_new`.
+    song_new: dict = field(default_factory=dict)
     wait_mode: bool = False
     sort_mode: str = "name_asc"
     # Song keys the player has starred. A list rather than a set because it
@@ -298,6 +302,58 @@ class Config:
             self.favourites[self.favourites.index(old_key)] = new_key
             moved.append("favourites")
         return moved
+
+    def is_new(self, song_key: str, played: bool) -> bool:
+        """Is this song still one the player has not started?
+
+        *"Alle Songs, die ich noch nie gespielt habe, sollen ein Neu haben.
+        Es geht nur weg, wenn ich es von Hand entferne."*
+
+        Both halves of that, and they pull against each other: it has to be
+        true of every never-played song WITHOUT anyone having marked them,
+        and it must survive the song being played. So an entry here is an
+        OVERRIDE and its absence is a question -- new exactly while nothing
+        has been played. A song is pinned (`pin_new`) the moment it is
+        opened, which is before it can gain an attempt, so playing it never
+        takes the mark away.
+
+        `played` is asked of the caller rather than looked up: the practice
+        record lives in `progress.py` and this module knows nothing about
+        it, which is what keeps the settings readable without it.
+        """
+        stored = self.song_new.get(song_key)
+        if stored is not None:
+            return bool(stored)
+        return not played
+
+    def set_new(self, song_key: str, new: bool) -> None:
+        """Mark this song new, or take the mark off. By hand only.
+
+        Stored either way and unconditionally, including a value that
+        agrees with what would have been derived: an entry that was left
+        out because it agreed today is an entry that silently stops
+        agreeing the first time the song is played, which is the one thing
+        this must not do.
+        """
+        if not song_key:
+            return
+        self.song_new[song_key] = bool(new)
+
+    def pin_new(self, song_key: str, played: bool) -> bool:
+        """Freeze a new song's mark before it can be played. True if it wrote.
+
+        Only ever writes True, and only for a song that IS new and has no
+        entry. "Not new" needs no pin: a song that has been played can never
+        become unplayed, so the derivation will go on answering the same
+        thing for ever -- and writing it would put an entry beside every
+        song in the folder to say what was already known.
+        """
+        if not song_key or song_key in self.song_new:
+            return False
+        if played:
+            return False
+        self.song_new[song_key] = True
+        return True
 
     def track_merge_for(self, song_key: str) -> list:
         """The tracks this song is played as, most important first.

@@ -4651,6 +4651,8 @@ binaries = []                            # line 54
 - **It fails on the unfixed spec** — verified, because a test that cannot fail is the thing it is meant to catch.
 - **A file that only runs on the build machine is a file that is only tested there**, and "there" is a laptop belonging to somebody who is not writing the code. Everything in the tree that is Python gets read by something in the suite now.
 
+**And the list of lazy imports in it was a hand-kept list, which is only ever as fresh as somebody's memory.** Six pickhero modules that are reached only from inside a function were missing from it — `autosync`, `build_info`, `recommendations`, `merge`, `youtube` and `chord_view` — one of them added by me a day earlier, in the same session that quoted the verovio lesson. So the rule is read off the TREE now: `tests/test_spec.py` walks every module, separates the imports that sit at module level from the ones that only ever run inside a function, and fails when one of the second kind is not named in the spec. Same shape as every other rule here that survived — the property, not the instance.
+
 ### A Folder Of Histories Looked Like An Empty Folder
 
 *"Wenn ich im Sync\\songs nur die .mysician.json und die .runs.json ablege, geht es nicht. Da gp, mp3 und songsterr schon auf NB2 sind, sehe
@@ -4836,6 +4838,51 @@ a file that would not open at all. So note-by-note interleaving is not a stricte
   the 44.4 → 44.5 px walk the footer already paid for.
 - **`tabs/merge.py` is arithmetic and nothing else** — no file reading, no pygame — so the rule is tested on bare timelines, and so the app and
   any tool that wants it cannot have two ideas of what a merge is.
+
+## A Mark That Only A Hand Can Remove
+
+*"Brauche eine Möglichkeit, um Songs mit neu zu markieren, wie M für Favorit. Alle Songs, die ich noch nie gespielt habe, sollen ein Neu
+haben. Es geht nur weg, wenn ich es von Hand entferne."*
+
+Two halves, and they pull against each other. **Every never-played song has to be marked without anyone marking it** — a folder of fifty songs
+must not have to be visited one at a time, which is the "four files" promise this project already broke once. And **the mark has to survive the
+song being played**: it is not "songs I have not played", it is a list of what he still intends to learn, and only he says when one is off it.
+
+A derived rule (`new = never played`) does the first and fails the second: the badge would vanish the moment he practised the song, which is
+exactly what he said must not happen. A stored list does the second and needs the scan to decide for every song it has never seen — a scan that
+invents state, and a sidecar beside every song in the folder to carry it.
+
+- **The stored entry is an OVERRIDE and its absence is a question.** No entry means new exactly while nothing has been played; an entry means
+  what it says. So the whole folder is marked on the first run with **nothing written at all**, and a hand-set value is honoured for ever.
+- **What closes the gap is pinning at the door.** `_load_song` is the one route into a song and it is reached BEFORE a single attempt can be
+  recorded, so a song that is new at that moment has `True` written then. Playing it afterwards changes the history and not the answer.
+- **Only one direction is pinned.** "Not new" needs no entry: a song that has been played can never become unplayed, so the derivation goes on
+  answering the same thing for ever — and writing it would put a file beside every song in the folder to say what was already known.
+- **`Ctrl+N` and `Ctrl+Shift+N`, not a toggle and not a plain letter.** Ctrl for the reason `Ctrl+M` is: `Shift+N` is how a capital N is typed,
+  and a filter box that cannot spell "Nirvana" is not a filter box. Set and unset rather than toggle, because while the box is open the note
+  under it is the last thing being read, so a toggle means finding out afterwards which way it went. And the plain `N` stays the sort key — a
+  shortcut that has been under the player's fingers for months is not worth taking for a mnemonic.
+- **`Shift+N` shows only the new ones**, and refuses when nothing is: a filter that empties the list looks exactly like a list that has lost its
+  songs. Tested before the plain `N`, because an `if` chain is read in order and a shifted key placed after its unshifted twin is never
+  reached — which is how the chord view once shipped inert.
+- **The badge is in the streak colour, beside the star, in the left column.** Not the accent: the star and half the header are already drawn in
+  it, and a mark sharing its colour with the mark next to it says nothing the position did not. Left of the name, so the eye scans one edge and
+  a long title can push neither off the screen.
+- **It is a dict named `song_something`**, so `forget_song`, `rename_song`, the sidecar and `merge_stats` carry it without anyone writing the
+  name down — and the mark travels to the other laptop, which is what stops that machine deciding it afresh with no history to go on.
+
+### Two faults it uncovered, both of them older than it
+
+- **`shift_held` could not be reached from the song list.** It was written in `scrolling.py` to close the class of fault where a key arrives
+  carrying a capital letter with **no shift bit in `event.mod` at all** — and this file recorded it as "used by all eleven of them and by the
+  song list", which was not true: the list's own `Shift+M` still asked `event.mod` by hand. **A helper that closes a class of fault only closes
+  it where it can be reached**, so it lives in `ui/keys.py` now and both import it. `Shift+M` was fixed on the way past.
+- **The song list's footer has been cut at both ends all along.** Measured: **2554 px of text on a 1920 window**, before a single entry was
+  added to it — so the first shortcut and the last were simply not there. That is the fault the PLAYING screen has a chapter for, and the fix
+  never reached this screen: `_wrap_on_bars` sat in `scrolling.py` where the list could not use it. It is `ui/footer.wrap_on_bars` now, one
+  implementation for both, and the bottom of the song list stacks UPWARD from the footer the way the sync panel and the completion overlay were
+  each fixed to do. Without it the new key would have been invisible on the very screen it lives on, which is this project's own definition of a
+  feature that does not exist.
 
 ## What NOT To Do
 
