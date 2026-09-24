@@ -1122,3 +1122,160 @@ class TestAMapThatBeginsBeforeTheRecordingDoes:
         here = autosync._fit_one(base, starts, times, rows, 25.0)
         there = autosync._fit_one(base, starts, moved, shifted_rows, 25.0)
         assert here["points"] == there["points"]
+
+
+class TestOneShapeIsOneCandidate:
+    """Songsterr offered 44 maps for one song and 34 are one curve shifted.
+
+    The fit's whole job is to find one constant, so a map differing from
+    another only by a constant is the same answer written twice -- and each
+    one costs a full drift curve over the song. Measured on the player's
+    Californication: 44 candidates to 11, and the run from 2.6 minutes to
+    42 seconds. *"SYNC comparing bei 50 % bleibt haengen."*
+    """
+
+    def test_shifted_copies_are_one(self):
+        base = REAL[0]["points"]
+        shifted = [[t + d for t in base] for d in (0.0, -25.15, 7.5, 40.0)]
+        assert len(autosync._distinct(shifted)) == 1
+
+    def test_a_different_curve_survives(self):
+        a = REAL[0]["points"]
+        b = [t * 1.01 for t in a]          # a different shape, not a shift
+        assert len(autosync._distinct([a, [x + 9 for x in a], b])) == 2
+
+    def test_the_first_of_a_set_wins(self):
+        """`candidates_for` puts the video Songsterr marked first, and that
+        ordering has to survive the thinning."""
+        base = REAL[0]["points"]
+        out = autosync._distinct([[t + 3.0 for t in base], base])
+        assert out[0] == [t + 3.0 for t in base]
+
+    def test_it_is_really_wired_into_the_fit(self, monkeypatch):
+        """A rule nothing calls is a rule that ships doing nothing."""
+        import numpy as np
+        seen = []
+        monkeypatch.setattr(autosync, "decode",
+                            lambda p, samplerate=44100: (np.zeros(44100), 44100))
+        monkeypatch.setattr(autosync, "chroma_of_audio",
+                            lambda s, r, progress=None: (np.zeros((100, 12)), 21.5))
+        monkeypatch.setattr(autosync, "chroma_of_timeline",
+                            lambda tl, fps: np.zeros((100, 12)))
+        monkeypatch.setattr(autosync, "drift_curve",
+                            lambda *a, **k: seen.append(1) or [])
+        base = REAL[0]["points"]
+        autosync.align_to_bar_times(
+            _song(bars=8), "audio.mp3",
+            [[t + d for t in base] for d in (0.0, 1.0, 2.0, 3.0)])
+        assert len(seen) == 1, "four shifts of one map cost four drift curves"
+
+
+class TestTheProgressBarMovesThroughAllOfThem:
+    """`0.5 + 0.5 * (taken + 1) / n * f` restarts at a half for every
+    candidate and reaches 51 % on the first of 44, so a measurement doing
+    exactly what it should reads as a freeze at 50 %."""
+
+    def _run(self, monkeypatch, maps):
+        rows = [(float(i * 6), 1.2, 0.9) for i in range(5)]
+        import numpy as np
+        monkeypatch.setattr(autosync, "decode",
+                            lambda p, samplerate=44100: (np.zeros(44100), 44100))
+        monkeypatch.setattr(autosync, "chroma_of_audio",
+                            lambda s, r, progress=None: (np.zeros((100, 12)), 21.5))
+        monkeypatch.setattr(autosync, "chroma_of_timeline",
+                            lambda tl, fps: np.zeros((100, 12)))
+
+        def curve(tab, rec, fps, progress=None):
+            if progress:
+                for k in range(1, 5):
+                    progress(k / 4)
+            return rows
+        monkeypatch.setattr(autosync, "drift_curve", curve)
+        seen = []
+        autosync.align_to_bar_times(
+            _song(bars=8), "audio.mp3", maps,
+            lambda f, what: seen.append((f, what)) or True)
+        return seen
+
+    def _maps(self, n):
+        base = REAL[0]["points"]
+        return [[t * (1.0 + i * 0.003) for t in base] for i in range(n)]
+
+    def test_it_never_walks_backwards(self, monkeypatch):
+        seen = self._run(monkeypatch, self._maps(6))
+        bars = [f for f, _ in seen]
+        assert bars == sorted(bars), "the percentage went back down"
+
+    def test_it_reaches_the_end(self, monkeypatch):
+        seen = self._run(monkeypatch, self._maps(6))
+        assert max(f for f, _ in seen) == pytest.approx(1.0)
+
+    def test_it_leaves_the_half_on_the_first_candidate(self, monkeypatch):
+        """The whole complaint: 44 candidates put the first one's finish at
+        51 %, and then the next began again at 50."""
+        seen = self._run(monkeypatch, self._maps(20))
+        comparing = [f for f, what in seen if what.startswith("comparing")]
+        assert max(comparing[:4]) > 0.5
+
+    def test_it_says_which_map(self, monkeypatch):
+        seen = self._run(monkeypatch, self._maps(3))
+        words = {what for _, what in seen if what.startswith("comparing")}
+        assert "comparing map 1 of 3" in words
+        assert "comparing map 3 of 3" in words
+
+
+class TestABarLineNoDriftCouldPutThere:
+    """Songsterr's bar 0 for Papa Roach's "Reckless" is the VIDEO's start,
+    not the first bar line: that bar reads 1834 ms where every other bar of
+    the song reads about 2970. `SyncMap` clamps the segment at `MAX_RATE`
+    and spreads the rest over the music -- the `+11.11 %` first section in
+    the player's run log, and the 628 ms the picture was pulled by.
+    """
+
+    def _map(self, bars=20, bar_ms=2926.8, first=None):
+        """A map drifting smoothly at 1 %, with one point movable."""
+        pts = [(i * bar_ms, i * bar_ms * 0.01) for i in range(bars)]
+        if first is not None:
+            pts[0] = (0.0, first)
+        return pts
+
+    def test_a_smooth_map_loses_nothing(self):
+        pts = self._map()
+        assert autosync._without_spikes(pts) == pts
+
+    def test_the_video_start_goes(self):
+        pts = self._map(first=-1091.0)
+        kept = autosync._without_spikes(pts)
+        assert len(kept) == len(pts) - 1
+        assert kept[0][0] == pytest.approx(2926.8)
+
+    def test_only_the_bad_one_goes(self):
+        """One bad point drags the line for the two beside it, so bar 1
+        also fails while bar 0 is still in -- and passes the moment it is
+        gone. Worst first, then measured again."""
+        pts = self._map(first=-1091.0)
+        kept = autosync._without_spikes(pts)
+        assert [p[0] for p in kept] == [p[0] for p in pts[1:]]
+
+    def test_a_spike_in_the_middle_goes_too(self):
+        pts = self._map()
+        pts[7] = (pts[7][0], pts[7][1] + 900.0)
+        kept = autosync._without_spikes(pts)
+        assert len(kept) == len(pts) - 1
+        assert all(p[0] != pts[7][0] for p in kept)
+
+    def test_a_disagreement_nobody_could_see_is_kept(self):
+        """Floored at SPIKE_FLOOR_S, so a reading inside the 100 ms where
+        picture and sound still read as one event is never refused."""
+        pts = self._map()
+        pts[7] = (pts[7][0], pts[7][1] + 80.0)
+        assert autosync._without_spikes(pts) == pts
+
+    def test_it_never_eats_a_short_map(self):
+        pts = [(0.0, 0.0), (1000.0, 900.0), (2000.0, 0.0)]
+        assert len(autosync._without_spikes(pts)) == 3
+
+    def test_the_fit_counts_what_it_dropped(self, monkeypatch):
+        report = TestFittingItToARecording()._aligned(
+            monkeypatch, [1.2, 1.25, 1.18, 1.22, 1.21])
+        assert "spikes" in report

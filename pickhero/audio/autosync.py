@@ -647,6 +647,96 @@ def _from_zero(bar_times: Sequence[float]) -> list[float]:
     return [t - first for t in bar_times]
 
 
+def _distinct(candidates: list[list[float]]) -> list[list[float]]:
+    """One SHAPE is one candidate, whatever constant it carries.
+
+    Songsterr offered **44 maps** for the player's Californication and
+    **34 of them are one curve shifted** -- their own uploads of the same
+    transcription against different videos. The fit's whole job is to find
+    one constant, so a map that differs from another only by a constant is
+    not a second answer to try, it is the same answer written down again.
+
+    That is not a saving of the cheap kind. Each candidate costs a full
+    drift curve over the song -- 3.5 s here, and a laptop is slower -- so
+    44 of them is minutes of a progress bar that looks stuck, which is
+    exactly what came back: *"SYNC comparing bei 50 % bleibt haengen."*
+    Measured: 44 candidates to 11, Reckless 3 to 3 (nothing lost).
+
+    The first of a set wins, so `candidates_for`'s ordering still decides:
+    the video Songsterr marks as the one the tab was written from stays at
+    the front.
+    """
+    seen: set[tuple[float, ...]] = set()
+    out: list[list[float]] = []
+    for c in candidates:
+        if not c:
+            continue
+        shape = tuple(round(t - c[0], 3) for t in c)
+        if shape in seen:
+            continue
+        seen.add(shape)
+        out.append(list(c))
+    return out
+
+
+def _without_spikes(points: list[tuple[float, float]]
+                    ) -> list[tuple[float, float]]:
+    """The map minus the bar lines no drift could put where they are.
+
+    Songsterr's bar 0 for Papa Roach's "Reckless" sits at **0.0 s** -- the
+    video's start, not the first bar line -- so that bar reads 1834 ms
+    where every other bar of the song reads about 2970. `SyncMap` clamps
+    the segment to `MAX_RATE` and spreads the remaining second over the
+    music, which is the `+11.11 %` first section in the player's run log
+    and the 628 ms the picture was pulled by.
+
+    A point is refused when it sits further from the LINE BETWEEN ITS
+    NEIGHBOURS than drift could carry it: the bound is `MAX_DRIFT_RATE`
+    over the distance to each neighbour, floored at `SPIKE_FLOOR_S` so a
+    disagreement nobody could see is never called one. Both are bounds
+    this module already carries rather than numbers fitted here.
+
+    **Worst first, then measured again**, because one bad point drags the
+    interpolation for the two beside it: on that song bar 1 also fails
+    while bar 0 is still in, and passes the moment it is gone. So exactly
+    one point is dropped, which is the one that is wrong.
+
+    Dropping is the honest repair. The line between the neighbours is what
+    `simplify` would already have claimed for a point it thinned away, and
+    outside the outermost point `SyncMap` extrapolates -- so nothing is
+    invented, one reading is refused.
+
+    Measured on the player's own files: Reckless loses **1** of 71 points,
+    Californication **2** of 127, and Bon Jovi -- the song that syncs well
+    and the control this rests on -- loses **none** of 149.
+    """
+    kept = list(points)
+    while len(kept) >= 4:
+        worst, margin = None, 0.0
+        for i in range(len(kept)):
+            if 0 < i < len(kept) - 1:
+                a, b = i - 1, i + 1
+            elif i == 0:
+                a, b = 1, 2
+            else:
+                a, b = len(kept) - 3, len(kept) - 2
+            span = kept[b][0] - kept[a][0]
+            if span == 0:
+                continue
+            share = (kept[i][0] - kept[a][0]) / span
+            want = kept[a][1] + (kept[b][1] - kept[a][1]) * share
+            allow = max(SPIKE_FLOOR_S * 1000.0,
+                        MAX_DRIFT_RATE * (abs(kept[i][0] - kept[a][0])
+                                          + abs(kept[i][0] - kept[b][0])))
+            over = abs(kept[i][1] - want) - allow
+            if over > margin:
+                worst, margin = i, over
+        if worst is None:
+            break
+        kept.pop(worst)
+    return kept
+
+
 def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
                        candidates,
                        progress: Callable[[float, str], bool] | None = None,
@@ -674,10 +764,11 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
         "ambiguous": 0, "breaks": [], "covered": None, "song_s": 0.0,
         "wrong_length": False, "sections": 0, "sections_used": 0,
         "unreadable": [], "share": 0.0, "wrong_bars": False,
+        "spikes": 0,
         "offered": [len(c) for c in candidates],
     }
-    fitting = [_from_zero(c) for c in candidates
-               if _covers(timeline, bar_starts, c)]
+    fitting = _distinct([_from_zero(c) for c in candidates
+                         if _covers(timeline, bar_starts, c)])
     if not fitting or len(bar_starts) < 2:
         # A map with a different number of bars is a map of a different tab --
         # a newer revision, or the repeats written out differently. Said
@@ -703,10 +794,17 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
             replace_times(timeline, bar_starts, bar_times), fps)
         if len(tab) == 0:
             continue
-        share = (taken + 1) / len(fitting)
+        # Through all of them, not back to 50 % at each one. The old form
+        # was `0.5 + 0.5 * (taken + 1) / n * f`, which restarts at a half
+        # for every candidate and reaches 51 % on the first of 44 -- so a
+        # measurement doing exactly what it should read as a freeze. And
+        # the word says WHICH candidate, because "comparing" alone cannot
+        # say whether anything is moving.
+        done, n = taken, len(fitting)
         rows = drift_curve(
             tab, rec, fps,
-            (lambda f, s=share: progress(0.5 + 0.5 * s * f, "comparing"))
+            (lambda f, d=done, k=n: progress(0.5 + 0.5 * (d + f) / k,
+                                             f"comparing map {d + 1} of {k}"))
             if progress else None)
         found = _fit_one(report, bar_starts, bar_times, rows, tolerance_ms)
         if found["share"] > best["share"]:
@@ -756,8 +854,10 @@ def _fit_one(base: dict, bar_starts, bar_times, rows, tolerance_ms) -> dict:
     # measured at 324 ms against readings the report claimed 76 ms of.
     raw = [(float(start), start - (time + constant) * 1000.0)
            for start, time in zip(bar_starts, bar_times)]
+    kept = _without_spikes(raw)
+    report["spikes"] = len(raw) - len(kept)
     report["points"] = [(round(a, 1), round(b, 1))
-                        for a, b in simplify(raw, tolerance_ms)]
+                        for a, b in simplify(kept, tolerance_ms)]
     return report
 
 

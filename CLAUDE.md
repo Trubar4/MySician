@@ -5047,6 +5047,65 @@ which is why "listen only" was no better. `_set_sync_point` has spent the nudge 
   shortcuts and not the song list, and as the capability check that disagreed with the permission check on Born To Be My Baby: **a rule applied
   in one of the two places it belongs is a rule that will be found again from the other side.**
 
+## Forty-Four Maps Of One Curve, And A Bar Line At The Video's Start
+
+*"Obwohl songsterr bar map only, Ctrl+S: listening schnell bis 50 %, comparing bei 50 % bleibt haengen. Was wird compared und warum?"*
+
+Nothing was hanging. **Each candidate map costs a full drift curve over the song** -- 3.5 s here, more on a laptop -- and Californication
+offered **44 of them**, so `comparing` really was two and a half minutes of arithmetic. And the progress said 50 % throughout because the
+arithmetic was wrong in a way only many candidates expose: `0.5 + 0.5 * (taken + 1) / n * f` restarts at a half for EVERY candidate and
+reaches 51 % on the first of 44. A measurement doing exactly what it should, reading as a freeze.
+
+**34 of those 44 are one curve shifted** -- Songsterr's own uploads of the same transcription against different videos. The fit's whole job
+is to find one constant, so a map differing from another only by a constant is not a second answer to try, it is the same answer written
+down again. `_distinct` keeps one of each SHAPE, first wins, so `candidates_for`'s ordering still decides.
+
+| | candidates | after | run |
+|---|---|---|---|
+| Californication | 44 | **11** | 2.6 min -> **42 s** |
+| Reckless | 3 | 3 | 8.6 s |
+
+The bar says `comparing map 3 of 11` now and walks 50 % to 100 % once.
+
+**And one bar line in the map is not a measurement.** Songsterr's bar 0 for Papa Roach's "Reckless" sits at **0.0 s** -- the video's start,
+not the first bar line -- so that bar reads **1834 ms where every other bar of the song reads about 2970**. `SyncMap` clamps the segment to
+`MAX_RATE` and spreads the rest over the music: the `+11.11 %` first section in the player's run log, and most of the 628 ms the picture was
+pulled by.
+
+`_without_spikes` refuses a point sitting further from the LINE BETWEEN ITS NEIGHBOURS than drift could carry it -- `MAX_DRIFT_RATE` over the
+distance to each neighbour, floored at `SPIKE_FLOOR_S`. Both are bounds this module already carries; nothing is fitted here.
+
+- **Worst first, then measured again.** One bad point drags the interpolation for the two beside it: on that song bar 1 also fails while bar 0
+  is in, and passes the moment it is gone. So exactly one point goes, and it is the one that is wrong.
+- **Dropping is the honest repair.** The line between the neighbours is what `simplify` already claims for a point it thinned away, and outside
+  the outermost point `SyncMap` extrapolates. Nothing is invented; one reading is refused.
+- **Measured: Reckless loses 1 of 71, Californication 2 of 127, and Bon Jovi -- the song that syncs well, and the control this rests on --
+  loses none of 149.**
+
+### And then the follow loop answered the question the player actually asked
+
+*"Haben wir selbst Fehler in der Visualisierung?"* No, and this is the measurement rather than an assurance. `_follow_recording` simulated at
+60 fps over each stored map, on his own two songs:
+
+| | points | worst lag | snaps |
+|---|---|---|---|
+| Reckless, Songsterr's bar map | 39 | **206 ms** | 0 |
+| **Reckless, the listening** | 17 | **0 ms** | 0 |
+| Californication, Songsterr's bar map | 66 | 158 ms | 0 |
+| **Californication, the listening** | 20 | **0 ms** | 0 |
+
+**The same loop, the same song, the same recording: 0 ms on one map and 206 on the other.** So the picture follows perfectly what it is given,
+and what it is given wobbles. `SYNC_PULL_FRACTION` is 50 ms/s; a bar map that steps 200 ms between two bar lines 3 s apart demands 66 ms/s and
+the picture never catches up -- which is *"haengt hinterher"*, and it is over `AUDIBLE_MS`.
+
+**The wobble is Songsterr's own reading and cannot be filtered away**, which is the honest half. Compared against the listening on the same
+song, their bar times are up to **345 ms** out around 2:10 -- systematic over several bars, not a spike, so no rule that refuses outliers can
+reach it. The spike filter is correctly scoped at "no drift could do this" and stops there.
+
+**So on both of these songs the answer is the listening**, and that is now a measured statement rather than a preference: `Alt+S` -> listen
+only, `Ctrl+S`. It also puts a number against the default set two chapters up -- the bar map is instant and cannot fail, and on the player's
+own songs it costs 200 ms of lag where the listening costs none.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

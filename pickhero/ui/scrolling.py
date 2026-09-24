@@ -8932,11 +8932,17 @@ class PlayingScreen:
                 f"with it",
                 "SYNC   nothing was stored. Is this the same recording the "
                 "tab was made from?"]
+        # A dropped bar line is a state, not a detail: Songsterr's bar 0 is
+        # regularly the VIDEO's start rather than the first bar line, and
+        # one such point is a second of correction spread over the music.
+        dropped = report.get("spikes") or 0
+        refused = (f", {dropped} bar line{'s' if dropped > 1 else ''} refused "
+                   f"(no drift could put them there)" if dropped else "")
         return [
             f"SYNC   from Songsterr's {report['bars']} bar times, lined up "
             f"here at {report['constant_s']:+.2f} s — {report['usable']} of "
             f"{report['windows']} windows agree to "
-            f"{report['scatter_ms']:.0f} ms",
+            f"{report['scatter_ms']:.0f} ms{refused}",
             "SYNC   coarser than listening (80–90 ms against 10) but it does "
             "not care that a song repeats itself. Shift+S refines it",
         ]
