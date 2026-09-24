@@ -1,0 +1,12 @@
+{
+ "version": 1,
+ "song": "Red Hot Chili Peppers - Californication",
+ "settings": {
+  "song_mp3_paths": "Red Hot Chili Peppers - Californication.mp3",
+  "song_mp3_offsets": -3000.0,
+  "song_songsterr": 439,
+  "song_sync_source": "songsterr",
+  "song_new": true
+ },
+ "favourite": false
+}
