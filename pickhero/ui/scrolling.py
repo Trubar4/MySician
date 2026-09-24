@@ -8621,6 +8621,28 @@ class PlayingScreen:
         rate_setter = getattr(self._config, "set_mp3_rate_for", None)
         if rate_setter is not None:
             rate_setter(self._song_key, 1.0)
+        # The nudge goes with them, and this was the whole of a song that
+        # would not sync however it was measured. `base_offset_ms` is a
+        # correction sitting ON TOP of the points, and these points were
+        # measured against the recording itself without reference to it --
+        # so a -3000 ms set by hand while the song had no map at all was
+        # added to every one of them, putting the recording exactly three
+        # seconds out from the first bar to the last. `Shift+S` has spent
+        # it since the day it was written, and says why in as many words;
+        # this path never did, which is one rule applied in one of the two
+        # places it belongs.
+        #
+        # SAID rather than done quietly: a nudge dialled in to correct a
+        # bias in the OLD map is real work, and the new measurement may or
+        # may not carry the same bias. Dropping it is right -- carrying it
+        # over assumes an answer nobody has -- but the player has to know
+        # it went, or the first thing he does is wonder where it went.
+        spent = self._mp3_offset()
+        if spent:
+            self._set_mp3_offset(0.0)
+            self._sync_lines.append(
+                f"SYNC   your {_offset_text(spent)} nudge was dropped — "
+                f"the points measure the offset themselves")
         self._config.save()
         described = list(self._sync_lines)
         self._describe_sync()
@@ -9101,17 +9123,28 @@ class PlayingScreen:
         self._sync_lines = ["SYNC   " + lines[0]] + lines[1:]
 
     def _clear_sync_rate(self) -> None:
-        """Back to the recording as it was made."""
+        """Back to the recording as it was made.
+
+        The OFFSET goes too, which it did not until a song turned up whose
+        whole sync was a hand-set nudge. Leaving it behind makes "clear"
+        mean "clear most of it": the number that survives was dialled in
+        against a map that no longer exists, and it is then the only thing
+        placing the recording. This is what `_forget_sync_for_new_recording`
+        already does for a file that changed, and it is the same question.
+        It is also the one key that answers "how do I get rid of an offset
+        I no longer want" without pressing Ctrl+M until it reaches zero.
+        """
         self._sync_anchor = None
         self._sync_lines = []
         self._mp3_loaded_build = None
         for name, value in (("set_mp3_anchors_for", []),
+                            ("set_mp3_offset_for", 0.0),
                             ("set_mp3_rate_for", 1.0)):
             setter = getattr(self._config, name, None)
             if setter is not None:
                 setter(self._song_key, value)
         self._config.save()
-        self._say("Recording sync points cleared")
+        self._say("Recording sync cleared — points, rate and offset")
 
     def _set_mp3_offset(self, offset_ms: float) -> None:
         """Store the recording's offset and move the recording to match."""

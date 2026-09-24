@@ -1837,3 +1837,83 @@ class TestSayingItIsTheTempo:
             [], self._report(295.4, 253.9)))
         assert "BPM" not in lines
         assert "not the same transcription" in lines
+
+
+class TestNoPathThatWritesTheSyncLeavesANudgeStanding:
+    """`base_offset_ms` is a correction ON TOP of the points, so a stale one
+    is added to every one of them.
+
+    The player's Californication: a -3000 ms nudge dialled in by hand while
+    the song had no map at all, and then a measured map arriving underneath
+    it. Both measurements -- the listening and Songsterr's bar map -- agreed
+    on that song to within 1 to 180 ms over five minutes, and the recording
+    was still exactly three seconds out from the first bar to the last,
+    because nothing spent the nudge.
+
+    `Shift+S` has spent it since it was written and says why. `Ctrl+S` and
+    `Ctrl+Shift+S` did not. So the property is asserted over every path that
+    writes the sync rather than over the one that was reported.
+    """
+
+    def _screen(self, tmp_path, monkeypatch):
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        screen = PlayingScreen(_timeline(), config=config, song_key="song")
+        screen._config.set_mp3_offset_for("song", -3000.0)
+        return screen
+
+    def test_the_measurement_spends_it(self, tmp_path, monkeypatch):
+        points = [(0.0, -3662.0), (150_000.0, -3063.0), (300_000.0, -1288.0)]
+        TestAutoSyncInsideTheApp()._found(monkeypatch, points)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        TestAutoSyncInsideTheApp()._run(screen)
+        assert screen._mp3_anchors() == points
+        assert screen._mp3_offset() == 0.0
+        # Every point, not just the first: the nudge was a flat error.
+        for at, offset in points:
+            assert screen._sync_map().offset_at(at) == pytest.approx(offset)
+
+    def test_and_says_that_it_did(self, tmp_path, monkeypatch):
+        """A number that vanishes without a word is the next report."""
+        TestAutoSyncInsideTheApp()._found(
+            monkeypatch, [(0.0, -3662.0), (300_000.0, -1288.0)])
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        TestAutoSyncInsideTheApp()._run(screen)
+        assert any("nudge" in line for line in screen._sync_lines)
+
+    def test_a_song_with_no_nudge_says_nothing(self, tmp_path, monkeypatch):
+        TestAutoSyncInsideTheApp()._found(
+            monkeypatch, [(0.0, -260.0), (300_000.0, -1288.0)])
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_offset_for("song", 0.0)
+        screen._start_auto_sync()
+        TestAutoSyncInsideTheApp()._run(screen)
+        assert not any("nudge" in line for line in screen._sync_lines)
+
+    def test_clearing_clears_the_offset_too(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for("song", [(0.0, -100.0),
+                                                    (60_000.0, -200.0)])
+        screen._clear_sync_rate()
+        assert screen._mp3_anchors() == []
+        assert screen._mp3_offset() == 0.0
+        assert screen._sync_map().offset_at(30_000.0) == 0.0
+
+    def test_pinning_a_point_still_spends_it(self, tmp_path, monkeypatch):
+        """The rule that was already right, pinned so it stays that way."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._playback_ms = 60_000.0
+        screen._set_sync_point()
+        assert screen._mp3_offset() == 0.0
+        assert screen._sync_map().offset_at(60_000.0) == pytest.approx(-3000.0)
+
+    def test_a_different_recording_drops_it(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._forget_sync_for_new_recording()
+        assert screen._mp3_offset() == 0.0

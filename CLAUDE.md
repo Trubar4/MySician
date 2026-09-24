@@ -4997,6 +4997,56 @@ is keyed by KEY and not by COMBINATION: `"a": "A: audio"` covers `Shift+A` as fa
 `Shift+C`, `Shift+D`, `Shift+R`, `Shift+S`, `Shift+T`, `Shift+U`, `Shift+Y` and `Shift+Z`. Every one of them could go undocumented without
 anything turning red.
 
+## One Map Began Before Zero, And A Nudge Outlived Its Map
+
+*"Warum ist der Song Californication mit dem Video bei Songsterr selbst perfekt sync? Mit Listen only ist es bei mir auch nicht Sync."*
+
+**Songsterr plays the video their map was made for.** Their `video-points` are timestamps into one particular YouTube upload -- 55 entries for
+this song, one per video -- so on their site there is nothing to measure and nothing that can be wrong. A player's own MP3 is a different file
+with a different start (intro trim plus encoder padding, about 2.6 to 3.6 s here), so exactly ONE constant has to be found. That is the only
+thing that can fail, and on this song it does not fail: measured through the app's own path, **48 of 51 windows at 95 ms of scatter**. The two
+independent measurements agree to 1-180 ms across five minutes:
+
+| song | listening | Songsterr | apart |
+|---|---|---|---|
+| 30 s | -3649 ms | -3399 ms | 250 |
+| 150 s | -3063 | -3092 | 29 |
+| 300 s | -1288 | -1289 | **1** |
+
+So the alignment was never the problem. Two other things were, and neither is about Songsterr.
+
+**One candidate map begins at -40.25 s and killed the other forty-three.** `replace_times` moves every note onto the map and `NoteEvent`
+refuses a negative timestamp, so `align_to_bar_times` raised on the first such candidate before any good one had been tried -- and the source
+was pinned to Songsterr, so nothing fell back to the listening either. The song had `mp3_sync_points 0` and no way to get any.
+
+- **A uniformly shifted map IS the same map**, which is why `_from_zero` is a normalisation rather than a repair: the fit looks for one
+  constant, so moving every bar by S moves that constant by -S and `start - (time + constant)` is unchanged to the millisecond. Asserted
+  through the real `_fit_one` with the lags moved by whatever shift the normalisation chose, not by a number written into the test.
+- **Only a map that really begins before zero is touched**, so all 38 candidates that worked before are bit-identical. That control is what
+  the change rests on.
+
+**And the hand offset outlived the map it was compensating for.** `base_offset_ms` is a nudge ON TOP of the points, and a -3000 ms dialled in
+by hand while the song had no map at all was then added to every measured point -- **exactly three seconds out from the first bar to the last**,
+which is why "listen only" was no better. `_set_sync_point` has spent the nudge since the day it was written and says why in as many words;
+`Ctrl+S` and `Ctrl+Shift+S` never did.
+
+| | points | rate | offset |
+|---|---|---|---|
+| picking a different recording | cleared | cleared | **cleared** |
+| `Shift+S` | adds | -- | **spent** |
+| **`Ctrl+S`** (was) | replaced | reset | **left standing** |
+| **`Ctrl+Shift+S`** (was) | cleared | reset | **left standing** |
+
+- **The measured points are absolute**, computed against the recording without reference to the nudge, so keeping it is double counting. It is
+  dropped and **said out loud** (`your -3.00 s nudge was dropped -- the points measure the offset themselves`): a number dialled in to correct a
+  bias in the OLD map is real work, dropping it is right because the new measurement may not carry the same bias, and a number that vanishes
+  without a word is the next report.
+- **`Ctrl+Shift+S` clears the offset too**, which makes "clear" mean clear and gives the one key that removes an offset nobody wants any more --
+  the alternative was pressing `Ctrl+M` until it reached zero.
+- **The property is asserted over every path that writes the sync**, not over the one that was reported. Same shape as `shift_held` reaching ten
+  shortcuts and not the song list, and as the capability check that disagreed with the permission check on Born To Be My Baby: **a rule applied
+  in one of the two places it belongs is a rule that will be found again from the other side.**
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

@@ -622,6 +622,31 @@ def _covers(timeline: Timeline, bar_starts: Sequence[float],
     return all(note.timestamp_ms < after for note in timeline.notes)
 
 
+def _from_zero(bar_times: Sequence[float]) -> list[float]:
+    """The same map, moved so no bar sits before the recording starts.
+
+    Songsterr offered 44 maps for one song and **six of them begin before
+    zero**, one at -40.25 s. `replace_times` moves every note onto the map,
+    `NoteEvent` refuses a negative timestamp, and the whole fit died on the
+    first such candidate -- taking the other 38 with it before any of them
+    was tried. The player's song was left with no sync map at all, and
+    because its source was pinned to Songsterr there was no listening to
+    fall back on either.
+
+    **A uniformly shifted map IS the same map**, which is why this is a
+    normalisation and not a repair: the whole job here is to find ONE
+    constant between the map's clock and this recording's, so moving every
+    bar by S moves the fitted constant by -S and `start - (time + constant)`
+    comes out identical to the millisecond. Only a map that really begins
+    before zero is touched, so every candidate that worked before is passed
+    through unchanged -- which is the control this rests on.
+    """
+    first = min(bar_times) if bar_times else 0.0
+    if first >= 0.0:
+        return list(bar_times)
+    return [t - first for t in bar_times]
+
+
 def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
                        candidates,
                        progress: Callable[[float, str], bool] | None = None,
@@ -651,7 +676,8 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
         "unreadable": [], "share": 0.0, "wrong_bars": False,
         "offered": [len(c) for c in candidates],
     }
-    fitting = [c for c in candidates if _covers(timeline, bar_starts, c)]
+    fitting = [_from_zero(c) for c in candidates
+               if _covers(timeline, bar_starts, c)]
     if not fitting or len(bar_starts) < 2:
         # A map with a different number of bars is a map of a different tab --
         # a newer revision, or the repeats written out differently. Said

@@ -1061,3 +1061,64 @@ class TestATabCarriedAcrossWithItsBarMap:
         screen._start_auto_sync()
         assert screen._auto_sync_thread is None
         assert "no bar map is here" in screen._status_note_text()
+
+
+class TestAMapThatBeginsBeforeTheRecordingDoes:
+    """One bad candidate must not take the other forty-three with it.
+
+    Songsterr offered 44 maps for the player's Californication and six of
+    them start before zero, one at -40.25 s. `replace_times` moves every
+    note onto the map, `NoteEvent` refuses a negative timestamp, and
+    `align_to_bar_times` died on the first such candidate -- before any of
+    the 38 good ones had been tried. The song was left with no sync map at
+    all, and its source was pinned to Songsterr so nothing fell back to the
+    listening either. Read with the bad candidates dropped, the same song
+    fits at 48 of 51 windows and 95 ms of scatter.
+    """
+
+    def test_it_does_not_take_the_good_ones_with_it(self, monkeypatch):
+        negative = [t - 40.25 for t in REAL[0]["points"]]
+        report = TestFittingItToARecording()._aligned(
+            monkeypatch, [1.2, 1.25, 1.18, 1.22, 1.21],
+            times=[negative, REAL[0]["points"]])
+        assert report["readable"]
+        assert report["points"]
+
+    def test_the_real_reply_carries_one(self, monkeypatch):
+        """REAL[1] is a genuine Songsterr entry and it starts at -24.21 s."""
+        assert min(REAL[1]["points"]) < 0
+        report = TestFittingItToARecording()._aligned(
+            monkeypatch, [1.2, 1.25, 1.18, 1.22, 1.21],
+            times=[REAL[1]["points"]])
+        assert report["readable"]
+
+    def test_a_map_that_starts_at_zero_is_passed_through_untouched(self):
+        """The control: every candidate that worked before is bit-identical."""
+        assert autosync._from_zero(REAL[0]["points"]) == REAL[0]["points"]
+        assert autosync._from_zero([]) == []
+
+    def test_moving_the_whole_map_moves_the_constant_and_nothing_else(self):
+        """Why this is a normalisation and not a repair.
+
+        The fit looks for ONE constant between the map's clock and this
+        recording's, so shifting every bar by S moves that constant by -S
+        and `start - (time + constant)` is unchanged to the millisecond.
+        Asserted through the real `_fit_one` with the lags moved by the same
+        S, which is what the measurement would really report.
+        """
+        starts = [i * 3077.0 for i in range(8)]
+        times = REAL[0]["points"]
+        rows = [(float(i * 6), 1.2, 0.9) for i in range(6)]
+        base = {"points": [], "windows": 0, "usable": 0, "share": 0.0}
+
+        moved = autosync._from_zero([t - 40.25 for t in times])
+        assert min(moved) >= 0.0
+        # Whatever shift the normalisation chose, not one written down here:
+        # the map moved by `net` seconds, so the recording is found `net`
+        # seconds earlier against it.
+        net = moved[0] - times[0]
+        shifted_rows = [(at, lag - net, margin) for at, lag, margin in rows]
+
+        here = autosync._fit_one(base, starts, times, rows, 25.0)
+        there = autosync._fit_one(base, starts, moved, shifted_rows, 25.0)
+        assert here["points"] == there["points"]
