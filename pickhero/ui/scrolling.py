@@ -994,6 +994,60 @@ def track_menu_box(row_widths: list, rows: int) -> tuple[int, int]:
     return width, TRACK_MENU_ROW_H * rows + 52 + TRACK_MENU_NOTE_H
 
 
+HELP_COLUMNS = 3
+HELP_TOP_PX = 56
+HELP_BOTTOM_PAD_PX = 30
+HELP_HEADING_PX = 24
+HELP_BLOCK_GAP_PX = 8
+HELP_STEP_PX = {"body": 20, "small": 17}
+
+
+def help_block_height(items: int, size: str) -> int:
+    """How tall one help block is: heading, its lines, and the gap after it."""
+    return HELP_HEADING_PX + HELP_STEP_PX[size] * items + HELP_BLOCK_GAP_PX
+
+
+def help_page_layout(heights: list[int], top: int, bottom: int,
+                     columns: int = HELP_COLUMNS) -> list[list[tuple[int, int, int]]]:
+    """Which help block goes on which page, in which column, at what y.
+
+    Three columns held everything the day they were fitted, and then the
+    page grew: at the default 1280x720 window three whole sections --
+    "What you see", "Sound and scoring" and the entire sync block -- were
+    drawn from y=581 to y=1425 against a bottom edge of 690. They were
+    rendered, off the screen, with nothing on the page to say so, which is
+    exactly the fault this project keeps writing up: a feature that cannot
+    be seen is indistinguishable from one that is not there. It cost the
+    player a round trip asking which key resets the audio, on a page that
+    documents it.
+
+    So a full third column starts a PAGE rather than running off the edge.
+    Returns one list per page of (block index, column index, y).
+
+    Whole blocks move, never halves of one -- a heading stranded at the
+    foot of a column with its list carrying on elsewhere reads as two
+    unrelated things. A block taller than a whole column is drawn anyway,
+    at the top of one: shortening it is a decision for whoever wrote it,
+    the same answer the footer gives a single entry wider than the screen.
+    """
+    pages: list[list[tuple[int, int, int]]] = []
+    page: list[tuple[int, int, int]] = []
+    col, y = 0, top
+    for index, need in enumerate(heights):
+        if y + need > bottom and y > top:
+            col += 1
+            if col >= columns:
+                pages.append(page)
+                page = []
+                col = 0
+            y = top
+        page.append((index, col, y))
+        y += need
+    if page:
+        pages.append(page)
+    return pages
+
+
 class PlayingScreen:
     """Scrolling tab display with playback clock and optional audio matching."""
 
@@ -1371,6 +1425,7 @@ class PlayingScreen:
 
         # Help overlay
         self._show_help: bool = False
+        self._help_page: int = 0
         self._show_timing: bool = False
         self._timing_export_note: str = ""
         self._run_log_note: str = ""
@@ -2160,7 +2215,7 @@ class PlayingScreen:
         elif event.key == pygame.K_l:
             self._loop_weakest_section()
         elif event.key == pygame.K_h:
-            self._show_help = not self._show_help
+            self._step_help()
         elif event.key == pygame.K_y:
             if shift_held(event):
                 self._export_timing_samples()
@@ -6770,6 +6825,33 @@ class PlayingScreen:
                      f"\t{written_at.get(int(round(note.timestamp_ms)), 1)}"
                      f"\t{matcher.get_note_state(note).value}\n")
 
+    def _step_help(self) -> None:
+        """H opens the help, walks its pages, and closes after the last one.
+
+        One key rather than two, the way `Shift+T` walks the three views:
+        the page is chosen by LOOKING at it, so what the key has to do is
+        keep going until the right one is up. Opening always starts at page
+        one -- a help page that remembers where you left it answers a
+        question you are no longer asking.
+        """
+        if not self._show_help:
+            self._show_help = True
+            self._help_page = 0
+        elif self._help_page + 1 < self._help_page_count():
+            self._help_page += 1
+        else:
+            self._show_help = False
+            self._help_page = 0
+
+    def _help_page_count(self) -> int:
+        """How many pages the help needs at the window it is drawn in."""
+        h = self._last_layout.screen_h if self._last_layout else 720
+        pages = help_page_layout(
+            [help_block_height(len(items), size)
+             for _, items, size in self.help_blocks()],
+            HELP_TOP_PX, h - HELP_BOTTOM_PAD_PX)
+        return max(1, len(pages))
+
     def help_blocks(self) -> list[tuple[str, list, str]]:
         """The help page as data: (heading, items, text size).
 
@@ -6946,7 +7028,8 @@ class PlayingScreen:
                 ("K: measure your timing offset     Shift+K: back to 0",
                  f"{int(self._config.audio_latency_offset_ms):+d} ms"),
                 ",/.: nudge that offset by 10 ms",
-                "Shift+A: reopen the audio output, if the sound goes bad",
+                "Shift+A: reset the audio — silences the MIDI synth and",
+                "  reopens the output, if the sound goes bad",
                 "Y: timing report — which timing problem you actually have",
                 "Shift+Y: save the raw measurements as a CSV",
                 "D: save a full run log (what every strike did)",
@@ -7021,30 +7104,30 @@ class PlayingScreen:
         title_font = _get_font("arial", 26)
         section_font = _get_font("arial", 18)
         fonts = {"body": _get_font("arial", 15), "small": _get_font("arial", 13)}
-        steps = {"body": 20, "small": 17}
+        steps = HELP_STEP_PX
         hint_font = fonts["small"]
 
+        top, bottom = HELP_TOP_PX, h - HELP_BOTTOM_PAD_PX
+        col_w = (w - 60) // HELP_COLUMNS
+        columns = [30 + i * (col_w + 15) for i in range(HELP_COLUMNS)]
+
+        blocks = self.help_blocks()
+        pages = help_page_layout(
+            [help_block_height(len(items), size) for _, items, size in blocks],
+            top, bottom)
+        page = max(0, min(self._help_page, len(pages) - 1))
+
         cx = w // 2
-        title_surf = title_font.render("Help", True, t.hud_accent)
+        heading = "Help" if len(pages) < 2 else f"Help  {page + 1}/{len(pages)}"
+        title_surf = title_font.render(heading, True, t.hud_accent)
         surface.blit(title_surf, (cx - title_surf.get_width() // 2, 12))
 
-        top, bottom = 56, h - 30
-        col_w = (w - 60) // 3
-        columns = [30, 30 + col_w + 15, 30 + 2 * (col_w + 15)]
-        col = 0
-        x, y = columns[0], top
-
-        for title, items, size in self.help_blocks():
+        for index, col, y in pages[page]:
+            title, items, size = blocks[index]
             font, step = fonts[size], steps[size]
-            # Whole blocks move to the next column, never halves of one: a
-            # heading stranded at the foot of a column with its list carrying
-            # on at the top of the next reads as two unrelated things.
-            needed = 24 + step * len(items) + 8
-            if y + needed > bottom and col + 1 < len(columns):
-                col += 1
-                x, y = columns[col], top
+            x = columns[col]
             surface.blit(section_font.render(title, True, t.hud_accent), (x, y))
-            y += 24
+            y += HELP_HEADING_PX
             # Values in a column of their own, at the width of the widest
             # label in THIS block: a value tacked straight onto the end of
             # each line makes a ragged edge nobody can scan down.
@@ -7067,9 +7150,10 @@ class PlayingScreen:
                 else:
                     surface.blit(font.render(item, True, t.hud_text), (x, y))
                 y += step
-            y += 8
 
-        close_surf = hint_font.render("Press H to close", True, t.hud_accent)
+        hint = ("Press H to close" if page + 1 >= len(pages)
+                else f"Press H for page {page + 2} of {len(pages)}")
+        close_surf = hint_font.render(hint, True, t.hud_accent)
         surface.blit(close_surf, (cx - close_surf.get_width() // 2, h - 20))
 
     # -- Difficulty filter --

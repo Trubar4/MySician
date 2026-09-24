@@ -5445,3 +5445,91 @@ class TestThePickerCombinesTwoTracks:
         # And the line it reserves room for really fits under the last row.
         _, height = track_menu_box([100], 3)
         assert height >= scrolling.TRACK_MENU_ROW_H * 3 + 52 + 18
+
+
+class TestTheHelpPageFitsOnTheScreen:
+    """Every line the help claims to carry has to be inside the window.
+
+    Three whole sections -- "What you see", "Sound and scoring" and the
+    sync block -- were drawn from y=581 to y=1425 against a bottom edge of
+    690 at the default 1280x720 window. They were in `help_blocks()`, they
+    were rendered, and they were off the screen, which is how the player
+    came to ask which key resets the audio on a page that documents it.
+    """
+
+    def _pages(self, screen, h: int):
+        from pickhero.ui.scrolling import (HELP_BOTTOM_PAD_PX, HELP_TOP_PX,
+                                           help_block_height, help_page_layout)
+        blocks = screen.help_blocks()
+        heights = [help_block_height(len(items), size)
+                   for _, items, size in blocks]
+        pages = help_page_layout(heights, HELP_TOP_PX, h - HELP_BOTTOM_PAD_PX)
+        return blocks, heights, pages
+
+    def test_no_block_is_drawn_past_the_bottom_edge(self):
+        from pickhero.ui.scrolling import HELP_BOTTOM_PAD_PX
+        screen = PlayingScreen(_make_timeline())
+        for h in (640, 720, 900, 1080, 1200):
+            blocks, heights, pages = self._pages(screen, h)
+            bottom = h - HELP_BOTTOM_PAD_PX
+            for page in pages:
+                for index, _col, y in page:
+                    end = y + heights[index]
+                    assert end <= bottom, (
+                        f"{blocks[index][0]!r} runs to {end} at {h} px "
+                        f"(bottom {bottom})")
+
+    def test_every_block_is_on_exactly_one_page(self):
+        screen = PlayingScreen(_make_timeline())
+        for h in (640, 720, 1080):
+            blocks, _heights, pages = self._pages(screen, h)
+            placed = [index for page in pages for index, _c, _y in page]
+            assert sorted(placed) == list(range(len(blocks)))
+
+    def test_the_default_window_really_needs_more_than_one_page(self):
+        """Or this test would pass on a help page nobody can overflow."""
+        screen = PlayingScreen(_make_timeline())
+        _blocks, _heights, pages = self._pages(screen, 720)
+        assert len(pages) > 1
+
+    def test_h_walks_the_pages_and_then_closes(self):
+        screen = PlayingScreen(_make_timeline())
+        screen._last_layout = None          # falls back to 720
+        assert not screen._show_help
+        screen._step_help()
+        assert screen._show_help and screen._help_page == 0
+        pages = screen._help_page_count()
+        assert pages > 1
+        for expected in range(1, pages):
+            screen._step_help()
+            assert screen._show_help and screen._help_page == expected
+        screen._step_help()
+        assert not screen._show_help
+
+    def test_reopening_starts_at_the_first_page(self):
+        screen = PlayingScreen(_make_timeline())
+        screen._last_layout = None
+        screen._step_help()
+        screen._step_help()
+        assert screen._help_page == 1
+        screen._show_help = False           # left the help some other way
+        screen._step_help()
+        assert screen._help_page == 0
+
+    def test_a_tall_window_needs_no_second_page(self):
+        screen = PlayingScreen(_make_timeline())
+        _blocks, _heights, pages = self._pages(screen, 1080)
+        assert len(pages) == 1
+
+    def test_a_block_taller_than_a_column_is_drawn_rather_than_dropped(self):
+        from pickhero.ui.scrolling import help_page_layout
+        pages = help_page_layout([50, 5000, 50], 56, 690)
+        placed = [index for page in pages for index, _c, _y in page]
+        assert sorted(placed) == [0, 1, 2]
+
+
+class TestShiftAIsWrittenDownInWordsSomebodyWouldSearchFor:
+    def test_the_audio_reset_says_reset(self):
+        screen = PlayingScreen(_make_timeline())
+        text = "  ".join(screen.help_lines())
+        assert "Shift+A: reset the audio" in text

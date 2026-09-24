@@ -4962,6 +4962,41 @@ nutzen."*
 - **The box says which state it is in.** The caret and the fill are the signal, and the way back is named (`bon   (F edits)`): a filter you
   cannot get back into is one you have to retype.
 
+## The Help Page Documented A Key That Was Off The Screen
+
+*"Mit welchem Knopf habe ich Audio resettet? Steht nicht in h."* It is `Shift+A`, it has been in `help_blocks()` all along, and both halves
+of his sentence were right anyway.
+
+**Three whole sections were drawn past the bottom edge.** `_draw_help_overlay` lays the blocks down three columns and moved to the next one
+only `if col + 1 < len(columns)` -- so once the third column was full it simply carried on downwards, off the window, with nothing on the page
+to say so. Measured at the default 1280x720, where the bottom edge is 690:
+
+| window | what falls off |
+|---|---|
+| **1280x720** | **"What you see", "Sound and scoring", "S: lining the recording up"** -- y=581 to y=1425 |
+| 1600x900 | the sync block |
+| 1920x1080 and up | nothing |
+
+`Shift+A` sits in "Sound and scoring", together with `Y`, `Shift+Y`, `D`, `Z`, `Shift+Z`, `G`, `K` and `X/C`, and the whole sync block went
+with it. **A feature that cannot be seen working is indistinguishable from one that does not work** -- the same fault as the `D` that wrote a
+file and said nothing, and here it cost a round trip asking about a key the page already documents.
+
+- **A full third column starts a PAGE now**, and `H` walks them and closes after the last, the way `Shift+T` walks the three views: the page
+  is chosen by LOOKING at it, so what the key has to do is keep going. The heading says `Help 1/2` and the footer names the next page rather
+  than "Press H to close" on a page that is not the last.
+- **The packing is pure arithmetic** (`help_page_layout`), because a block's height is its heading plus a fixed step per line and needs no
+  font metrics -- so the property is asserted without a screen, at five window heights, and `test_the_default_window_really_needs_more_than_one_page`
+  pins the premise. Without it the whole class would pass on a page nobody can overflow.
+- **A block taller than a whole column is drawn anyway**, at the top of one. Shortening it is a decision for whoever wrote it -- the same
+  answer the footer gives a single entry wider than the screen.
+- **And the wording was the other half.** The line read `Shift+A: reopen the audio output`. Somebody looking for "reset" finds nothing, so it
+  says `reset the audio` first and what that means second.
+
+**What is NOT fixed, and it is the class rather than the instance.** `TestEveryKeyIsWrittenDownSomewhere` maps `pygame.K_*` to a label, so it
+is keyed by KEY and not by COMBINATION: `"a": "A: audio"` covers `Shift+A` as far as the suite is concerned, and the same goes for `Shift+B`,
+`Shift+C`, `Shift+D`, `Shift+R`, `Shift+S`, `Shift+T`, `Shift+U`, `Shift+Y` and `Shift+Z`. Every one of them could go undocumented without
+anything turning red.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
