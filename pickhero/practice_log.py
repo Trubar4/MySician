@@ -150,3 +150,22 @@ def totals(sessions: list[Session], period: str = "day") -> list[Total]:
 def now_iso() -> str:
     """Local time, because a practice diary is read in the time you live in."""
     return datetime.now().isoformat(timespec="seconds")
+
+
+def today(sessions: list[Session] | None = None,
+          day: str | None = None) -> Total | None:
+    """What has been played today, or None if nothing has.
+
+    Local days throughout, because `now_iso` writes local time and a diary is
+    read in the time you live in -- comparing a local stamp against a UTC
+    "today" loses a couple of hours at either end of the day.
+
+    None rather than an empty `Total`: a day nobody has played is a day with
+    nothing to say, and the caller decides whether to say it.
+    """
+    rows = read() if sessions is None else sessions
+    when = day or datetime.now().strftime("%Y-%m-%d")
+    mine = [s for s in rows if s.day == when]
+    if not mine:
+        return None
+    return totals(mine, "day")[0]

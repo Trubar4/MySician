@@ -5238,6 +5238,59 @@ commit DID do is measure the block-to-block jumps (280/455/16 ms) and attribute 
 WITHIN a block was in that same data and nobody subtracted it. **The second half of a fault looks like a new fault**,
 and the log said `build unknown build`, so which version produced it cannot be established either.
 
+## The Same Interface, Two Entries, And Only One Of Them Keeps Time
+
+"Das Problem war vor 3 Tagen noch nicht. Haben wir das eingebaut?" No. Four of the player's own run logs, read for the
+one thing that decides whether a strike reaches its note -- how the delay from stamping to matching moves over a stretch
+with no anchor in it:
+
+| log | device | block | delay | drift |
+|---|---|---|---|---|
+| Kid Rock, 16.09 | **index 1** | 53-88 s | 194 -> 302 ms | **-0.06 ms/s** |
+| Asking Alexandria, 23.09 | **index 1** | 183-247 s | 156 -> 267 ms | **+0.05 ms/s** |
+| Any Given Sin, 23.09 | **index 1** | 90-206 s | 166 -> 285 ms | **+0.00 ms/s** |
+| **Shinedown, 26.09** | **index 24** | 157-217 s | **355 -> 862 ms** | **+6.47 ms/s** |
+
+Same Scarlett Solo in all four. Three entries of it hold the clock flat to within a twentieth of a millisecond per
+second, over blocks of 35, 64 and 116 seconds. One drifts at **6.5 ms/s** and crosses the 630 ms budget after a minute.
+The two 23.09 runs report `strike_delay_over_budget_percent 0`; the 26.09 run reports **32**.
+
+**So it is a property of the host API, not of the code.** Nothing since 2026-09-19 touches `elapsed_ms()`,
+`audio_offset_ms`, the frame clock or the late window, and a crystal is not something a commit can reach. What changed
+is which entry of the interface was picked -- MME, DirectSound, WASAPI and WDM-KS are four devices as far as Windows is
+concerned, and they do not behave the same.
+
+- **The API is named now**, in the run log's `input_device` line and in the device picker. `describe_device` warned about
+  exactly this case in its own docstring -- *"on a machine with the same interface listed several times over (MME,
+  DirectSound, WASAPI) that is the whole question"* -- and then printed only the number. **"index 24" is not something a
+  player can act on.**
+- **The tracking loop stays**, and this is why it is worth having rather than a workaround: the drift is a device
+  property the app cannot control, it was invisible until a number existed for it, and it costs nothing on an entry that
+  keeps time (asserted -- a device at ratio 1.0 gets no correction at all). The cheaper fix is to pick the other entry,
+  and the app can now say which one that was.
+- **Read the delay's SLOPE, not the clock ratio.** `Δplayback / Δstrike` is polluted by the recording pull, which moves
+  `_playback_ms` and `audio_offset_ms` together -- on the Asking Alexandria log it reads 0.993 while the delay is flat.
+  The delay nets the pull out by construction, which is what makes it the honest measurement.
+
+## How Much Was Played Today, Where The Day Is Spent
+
+"Kann ich in der Songuebersicht rechts oben einen Zaehler haben, wie viele Minuten ich heute schon gespielt habe? Wie
+viele Songs und wie viele Anschlaege?" Everything needed was already in `practice_log.Total` -- seconds, strikes,
+sessions and the SET of songs. What was missing was `today()` and a screen that re-reads it.
+
+- **Local days throughout**, because `now_iso` writes local time and a diary is read in the time you live in. Comparing
+  a local stamp against a UTC "today" loses a couple of hours at either end of the day.
+- **Re-read in `scan_files`**, which is what leaving a song calls -- and leaving a song is where the sitting was just
+  written. **A number that is right in the file and stale on the screen is indistinguishable from a diary that loses
+  sittings**, which this project already shipped once: the dashboard was rebuilt only on exit, so twelve sittings
+  totalling 10.1 minutes read as three. Never per frame; it reads the whole log.
+- **Two sittings on one song are one song.** "How many songs did I play today" is a count of songs; the sittings are
+  counted separately and `Total` already carries both.
+- **Silent on a day nobody has played.** A permanent "0 min - 0 songs - 0 strikes" is clutter on a screen that was cut
+  down on purpose, and the first sitting makes it appear.
+- **A broken diary is never why the song list fails**, and that the line really reaches the screen is asserted by
+  rendering with it and without it -- a counter nothing blits is a feature that ships doing nothing.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

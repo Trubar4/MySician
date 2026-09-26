@@ -172,3 +172,43 @@ class TestTheAppWritesOne:
         monkeypatch.setattr(practice_log, "append",
                             lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
         assert screen.close_session() is False
+
+
+class TestWhatWasPlayedToday:
+    """"Kann ich in der Songuebersicht einen Zaehler haben, wie viele Minuten
+    ich heute schon gespielt habe? Wie viele Songs und wie viele Anschlaege?"
+
+    Everything needed was already in `Total`; what was missing was a way to ask
+    it about TODAY, in the local day the log is written in.
+    """
+
+    def _s(self, started, song, seconds, strikes):
+        return practice_log.Session(started=started, song=song, seconds=seconds,
+                                    strikes=strikes, tempo_percent=100)
+
+    def test_it_adds_up_the_days_sittings(self):
+        rows = [self._s("2026-09-26T10:00:00", "A", 120.0, 300),
+                self._s("2026-09-26T19:30:00", "B", 180.0, 500),
+                self._s("2026-09-26T20:00:00", "A", 60.0, 100)]
+        got = practice_log.today(rows, day="2026-09-26")
+        assert got.minutes == pytest.approx(6.0)
+        assert got.strikes == 900
+        assert got.sessions == 3
+
+    def test_two_sittings_on_one_song_are_one_song(self):
+        """"How many songs did I play today" is a count of songs, not of
+        times a song was opened -- the sittings are counted separately."""
+        rows = [self._s("2026-09-26T10:00:00", "A", 60.0, 10),
+                self._s("2026-09-26T11:00:00", "A", 60.0, 10)]
+        got = practice_log.today(rows, day="2026-09-26")
+        assert len(got.songs) == 1
+        assert got.sessions == 2
+
+    def test_yesterday_is_not_today(self):
+        rows = [self._s("2026-09-25T23:59:00", "A", 600.0, 9999)]
+        assert practice_log.today(rows, day="2026-09-26") is None
+
+    def test_a_day_nobody_played_says_nothing(self):
+        """None rather than a zeroed Total: the caller decides whether a day
+        with nothing in it is worth a line."""
+        assert practice_log.today([], day="2026-09-26") is None

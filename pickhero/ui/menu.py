@@ -112,6 +112,40 @@ class MenuScreen:
         self._device_name = self._resolve_device_name()
         self.scan_files()
 
+    def refresh_today(self) -> None:
+        """Re-read the practice diary for today's totals.
+
+        The file is written when a song is LEFT (`close_session`), and leaving
+        a song lands here -- so this is called on every entry and on every
+        reload rather than once at startup. **A number that is right in the
+        file and stale on the screen is indistinguishable from a diary that
+        loses sittings**, which this project has already shipped once: the
+        dashboard was rebuilt only when the app closed, so twelve sittings
+        totalling 10.1 minutes read as three.
+
+        Never per frame: it reads the whole log.
+        """
+        from pickhero import practice_log
+        try:
+            self._today = practice_log.today()
+        except Exception:
+            self._today = None          # a diary is never why the list fails
+
+    def _today_line(self) -> str:
+        """Today, in the three numbers that were asked for.
+
+        Silent on a day nobody has played: a permanent "0 min - 0 songs -
+        0 strikes" is clutter on a screen that was cut down on purpose, and
+        the first sitting makes it appear.
+        """
+        total = getattr(self, "_today", None)
+        if total is None or total.seconds <= 0:
+            return ""
+        songs = len(total.songs)
+        return (f"today: {total.minutes:.0f} min  ·  "
+                f"{songs} song{'' if songs == 1 else 's'}  ·  "
+                f"{total.strikes} strikes")
+
     def refresh_device_name(self) -> None:
         """Re-resolve the current device name (call after device selection)."""
         self._device_name = self._resolve_device_name()
@@ -224,7 +258,11 @@ class MenuScreen:
             self._config.save()
 
     def scan_files(self) -> None:
-        """Scan songs directory (recursively) for GP files.
+        """Scan songs directory (recursively) for GP files, and read the diary.
+
+        Both, because leaving a song calls this and leaving a song is where
+        the sitting was just written -- so the count on screen is the count in
+        the file rather than the one from when the app started.
 
         A folder that cannot be read is an EMPTY LIST and a line saying so,
         never an exception. This used to call mkdir(parents=True) and die
@@ -243,6 +281,7 @@ class MenuScreen:
                                  f"{exc.strerror or exc}")
             found = []
         self._files = found
+        self.refresh_today()
         # Counted, not announced from in here. `reload_files` OWNS the note
         # -- it returns one and the caller displays it -- so a message set
         # here is either overwritten immediately or, worse, left standing
@@ -1070,6 +1109,16 @@ class MenuScreen:
             "Select a song to play", True, t.hud_text
         )
         surface.blit(sub_surf, (w // 2 - sub_surf.get_width() // 2, 68))
+
+        # Today, top right. Asked for by name -- "wie viele Minuten habe ich
+        # heute schon gespielt? Wie viele Songs und wie viele Anschlaege?" --
+        # and it belongs on THIS screen because this is where a sitting ends.
+        # Right-aligned so a long number grows away from the centred title
+        # rather than into it.
+        today = self._today_line()
+        if today:
+            today_surf = hint_font.render(today, True, t.hud_accent)
+            surface.blit(today_surf, (w - today_surf.get_width() - 24, 28))
 
         item_h = 30
         list_left = 60

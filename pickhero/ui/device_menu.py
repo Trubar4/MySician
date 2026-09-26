@@ -125,7 +125,13 @@ class DeviceMenuScreen:
         items: list[tuple[str, bool]] = []
         items.append(("System Default", current_device_index is None))
         for dev in self._devices:
-            label = f"[{dev['index']}] {dev['name']}  ({dev['sample_rate']:.0f} Hz)"
+            # The API, not just the index. One interface is listed several
+            # times over and they do not behave the same: measured across the
+            # player's run logs, the same Scarlett Solo kept the clock flat on
+            # one entry and drifted 0.61 % on another.
+            api = dev.get("host_api") or "?"
+            label = (f"[{dev['index']}] {dev['name']}  "
+                     f"({api}, {dev['sample_rate']:.0f} Hz)")
             is_active = dev["index"] == current_device_index
             items.append((label, is_active))
 

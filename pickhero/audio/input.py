@@ -541,10 +541,11 @@ class AudioCapture:
             info = sd.query_devices(index, "input")
             name = info["name"]
             inputs = info["max_input_channels"]
+            api = host_api_name(info)
         except Exception:
             return f"index {index} (could not be queried)"
         rate, channels = (self._resolved_settings or (ac.sample_rate, 1))
-        return (f"{name} — index {'default' if index is None else index}, "
+        return (f"{name} — {api}, index {'default' if index is None else index}, "
                 f"{channels} of {inputs} channel(s) at {rate} Hz")
 
     def is_running(self) -> bool:
@@ -623,6 +624,28 @@ class AudioCapture:
         return windows
 
 
+def host_api_name(info: dict) -> str:
+    """Which Windows audio API a device entry belongs to.
+
+    One interface is listed several times over -- MME, DirectSound, WASAPI,
+    WDM-KS -- and they are NOT interchangeable. Measured across four of the
+    player's run logs, all from the same Scarlett Solo: on `index 1` the
+    delay from a strike being stamped to the matcher seeing it is flat to
+    within 0.06 ms per second over blocks of 35, 64 and 116 seconds. On
+    `index 24` it walks at **6.5 ms/s** -- 0.61 % -- and crosses the budget
+    after a minute, which took a song from green to red.
+
+    So the API is the thing to act on, and "index 24" is not something a
+    player can act on. This function exists because `describe_device` warned
+    about exactly this case in its own docstring and then printed only the
+    number.
+    """
+    try:
+        return str(sd.query_hostapis(info["hostapi"])["name"])
+    except Exception:
+        return "?"
+
+
 def list_audio_devices() -> list[dict]:
     """List available audio input devices."""
     devices = sd.query_devices()
@@ -634,6 +657,7 @@ def list_audio_devices() -> list[dict]:
                 "name": dev["name"],
                 "channels": dev["max_input_channels"],
                 "sample_rate": dev["default_samplerate"],
+                "host_api": host_api_name(dev),
             })
     return inputs
 
