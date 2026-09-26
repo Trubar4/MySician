@@ -270,6 +270,19 @@ def tuning_for_notes(letters: str) -> dict[int, int] | None:
     return None
 
 
+def tuning_label(letters: str) -> str:
+    """What to CALL a tuning, given the open strings the song list shows.
+
+    The name where there is one -- "Drop D" is read at a glance where
+    "D A D G B E" has to be spelled out -- and the letters where there is
+    not. A mixed strip is the price: plenty of tabs use a tuning nobody
+    named, and inventing a name for one would be the guess this project
+    refuses everywhere else.
+    """
+    wanted = " ".join((letters or "").split())
+    return tuning_name(tuning_for_notes(wanted)) or wanted
+
+
 def is_standard_tuning(tuning: dict[int, int] | None) -> bool:
     """True when nothing has to be retuned before playing.
 

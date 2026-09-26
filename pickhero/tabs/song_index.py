@@ -163,12 +163,12 @@ class SongIndex:
                         names=list(entry.get("names", [])),
                         readable=bool(entry.get("readable", True)))
 
-    def tunings_present(self, files: list[Path]) -> list[str]:
-        """Every tuning that appears in these songs, commonest first.
+    def tuning_counts(self, files: list[Path]) -> dict[str, int]:
+        """How many of these songs have a track in each tuning.
 
-        Ordered by how many songs use it rather than alphabetically: the
-        filter exists to reach the ones actually played, and standard tuning
-        should not sit between two things nobody has.
+        A song is counted once per DISTINCT tuning it holds, which is what
+        the filter matches on -- six guitar tracks in standard tuning are one
+        answer, not six.
         """
         counts: dict[str, int] = {}
         for file in files:
@@ -177,6 +177,16 @@ class SongIndex:
                 continue
             for tuning in info.distinct_tunings:
                 counts[tuning] = counts.get(tuning, 0) + 1
+        return counts
+
+    def tunings_present(self, files: list[Path]) -> list[str]:
+        """Every tuning that appears in these songs, commonest first.
+
+        Ordered by how many songs use it rather than alphabetically: the
+        filter exists to reach the ones actually played, and standard tuning
+        should not sit between two things nobody has.
+        """
+        counts = self.tuning_counts(files)
         return sorted(counts, key=lambda k: (-counts[k], k))
 
     def has(self, file: Path, tuning: str) -> bool:

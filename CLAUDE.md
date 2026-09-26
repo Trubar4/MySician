@@ -5367,6 +5367,51 @@ it** — which is what the screenshot shows: "Audio: Mikrofon (Scarlett Solo USB
 - **`_hint_text` is the one source**, pulled out of the drawing so the room and the drawing cannot read two different
   footers. Same seam as `_footer_block` on the playing screen, for the same reason.
 
+## The Filter Was A Key That Walked A List Nobody Could See
+
+*"Möchte alle Stimmungen als Mini Karte neben dem Suchfeld zum Anklicken mit der Maus. Das Blättern mit dem Kürzel nervt
+mich etwas."*
+
+TAB has cycled the tunings since the index was built, and its own docstring says why it is safe — it offers only what the
+folder really contains, so it can never empty the list. What it could never say is **what the choices ARE.** With ten
+tunings in the folder, reaching Drop C is three presses past three things nobody has, and every press costs a re-filter
+to find out where you landed. That is the same fault as `R` walking the tunings in the song, one screen up: **a key you
+press to find out where it went.**
+
+- **Every tuning is a chip, and the chip carries its count.** `All 88  Standard 41  Drop D 20  Drop C 17 …` — which is
+  the question the cycle never answered, and it is free: `SongIndex.tuning_counts` is the walk `tunings_present` was
+  already doing with the counts thrown away at the end.
+- **The name where there is one, the letters where there is not** (`tuning_label`). "Drop D" is read at a glance where
+  "D A D G B E" has to be spelled out; three of this player's ten tunings have no name and show their letters, so the
+  strip is deliberately mixed. `CLAUDE.md` says "letters, not names" for the song ROWS and that still holds — the row
+  is a fact about one song and the chip is a choice among eleven, where 1264 px of chips against 1549 px of letters is
+  the difference between one row and two. The rows still show the letters, and the status line still prints them beside
+  the count, so the two spellings sit on screen together and teach each other.
+- **Its own row under the search box, not beside it.** Beside the box is where the status line lives — the rename hint,
+  `reading songs… 12/240`, the filter count — and a strip that collides with those only on some windows is worse than
+  one that always works. Full width is also what buys a single row: measured on the player's own folder, eleven chips
+  are **1264 px** against **1844 px at 1920** and **1524 at 1600**, but only **772 px** of room beside the box on a
+  1280 window. At 1280 full-width it takes two rows and costs six song rows, which is why commonest-first matters: the
+  wrap puts the tunings nobody has on the second row.
+- **`ui/chips.py` is arithmetic and nothing else** — no drawing, no pygame — for the reason `strip.py` gives: the
+  drawing and the MOUSE read one list of rects, and two answers to "where is this chip" is a click landing on the
+  neighbour of the one under the pointer. Text widths come in as a callable, so the decision is tested without a screen
+  and the drawing cannot measure differently from the layout that placed it.
+- **A chip wider than the room is drawn anyway**, clamped and clipped. Shortening the text is a decision for whoever
+  wrote it — the same answer the footer gives a single entry wider than the screen, and a chip silently dropped is a
+  filter that cannot be reached at all.
+- **The key STAYS.** Taking away a shortcut that works costs and buys nothing, and `test_the_key_and_the_chips_agree`
+  walks TAB over the strip and requires the same tunings in the same order — the property `K` and its HUD line are
+  held to, so the strip can never offer one the key refuses.
+- **`list_top` was the constant 124** and is measured now. Third time in this file: `VISIBLE_ITEMS`, the footer, this.
+
+**And it exposed an older bug, which is the second half of the value.** The footer grew by one entry (`TAB or a click`),
+wrapped one line further on a 1280 window, and `test_at_every_window_size` went red by **4 px** — because the row count
+reserved exactly 4 px for the `▼ more` line, which is a whole 18 px of type. So on a short window the arrow that says
+the list continues was printed over the lines along the bottom while every song row was clear. It was there before any
+of this and the test was checking the 4 px it was written against; it reserves the line's own height now, and the test
+asks for the whole of it.
+
 ## A Score For The Part You Actually Played
 
 *"Habe nur die 2. Hälfte des Songs gespielt. Kann ich dann auch für den gespielten Teil eine Bewertung haben? Es ist ok,

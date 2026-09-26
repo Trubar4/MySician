@@ -10,6 +10,7 @@ from pathlib import Path
 import pygame
 
 from pickhero.audio.input import list_audio_devices
+from pickhero.audio.note_utils import tuning_label
 from pickhero.config import Config
 from pickhero.progress import ProgressTracker
 # .gpx is Guitar Pro 6. It was missing from this set for as long as the
@@ -18,6 +19,7 @@ from pickhero.progress import ProgressTracker
 # property of the reader, and the downloader needs the same answer.
 from pickhero.tabs.loader import GP_EXTENSIONS
 from pickhero.tabs.song_index import SongIndex
+from pickhero.ui import chips
 from pickhero.ui.colors import cycle_theme, get_theme
 from pickhero.ui.footer import wrap_on_bars
 from pickhero.ui.keys import shift_held
@@ -110,6 +112,10 @@ class MenuScreen:
         #: Where the search box was last drawn, so a click can be told to be
         #: inside or outside it. Set by render, the way the list rows are.
         self._search_box = None
+        #: The tuning chips, as the last frame placed them. What a
+        #: click is tested against -- the drawing and the mouse read
+        #: the same list, so they cannot disagree about where one is.
+        self._tuning_chips: list[chips.Chip] = []
         self._search_text: str = ""
         self._search_active: bool = False
         self._filtered_files: list[Path] = []
@@ -521,6 +527,19 @@ class MenuScreen:
         self._apply_filter()
         self._select_path(selected)
 
+    def _set_tuning_filter(self, tuning: str) -> None:
+        """Show one tuning, or all of them when it is already the one shown.
+
+        Clicking the chip that is already on means "all", so the strip needs
+        no separate way to switch the filter off -- and pressing a chip twice
+        is harmless rather than a state nobody chose.
+        """
+        selected = self._selected_path()
+        self._tuning_filter = "" if tuning == self._tuning_filter else tuning
+        self._reload_note = ""
+        self._apply_filter()
+        self._select_path(selected)
+
     def _cycle_tuning_filter(self) -> None:
         """All songs -> each tuning in turn -> all songs again.
 
@@ -811,13 +830,13 @@ class MenuScreen:
         `_footer_block` on the playing screen, for the same reason.
         """
         if self._search_active:
-            return "Type to search  |  UP/DOWN or a click: leave the box, keep the filter  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+N: not new (Ctrl+Shift+N: new)  |  DEL: delete song (Ctrl+Z undo)  |  Ctrl+I: import  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            return "Type to search  |  UP/DOWN or a click: leave the box, keep the filter  |  TAB or click: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+N: not new (Ctrl+Shift+N: new)  |  DEL: delete song (Ctrl+Z undo)  |  Ctrl+I: import  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"
             fav = "on" if self._favourites_only else "off"
             new_f = "on" if self._new_only else "off"
-            return f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  Ctrl+N / Ctrl+Shift+N: not new / new (Shift+N: only, {new_f})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song (Ctrl+Z undo)  |  Ctrl+I: import from another PC  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+            return f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  Ctrl+N / Ctrl+Shift+N: not new / new (Shift+N: only, {new_f})  |  TAB or a click: tuning ({tune_label})  |  R: rename  |  DEL: delete song (Ctrl+Z undo)  |  Ctrl+I: import from another PC  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
 
     def _bottom_height(self, w: int, hint_font) -> int:
         """How much of the window the block along the bottom edge takes.
@@ -1175,6 +1194,13 @@ class MenuScreen:
             # name (*"Rausklicken entweder per Maus oder mit Pfeiltasten"*).
             if self._search_box is not None:
                 self._search_active = self._search_box.collidepoint(event.pos)
+            # A chip before a row: the strip sits above the list, so nothing
+            # can be both, but the tuning is what this click is ABOUT and a
+            # miss must not move the cursor as a side effect.
+            for chip in self._tuning_chips:
+                if chip.hit(event.pos):
+                    self._set_tuning_filter(chip.value)
+                    return None
             idx = self._hit_test(event.pos)
             if idx is not None and files:
                 now = pygame.time.get_ticks()
@@ -1294,14 +1320,76 @@ class MenuScreen:
             surface.blit(hint_font.render(
                 f"reading songs… {done}/{total}", True, t.hud_text),
                 (box.right + 12, box.y + 6))
-        list_top = 124
+        # Every tuning in the folder, as a chip you can click. TAB still
+        # walks them -- taking away a shortcut that works costs and buys
+        # nothing -- but walking a list nobody can see is what the player
+        # objected to, and the count on each chip answers "what is actually
+        # in my folder", which the cycle never could.
+        #
+        # Its own row under the box rather than beside it: beside is where
+        # the status line lives (the rename hint, "reading songs 12/240",
+        # the filter count), and a strip that collides with those only on
+        # some windows is worse than one that always works.
+        #
+        # Full width buys a single row where beside the box could not.
+        # Measured on the player's own folder -- eleven chips, 1264 px --
+        # against the room there is: 1844 px at 1920 and 1524 at 1600, so
+        # one row on either of his screens; 1204 px at 1280, where it takes
+        # two and costs six song rows. Commonest first is what makes that
+        # acceptable: the wrap puts the tunings nobody has on the second row.
+        present = self._index.tunings_present(self._files)
+        chips_top = box.bottom + 8
+        if len(present) < 2:
+            # One tuning is not a choice, and no tuning is not a strip.
+            self._tuning_chips = []
+        else:
+            counts = self._index.tuning_counts(self._files)
+            entries = [("", f"All {len(self._files)}")]
+            entries += [(t, f"{tuning_label(t)} {counts[t]}") for t in present]
+            self._tuning_chips = chips.lay_out(
+                entries, lambda text: hint_font.size(text)[0],
+                left=box.x, top=chips_top, right=w - 24)
+        mouse = pygame.mouse.get_pos()
+        for chip in self._tuning_chips:
+            rect = pygame.Rect(chip.rect)
+            on = chip.value == self._tuning_filter
+            hover = rect.collidepoint(mouse)
+            if on:
+                pygame.draw.rect(surface, t.hud_accent, rect,
+                                 border_radius=chips.CHIP_H // 2)
+            elif hover:
+                # A chip that does not react to the pointer reads as a label.
+                pygame.draw.rect(surface, t.menu_selected_bg, rect,
+                                 border_radius=chips.CHIP_H // 2)
+            pygame.draw.rect(surface,
+                             t.hud_accent if on or hover else t.hud_text,
+                             rect, width=1, border_radius=chips.CHIP_H // 2)
+            label = hint_font.render(chip.label, True,
+                                     t.menu_bg if on else t.menu_item)
+            # Clipped, because a chip wider than the room is clamped to it
+            # and its text would otherwise run over the one beside it.
+            surface.blit(label, (rect.x + chips.CHIP_PAD,
+                                 rect.y + (rect.h - label.get_height()) // 2),
+                         pygame.Rect(0, 0, max(0, chip.w - 2 * chips.CHIP_PAD),
+                                     label.get_height()))
+
+        # The strip pushes the list down, so this cannot be the constant it
+        # was -- the same fault VISIBLE_ITEMS and the footer each paid for.
+        list_top = max(124, chips_top
+                       + chips.height(self._tuning_chips, chips_top) + 10)
         # VISIBLE_ITEMS was a constant, so on a window short enough the list
         # simply ran through the device line, the scoring hint and the
         # footer -- all three of which the player's screenshot has printed
         # over each other and over the songs. It is the room there is now,
         # and never more than the constant, so a tall window is unchanged.
-        rows = max(3, (h - list_top - self._bottom_height(w, hint_font))
-                   // item_h)
+        # The "more" line is drawn UNDER the last row, so the rows have to
+        # leave room for the whole of it -- a 4 px allowance was all it had,
+        # and the arrow that says the list continues was then printed over
+        # the lines along the bottom on a short window. Found by the test
+        # above when the footer grew by one entry.
+        arrow_room = 4 + hint_font.get_height()
+        rows = max(3, (h - list_top - arrow_room
+                       - self._bottom_height(w, hint_font)) // item_h)
         visible = min(VISIBLE_ITEMS, rows)
         self._visible_items = visible
 
