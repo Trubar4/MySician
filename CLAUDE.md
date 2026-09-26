@@ -5106,6 +5106,66 @@ reach it. The spike filter is correctly scoped at "no drift could do this" and s
 only, `Ctrl+S`. It also puts a number against the default set two chapters up -- the bar map is instant and cannot fail, and on the player's
 own songs it costs 200 ms of lag where the listening costs none.
 
+## Two Numbers For The Same Guess, One Eight Times Too Big And One Eighteen Times Too Small
+
+"Warum wird davor geraten? Es ist viel zu viel Arbeit das davor von Hand zu syncen." The panel read
+`before the measured part (0:33-4:45) - the recording is guessed here, and it drifted 2217 ms where it was measured`,
+and that number is the reason it looked like a stretch of work. It is the wrong quantity.
+
+Reproduced exactly on his own Californication (41 of 51 windows, covered 0:23-4:55, first point 0:33, drift 2217 ms),
+the four windows before the coverage read:
+
+| window | offset read | margin | what happened to it |
+|---|---|---|---|
+| **0:00** | **3.385 s** | 0.025 | **refused as an outlier** |
+| **0:06** | **3.443 s** | 0.067 | **refused as an outlier** |
+| 0:12 | 28.66 s | 0.013 | the wrong part of the song, 25 s away |
+| 0:18 | 28.66 s | 0.001 | not readable |
+| 0:24 | 3.648 s | 0.083 | kept |
+
+**The first two were readings**, at two and five times `MIN_MARGIN`. They were refused because they sit 374 and 290 ms
+off the straight line fitted over 0-102 s, against a tolerance of 236 ms -- and the curve over that stretch is not
+straight: it rises from 3.385 to a plateau at 3.65 and then falls. A single line through a whole section pushes its
+bent ends out.
+
+**So the size of the guess is measurable, and it is a quarter of a second.** Against those two refused readings the map
+extrapolates -3658 and -3655 where they measured -3385 and -3443: **273 ms and 212 ms**. The line was claiming 2217.
+
+- **`drift_seen_ms()` is the drift over the WHOLE measured span**, offered as the uncertainty over the 33 seconds being
+  extrapolated. Eight times too big, and frightening in a way that sends the player to a workflow they do not need.
+- **And the obvious replacement is wrong the other way.** The local rate at the first point is 0.043 %, which over 34 s
+  predicts **15 ms** -- eighteen times too small. **The error comes from curvature the map never saw**, so no number
+  computed from the stored points can bound it, and a line that prints one is guessing with a decimal point on it.
+- **What is known is the distance**, and that is what a player acts on: a few seconds outside is nothing, a minute
+  outside is worth a point. The line says how far out it is and which key closes it, and `_gap_text` reads it in the
+  unit a transport is read in. The test asserts the PROPERTY -- that no millisecond figure appears at all -- rather
+  than the wording.
+- **One `Shift+S` closes it**, which is the practical answer and was buried under the number.
+
+**A candidate fix for the filter was measured and NOT built.** Replacing the section-line residual with the
+neighbour-based "no drift could do this" test that the bar map already uses (`_without_spikes`) gains Bon Jovi +2,
+Born To Be My Baby +3, Thunder +3, Godsmack +1 -- and loses **Kid Rock -5** and What's Up -2, while still not rescuing
+Californication's intro: the endpoint sits next to a wrong-chorus match and gets convicted instead of it, by 10 ms of
+margin. A change that trades two songs for four is not a fix.
+
+## Strumming Direction Is In The Format And In None Of The Tabs
+
+"Ist eigentlich die Strumming Direction (Strumming Pattern) irgendwo in GPs enthalten?" Guitar Pro carries **two**
+separate things, in GP3-5 and in GP6/7/8 alike:
+
+- **Brush** -- `BeatEffect.stroke` (`BeatStroke`: direction and speed), GPIF `<Property name="Brush">`. The chord is
+  spread over time, arrow up or down.
+- **Pick stroke** -- `BeatEffect.pickStroke`, GPIF `<Property name="PickStroke">`. The n / V marks over the notes,
+  which is what a player reads as a strumming pattern.
+
+Counted over the player's eight tabs: **0 of 32 787 beats** carry either. `<AutoBrush/>` appears in all of them and is
+a track-level playback setting, not per-beat data. `Effects.gp5` in `tests/fixtures/` has one of each, so the readers
+work and the tabs are empty.
+
+Same story as the fingering (0 of 6193) and the chord names (0 of 5601): **the field exists and transcribers do not
+fill it in.** Deriving a strumming pattern from the note positions would be a guess dressed as data, which is the
+invention this project refuses everywhere else.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

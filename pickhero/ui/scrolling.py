@@ -924,6 +924,20 @@ def _clock_text(ms: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
+def _gap_text(ms: float) -> str:
+    """How far outside the measured span, in the unit it is read in.
+
+    Seconds up to a minute, then minutes and seconds -- the same rule as
+    `_offset_text`, and for the same reason: "94 s" is not something
+    anybody checks against a transport.
+    """
+    size = max(0.0, ms)
+    if size < 60_000:
+        return f"{size / 1000:.0f} s"
+    total = int(size // 1000)
+    return f"{total // 60}:{total % 60:02d} min"
+
+
 def _offset_text(ms: float) -> str:
     """A backing offset in the unit it is actually judged in.
 
@@ -9068,16 +9082,32 @@ class PlayingScreen:
     def _beyond_sync_line(self) -> str:
         """Said only where the playhead is outside the measured span.
 
-        The map extrapolates past its outermost point from the last
-        segment's slope, which is worth having and is still a guess. How big
-        a guess cannot be modelled honestly, so the size offered is the drift
-        the song ALREADY showed where somebody was listening: a recording
-        that wandered that far under measurement can wander that far again
-        where nobody measured.
+        It names HOW FAR outside, and nothing else. It used to offer
+        `drift_seen_ms()` as the size of the guess, and that is the wrong
+        quantity: the drift over the WHOLE measured span, quoted as the
+        uncertainty over the few seconds being extrapolated.
 
-        Nothing is said inside the span, and nothing on a song with no points
-        at all -- a single stored offset makes no claim to have been measured
-        anywhere, so there is no edge to fall off.
+        Measured on the player's own Californication, where the panel read
+        2217 ms: the two windows that DO cover the opening were read at
+        -3385 and -3443 ms against a map that extrapolates -3658 and -3655,
+        so the guess there is 273 and 212 ms. Eight times smaller than the
+        line claimed -- and the claim is what made a quarter of a second
+        look like a stretch nobody could sync by hand.
+
+        And the obvious replacement is wrong the other way. The local rate
+        at that first point is 0.043 %, which over 34 s predicts 15 ms --
+        eighteen times too small. The error comes from CURVATURE the map
+        never saw, so no number computed from the stored points can bound
+        it, and a line that prints one is guessing with a decimal point on
+        it.
+
+        What IS known is the distance, and that is what a player acts on: a
+        few seconds outside is nothing, a minute outside is worth a point.
+        So the line says how far out it is and which key closes it.
+
+        Nothing is said inside the span, and nothing on a song with no
+        points at all -- a single stored offset makes no claim to have been
+        measured anywhere, so there is no edge to fall off.
         """
         covers = self._sync_map().covers()
         if covers is None:
@@ -9085,12 +9115,14 @@ class PlayingScreen:
         first, last = covers
         if first <= self._playback_ms <= last:
             return ""
-        side = "before" if self._playback_ms < first else "past"
-        drift = self._sync_map().drift_seen_ms()
-        return (f"SYNC   {side} the measured part "
-                f"({_clock_text(first)}–{_clock_text(last)}) — the recording "
-                f"is guessed here, and it drifted {drift:.0f} ms where it was "
-                f"measured. Shift+S pins it.")
+        if self._playback_ms < first:
+            side, gap = "before", first - self._playback_ms
+        else:
+            side, gap = "past", self._playback_ms - last
+        return (f"SYNC   {_gap_text(gap)} {side} the measured part "
+                f"({_clock_text(first)}–{_clock_text(last)}) — nothing here "
+                f"was readable, so the recording is extrapolated. "
+                f"One Shift+S here pins it.")
 
     def _describe_sync(self, replaced: int = 0) -> None:
         """The sync points and what they add up to, kept on screen.

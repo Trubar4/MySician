@@ -4589,13 +4589,34 @@ class TestSayingWhereTheGuessBegins:
         screen._playback_ms = 5_000.0
         assert "before" in screen._beyond_sync_line()
 
-    def test_the_size_offered_is_drift_the_song_already_showed(self):
-        """Not a modelled bound, which would be a promise. The recording
-        wandered this far where somebody was listening."""
+    def test_it_names_how_far_outside_the_playhead_is(self):
+        """The one thing that IS known, and the one a player acts on."""
+        screen = self._screen(self._POINTS)
+        screen._playback_ms = 232_000.0                 # 30 s past 3:22
+        assert "30 s past" in screen._beyond_sync_line()
+        screen._playback_ms = 5_000.0                   # 17 s before 0:22
+        assert "17 s before" in screen._beyond_sync_line()
+
+    def test_it_quotes_no_drift_figure_at_all(self):
+        """`drift_seen_ms()` is the drift over the WHOLE measured span, and
+        it was being offered as the uncertainty over the few seconds being
+        extrapolated. Measured on the player's own Californication that
+        line read 2217 ms where the real guess is 212-273 ms -- and the
+        obvious replacement, the local rate over the distance, says 15 ms.
+        Eight times too big and eighteen times too small, so no number
+        computed from these points may be printed as a bound."""
         screen = self._screen(self._POINTS)
         screen._playback_ms = 232_000.0
+        line = screen._beyond_sync_line()
         spread = max(o for _, o in self._POINTS) - min(o for _, o in self._POINTS)
-        assert f"{spread:.0f} ms" in screen._beyond_sync_line()
+        assert f"{spread:.0f} ms" not in line
+        assert " ms" not in line
+
+    def test_a_long_way_out_reads_in_minutes(self):
+        """"94 s" is not something anybody checks against a transport."""
+        screen = self._screen(self._POINTS)
+        screen._playback_ms = 202_000.0 + 94_000.0
+        assert "1:34 min past" in screen._beyond_sync_line()
 
     def test_a_song_nobody_synced_has_no_edge_to_fall_off(self):
         """One stored offset claims to have been measured nowhere, so there
