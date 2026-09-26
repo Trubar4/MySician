@@ -5166,6 +5166,78 @@ Same story as the fingering (0 of 6193) and the chord names (0 of 5601): **the f
 fill it in.** Deriving a strumming pattern from the note positions would be a guess dressed as data, which is the
 invention this project refuses everywhere else.
 
+## The Sound Card Keeps Its Own Time, And Nobody Was Watching It
+
+"Warum wird hier in Takt 64-67 so wenig erkannt?" Not the detector. Every written pitch in bars 65-67 was heard at
+**confidence 1.00**, within 400 ms of where the tab asks for it. What lost them is one column of the run log nobody had
+read down:
+
+| bar | written | right pitch found at | conf | **stale** |
+|---|---|---|---|---|
+| 65 | 208.0 s, MIDI 72 | -400 ms | 1.00 | **737** |
+| 66 | 211.2 s, MIDI 69 | -420 ms | 1.00 | **774** |
+| 66 | 212.8 s, MIDI 70 | -393 ms | 1.00 | **773** |
+| 67 | 214.4 s, MIDI 70 | -43 ms | 1.00 | **860** |
+| **68** | 219.2 s, MIDI 74 | +173 ms | 1.00 | **393** -> **hit** |
+| 70 | 225.6 s, MIDI 70 | -100 ms | 1.00 | 436 -> hit |
+| 71 | 228.8 s, MIDI 65 | -130 ms | 0.99 | 545 -> hit |
+
+`strike_delay_budget` is 630 (`timing_window` + `late_window`). Past it `_mark_missed_notes` has already swept the note,
+so the strike arrives to a note that no longer exists. Bars 60-67 sit at 718-860 and go almost entirely red; bars 68-71
+sit at 393-545 and go almost entirely green. **Same playing, same detector, one number in between** -- and the number
+is why pausing helped, which the player noticed before anything was measured: `_resume_audio` re-anchors.
+
+**The lag is not constant, it WALKS.** Split by anchor block:
+
+| block | song | stale start -> end | |
+|---|---|---|---|
+| 0 | 126-149 s | 435 -> 558 | +5.3 ms/s |
+| **3** | **157-217 s** | **462 -> 829** | **+6.1 ms/s** |
+| 4 | 219-230 s | 421 -> 574 | +14.5 ms/s |
+
+Every block starts at ~430 -- exactly `late_window_ms`, the designed pipeline -- and leaves. Measured over block 3,
+which contains no anchor and where the offset moved by **-0.8 ms** in sixty seconds:
+
+| | |
+|---|---|
+| ring buffer's sample counter | **+60 070 ms** |
+| song clock (`_playback_ms`) | **+60 436 ms** |
+| **ratio** | **1.00610 (+0.61 %)** |
+
+**A strike is stamped from `written / sample_rate` and the song runs on `perf_counter`, and those are two different
+clocks.** The mp3 pull is innocent (the offset did not move), and `mp3_worst_drift_ms 58` with `mp3_resyncs 0` says the
+OUTPUT device and `perf_counter` agree over the whole run -- so it is the input counter that is 0.61 % slow against both.
+
+- **The app cannot make a sound card keep the wall clock, so it tracks it.** `_track_audio_clock` nudges the offset
+  towards what an anchor would set, every frame. Same answer `_follow_recording` gives for the output side, and for the
+  same reason.
+- **`_apply_audio_anchor` stays what it is: the answer for an EVENT**, where the clocks really jumped and the strikes in
+  hand belong to a moment the song has left. This is for the slow walk in between, which no event explains.
+- **It creeps and never jumps.** A step is capped at `AUDIO_CLOCK_PULL_FRACTION` (10 %) of the time that really passed,
+  so a queued strike cannot be displaced wholesale. It is deliberately more generous than `SYNC_PULL_FRACTION` (5 %):
+  that pull moves the PICTURE and must stay invisible, this one moves only the arithmetic that places a strike.
+- **Slack first**, `AUDIO_CLOCK_SLACK_MS` (25 ms). `elapsed_ms()` advances one callback block at a time (512 samples,
+  11.6 ms) while the song clock moves smoothly, so the error carries a sawtooth of about one block; chasing it would
+  hand the quantisation back as jitter. Twice a block, and the real drift crosses it in four seconds.
+- **Both directions.** A counter running fast places a strike in the FUTURE, which loses the note just as surely.
+- **Wait mode comes right for free.** There `_playback_ms` is held while the audio clock runs on, and the tracking loop
+  pulls the offset down to match -- which is what a strike arriving during the freeze should be credited at.
+- **The run log carries `audio_clock_ratio` and `audio_clock_pulled_ms`**, because a correction that cannot be seen
+  working is indistinguishable from one that does not work. That the loop is WIRED into the frame is asserted by driving
+  the real `update()`, not the helper -- this project has shipped an unwired feature four times.
+
+**What it is worth, on the player's own run: 29 % -> 40 %.** 126 of 393 strikes were over budget; 38 red notes had a
+strike of the right pitch, in the right place, and only too late to be delivered. Concentrated in bars 54-67, which is
+the stretch he asked about. That is an upper bound for this one mechanism and not a promise about the run: the other
+183 misses have other causes.
+
+**And no, it was not built in three days ago.** Nothing since `d77b029` (2026-09-19) touches `elapsed_ms()`,
+`audio_offset_ms`, the frame clock or the late window -- the only change to any of it made the budget 17 ms MORE
+generous. The drift is between a crystal and `perf_counter`, which no commit in this tree can reach. What the anchor
+commit DID do is measure the block-to-block jumps (280/455/16 ms) and attribute all of them to the anchor; the walk
+WITHIN a block was in that same data and nobody subtracted it. **The second half of a fault looks like a new fault**,
+and the log said `build unknown build`, so which version produced it cannot be established either.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

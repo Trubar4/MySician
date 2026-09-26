@@ -5554,3 +5554,187 @@ class TestShiftAIsWrittenDownInWordsSomebodyWouldSearchFor:
         screen = PlayingScreen(_make_timeline())
         text = "  ".join(screen.help_lines())
         assert "Shift+A: reset the audio" in text
+
+
+class TestTheSoundCardsClockIsTrackedNotTrusted:
+    """"Warum wird hier in Takt 64-67 so wenig erkannt?"
+
+    Because the strikes arrived 718-860 ms stale against a 630 ms budget, and
+    past that the note has already been swept to MISS. Every written pitch in
+    bars 65-67 WAS heard, at confidence 1.00, within 400 ms. Bars 68-71 -- the
+    same playing, right after a re-anchor had reset the lag to 393 ms -- went
+    almost entirely green.
+
+    Measured over a 60 s stretch of that run with no anchor and no recording
+    pull in it: the ring buffer's sample counter advanced 60 070 ms while the
+    song clock advanced 60 436. **0.61 %**, about 6 ms a second, crossing the
+    budget after a minute of playing. That is also why pausing helped -- the
+    resume re-anchors.
+    """
+
+    class _Drifting:
+        """A capture whose sample counter runs slow against the wall clock.
+
+        Which is what a sound card does: `elapsed_ms()` is
+        `written / sample_rate`, and nothing makes the device's crystal agree
+        with `perf_counter`.
+        """
+
+        def __init__(self, rate=1.0):
+            self.heard = 0.0
+            self.rate = rate
+
+        def tick(self, real_ms):
+            self.heard += real_ms * self.rate
+
+        def elapsed_ms(self) -> float:
+            return self.heard
+
+        def get_notes(self):
+            return []
+
+        def get_strike_windows(self):
+            return []
+
+        # What a real frame also asks a capture for.
+        def get_signal_db(self):
+            return -20.0
+
+        def get_tuner_data(self, raw=False):
+            return 0.0, 0.0
+
+    def _screen(self, rate=0.9939):
+        from pickhero.matcher import NoteMatcher
+        # A song long enough that a frame cannot reach the end of it: this
+        # class spends minutes of playing on purpose.
+        timeline = _make_timeline(notes=[NoteEvent(600_000, 500, 64, 1, 5)])
+        screen = PlayingScreen(timeline, config=Config())
+        screen._matcher = NoteMatcher(timeline)
+        screen._audio_capture = self._Drifting(rate)
+        screen._playing = True
+        screen._playback_ms = 0.0
+        screen._audio_anchor_ms = 0.0
+        screen._audio_anchor_song_ms = 0.0
+        screen._matcher.audio_offset_ms = 0.0
+        return screen
+
+    def _lag(self, screen):
+        """How stale a strike stamped NOW would look to the matcher.
+
+        `playback - (stamp x tempo + offset)`, which is the `stale` column of
+        the run log's strike table.
+        """
+        stamp = screen._audio_capture.elapsed_ms()
+        return screen._playback_ms - (stamp * screen._tempo_factor
+                                      + screen._matcher.audio_offset_ms)
+
+    def _play(self, screen, seconds, frame_s=1 / 60, track=True):
+        for _ in range(int(seconds / frame_s)):
+            screen._audio_capture.tick(frame_s * 1000.0)
+            screen._playback_ms += frame_s * 1000.0 * screen._tempo_factor
+            if track:
+                screen._track_audio_clock(frame_s)
+
+    def test_untracked_the_lag_grows_until_no_note_can_be_reached(self):
+        """The bug, stated as the thing the fix has to beat."""
+        screen = self._screen()
+        self._play(screen, 60.0, track=False)
+        assert self._lag(screen) > 300.0        # measured 367 on his own run
+
+    def test_tracked_it_stays_inside_the_slack(self):
+        screen = self._screen()
+        self._play(screen, 60.0)
+        assert abs(self._lag(screen)) <= scrolling.AUDIO_CLOCK_SLACK_MS + 5.0
+
+    def test_and_still_does_after_ten_minutes(self):
+        """The failure was one that only shows with time, so the test has to
+        spend some."""
+        screen = self._screen()
+        self._play(screen, 600.0)
+        assert abs(self._lag(screen)) <= scrolling.AUDIO_CLOCK_SLACK_MS + 5.0
+
+    def test_a_counter_running_fast_is_corrected_too(self):
+        """It would place a strike in the FUTURE, which loses the note just as
+        surely as placing it in the past."""
+        screen = self._screen(rate=1.0061)
+        self._play(screen, 60.0)
+        assert abs(self._lag(screen)) <= scrolling.AUDIO_CLOCK_SLACK_MS + 5.0
+
+    def test_a_device_that_keeps_time_is_left_alone(self):
+        """The control. A correction that fires when there is nothing wrong is
+        a correction nobody can calibrate."""
+        screen = self._screen(rate=1.0)
+        self._play(screen, 60.0)
+        assert screen._audio_clock_pulled_ms == 0.0
+        assert screen._matcher.audio_offset_ms == 0.0
+
+    def test_one_frame_can_never_displace_a_queued_strike(self):
+        """It creeps. A jump would move every strike already in the queue,
+        which is what a re-anchor is for -- and a re-anchor throws the queue
+        away first, precisely because it may not."""
+        screen = self._screen()
+        screen._matcher.audio_offset_ms = -5_000.0      # a wild error
+        before = screen._matcher.audio_offset_ms
+        screen._track_audio_clock(1 / 60)
+        moved = abs(screen._matcher.audio_offset_ms - before)
+        assert moved <= 1000.0 / 60 * scrolling.AUDIO_CLOCK_PULL_FRACTION + 1e-6
+
+    def test_it_stands_down_while_an_anchor_is_pending(self):
+        """An event owns the clocks that frame, and the anchor is the right
+        answer for an event."""
+        screen = self._screen()
+        screen._matcher.audio_offset_ms = -5_000.0
+        screen._reanchor_due = True
+        screen._track_audio_clock(1 / 60)
+        assert screen._matcher.audio_offset_ms == -5_000.0
+
+    def test_it_stands_down_while_paused(self):
+        screen = self._screen()
+        screen._playing = False
+        screen._matcher.audio_offset_ms = -5_000.0
+        screen._track_audio_clock(1 / 60)
+        assert screen._matcher.audio_offset_ms == -5_000.0
+
+    def test_the_recording_pull_cannot_fight_it(self):
+        """`_follow_recording` moves `_playback_ms` and the offset by the SAME
+        step, and the error here is the difference between them -- so its
+        contribution cancels and neither loop chases the other."""
+        screen = self._screen(rate=1.0)
+        screen._track_audio_clock(1 / 60)            # settle
+        pulled = screen._audio_clock_pulled_ms
+        screen._playback_ms += 400.0
+        screen._matcher.audio_offset_ms += 400.0
+        screen._audio_anchor_song_ms += 400.0
+        screen._track_audio_clock(1 / 60)
+        assert screen._audio_clock_pulled_ms == pulled
+
+    def test_a_restarted_capture_is_a_new_clock_not_a_leap_backwards(self):
+        """`AudioCapture.start()` builds a new ring with the counter at zero.
+        Counted as elapsed time that would be minutes of negative drift."""
+        screen = self._screen(rate=1.0)
+        self._play(screen, 5.0)
+        heard = screen._audio_clock_heard_ms
+        screen._audio_capture.heard = 0.0
+        screen._track_audio_clock(1 / 60)
+        assert screen._audio_clock_heard_ms == pytest.approx(heard)
+
+    def test_the_ratio_is_what_the_two_clocks_actually_did(self):
+        screen = self._screen(rate=0.9939)
+        self._play(screen, 60.0)
+        ratio = screen._audio_clock_song_ms / screen._audio_clock_heard_ms
+        assert ratio == pytest.approx(1 / 0.9939, abs=0.0005)
+
+    def test_it_is_really_wired_into_the_frame(self):
+        """A correction nothing calls is a feature that ships doing nothing,
+        which this project has now shipped four times. So the real `update()`
+        loop is driven, not the helper."""
+        import time as _time
+        screen = self._screen()
+        screen._playing = True
+        screen._last_tick = _time.perf_counter() - 0.1
+        screen._audio_capture.tick(100.0 * screen._audio_capture.rate)
+        screen._matcher.audio_offset_ms = -400.0          # an error to correct
+        before = screen._matcher.audio_offset_ms
+        screen.update()
+        assert screen._matcher.audio_offset_ms != before
+        assert screen._audio_clock_pulled_ms > 0.0

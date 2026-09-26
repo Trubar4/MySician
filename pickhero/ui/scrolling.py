@@ -437,6 +437,42 @@ SYNC_SNAP_MS = 1500.0
 # those into a scroll nobody can see move.
 SYNC_PULL_FRACTION = 0.05
 
+# The INPUT device has a clock of its own too, and it is not the same one the
+# song runs on. A strike is stamped from the ring buffer's sample counter
+# (`written / sample_rate`); the song advances on `perf_counter`. Measured on
+# the player's own Shinedown run, over a 60 s stretch with no anchor and no
+# recording pull in it: the sample counter advanced 60 070 ms while the song
+# clock advanced 60 436 ms -- **0.61 % apart**, about 6 ms of lag per second
+# of playing.
+#
+# That is enough to lose a song. `_late_window_ms` + `timing_window` gave a
+# 630 ms budget on that run; each block started at the designed ~430 ms and
+# crossed 630 after about a minute, and from there every strike arrived to
+# find its note already swept to MISS. Bars 60-67 read 718-860 ms and went
+# almost entirely red; bars 68-71, right after a re-anchor reset it to 393,
+# went almost entirely green. Same playing, same detector.
+#
+# The app cannot make a sound card keep the wall clock, so it tracks it --
+# the same answer `_follow_recording` gives for the output side, and for the
+# same reason. Nothing visible moves: the offset only decides where a strike
+# lands, so this costs no scroll and no frame.
+#
+# Slack first, because the error is quantised. `elapsed_ms()` advances one
+# callback block at a time (512 samples, 11.6 ms at 44.1 kHz) while the song
+# clock moves smoothly, so the error carries a sawtooth of about one block.
+# Chasing that would inject the quantisation back as jitter. Twice a block is
+# under the smallest thing that matters here (a 200 ms hit window) and the
+# real drift crosses it in four seconds.
+AUDIO_CLOCK_SLACK_MS = 25.0
+# And then it may be corrected by at most this fraction of the time that
+# really passed. 10 % is sixteen times the 0.61 % being chased -- so an error
+# that has already accumulated is gone in a few seconds -- and at 60 fps it
+# is 1.7 ms a frame, well under the one callback block the measurement is
+# quantised to. It is deliberately more generous than SYNC_PULL_FRACTION:
+# there the pull moves the PICTURE and has to stay invisible, here it moves
+# only the arithmetic that places a strike.
+AUDIO_CLOCK_PULL_FRACTION = 0.10
+
 # How far apart the two sync points must be. The offset is dialled in 10 ms
 # steps, so one keypress over a short span is a large speed error: over 30 s
 # it is 0.03 %, against the ~1 % the correction is for; over 5 s it would be
@@ -1095,6 +1131,14 @@ class PlayingScreen:
         # for the rest of the song and cannot be corrected by K.
         self._audio_anchor_ms: float = 0.0       # audio clock at the anchor
         self._audio_anchor_song_ms: float = 0.0  # song clock at the anchor
+        # What the two clocks did between frames, and what tracking them
+        # cost. Never reset by a seek or a loop: the question is what the
+        # DEVICE did over the whole sitting.
+        self._audio_clock_song_ms: float = 0.0
+        self._audio_clock_heard_ms: float = 0.0
+        self._audio_clock_pulled_ms: float = 0.0
+        self._audio_clock_worst_ms: float = 0.0
+        self._audio_clock_last_heard: float | None = None
         # An anchor asked for, not yet taken. It is taken on the next frame,
         # where the two clocks really do describe the same instant -- see
         # _apply_audio_anchor.
@@ -1751,6 +1795,69 @@ class PlayingScreen:
                                    self._matcher.audio_offset_ms,
                                    self._matcher.audio_offset_ms - was))
 
+    def _track_audio_clock(self, real_elapsed_s: float) -> None:
+        """Keep the strike stamps on the song clock, sound card and all.
+
+        A strike is stamped from the ring buffer's sample counter and the
+        song runs on `perf_counter`, and the two are not the same clock.
+        Measured on the player's own Shinedown run, over a 60 s stretch with
+        no anchor and no recording pull in it: the counter advanced 60 070 ms
+        against the song's 60 436 -- **0.61 %**, about 6 ms of lag a second.
+
+        Nothing downstream survives that. `timing_window` + `late_window`
+        gave a 630 ms budget on that run; each block began at the designed
+        ~430 ms and crossed 630 after about a minute, and past it a strike
+        arrives to find its note already swept to MISS. Bars 60-67 sat at
+        718-860 ms and went almost entirely red; bars 68-71, which a
+        re-anchor had just reset to 393, went almost entirely green. Same
+        playing, same detector, one number in between -- which is also why
+        pausing for a moment made it better: `_resume_audio` re-anchors.
+
+        So the offset is nudged towards what an anchor would set, every
+        frame, instead of waiting for the player to seek. `_apply_audio_anchor`
+        stays what it is -- the answer for an EVENT, where the clocks really
+        have jumped and the strikes in hand belong to a moment the song has
+        left. This is for the slow walk in between, which no event explains
+        and nothing was watching.
+
+        - **It creeps, it never jumps.** A step is capped at
+          `AUDIO_CLOCK_PULL_FRACTION` of the time that really passed, so a
+          strike still in the queue can never be displaced wholesale.
+        - **Slack first**, because `elapsed_ms()` advances one callback block
+          at a time while the song clock moves smoothly. Inside
+          `AUDIO_CLOCK_SLACK_MS` nothing is done, or the loop would chase
+          that sawtooth and hand the quantisation back as jitter.
+        - **Both directions.** A counter running fast places a strike in the
+          future, which loses the note just as surely.
+        - **The mp3 pull cannot fight it**: `_follow_recording` moves
+          `_playback_ms` and `matcher.audio_offset_ms` by the same step, and
+          the error here is the difference between them, so its contribution
+          cancels exactly.
+        """
+        if self._audio_capture is None or self._matcher is None:
+            return
+        if self._reanchor_due or self._playback_ms < 0 or not self._playing:
+            return                         # an event owns the clocks this frame
+        heard = self._audio_capture.elapsed_ms()
+        # A restarted capture is a NEW ring with the counter back at zero, so
+        # the difference is not time that passed -- it is a different clock.
+        if (self._audio_clock_last_heard is not None
+                and heard >= self._audio_clock_last_heard):
+            self._audio_clock_heard_ms += heard - self._audio_clock_last_heard
+            self._audio_clock_song_ms += real_elapsed_s * 1000.0
+        self._audio_clock_last_heard = heard
+        wanted = (self._playback_ms - heard * self._tempo_factor
+                  + self._sync_offset_song_ms())
+        error = wanted - self._matcher.audio_offset_ms
+        self._audio_clock_worst_ms = max(self._audio_clock_worst_ms, abs(error))
+        if abs(error) <= AUDIO_CLOCK_SLACK_MS:
+            return
+        room = real_elapsed_s * 1000.0 * AUDIO_CLOCK_PULL_FRACTION
+        step = max(-room, min(room, error))
+        self._matcher.audio_offset_ms += step
+        self._audio_anchor_song_ms += step
+        self._audio_clock_pulled_ms += abs(step)
+
     def set_noise_gate_db(self, db: float) -> None:
         """Set the noise gate, clamped to the useful range and rounded.
 
@@ -1856,6 +1963,10 @@ class PlayingScreen:
 
         now = time.perf_counter()
         prev_ms = self._playback_ms
+        # The first frame of a screen has no previous tick, so nothing has
+        # elapsed yet -- and every reader of this below has to be able to say
+        # so without a NameError.
+        real_elapsed = 0.0
         if self._last_tick is not None:
             # A frame that took longer than this is a machine that stalled --
             # a decoder, a device open, the operating system. Advancing the
@@ -1918,6 +2029,10 @@ class PlayingScreen:
         # describe the present: the clock has been advanced, wait mode has
         # settled it, and nothing has been matched against it yet.
         self._apply_audio_anchor()
+        # ...and then the slow walk no event explains. After the anchor, so a
+        # frame that has just re-paired the clocks is left alone, and before
+        # anything is matched, so this frame's strikes use the corrected value.
+        self._track_audio_clock(real_elapsed)
 
         # Process audio matching (only during actual song, not count-in)
         if (self._playback_ms >= 0
@@ -6595,6 +6710,22 @@ class PlayingScreen:
             fh.write("audio_anchor_at\t" + "  ".join(
                 f"{ms / 1000:.0f}s:{off:.0f}ms({d:+.0f})"
                 for ms, off, d in shown) + "\n")
+        # The INPUT device's clock against the song's, which is the one
+        # comparison the log never made -- and the one that decides whether a
+        # strike reaches its note at all. A ratio over 1 means the sample
+        # counter runs SLOW, so every strike is stamped earlier than it
+        # happened and the lag grows for the whole song. On the run that found
+        # this it was 1.0061: 6 ms a second, past the budget after a minute.
+        # `pulled` is what the tracking loop put back; without it a feature
+        # that cannot be seen working is indistinguishable from one that does
+        # not work.
+        if self._audio_clock_heard_ms > 1000.0:
+            ratio = self._audio_clock_song_ms / self._audio_clock_heard_ms
+            fh.write(f"audio_clock_ratio\t{ratio:.4f}\t"
+                     f"({(ratio - 1.0) * 1000:+.1f} ms per second of playing)\n")
+        fh.write(f"audio_clock_pulled_ms\t{self._audio_clock_pulled_ms:.0f}\t"
+                 f"worst error {self._audio_clock_worst_ms:.0f} ms"
+                 f" (slack {AUDIO_CLOCK_SLACK_MS:.0f})\n")
         fh.write(f"sample_rate\t{getattr(capture, '_sample_rate', ac.sample_rate)}\n")
         describe = getattr(capture, "describe_device", None)
         fh.write(f"input_device\t{describe() if describe else '(unknown)'}\n")
