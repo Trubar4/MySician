@@ -33,7 +33,15 @@ STRIP_SIDE_PAD = 12
 # gaps is 186. The first value here was 168 and the miniature drew over the
 # word "Notes" -- the fault this screen has been fixed for at the footer, at
 # the sync panel and at the completion overlay. A test asserts the room.
-STRIP_NUMBERS_W = 190
+STRIP_NUMBERS_W = 280
+
+# Of that, what the PLAYED-part column takes on the right of it. "100%
+# Played" is 84 px of arial 12 and "bars 100-199" is 76, so 90 is the wider
+# of the two plus a gap -- and it is reserved whether or not there is
+# anything to say, because a column that appears when the first verdict
+# lands slides the whole miniature sideways. That was a real bug here once,
+# found by a verdict landing on the wrong pixel in a test.
+STRIP_PLAYED_W = 90
 
 # The six rows do not fill the band; they sit in the middle of it. Two
 # reasons, and the player named the first: *"die Saiten naeher zusammenruecken,

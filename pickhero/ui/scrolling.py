@@ -1230,6 +1230,9 @@ class PlayingScreen:
         self._finished_stats: dict | None = None
         self._session_seconds = 0.0
         self._session_strikes = 0
+        #: Song-time of every strike this run, for `played.score`. A float
+        #: each, a few hundred a song.
+        self._heard_at: list[float] = []
         self._session_written = False
         self._song_key = song_key
         # Where the tab came from. Only the auto-sync wants it,
@@ -1576,6 +1579,9 @@ class PlayingScreen:
             # because the notes ahead are about to be played again.
             if self._matcher:
                 self._matcher.forget_from(max(0.0, self._playback_ms))
+                # The strikes go with the verdicts, or a passage
+                # replayed would leave its old bars counted as played.
+                self._forget_heard_from(max(0.0, self._playback_ms))
             # Only start audio capture when past count-in. If the stream is
             # already open -- which after a pause it now is -- re-anchoring is
             # the whole of what resuming needs, and it does not touch the
@@ -1723,6 +1729,9 @@ class PlayingScreen:
             # Same rule as playing: the speed changes what comes next, not
             # what was already heard.
             self._matcher.forget_from(max(0.0, self._playback_ms))
+            # The strikes go with the verdicts, or a passage
+            # replayed would leave its old bars counted as played.
+            self._forget_heard_from(max(0.0, self._playback_ms))
         self._feedback.reset()
 
     def _reanchor_audio_clock(self) -> None:
@@ -2055,6 +2064,12 @@ class PlayingScreen:
             self._matcher.record_timing_samples = not self._wait_mode_frozen
             self._matcher.record_contour = not self._wait_mode_frozen
             self._session_strikes += sum(1 for d in detected if d.note.is_onset)
+            # WHERE the microphone heard something, in song time. A count
+            # cannot say which half of a song was played, and that is the
+            # question: "habe nur die 2. Haelfte gespielt, kann ich dann auch
+            # fuer den gespielten Teil eine Bewertung haben?"
+            self._heard_at += [d.timestamp_ms + self._matcher.audio_offset_ms
+                               for d in detected if d.note.is_onset]
             results = self._matcher.process_detected_notes(detected, self._playback_ms)
             # Per-string chord verdicts arrive ~380 ms after their strike, once
             # enough audio exists to tell a semitone apart. They can only
@@ -2085,6 +2100,9 @@ class PlayingScreen:
                 # else. A full reset here threw away everything played
                 # before the loop was switched on, every few seconds.
                 self._matcher.forget_from(self._loop_start_ms)
+                # The strikes go with the verdicts, or a passage
+                # replayed would leave its old bars counted as played.
+                self._forget_heard_from(self._loop_start_ms)
             self._feedback.reset()
             for player in self._midi_all():
                 player.seek(self._backing_ms(self._loop_start_ms))
@@ -5400,6 +5418,30 @@ class PlayingScreen:
             lx = min(max(mini.x, x + 4), mini.right - label.get_width() - 2)
             surface.blit(label, (lx, mini.y - label.get_height() - 2))
 
+    def _forget_heard_from(self, ms: float) -> None:
+        """Drop the strikes from here on, with the verdicts they made."""
+        self._heard_at = [at for at in self._heard_at if at < ms]
+
+    def _played_part(self):
+        """How the stretch that was actually played went.
+
+        Over BARS the microphone heard a strike in, the ones that went wrong
+        included -- see `pickhero/played.py` for why that, and why not "the
+        bars that scored" and not a span from the first strike to the last.
+        """
+        from pickhero import played as played_module
+        if self._matcher is None or not self._timeline.measures:
+            return played_module.Played()
+        starts = [m.start_ms for m in self._timeline.measures]
+        notes = []
+        for note in self._timeline.notes:
+            state = self._matcher.get_note_state(note)
+            notes.append((note.timestamp_ms,
+                          state != MatchType.PENDING,
+                          state == MatchType.HIT,
+                          state == MatchType.CLOSE))
+        return played_module.score(notes, self._heard_at, starts)
+
     def _blit_strip_numbers(self, surface: pygame.Surface,
                             rect: pygame.Rect) -> None:
         """82 % big, and what it is made of underneath.
@@ -5421,11 +5463,28 @@ class PlayingScreen:
         surface.blit(drawn, (rect.x, rect.y + (rect.height
                                                - drawn.get_height()) // 2))
         x = rect.x + drawn.get_width() + 10
-        y = rect.y + (rect.height - 2 * (small.get_height() + 2)) // 2
+        top = rect.y + (rect.height - 2 * (small.get_height() + 2)) // 2
+        y = top
         for value, label in ((timing, "Timing"), (right, "Right Notes")):
             text = ("—" if value is None else f"{value:.0f}%") + "  " + label
             surface.blit(small.render(text, True, t.hud_text), (x, y))
             y += small.get_height() + 2
+
+        # And what the part he actually PLAYED came to, beside them rather
+        # than under them: the band is 37 px and a third line does not fit
+        # in it. Said only where it differs from the number on the left --
+        # a song played end to end has nothing here, and a line repeating
+        # one already on screen is the wallpaper the HUD was cut down to
+        # remove. The room is reserved either way, because a column that
+        # appears when the first verdict lands slides the whole miniature
+        # sideways, which this strip has been fixed for once already.
+        part = self._played_part()
+        if part.worth_saying:
+            px = rect.x + strip.STRIP_NUMBERS_W - strip.STRIP_PLAYED_W
+            surface.blit(small.render(f"{part.percent:.0f}%  Played",
+                                      True, t.feedback_streak), (px, top))
+            surface.blit(small.render(part.bars_text(), True, t.hud_text),
+                         (px, top + small.get_height() + 2))
 
     def _sheet_ms_at(self, pos) -> float | None:
         """Which moment the player clicked on the sheet, or None if not on it.
@@ -6072,6 +6131,27 @@ class PlayingScreen:
                 f"({stats['hits']}/{stats['total']})"
             )
             say(stat_font.render(accuracy_text, True, t.hud_text), 10)
+
+            # And the same question asked only of the part he PLAYED.
+            # *"Habe nur die 2. Haelfte des Songs gespielt. Ich brauche eine
+            # Bewertung von dem was ich gespielt habe."* On his run that is
+            # 54.6 % against 71.7 %: the song ran from the start while he
+            # waited, so 75 notes crossed the playhead with nobody playing
+            # and `get_statistics` counted every one of them as reached.
+            #
+            # Said only where it differs, and it NAMES the bars: a range
+            # that is not the one you played is something you can see, where
+            # a percentage on its own is not.
+            part = self._played_part()
+            if part.worth_saying:
+                say(stat_font.render(
+                    f"Played part: {part.percent:.1f}%  "
+                    f"({part.hits}/{part.total})",
+                    True, t.feedback_streak), 4)
+                say(hint_font.render(
+                    f"{part.bars_text()} — the other {part.skipped} notes "
+                    f"went past with nothing played",
+                    True, t.hud_text), 10)
 
             # How many strikes were HEARD at all, next to how many scored.
             # Without it a low percentage says only that something is wrong;

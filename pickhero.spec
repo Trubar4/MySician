@@ -96,6 +96,7 @@ a = Analysis(
         # static import graph reaches it.
         "verovio",
         "resvg_py",
+        "pickhero.played",
         "pickhero.ui.tab_view",
         "pickhero.tabs.musicxml",
         # Imported inside the functions that use them, so nothing in the

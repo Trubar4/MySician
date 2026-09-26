@@ -5367,6 +5367,52 @@ it** — which is what the screenshot shows: "Audio: Mikrofon (Scarlett Solo USB
 - **`_hint_text` is the one source**, pulled out of the drawing so the room and the drawing cannot read two different
   footers. Same seam as `_footer_block` on the playing screen, for the same reason.
 
+## A Score For The Part You Actually Played
+
+*"Habe nur die 2. Hälfte des Songs gespielt. Kann ich dann auch für den gespielten Teil eine Bewertung haben? Es ist ok,
+wenn ich keinen neuen Logs in Best mache, wenn ich nicht den ganzen Song spiele, ich brauche aber eine Bewertung von dem
+was ich gespielt habe."*
+
+His run reads **54.6 % (177/324)** and the log says why in one shape: bars 18-25 are `miss` all the way down, and the
+first strike in the whole file lands at song **2:07**. He let the song run from the start and picked the guitar up in
+the second half, so seventy-odd notes crossed the playhead with nobody playing -- and `get_statistics` counts everything
+REACHED, which they were. Scored over the bars he played in, the same run is **69.7 % (177/254)**.
+
+**A bar is "played" if the microphone heard a strike in it**, and every written note in such a bar counts -- the ones
+that went wrong included. `pickhero/played.py` is that arithmetic and nothing else, so it is tested without a timeline
+and without a screen. Two things it refuses, and both are what make the number honest:
+
+- **NOT "a bar where something scored".** A bar played entirely wrong has no hit and no close, so scoring only the bars
+  that went well would quietly drop the hardest ones and hand back a flattering number -- **the same fault as the one
+  being fixed, the other way up**. The test that pins it scores a bar of nothing but misses at 0 % rather than leaving
+  it out.
+- **NOT a span from the first strike to the last.** One interval cannot say *"I played the intro and the solo and sat
+  out the verse"*, and it would charge him for a section he deliberately skipped. Bars are what a player counts in,
+  what a loop is set in, and what the weakest-section line already names.
+
+A stray strike puts its bar in, **which is why the bars are NAMED and not only the percentage**: a range that is not
+the one you played is something you can see, where a number on its own is not.
+
+- **Bottom left while playing, beside the existing numbers rather than under them.** The band is 37 px and a third line
+  of 14 px type does not fit in it. `STRIP_NUMBERS_W` went 190 → 280 and the room is reserved whether or not there is
+  anything to say: **a column that appears when the first verdict lands slides the whole miniature sideways**, which
+  this strip has been fixed for once already.
+- **And on the completion screen**, under the accuracy, in the streak colour: `Played part: 69.7 % (177/254)` with the
+  bars and how many notes went past untouched.
+- **Silent where it says nothing new.** A song played end to end has `skipped == 0` and the two numbers are identical;
+  a line repeating one already on screen is the wallpaper the HUD was cut down to remove.
+- **`None` rather than `0.0` where nothing was played**, the rule the strip's own three numbers already follow: nothing
+  played is not the same as everything missed.
+- **The strikes are forgotten with the verdicts.** `forget_from` spends the verdicts from the seek onward when playing
+  resumes, so `_forget_heard_from` drops the strikes at the same moment -- otherwise a replayed passage leaves its old
+  bars counted as played while the notes in them are PENDING again.
+- **The best score is untouched**, which he asked for in the same sentence. A run still records what it recorded; this
+  is a second reading of it and never a replacement.
+
+**And `tests/test_spec.py` caught the packaging on the way past**, which is what it was built for: `pickhero.played` is
+imported inside the function that uses it, so nothing in the static graph reaches it and the EXE would have shipped
+without it. Named in the spec now.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
