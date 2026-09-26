@@ -30,7 +30,21 @@ from pickhero.ui.scrolling import PlayingScreen
 # Keys that must never fire twice from one hold. See _process_events: the
 # global repeat is 300 ms then every 40 ms, and both of these cross screens
 # that do different things with them.
-NEVER_REPEAT = frozenset({pygame.K_ESCAPE, pygame.K_SPACE})
+#: Keys that may never arrive twice from ONE physical press. Two different
+#: reasons, and the second one cost the player his songs.
+#:
+#: The toggles (escape, space) were here first: a repeat undoes what the
+#: press just did, so an even number of them looks like a dead key.
+#:
+#: DELETE is not a toggle. It ARMS on the first press and DELETES on the
+#: second, so a repeat is not an undo -- it is the confirmation, answered by
+#: the key that asked the question. `set_repeat(300, 40)` makes that 25 a
+#: second: measured on the real song list, **holding DEL for two seconds
+#: removed five songs and all fifteen of their files**, tab, recording and
+#: bar map alike. With the tuning filter on it walks the filtered list, which
+#: is exactly what the player reported -- *"alle Songs mit Drop D Stimmung
+#: sind weg... Alles weg MP3, GP, Map"*.
+NEVER_REPEAT = frozenset({pygame.K_ESCAPE, pygame.K_SPACE, pygame.K_DELETE})
 
 
 class App:
@@ -295,7 +309,7 @@ class App:
                 self._running = False
                 return
 
-            # A TOGGLE NEVER REPEATS. `set_repeat(300, 40)` is one global
+            # ONE PRESS IS ONE KEYDOWN. `set_repeat(300, 40)` is one global
             # setting for every key, and this file has now paid for it three
             # times: a short press on PgDn walking the practice speed from
             # 100 % to 50 %, escape leaving the song AND closing the app on

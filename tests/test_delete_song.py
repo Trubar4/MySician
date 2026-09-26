@@ -134,10 +134,15 @@ class TestDeleting:
         is the worst of the three outcomes."""
         tab = _song(tmp_path, audio=False, cache=False)
 
-        def locked(self):
+        # A delete MOVES the files into the trash now, so this is what a
+        # locked file does to that. The property is the one that matters --
+        # a file that would not go is named rather than claimed -- and the
+        # old version patched `Path.unlink`, which is the mechanism and not
+        # the property.
+        def locked(src, dst):
             raise OSError(32, "The process cannot access the file")
 
-        monkeypatch.setattr("pathlib.Path.unlink", locked)
+        monkeypatch.setattr("pickhero.tabs.remove.shutil.move", locked)
         report = remove.delete_song(tab, None)
         assert not report.ok
         assert "AC-DC - Thunder.gp5" in report.failed[0]
@@ -164,8 +169,15 @@ class TestTheKey:
         return screen
 
     def _press(self, screen, key, mod=0):
-        return screen.handle_event(pygame.event.Event(
+        # A press is a press AND a release. DEL arms on one and
+        # deletes on the next, so a helper that only ever sends
+        # KEYDOWN describes a key held down -- which is what took a
+        # folder of the player's songs.
+        out = screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=key, mod=mod, unicode=""))
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYUP, key=key, mod=mod))
+        return out
 
     def test_one_press_asks_and_deletes_nothing(self, tmp_path, monkeypatch):
         tab = _song(tmp_path)

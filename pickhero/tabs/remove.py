@@ -22,8 +22,12 @@ Two rules decide what goes:
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+
+import pickhero.config as config_module
 
 from pickhero.tabs.sidecar import SUFFIX as SETTINGS_SUFFIX
 from pickhero.runs import SUFFIX as RUNS_SUFFIX
@@ -34,6 +38,32 @@ from pickhero.tabs.songsterr import CACHE_SUFFIX
 #: there under the song's name is this app's to clean up whether or not it
 #: turned out to be playable.
 AUDIO_SUFFIXES = (".mp3", ".ogg", ".wav", ".flac", ".m4a", ".opus", ".webm")
+
+#: Where a deleted song goes instead of nowhere.
+#:
+#: `Path.unlink()` does NOT reach the Windows recycle bin, so until this
+#: existed DEL was the one irreversible key in the app -- and it sits one row
+#: from the arrow keys. The player lost a folder of songs to it: key repeat
+#: made one held press into 25 a second, each pair arming and confirming, and
+#: with the tuning filter on it walked the filtered list. The repeat is fixed
+#: where it belongs (`NEVER_REPEAT`), and this is the other half, because
+#: **a guard stops the fault it was written for and a copy survives the one
+#: nobody thought of.** It is the same rule the import already follows when
+#: it leaves a `.bak` beside anything it rewrites.
+#: Read through the module rather than captured at import, or it would be
+#: the CONFIG_DIR that existed when this file was first imported -- which is
+#: how the first version of this wrote into the player's real home directory
+#: from inside the test suite, straight past the fixture that exists to stop
+#: exactly that. A constant computed from another module's constant cannot be
+#: redirected, and this project has paid for that once already at the build
+#: stamp.
+def trash_root() -> Path:
+    return config_module.CONFIG_DIR / "deleted"
+
+#: How many deletes are kept. A song with its recording is a few megabytes,
+#: so twenty is a bounded cost -- and twenty is also more than a mis-held key
+#: can get through in the second it now takes to notice.
+MAX_TRASH = 20
 
 
 @dataclass
@@ -47,6 +77,8 @@ class Removed:
     #: delete on Windows, and a delete that reports success while the song
     #: is still in the list is the worst of the three outcomes.
     failed: list[str] = field(default_factory=list)
+    #: Where the files were kept, or None when nothing could be kept.
+    kept_in: Path | None = None
 
     @property
     def ok(self) -> bool:
@@ -60,8 +92,82 @@ class Removed:
                                              else "")]
         if self.settings:
             bits.append("its settings")
+        where = (" Ctrl+Z puts it back." if self.kept_in is not None
+                 else " NOT kept — nothing to put back.")
         return (f"Deleted {self.song_key} — {', '.join(bits)}. "
-                "Practice diary kept.")
+                f"Practice diary kept.{where}")
+
+
+def _trash_folder(stem: str):
+    """A folder of its own for this delete, or None if none can be made.
+
+    Named for the song AND the moment, because deleting the same song twice
+    is an ordinary thing to do and the second one must not overwrite the
+    first one's copy.
+    """
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    safe = "".join(c if (c.isalnum() or c in " -_") else "_" for c in stem)
+    folder = trash_root() / f"{stamp} {safe}".strip()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+    except OSError:
+        return None                  # a delete is never blocked by the copy
+
+
+def trashed() -> list[Path]:
+    """Every kept delete, newest first."""
+    try:
+        return sorted((p for p in trash_root().iterdir() if p.is_dir()),
+                      key=lambda p: p.name, reverse=True)
+    except OSError:
+        return []
+
+
+def _prune_trash() -> None:
+    """Keep the newest `MAX_TRASH` and let the rest go."""
+    for stale in trashed()[MAX_TRASH:]:
+        try:
+            shutil.rmtree(stale)
+        except OSError:
+            pass
+
+
+def restore_last(songs_dir) -> Removed:
+    """Put the most recent delete back, and say what came.
+
+    The per-song settings come back with it: the sidecar is one of the
+    belongings, so it is in the folder, and the song list adopts what the
+    folder knows and this machine does not on its next scan. The practice
+    diary never went anywhere.
+
+    A file whose name is already taken again is NOT overwritten -- that
+    would be an undo destroying something newer than what it is undoing.
+    """
+    out = Removed()
+    folders = trashed()
+    if not folders:
+        out.failed.append("nothing to put back")
+        return out
+    folder = folders[0]
+    out.song_key = folder.name.split(" ", 1)[-1]
+    target_dir = Path(songs_dir)
+    for item in sorted(folder.iterdir()):
+        target = target_dir / item.name
+        if target.exists():
+            out.failed.append(f"{item.name} (already there again)")
+            continue
+        try:
+            shutil.move(str(item), str(target))
+            out.files.append(target)
+        except OSError as exc:
+            out.failed.append(f"{item.name} ({exc.strerror or exc})")
+    if not any(folder.iterdir()):
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
+    return out
 
 
 def belongings(tab_path) -> list[Path]:
@@ -94,12 +200,22 @@ def delete_song(tab_path, config=None) -> Removed:
     tab = Path(tab_path)
     out = Removed(song_key=tab.stem)
 
+    keep = _trash_folder(tab.stem)
     for target in belongings(tab):
         try:
-            target.unlink()
+            if keep is not None:
+                # MOVED, not unlinked. A move that fails leaves the file
+                # exactly where it was, which is the safe way for this to go
+                # wrong: a full disk makes DEL report a failure rather than
+                # destroy a song it could not keep a copy of.
+                shutil.move(str(target), str(keep / target.name))
+            else:
+                target.unlink()
             out.files.append(target)
+            out.kept_in = keep
         except OSError as exc:
             out.failed.append(f"{target.name} ({exc.strerror or exc})")
+    _prune_trash()
 
     if config is not None:
         forget = getattr(config, "forget_song", None)

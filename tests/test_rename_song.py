@@ -135,8 +135,15 @@ class TestTheKey:
         return MenuScreen(tmp_path, config=config)
 
     def _press(self, screen, key, mod=0, unicode=""):
-        return screen.handle_event(pygame.event.Event(
+        # A press is a press AND a release. DEL arms on one and
+        # deletes on the next, so a helper that only ever sends
+        # KEYDOWN describes a key held down -- which is what took a
+        # folder of the player's songs.
+        out = screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=key, mod=mod, unicode=unicode))
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYUP, key=key, mod=mod))
+        return out
 
     def _type(self, screen, text):
         for ch in text:
@@ -436,8 +443,14 @@ class TestTheCaret:
         return MenuScreen(tmp_path, config=config)
 
     def _press(self, screen, key, mod=0, unicode=""):
-        screen.handle_event(pygame.event.Event(
+        # A press is a press AND a release. DEL arms on one and
+        # deletes on the next, so a helper that only ever sends
+        # KEYDOWN describes a key held down -- which is what took a
+        # folder of the player's songs.
+        out = screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=key, mod=mod, unicode=unicode))
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYUP, key=key, mod=mod))
 
     def _type(self, screen, text):
         for ch in text:
@@ -537,8 +550,12 @@ class TestDeletingWhileFiltering:
         return MenuScreen(tmp_path, config=config)
 
     def _press(self, screen, key, mod=0, unicode=""):
+        # A press is a press AND a release -- see the note on the other
+        # helper. A DEL that never comes up is a DEL held down.
         screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=key, mod=mod, unicode=unicode))
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYUP, key=key, mod=mod))
 
     def test_two_presses_delete_the_filtered_song(self, tmp_path):
         screen = self._menu(tmp_path)

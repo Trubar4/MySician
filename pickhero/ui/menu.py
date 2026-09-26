@@ -70,6 +70,13 @@ class MenuScreen:
         self._reload_note: str = ""
         #: How many songs took settings out of the folder on the last scan.
         self._adopted: int = 0
+        #: How many rows the last frame had room for. VISIBLE_ITEMS until
+        #: something has been drawn -- a keypress can arrive first.
+        self._visible_items: int = VISIBLE_ITEMS
+        #: True while the DEL that armed a delete is still physically down.
+        #: The confirmation must be a press the player MADE -- see
+        #: `_delete_selected`.
+        self._delete_key_down: bool = False
         #: And how many had their settings written back into it.
         self._backfilled: int = 0
         #: The last import's report, shown over the list until a key is
@@ -271,10 +278,18 @@ class MenuScreen:
         """
         try:
             self._songs_dir.mkdir(parents=True, exist_ok=True)
+            # NOT what was deleted. `Config.songs_path` falls back to the
+            # folder beside settings.json when the configured one cannot be
+            # made, and the trash lives under that same folder -- so without
+            # this a deleted song walks straight back into the list, and
+            # deleting it again would only move it deeper.
+            from pickhero.tabs.remove import trash_root
+            trash = trash_root().resolve()
             found = sorted(
                 p
                 for p in self._songs_dir.rglob("*")
                 if p.is_file() and p.suffix.lower() in GP_EXTENSIONS
+                and trash not in p.resolve().parents
             )
         except OSError as exc:
             self._reload_note = (f"Cannot read {self._songs_dir} — "
@@ -733,11 +748,26 @@ class MenuScreen:
 
         if self._delete_armed != path:
             self._delete_armed = path
+            self._delete_key_down = True
             count = len(belongings(path))
             what = f"{count} file" + ("s" if count != 1 else "")
             self.say(f"Delete {path.stem} and {what}? "
                      f"DEL again to confirm, any other key cancels. "
                      f"Your practice history is kept.")
+            return
+
+        if self._delete_key_down:
+            # The SAME press, arriving again. `NEVER_REPEAT` in App already
+            # drops these, and this is the second lock on the same door
+            # because the first one is somewhere else: a screen is only ever
+            # as safe as whatever is handing it events, and a test, a tool or
+            # a future dispatcher calling this directly must not be able to
+            # delete a folder of songs with one finger.
+            #
+            # The rule is physical, not a timer: the confirmation has to be
+            # a press the player MADE, which is what a KEYUP in between says
+            # and what a stalled frame draining a burst of repeats cannot
+            # fake. Same reason the tempo gate waits for its key to come up.
             return
 
         self._delete_armed = None
@@ -747,6 +777,62 @@ class MenuScreen:
         # claiming a delete that did not happen.
         self.reload_files()
         self.say(report.summary())
+
+    def _undo_delete(self) -> None:
+        """Ctrl+Z: put the last deleted song back.
+
+        `Path.unlink()` never reached the Windows recycle bin, so DEL was
+        the one irreversible key in the app -- and it sits one row from the
+        arrow keys. Ctrl rather than a plain letter for the reason Ctrl+M
+        and Ctrl+N are: it produces no character, so it cannot be a key the
+        filter box wanted.
+        """
+        from pickhero.tabs.remove import restore_last
+        report = restore_last(self._songs_dir)
+        self.reload_files()
+        if report.files:
+            self._select_path(report.files[0])
+            self.say(f"Put {report.song_key} back — {len(report.files)} file"
+                     f"{'' if len(report.files) == 1 else 's'}"
+                     + (f". Not: {', '.join(report.failed)}"
+                        if report.failed else ""))
+        else:
+            self.say("Nothing to put back"
+                     + (f" — {', '.join(report.failed)}"
+                        if report.failed and report.failed != ["nothing to put back"]
+                        else ""))
+
+    def _hint_text(self) -> str:
+        """The footer's shortcuts, as one string.
+
+        Pulled out of the drawing so the ROOM it needs can be asked
+        for before the list is laid out, and the drawing and the
+        measurement cannot read two different strings. Same seam as
+        `_footer_block` on the playing screen, for the same reason.
+        """
+        if self._search_active:
+            return "Type to search  |  UP/DOWN or a click: leave the box, keep the filter  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+N: not new (Ctrl+Shift+N: new)  |  DEL: delete song (Ctrl+Z undo)  |  Ctrl+I: import  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+        else:
+            sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
+            tune_label = self._tuning_filter or "all"
+            fav = "on" if self._favourites_only else "off"
+            new_f = "on" if self._new_only else "off"
+            return f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  Ctrl+N / Ctrl+Shift+N: not new / new (Shift+N: only, {new_f})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song (Ctrl+Z undo)  |  Ctrl+I: import from another PC  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+
+    def _bottom_height(self, w: int, hint_font) -> int:
+        """How much of the window the block along the bottom edge takes.
+
+        The footer WRAPS -- 2554 px of shortcuts on a 1920 window -- so its
+        height is a measurement and never a constant, and the device line and
+        the scoring hint stack on top of it. Asked before the list is laid
+        out, so the list can be given what is left instead of being drawn
+        through it, which is what the player's screenshot showed.
+        """
+        lines = wrap_on_bars(self._hint_text(), hint_font, w - 24)
+        line_h = hint_font.get_height() + 2
+        # the footer itself, its 36 px bottom margin, and the two lines above
+        return (36 + len(lines) * line_h
+                + 2 * (hint_font.get_height() + 4) + 8)
 
     def _write_sidecar(self, path) -> None:
         """Put this song's settings back beside the song. Never raises."""
@@ -850,6 +936,12 @@ class MenuScreen:
         """Process input. Returns Path (file selected), "escape" (quit), or None."""
         files = self._display_files
 
+        if event.type == pygame.KEYUP and event.key == pygame.K_DELETE:
+            # The finger came off. Only now may a second DEL be the
+            # CONFIRMATION rather than the same press arriving again.
+            self._delete_key_down = False
+            return None
+
         if event.type == pygame.KEYDOWN:
             if event.key != pygame.K_F5:
                 # A note is for what just happened, not for the rest of the
@@ -867,6 +959,7 @@ class MenuScreen:
                 # question that armed it, or the second DEL lands on a
                 # different song than the one that was named.
                 self._delete_armed = None
+                self._delete_key_down = False
             if event.key == pygame.K_ESCAPE:
                 # A filter left standing with the box let go is still a
                 # filter, and ESC is what everybody presses to drop it. It
@@ -962,6 +1055,9 @@ class MenuScreen:
             # typing key. It is not, in THIS box: backspace is what edits
             # the search text and DEL does nothing there, while "find the
             # song, then delete it" is the order somebody actually works in.
+            if event.key == pygame.K_z and event.mod & pygame.KMOD_CTRL:
+                self._undo_delete()
+                return None
             if event.key == pygame.K_DELETE:
                 self._delete_selected()
                 return None
@@ -1010,13 +1106,13 @@ class MenuScreen:
                 return None
             if event.key == pygame.K_PAGEUP:
                 if files:
-                    self._selected = max(0, self._selected - VISIBLE_ITEMS)
+                    self._selected = max(0, self._selected - self._visible_items)
                     self._ensure_visible()
                 return None
             if event.key == pygame.K_PAGEDOWN:
                 if files:
                     self._selected = min(
-                        len(files) - 1, self._selected + VISIBLE_ITEMS
+                        len(files) - 1, self._selected + self._visible_items
                     )
                     self._ensure_visible()
                 return None
@@ -1199,6 +1295,15 @@ class MenuScreen:
                 f"reading songs… {done}/{total}", True, t.hud_text),
                 (box.right + 12, box.y + 6))
         list_top = 124
+        # VISIBLE_ITEMS was a constant, so on a window short enough the list
+        # simply ran through the device line, the scoring hint and the
+        # footer -- all three of which the player's screenshot has printed
+        # over each other and over the songs. It is the room there is now,
+        # and never more than the constant, so a tall window is unchanged.
+        rows = max(3, (h - list_top - self._bottom_height(w, hint_font))
+                   // item_h)
+        visible = min(VISIBLE_ITEMS, rows)
+        self._visible_items = visible
 
         # Empty states
         if not files:
@@ -1222,7 +1327,7 @@ class MenuScreen:
             surface.blit(msg_surf, (w // 2 - msg_surf.get_width() // 2, h // 2))
         else:
             # File list
-            visible_end = min(self._scroll_offset + VISIBLE_ITEMS, len(files))
+            visible_end = min(self._scroll_offset + visible, len(files))
             for i in range(self._scroll_offset, visible_end):
                 y = list_top + (i - self._scroll_offset) * item_h
                 if i == self._selected:
@@ -1299,7 +1404,7 @@ class MenuScreen:
                 surface.blit(arrow, (w // 2 - arrow.get_width() // 2, list_top - 20))
             if visible_end < len(files):
                 arrow = hint_font.render("▼ more", True, t.hud_text)
-                y_bottom = list_top + VISIBLE_ITEMS * item_h + 4
+                y_bottom = list_top + visible * item_h + 4
                 surface.blit(arrow, (w // 2 - arrow.get_width() // 2, y_bottom))
 
         # Controls hint. Drawn FIRST and reporting the y it starts at, so
@@ -1308,14 +1413,7 @@ class MenuScreen:
         # lines above it. The same rule the playing screen's footer,
         # its sync panel and its completion overlay have each been fixed
         # for once already.
-        if self._search_active:
-            hint = "Type to search  |  UP/DOWN or a click: leave the box, keep the filter  |  TAB: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+N: not new (Ctrl+Shift+N: new)  |  DEL: delete song  |  Ctrl+I: import  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
-        else:
-            sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
-            tune_label = self._tuning_filter or "all"
-            fav = "on" if self._favourites_only else "off"
-            new_f = "on" if self._new_only else "off"
-            hint = f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  Ctrl+N / Ctrl+Shift+N: not new / new (Shift+N: only, {new_f})  |  TAB: tuning ({tune_label})  |  R: rename  |  DEL: delete song  |  Ctrl+I: import from another PC  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+        hint = self._hint_text()
         # It measured 2554 px on a 1920 window before a single entry was
         # added to it, so both ends were simply not there -- which is how a
         # new shortcut looks exactly like one that never shipped.
@@ -1328,15 +1426,22 @@ class MenuScreen:
             surface.blit(surf, (w // 2 - surf.get_width() // 2,
                                 footer_top + n * line_h))
 
-        score_hint = "Press A during playback to enable scoring"
-        score_surf = hint_font.render(score_hint, True, t.hud_text)
-        surface.blit(score_surf, (w // 2 - score_surf.get_width() // 2,
-                                  footer_top - 20))
-
-        dev_text = f"Audio: {self._device_name}"
-        dev_surf = hint_font.render(dev_text, True, t.hud_text)
-        surface.blit(dev_surf, (w // 2 - dev_surf.get_width() // 2,
-                                footer_top - 36))
+        # And the two lines above it stack on MEASURED heights, upward from
+        # the footer's own top. They used to sit at -20 and -36, a 16 px
+        # step for an 18 px font, so they were printed through each other
+        # and through the footer the moment it wrapped to three lines --
+        # which the song list's footer now does, since it was taught to wrap
+        # at all. A constant offset at the bottom of a screen is the fault
+        # the playing screen's footer, its sync panel and its completion
+        # overlay have each been fixed for once already.
+        y = footer_top
+        for text in (f"Press A during playback to enable scoring",
+                     f"Audio: {self._device_name}"):
+            surf = hint_font.render(text, True, t.hud_text)
+            y -= surf.get_height() + 4
+            surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
+        # What the LIST may not reach into, remembered for the next frame.
+        self._bottom_used = h - y + 8
 
         if self._transfer_lines:
             self._blit_transfer_report(surface, w, h, item_font, hint_font, t)
@@ -1359,8 +1464,8 @@ class MenuScreen:
         """Adjust scroll offset so selected item is visible."""
         if self._selected < self._scroll_offset:
             self._scroll_offset = self._selected
-        elif self._selected >= self._scroll_offset + VISIBLE_ITEMS:
-            self._scroll_offset = self._selected - VISIBLE_ITEMS + 1
+        elif self._selected >= self._scroll_offset + self._visible_items:
+            self._scroll_offset = self._selected - self._visible_items + 1
 
     def _hit_test(self, pos: tuple[int, int]) -> int | None:
         """Return index of file at mouse position, or None."""

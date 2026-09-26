@@ -5291,6 +5291,82 @@ sessions and the SET of songs. What was missing was `today()` and a screen that 
 - **A broken diary is never why the song list fails**, and that the line really reaches the screen is asserted by
   rendering with it and without it -- a counter nothing blits is a feature that ships doing nothing.
 
+## One Held Key Took A Folder Of Songs
+
+*"Alle Songs mit Drop D Stimmung sind weg. Ich war in der Übersicht in diesem Filter als die App abgestürzt ist. Alles
+weg MP3, GP, Map..."*
+
+Reproduced on the real song list in one run, and it is not a crash:
+
+```
+before: 5 tabs, 15 files
+after : 0 tabs, 0 files
+left  : NOTHING
+```
+
+That is **one** `K_DELETE` KEYDOWN followed by the 42 repeats `set_repeat(300, 40)` produces in the next two seconds.
+DEL **arms** on the first press and **deletes** on the second, so a repeat is not an undo the way it is for a toggle --
+it is the confirmation, answered by the key that asked the question. Each pair takes a song and every file beside it;
+the list re-reads and the next song slides under the cursor; the next pair takes that one. **With the tuning filter on
+it walks the filtered list**, which is exactly the set that went.
+
+`NEVER_REPEAT` held escape and space, added for three faults that were all toggles — *"a repeat undoes what the press
+just did"*. **DELETE is the same mechanism and a different consequence, and the set was never widened to it.**
+
+- **One press is one KEYDOWN** (`NEVER_REPEAT` now includes `K_DELETE`), guarded at the App, which is the one door
+  every screen's events come through.
+- **And `_delete_selected` requires the key to have been RELEASED.** Two locks on one door, because the first one is
+  somewhere else: a screen is only ever as safe as whatever hands it events, and a tool, a test or a future dispatcher
+  calling it directly must not be able to empty a folder with one finger. The rule is PHYSICAL rather than a timer —
+  a stalled frame draining a burst of repeats cannot fake a KEYUP — which is the same reason the tempo gate waits for
+  its key to come up.
+- **The test presses DEL 43 times in a row and requires 15 files to still be there**, and it fails on the old code.
+
+### And a delete is no longer final
+
+`Path.unlink()` does **not** reach the Windows recycle bin, so DEL was the one irreversible key in the app — one row
+from the arrow keys. A guard stops the fault it was written for; a copy survives the one nobody thought of, which is
+the rule the import already follows when it leaves a `.bak` beside anything it rewrites.
+
+- **A delete MOVES the files** into `~/.pickhero/deleted/<when> <song>/`, and `Ctrl+Z` puts the last one back. Ctrl
+  rather than a plain letter for the reason `Ctrl+M` and `Ctrl+N` are: it produces no character, so the filter box
+  cannot want it.
+- **A move that fails leaves the file where it was.** That is the safe way for this to go wrong: a full disk makes DEL
+  report a failure rather than destroy a song it could not keep a copy of.
+- **An undo never overwrites a name that has been taken again** — that would be an undo destroying something newer
+  than what it is undoing.
+- **The per-song settings come back with it**, because the sidecar is one of the belongings and the scan adopts what
+  the folder knows. The practice diary was never in there: *außer History*.
+- **Bounded at `MAX_TRASH` (20)**, which is a few tens of megabytes and more than a mis-held key can now reach.
+
+**Two faults my own first version had, and both are ones this file already has a name for.**
+
+- **`TRASH_DIR = CONFIG_DIR / "deleted"` was computed at import**, so it captured the real home directory and the
+  suite's `isolated_config` fixture could not redirect it — tests wrote into the player's own `~/.pickhero`. **A
+  constant computed from another module's constant cannot be redirected**, which is the build stamp's fault exactly.
+  It is `trash_root()` now.
+- **And the trash turned up in the song list.** `Config.songs_path` falls back to the folder beside `settings.json`
+  when the configured one cannot be made — and the trash lives under that same folder, so a deleted song walked
+  straight back into the list. `scan_files` skips it.
+
+## The Bottom Of The Song List Was Three Things On Fixed Offsets
+
+*"Unten überlappt der Text im Screenshot."* The device line at `footer_top - 36`, the scoring hint at `- 20`: a 16 px
+step for an 18 px font, so they were printed through each other before anything else went wrong. Then the footer was
+taught to WRAP (2554 px of shortcuts on a 1920 window), and three lines of it reached up into both.
+
+And `VISIBLE_ITEMS = 18` is a constant, so on a window short enough **the songs themselves were drawn through all of
+it** — which is what the screenshot shows: "Audio: Mikrofon (Scarlett Solo USB)" printed across a song title, and
+"▼ more" across the footer's own second line.
+
+- **The block stacks upward on MEASURED heights**, each line by its own `get_height()`. The same rule the playing
+  screen's footer, its sync panel and its completion overlay have each been fixed for once already.
+- **The list gets the room that is left.** `_bottom_height` is asked BEFORE the list is laid out, so it can be given
+  what remains instead of being drawn over it — and it is a CEILING, so a 1920x1080 window still shows all eighteen.
+  Measured: 1280x720 shows 15 rows, 1352x776 shows 17, 1920x1080 shows 18, and none of them overlaps.
+- **`_hint_text` is the one source**, pulled out of the drawing so the room and the drawing cannot read two different
+  footers. Same seam as `_footer_block` on the playing screen, for the same reason.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
