@@ -7,6 +7,7 @@ middle -- a +50 ms shift with only 10 ms of scatter, which is a bias and not
 noise, and half the budget of the 100 ms this exists to get under.
 """
 
+import time
 import numpy as np
 import pytest
 
@@ -566,3 +567,133 @@ class TestATabWrittenAtTheWrongTempo:
         assert needed > autosync.MAX_DRIFT_RATE
         assert needed > (1.0 - syncmap.MIN_RATE)
         assert needed > (syncmap.MAX_RATE - 1.0)
+
+
+class TestTheLagSweepWithoutThePythonLoop:
+    """*"Ich habe bei mehreren Songs mehr als 5 min gewartet und es war immer
+    bei 51 oder 52 %."*
+
+    The lag sweep ran `for lag in range(-max_lag, max_lag)` inside a loop over
+    windows -- **70 602 iterations per candidate map** on the player's "Can't
+    Stop", each one slicing and re-normalising a 430x12 array. Two things
+    were wrong with that and only one of them is the clock: it also held the
+    GIL for 70 602 tiny numpy calls, on a worker thread beside a game loop
+    drawing at 60 Hz.
+
+    `seg` is centred per pitch class, so the window's own mean cancels and
+    the whole sweep is a cross-correlation over a divisor that comes off two
+    cumulative sums. Measured: **2.4 s a candidate to 0.15 s**.
+
+    The loop it replaced lives on HERE, as the reference this is checked
+    against. An optimisation that changes the answer is not an optimisation.
+    """
+
+    def _reference(self, tab, rec, fps):
+        """`drift_curve` exactly as it was written, lag by lag."""
+        width = int(autosync.WINDOW_S * fps)
+        step = int(autosync.STEP_S * fps)
+        max_lag = int(autosync.MAX_LAG_S * fps)
+        guard = int(autosync.RUNNER_UP_GUARD_S * fps)
+        rows = []
+        for start in range(0, max(0, len(tab) - width), step):
+            seg = autosync._norm(tab[start:start + width])
+            lags, scores = [], []
+            for lag in range(-max_lag, max_lag):
+                at = start + lag
+                if at < 0 or at + width > len(rec):
+                    continue
+                lags.append(lag)
+                scores.append(
+                    float((seg * autosync._norm(rec[at:at + width])).sum())
+                    / 12)
+            if not scores:
+                continue
+            scores_a, lags_a = np.array(scores), np.array(lags)
+            best = int(np.argmax(scores_a))
+            far = np.abs(lags_a - lags_a[best]) > guard
+            runner = float(scores_a[far].max()) if far.any() else -1.0
+            rows.append((start / fps,
+                         (autosync._refine(lags_a, scores_a, best)
+                          + autosync.FRAME_CENTRE_ROWS) / fps,
+                         float(scores_a[best]) - runner))
+        return rows
+
+    def _pair(self, seed, seconds=90.0, drift=0.0):
+        """A tab and a recording of it, offset by a few seconds."""
+        fps = 21.53
+        rng = np.random.default_rng(seed)
+        n = int(seconds * fps)
+        tab = np.abs(rng.standard_normal((n, 12))).astype(np.float32)
+        shift = int(7 * fps)
+        rec = np.zeros((n + shift, 12), dtype=np.float32)
+        rec[shift:] = tab
+        rec += 0.3 * np.abs(rng.standard_normal(rec.shape)).astype(np.float32)
+        return tab, rec, fps
+
+    @pytest.mark.parametrize("seed", [1, 2, 3])
+    def test_it_reads_exactly_what_the_loop_read(self, seed):
+        tab, rec, fps = self._pair(seed)
+        mine = autosync.drift_curve(tab, rec, fps)
+        theirs = self._reference(tab, rec, fps)
+        assert len(mine) == len(theirs)
+        for (at_a, lag_a, m_a), (at_b, lag_b, m_b) in zip(mine, theirs):
+            assert at_a == at_b
+            assert abs(lag_a - lag_b) < 0.001, "the lag moved by a millisecond"
+            assert abs(m_a - m_b) < 1e-3, "the margin moved"
+
+    def test_it_finds_the_offset_it_was_given(self):
+        """The control: a recording seven seconds behind its tab reads +7."""
+        tab, rec, fps = self._pair(11)
+        rows = autosync.drift_curve(tab, rec, fps)
+        assert rows
+        lags = sorted(lag for _, lag, _ in rows)
+        assert abs(lags[len(lags) // 2] - 7.0) < 0.2, lags[len(lags) // 2]
+
+    def test_a_tab_shorter_than_one_window_reads_nothing(self):
+        fps = 21.53
+        tab = np.ones((int(5 * fps), 12), dtype=np.float32)
+        rec = np.ones((int(60 * fps), 12), dtype=np.float32)
+        assert autosync.drift_curve(tab, rec, fps) == []
+
+    def test_a_recording_shorter_than_one_window_reads_nothing(self):
+        """No lag is valid, so no window may invent a row."""
+        fps = 21.53
+        tab = np.ones((int(60 * fps), 12), dtype=np.float32)
+        rec = np.ones((int(5 * fps), 12), dtype=np.float32)
+        assert autosync.drift_curve(tab, rec, fps) == []
+
+    def test_it_still_reports_and_can_be_cancelled(self):
+        tab, rec, fps = self._pair(4)
+        seen = []
+        autosync.drift_curve(tab, rec, fps, lambda f: seen.append(f) or True)
+        assert seen and seen[-1] == pytest.approx(1.0)
+        with pytest.raises(autosync.Cancelled):
+            autosync.drift_curve(tab, rec, fps, lambda f: False)
+
+    def test_the_scales_are_the_divisor_norm_would_have_used(self):
+        """Asserted against `_norm` itself, not against the arithmetic."""
+        rng = np.random.default_rng(7)
+        rec = np.abs(rng.standard_normal((300, 12))).astype(np.float32)
+        width = 64
+        scale = autosync._window_scales(rec, width)
+        for at in (0, 5, 137, len(rec) - width):
+            window = rec[at:at + width]
+            wanted = np.linalg.norm(
+                window - window.mean(axis=0, keepdims=True), axis=0) + 1e-9
+            assert np.allclose(scale[at], 1.0 / wanted, rtol=1e-4)
+
+    def test_it_is_faster_than_the_loop_it_replaced(self):
+        """The whole point, asserted rather than measured once and trusted.
+
+        Five times is far under the 16 measured here -- a busy machine is
+        allowed to be slow, and a test that pins a ratio is a test that goes
+        red on somebody else's laptop.
+        """
+        tab, rec, fps = self._pair(5, seconds=120.0)
+        t0 = time.perf_counter()
+        self._reference(tab, rec, fps)
+        loop = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        autosync.drift_curve(tab, rec, fps)
+        mine = time.perf_counter() - t0
+        assert mine * 5 < loop, f"{loop:.2f} s against {mine:.2f} s"

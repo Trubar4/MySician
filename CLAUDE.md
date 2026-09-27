@@ -5132,6 +5132,48 @@ all of them became one map and the class went green on a single candidate. It sc
 `_distinct` really keeps them all. **A fixture that quietly stops producing its own case is worse than no test**, and the only
 reason this one was caught is that it failed loudly the first time.
 
+### Seventy Thousand Python Steps A Map
+
+*"Ich habe bei mehreren Songs mehr als 5 min gewartet und es war immer bei 51 oder 52 % nach der Zeit."*
+
+**That number refuted the chapter above while it was being written.** At 51-52 % the bar is inside candidate 1 or 2 of 32
+(`0.5 + 0.5 * (d + f) / 32`), so five minutes buys not two of thirty-two maps. Thirty-two maps at the 2.35 s each measured
+here is 75 s, and even four times slower it would have FINISHED in that time with the bar somewhere near 100. **Fewer
+candidates was a real fix for a real waste and it does not explain his wait**, so it could not be the whole answer.
+
+Counted rather than guessed, on his own "Can't Stop":
+
+| | |
+|---|---|
+| windows per candidate | 41 |
+| lags tried per window | **1722** (±40 s at 21.53 frames a second) |
+| **Python-level iterations per candidate map** | **70 602** |
+| each one | slices a 430x12 array and re-normalises it |
+
+**`_norm` centres each pitch class over the window it is given, so the divisor changes with the lag -- and the NUMERATOR
+does not need it.** `seg` is already centred, so `sum_t seg[t, p] == 0` and the window's own mean cancels out of the dot
+product entirely. What is left is a cross-correlation divided by a norm, and the norm is a sum and a sum of squares, which
+come off two cumulative sums of the whole recording in one pass (`_window_scales`). The sweep is then one `einsum`.
+
+- **Measured: 2.4 s a candidate to 0.15 s -- 16x.** On his song the comparing phase goes **75 s to 0.9 s** here, and the
+  two changes together take a laptop two to four times slower from **2.5-5 minutes to 2-4 seconds**.
+- **The lag it picks is identical to within 0.1 ms** and the margin to 6e-5 -- float rounding, against a 25 ms
+  simplification tolerance. Asserted against the old loop, which **lives on inside the test as the reference**: an
+  optimisation that changes the answer is not an optimisation, and the control on the two songs with a real recording
+  gives the same stored points to the tenth of a millisecond.
+- **The SHAPE of the cost matters as much as its size, and it may be the half that explains five minutes.** Those 70 602
+  iterations were tiny numpy calls that hold the GIL, on a worker thread beside a game loop drawing at 60 Hz; one einsum
+  releases it for the whole sweep. That is reasoning and not a measurement -- the starvation cannot be reproduced on a
+  machine with no display and no audio device -- so it is written down as the best-founded suspect for the gap between
+  75 s of arithmetic and his five minutes, and **not** as the diagnosis.
+- **It is 3.7 MB of peak allocation**, because `einsum` walks the strided view rather than copying it. Worth measuring
+  before shipping: the obvious formulation of the same idea materialises 35 MB per window.
+
+**And the test caught a regression the old loop could not have had.** A recording shorter than one 20-second window has no
+valid lag, which the loop expressed by appending nothing and `sliding_window_view` expresses by RAISING -- so `Ctrl+S` on a
+short recording would have died. The class asserts both empty cases beside the equivalence, which is why it was found
+before it shipped rather than in a screenshot.
+
 ### And then the follow loop answered the question the player actually asked
 
 *"Haben wir selbst Fehler in der Visualisierung?"* No, and this is the measurement rather than an assurance. `_follow_recording` simulated at
