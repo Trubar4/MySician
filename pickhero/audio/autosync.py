@@ -87,6 +87,17 @@ MIN_SLOPE_SPAN_S = 30.0
 # worth storing. 25 ms is a quarter of the 100 ms where picture and sound
 # stop reading as one event.
 SIMPLIFY_MS = 25.0
+# Two bar maps that never disagree by this much are ONE map: 100 ms is where
+# picture and sound stop reading as one event, so a candidate within it of one
+# already kept cannot place the picture anywhere a player could see. Songsterr
+# writes its points to two decimals, and its re-uploads of one transcription
+# differ from each other by exactly that 10 ms grid -- 28 of the 32 on the
+# player's "Can't Stop", every pair of them within 10 ms. Measured on two real
+# songs, the count sits on a PLATEAU from 25 ms to 100 ms (5 and 8 candidates
+# either way) and only falls further at 250, where genuinely different maps
+# start being merged. So the value is the reasoned end of a plateau rather
+# than a number fitted to one song.
+SAME_MAP_MS = 100.0
 # Below this many usable windows there is no curve, only noise.
 MIN_WINDOWS = 3
 # A jump between two NEIGHBOURING windows that no drift can explain. They sit
@@ -662,21 +673,43 @@ def _distinct(candidates: list[list[float]]) -> list[list[float]]:
     exactly what came back: *"SYNC comparing bei 50 % bleibt haengen."*
     Measured: 44 candidates to 11, Reckless 3 to 3 (nothing lost).
 
+    **And "the same shape" is not an exact comparison**, which cost a second
+    round. The first version rounded to the millisecond, so Songsterr's own
+    re-uploads of one transcription -- which land on its 2-decimal grid and
+    differ from each other by exactly one unit of it -- each counted as a
+    fresh answer. On the player's "Can't Stop" that is 56 offered, **32
+    distinct to the millisecond, of which 28 sit within 10 ms of each
+    other**: 32 drift curves, measured at 75 s here and two to four times
+    that on his laptop, which is the "comparing 51 % for five minutes" he
+    reported. Within `SAME_MAP_MS` the same song gives **5**, and 12 s.
+
     The first of a set wins, so `candidates_for`'s ordering still decides:
     the video Songsterr marks as the one the tab was written from stays at
     the front.
     """
-    seen: set[tuple[float, ...]] = set()
+    kept: list[list[float]] = []
     out: list[list[float]] = []
     for c in candidates:
         if not c:
             continue
-        shape = tuple(round(t - c[0], 3) for t in c)
-        if shape in seen:
+        shape = [t - c[0] for t in c]
+        if any(_same_map(shape, k) for k in kept):
             continue
-        seen.add(shape)
+        kept.append(shape)
         out.append(list(c))
     return out
+
+
+def _same_map(a: Sequence[float], b: Sequence[float]) -> bool:
+    """Whether these two shapes never disagree by as much as a player sees.
+
+    Length first: a map of a different number of bars is a map of a different
+    tab, whatever its bar lines say.
+    """
+    if len(a) != len(b):
+        return False
+    limit = SAME_MAP_MS / 1000.0
+    return all(abs(x - y) <= limit for x, y in zip(a, b))
 
 
 def _without_spikes(points: list[tuple[float, float]]

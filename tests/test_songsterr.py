@@ -1170,6 +1170,84 @@ class TestOneShapeIsOneCandidate:
         assert len(seen) == 1, "four shifts of one map cost four drift curves"
 
 
+class TestTheSameMapWrittenDownOnTwoDecimals:
+    """*"Es haengt wieder bei comparing 51% fuer 5 Minuten."*
+
+    `_distinct` compared shapes to the MILLISECOND, and Songsterr writes its
+    points to two decimals -- so its own re-uploads of one transcription,
+    which differ from each other by exactly one unit of that 10 ms grid, each
+    counted as a fresh answer worth a full drift curve. On the player's
+    "Can't Stop": 56 offered, 32 distinct to the millisecond, **28 of them
+    within 10 ms of each other**, 75 s of arithmetic here and two to four
+    times that on his laptop. Within `SAME_MAP_MS` the same song gives 5.
+    """
+
+    def _grid(self, base, jitter):
+        """The same map re-rounded onto Songsterr's own 2-decimal grid."""
+        return [round(t + j, 2) for t, j in zip(base, jitter)]
+
+    def test_one_unit_of_songsterrs_grid_is_not_a_new_map(self):
+        base = REAL[0]["points"]
+        nudged = [self._grid(base, [0.01 if i % 3 else -0.01
+                                    for i in range(len(base))])
+                  for _ in range(4)]
+        assert len(autosync._distinct([base] + nudged)) == 1
+
+    def test_a_map_that_really_differs_survives(self):
+        """The four 102-point maps in his file sit up to 940 ms apart."""
+        base = REAL[0]["points"]
+        apart = list(base)
+        apart[3] += 0.94
+        assert len(autosync._distinct([base, apart])) == 2
+
+    def test_one_point_over_the_line_is_enough(self):
+        """It is the WORST disagreement that decides, not the average."""
+        base = REAL[0]["points"]
+        under = list(base)
+        under[4] += autosync.SAME_MAP_MS / 1000.0 * 0.9
+        over = list(base)
+        over[4] += autosync.SAME_MAP_MS / 1000.0 * 1.1
+        assert len(autosync._distinct([base, under])) == 1
+        assert len(autosync._distinct([base, over])) == 2
+
+    def test_a_different_number_of_bars_is_never_the_same_map(self):
+        """A map of another bar count is a map of another tab, whatever its
+        bar lines say -- and `_covers` decides that, not this."""
+        base = REAL[0]["points"]
+        assert len(autosync._distinct([base, list(base[:-1])])) == 2
+
+    def test_everything_dropped_is_within_the_tolerance_of_something_kept(self):
+        """The safety argument, asserted rather than reasoned.
+
+        First-wins clustering is not an equivalence relation -- A and C can
+        each sit within the tolerance of B and further from each other. What
+        it does guarantee is this, and this is what makes dropping safe: no
+        candidate is thrown away that any player could tell from one still
+        being tried.
+        """
+        base = REAL[0]["points"]
+        # Scaled, not shifted: a shift IS the same shape, so a fixture of
+        # shifts would collapse to one and prove nothing. Over this map's
+        # 21.68 s these are ~43 ms apart per step, so neighbours merge and
+        # distant ones do not -- the case the guarantee is about.
+        offered = []
+        for i in range(24):
+            offered.append([round(t * (1.0 + i * 0.002)
+                                  + (i % 5 - 2) * 0.01, 2) for t in base])
+        kept = autosync._distinct(offered)
+        assert 1 < len(kept) < len(offered)
+        for c in offered:
+            shape = [t - c[0] for t in c]
+            assert any(autosync._same_map(shape, [t - k[0] for t in k])
+                       for k in kept), c
+
+    def test_the_shifts_it_already_merged_are_still_merged(self):
+        """The control for the change: nothing that worked before moves."""
+        base = REAL[0]["points"]
+        shifted = [[t + d for t in base] for d in (0.0, -25.15, 7.5, 40.0)]
+        assert len(autosync._distinct(shifted)) == 1
+
+
 class TestTheProgressBarMovesThroughAllOfThem:
     """`0.5 + 0.5 * (taken + 1) / n * f` restarts at a half for every
     candidate and reaches 51 % on the first of 44, so a measurement doing
@@ -1198,8 +1276,19 @@ class TestTheProgressBarMovesThroughAllOfThem:
         return seen
 
     def _maps(self, n):
+        """n maps that `_distinct` really keeps, and it is asserted here.
+
+        The step was 0.003, which over this fixture's 21.68 s span is 65 ms
+        -- under `SAME_MAP_MS`, so every one of them was the same map and
+        this class stopped testing what it says once `_distinct` grew a
+        tolerance. A fixture that quietly stops producing its own case is
+        the fault this file writes chapters about, so the guard is in the
+        fixture rather than in somebody's memory.
+        """
         base = REAL[0]["points"]
-        return [[t * (1.0 + i * 0.003) for t in base] for i in range(n)]
+        maps = [[t * (1.0 + i * 0.03) for t in base] for i in range(n)]
+        assert len(autosync._distinct(maps)) == n, "the maps are not distinct"
+        return maps
 
     def test_it_never_walks_backwards(self, monkeypatch):
         seen = self._run(monkeypatch, self._maps(6))

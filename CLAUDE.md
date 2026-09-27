@@ -5082,6 +5082,56 @@ distance to each neighbour, floored at `SPIKE_FLOOR_S`. Both are bounds this mod
 - **Measured: Reckless loses 1 of 71, Californication 2 of 127, and Bon Jovi -- the song that syncs well, and the control this rests on --
   loses none of 149.**
 
+### Two Decimals Made Twenty-Eight Copies Of One Map
+
+*"Es haengt wieder bei comparing 51% fuer 5 Minuten."*
+
+**Nothing was hanging, and 51 % was exactly right.** `comparing map 1 of 32` at 51 % is where the bar belongs on the first of
+thirty-two: the walk was fixed last session and it is doing what it says. What was wrong is the **32**.
+
+Measured on his own two files (`Can't Stop`, 103 measures, 4444 notes):
+
+| | |
+|---|---|
+| maps Songsterr offers | **56** |
+| covering the tab | 56 |
+| distinct to the MILLISECOND, which is what shipped | **32** |
+| **of those, within 10 ms of each other** | **28** |
+| drift curves, measured here | **75 s** -- and a laptop is two to four times that |
+
+**`_distinct` rounded to the millisecond and Songsterr writes two decimals.** Its own re-uploads of one transcription land on
+that 10 ms grid and differ from each other by exactly one unit of it, so each counted as a fresh answer worth a full drift curve
+over the song. Every pair among those 28 is within **10 ms**; the four that genuinely differ sit up to **940 ms** apart and have
+a different bar count as well.
+
+- **`SAME_MAP_MS` is 100 ms, and the reason is what the map is FOR.** Two maps that never disagree by as much as the threshold
+  where picture and sound stop reading as one event place the picture identically as far as anyone can see, so trying both is
+  trying one twice. It is the WORST disagreement that decides, not the average, and a different bar count is never the same map.
+- **It sits on a plateau, not on a knife edge**, which is why it is not a number fitted to this song. Swept over two real songs:
+
+| tolerance | Can't Stop | Californication |
+|---|---|---|
+| to the millisecond (was) | 32 | 11 |
+| 10 ms | 21 | 10 |
+| **25 ms** | **5** | **8** |
+| **100 ms** | **5** | **8** |
+| 250 ms | 4 | 4 -- genuinely different maps start being merged |
+
+- **The guarantee is asserted rather than reasoned.** First-wins clustering is not an equivalence relation: A and C can each sit
+  within the tolerance of B and further from each other. What it does guarantee is that **everything dropped is within
+  `SAME_MAP_MS` of something still being tried**, and that is the whole safety argument, so there is a test that builds a ladder
+  of overlapping shapes and requires it of every one.
+- **The control is the map, not the clock.** Run through the real `align_to_bar_times` on the two songs where a bar map AND a
+  recording both exist, at the old rule and the new: Californication 11 candidates to 8 and Born To Be My Baby 1 to 1, with the
+  **stored points identical to the tenth of a millisecond** in both. A faster answer that is a different answer would be no fix.
+- **On his song: 32 maps to 5**, 75 s of arithmetic to 12 here, so 2.5-5 minutes on his laptop to 25-50 seconds.
+
+**And the test that was meant to catch this had stopped testing it.** `TestTheProgressBarMovesThroughAllOfThem._maps` built its
+candidates by scaling time by `1 + i * 0.003`, which over that fixture's 21.68 s span is **65 ms** -- under the new tolerance, so
+all of them became one map and the class went green on a single candidate. It scales by 0.03 now AND asserts in the fixture that
+`_distinct` really keeps them all. **A fixture that quietly stops producing its own case is worse than no test**, and the only
+reason this one was caught is that it failed loudly the first time.
+
 ### And then the follow loop answered the question the player actually asked
 
 *"Haben wir selbst Fehler in der Visualisierung?"* No, and this is the measurement rather than an assurance. `_follow_recording` simulated at
