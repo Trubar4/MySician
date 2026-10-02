@@ -26,6 +26,7 @@ import pygame
 
 from pickhero import runs as runs_mod
 from pickhero.ui import strip
+from pickhero.ui.keys import shift_held
 from pickhero.ui.colors import STRING_COLORS, get_theme, get_theme_name, unsure
 
 #: One row of the list is one bar plus the air around it.
@@ -400,7 +401,10 @@ class StatsOverlay:
             # In both modes, because the question is the same one: a list
             # that says a run went badly and a comparison that draws it both
             # leave the player to FIND the passage by reading pixels.
-            self._go_to_nest()
+            #
+            # Shift tested first, because an `if` chain is read in order and
+            # a shifted key placed after its unshifted twin is never reached.
+            self._go_to_nest(drill=shift_held(event))
             return True
         if self.mode == "list":
             if key == pygame.K_DOWN:
@@ -589,7 +593,7 @@ class StatsOverlay:
         end = notes[last].timestamp_ms + notes[last].duration_ms
         return start, end, f"{format_ms(start)}-{format_ms(end)}"
 
-    def _go_to_nest(self) -> None:
+    def _go_to_nest(self, drill: bool = False) -> None:
         """Set the loop over the next place this run went wrong, and wait.
 
         The same landing as a right-drag: loop, jump, hands free. The overlay
@@ -619,10 +623,19 @@ class StatsOverlay:
             # Only the position moves: the zoom is the player's.
             seen = self.window()
             self.view_from_ms = (start + end) / 2.0 - (seen[1] - seen[0]) / 2.0
-        self._screen.take_passage(start, end)
-        self._nest_note = (f"{self._nest_at + 1} of {len(self._nests)}: "
-                           f"{where}, {wrong} note{'' if wrong == 1 else 's'} "
-                           "wrong - SPACE plays the loop")
+        if drill:
+            # The same passage, walked up the ladder instead of merely
+            # looped. `start_drill` sets the loop itself, through the very
+            # `take_passage` the plain key calls, so there is one answer to
+            # what marking a passage means.
+            self._screen.start_drill(start, end, where)
+            self._nest_note = (f"{self._nest_at + 1} of {len(self._nests)}: "
+                               f"drilling {where} - SPACE plays it")
+        else:
+            self._screen.take_passage(start, end)
+            self._nest_note = (f"{self._nest_at + 1} of {len(self._nests)}: "
+                               f"{where}, {wrong} note{'' if wrong == 1 else 's'} "
+                               "wrong - SPACE plays the loop")
         self._screen.say(self._nest_note)
 
     # -- the bars -----------------------------------------------------------
@@ -975,7 +988,7 @@ class StatsOverlay:
                 "No runs recorded yet — play the song and leave it",
                 True, theme.hud_text), (x, y))
         foot = ("SPACE or click picks two · ENTER compares · S sorts · "
-                "N loops the next mistake · ESC closes")
+                "N loops the next mistake · Shift+N drills it · ESC closes")
         self._blit_foot(surface, panel, x, panel.right - 12 - x, foot)
 
     def _draw_compare(self, surface: pygame.Surface,
@@ -1031,7 +1044,7 @@ class StatsOverlay:
         foot = (f"+/- zoom ({self.zoom + 1}/{ZOOM_STEPS}) · "
                 f"UP/DOWN bar size ({self.size + 1}/{len(ladder)}) · "
                 f"LEFT/RIGHT move — showing {seen} · "
-                "right-drag or N marks a passage · ESC back")
+                "right-drag or N marks a passage · Shift+N drills it · ESC back")
         self._blit_foot(surface, panel, x, width, foot)
 
     def _blit_foot(self, surface: pygame.Surface, panel: pygame.Rect,

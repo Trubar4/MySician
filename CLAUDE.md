@@ -5682,6 +5682,49 @@ Anklicken."* Both, on a second labelled strip under the first.
 - **One `_draw_chips` for both**, because two copies of it is two ideas of what a chip looks like — the "four readers of
   one plan" fault at the size of a pill.
 
+## The Ladder: Slow, Twice Clean, Faster
+
+*"Was könnten wir machen, damit ich gezieltes Feedback bekomme und üben kann?"* — and the answer that needed the least new
+machinery was already most of the way built. `error_nests` finds the bars that keep going wrong, `N` loops one of them and
+lands with the hands free, the loop turn already re-judges its own bars, and the practice speed already moves in steps. What
+was missing is the SESSION over the top of them: **70 %, 80 %, 90 %, 100 %, two clean passes before each step up** —
+Rocksmith's riff repeater, assembled out of parts this app had.
+
+`Shift+N` in the stats overlay, one key further than the `N` that merely loops, on the same nest. It goes through
+`take_passage`, so there is one answer in the app to what marking a passage means.
+
+- **A clean pass is no `runs.is_error` among the notes of the passage**, which makes the drill, "most frequent errors" and
+  `N` mean the same thing by a mistake. A CLOSE is the right note played off the beat — the timing percentage answers for
+  that, and counting it here would paint most of a run red. A DRAINED miss is the app saying it could not tell.
+- **A pass where NOTHING was judged is not clean.** Audio off, a guitar not plugged in, a passage nobody played: crediting
+  those would walk the ladder to 100 % without a note being heard. That is the presumption of innocence pointed the other
+  way — absence of evidence does not acquit either.
+- **A mistake repeats the step and never drops below it.** The clean counter goes back to zero; the speed does not. Stepping
+  back is what Rocksmith's dynamic difficulty does, and it was offered and declined (*"nur wiederholen, nie zurück"*). What
+  makes that a defensible choice rather than a soft one is that the speed keys stay live throughout — and pressing one ENDS
+  the drill rather than fighting it, which is the rule the automatic gate already follows for `X` and `C`: an automatic that
+  silently undoes what you just set by hand is worse than one that was never offered.
+- **The pass is scored BEFORE `forget_from` spends its verdicts**, which is the whole reason `_drill_pass` sits inside the
+  loop-turn branch rather than anywhere tidier. Scored one line later every pass would read as "nothing was heard", and the
+  test that pins it says so in its name.
+- **Leaving the song puts the speed back.** `set_tempo_factor` STORES the practice speed per song, so a song abandoned in the
+  middle of a ladder would open at 70 % next time with nothing on screen to say why. `stop_audio` ends the drill; so does
+  switching the loop off, which is the way out that needs no key of its own.
+- **The HUD line REPLACES the loop line rather than sitting under it.** The drill is a loop too, and it says which bars, which
+  speed and how far along — everything the loop line says and more. Two lines for one state is the wallpaper this HUD was cut
+  down to remove, and the same rule trims what `_say` reports to what the top line cannot: what this one pass was.
+- **`pickhero/drill.py` is arithmetic and nothing else** — no pygame, no matcher — so the ladder is tested on counts the way
+  `runs.error_nests` is tested on strings. What that cannot cover is whether the loop turn really drives it, so the second
+  half of the suite runs the real `update()`.
+
+**What it costs, said rather than hidden:** each step moves the practice speed, which rebuilds the stretched recording. That is
+seconds the first time a song is drilled at a given speed and free afterwards — `timestretch` caches by speed — but a drill on
+a song with a recording spends four of those builds on its first run up the ladder.
+
+**And how demanding "two clean passes" really is has NOT been measured against his own history**, because the history is on his
+machine. The numbers that would settle it are on screen every pass (`N notes wrong of M`), which is deliberate: a bar that is
+too easy or too strict shows itself in one sitting rather than needing another round of guessing.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

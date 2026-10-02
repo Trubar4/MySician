@@ -1116,3 +1116,68 @@ class TestTheBankedRunIsNotOfferedAgain:
         screen._matcher._record_match(screen._timeline.notes[0],
                                       MatchType.MISS)
         assert screen.unbanked_run() is not None
+
+
+class TestShiftNDrillsTheNest:
+    """*"Shift+N übt das Nest, auf dem du gerade stehst — derselbe Ort,
+    dieselbe Liste, eine Taste weiter."*
+
+    One key further than `N`, and the same passage: `start_drill` sets the
+    loop through the very `take_passage` the plain key calls, so there is
+    one answer in the app to what marking a passage means.
+    """
+
+    def _with_errors(self, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        marks = ["h"] * len(song.notes)
+        for i in (4, 5, 20):
+            marks[i] = "m"
+        runs.append(screen._song_path,
+                    _run("".join(marks), "2026-09-01T10:00:00+00:00"))
+        screen._stats.show()
+        screen._stats.cursor = next(
+            i for i, e in enumerate(screen._stats._entries)
+            if e.run.kind == "run")
+        return screen, screen._stats
+
+    def test_it_sets_the_same_loop_the_plain_key_would(self, display,
+                                                       tmp_path):
+        plain, overlay = self._with_errors(tmp_path)
+        overlay.handle_event(_key(pygame.K_n))
+        looped = (plain._loop_start_ms, plain._loop_end_ms)
+        drilled, overlay = self._with_errors(tmp_path)
+        overlay.handle_event(_key(pygame.K_n, mod=pygame.KMOD_LSHIFT))
+        assert (drilled._loop_start_ms, drilled._loop_end_ms) == looped
+
+    def test_and_starts_the_ladder(self, display, tmp_path):
+        from pickhero.drill import LADDER
+        screen, overlay = self._with_errors(tmp_path)
+        overlay.handle_event(_key(pygame.K_n, mod=pygame.KMOD_LSHIFT))
+        assert screen._drill is not None
+        assert screen._tempo_factor == LADDER[0]
+
+    def test_the_plain_key_starts_no_drill(self, display, tmp_path):
+        """The shifted key is tested FIRST in the handler, because an `if`
+        chain is read in order -- and the plain one has to keep working."""
+        screen, overlay = self._with_errors(tmp_path)
+        overlay.handle_event(_key(pygame.K_n))
+        assert screen._drill is None
+        assert screen._loop_enabled
+
+    def test_it_says_it_is_drilling(self, display, tmp_path):
+        screen, overlay = self._with_errors(tmp_path)
+        overlay.handle_event(_key(pygame.K_n, mod=pygame.KMOD_LSHIFT))
+        assert "drilling" in overlay._nest_note
+
+    def test_the_overlay_stays_up(self, display, tmp_path):
+        screen, overlay = self._with_errors(tmp_path)
+        overlay.handle_event(_key(pygame.K_n, mod=pygame.KMOD_LSHIFT))
+        assert overlay.open
+
+    def test_pressing_it_again_drills_the_next_nest(self, display, tmp_path):
+        screen, overlay = self._with_errors(tmp_path)
+        overlay.handle_event(_key(pygame.K_n, mod=pygame.KMOD_LSHIFT))
+        first = screen._loop_start_ms
+        overlay.handle_event(_key(pygame.K_n, mod=pygame.KMOD_LSHIFT))
+        assert screen._loop_start_ms != first

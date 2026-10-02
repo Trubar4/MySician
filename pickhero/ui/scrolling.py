@@ -29,6 +29,7 @@ from pickhero.matcher import (FINE_MS, STRING_MIN_SAMPLES, MatchType,
 from pickhero.audio import midi_playback
 from pickhero.audio import output
 from pickhero.audio.syncmap import SyncMap
+from pickhero import drill as drill_mod
 from pickhero import practice_log
 from pickhero import runs
 from pickhero.progress import ProgressTracker
@@ -1173,6 +1174,8 @@ class PlayingScreen:
 
         # Audio matching
         self._audio_capture = None  # AudioCapture, created on demand
+        #: The passage being walked up the drill's ladder, or None.
+        self._drill: drill_mod.Drill | None = None
         self._matcher: NoteMatcher | None = None
         self._feedback = FeedbackRenderer()
         self._audio_enabled = True
@@ -1705,8 +1708,18 @@ class PlayingScreen:
     def is_playing(self) -> bool:
         return self._playing
 
-    def set_tempo_factor(self, factor: float) -> None:
-        """Set tempo scaling factor, clamped to [0.5, 1.0] and rounded to nearest 0.05."""
+    def set_tempo_factor(self, factor: float, by_hand: bool = True) -> None:
+        """Set tempo scaling factor, clamped to [0.5, 1.0] and rounded to nearest 0.05.
+
+        `by_hand` is false only when the DRILL is moving the speed up its own
+        ladder. A hand on PgUp/PgDn ends the drill rather than fighting it:
+        an automatic that silently undoes what you just set by hand is worse
+        than one that was never offered -- the rule the automatic gate
+        already follows for X and C.
+        """
+        if by_hand and self._drill is not None and not self._drill.finished:
+            self._end_drill("Drill off — you set the speed yourself",
+                            restore=False)
         factor = max(0.5, min(1.0, factor))
         factor = round(factor * 20) / 20  # round to nearest 0.05
         self._tempo_factor = factor
@@ -2095,6 +2108,9 @@ class PlayingScreen:
                 player.pause()
             self._playback_ms = self._loop_start_ms
             self._last_tick = time.perf_counter()
+            # BEFORE forget_from, which is what spends the verdicts this pass
+            # is scored on.
+            self._drill_pass()
             if self._matcher:
                 # The loop is a fresh pass over ITS OWN bars and nothing
                 # else. A full reset here threw away everything played
@@ -5193,6 +5209,96 @@ class PlayingScreen:
         self.seek(self._loop_start_ms)
         self._say("Loop set — SPACE to play it")
 
+    # -- the drill --------------------------------------------------------
+
+    def start_drill(self, start_ms: float, end_ms: float,
+                    where: str = "") -> None:
+        """Walk this passage up the ladder: slow, twice clean, faster.
+
+        Everything the drill needs was already here -- the loop, the practice
+        speed, the wait-mode landing and a verdict per note. What is new is
+        the SESSION over the top of them, which is `pickhero/drill.py`.
+        """
+        if self._drill is not None and not self._drill.finished:
+            # Restore the speed from the drill being replaced, or the second
+            # drill would remember the first one's ladder step as "normal".
+            self.set_tempo_factor(self._drill.restore_tempo, by_hand=False)
+        self._drill = drill_mod.Drill(
+            start_ms=start_ms, end_ms=end_ms, where=where,
+            restore_tempo=self._tempo_factor)
+        self.take_passage(start_ms, end_ms)
+        self.set_tempo_factor(self._drill.tempo, by_hand=False)
+        self._say(f"Drill — SPACE plays it at "
+                  f"{int(round(self._drill.tempo * 100))} %")
+
+    def _end_drill(self, note: str = "", restore: bool = True) -> None:
+        """Stop the drill and put the practice speed back.
+
+        `restore` is false where the speed is the very thing being set by
+        hand: putting it back there would undo the keypress that ended the
+        drill, which is a key that looks broken.
+        """
+        if self._drill is None:
+            return
+        back = self._drill.restore_tempo
+        self._drill = None
+        if restore and abs(back - self._tempo_factor) > 1e-6:
+            self.set_tempo_factor(back, by_hand=False)
+        if note:
+            self._say(note)
+
+    def _drill_marks(self) -> str:
+        """The verdicts of the drilled passage, as run characters.
+
+        Built through `runs.encode` rather than counted here, so the
+        drill, the stored history and "most frequent errors" cannot come to
+        mean different things by a mistake.
+        """
+        if self._matcher is None or self._drill is None:
+            return ""
+        marks = []
+        for note in self._timeline.notes:
+            if not (self._drill.start_ms <= note.timestamp_ms
+                    < self._drill.end_ms):
+                continue
+            kind = _RUN_VERDICT.get(self._matcher.get_note_state(note))
+            checked = kind is not None and not self._matcher.unreliable(note)
+            marks.append((kind, checked))
+        return runs.encode(marks)
+
+    def _drill_pass(self) -> None:
+        """Score the pass that has just ended, at the loop turn.
+
+        Called BEFORE `forget_from` spends the verdicts, which is the whole
+        reason this lives in the loop branch rather than anywhere tidier.
+        """
+        if self._drill is None or self._drill.finished:
+            return
+        step_before = self._drill.step
+        wrong, judged = drill_mod.count(self._drill_marks())
+        outcome = self._drill.record(wrong, judged)
+        if outcome == drill_mod.NOTHING:
+            self._say("Drill: nothing was heard that time — is the audio on?")
+            return
+        # The HUD line above the staff already says the passage, the speed
+        # and how far along -- so what is left to SAY is what this one pass
+        # was. A note repeating what is already on screen is the wallpaper
+        # the HUD was cut down to remove.
+        if outcome == drill_mod.WRONG:
+            plural = "" if wrong == 1 else "s"
+            self._say(f"{wrong} note{plural} wrong of {judged} — again")
+            return
+        if self._drill.finished:
+            where = f"{self._drill.where} " if self._drill.where else ""
+            self._end_drill(f"Drill done — {where}clean at 100 %")
+            return
+        if self._drill.step != step_before:
+            self.set_tempo_factor(self._drill.tempo, by_hand=False)
+            self._say(f"Clean — up to {int(round(self._drill.tempo * 100))} %")
+            return
+        self._say(f"Clean — {self._drill.clean} of "
+                  f"{drill_mod.CLEAN_PASSES} at this speed")
+
     def _strip_rect(self, w: int, h: int) -> pygame.Rect:
         """The whole band: the numbers and the miniature side by side.
 
@@ -5677,7 +5783,13 @@ class PlayingScreen:
         # The tempo moved into the footer, where the key that changes it is.
         # A loop, though, silently repeats a section of the song and no other
         # line would mention it -- the fret-filter trap in another costume.
-        loop_info = self._loop_hud_text()
+        # The drill REPLACES that line rather than sitting under it: it is a
+        # loop too, and it says which bars, which speed and how far along --
+        # everything the loop line says and more. Two lines for one state is
+        # the wallpaper this HUD was cut down to remove.
+        loop_info = (self._drill.line()
+                     if self._drill is not None and not self._drill.finished
+                     else self._loop_hud_text())
         if loop_info and self._loop_enabled:
             loop_surf = hint_font.render(loop_info, True, t.hud_accent)
             surface.blit(loop_surf, (w // 2 - loop_surf.get_width() // 2, 12))
@@ -7279,6 +7391,19 @@ class PlayingScreen:
                  else "off"),
                 ], "small"),
 
+                ("Shift+N: drilling a passage", [
+                ("The ladder, from the stats overlay (Shift+D, then Shift+N",
+                 (self._drill.line() if self._drill is not None
+                  and not self._drill.finished else "no drill running")),
+                "  on the place you want): 70 %, 80 %, 90 %, 100 %, and two",
+                "  clean passes before each step up.",
+                "A pass with a mistake repeats the step and never drops",
+                "  below it; a pass where nothing was heard is not clean.",
+                "A CLOSE is not a mistake here — the right note off the beat",
+                "  is what the timing percentage answers for.",
+                "PgUp/PgDn or P ends it and puts your own speed back.",
+                ], "small"),
+
                 ("S: lining the recording up", [
                 ("S opens the sync panel at the bottom and closes it again",
                  "open" if self._show_sync else "shut"),
@@ -7704,6 +7829,10 @@ class PlayingScreen:
 
     def _toggle_loop(self) -> None:
         """Toggle loop off (keep markers), then clear markers on second press."""
+        if self._drill is not None and not self._drill.finished:
+            # The drill IS the loop. Switching the loop off is the way out of
+            # it that needs no key of its own.
+            self._end_drill("Drill off")
         if self._loop_enabled:
             self._loop_enabled = False
         elif self._loop_start_ms is not None or self._loop_end_ms is not None:
@@ -8028,6 +8157,10 @@ class PlayingScreen:
 
     def stop_audio(self) -> None:
         """Public method to stop audio (called on state transitions)."""
+        # The drill moves the practice speed through `set_tempo_factor`,
+        # which STORES it per song -- so a song left in the middle of a
+        # ladder would open at 70 % next time with nothing to say why.
+        self._end_drill()
         # Leaving the song is the end of the run, and until now it wrote
         # nothing: only reaching the last bar did. A four-minute song is
         # almost never played to its end while something is being diagnosed,
