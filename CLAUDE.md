@@ -5725,6 +5725,51 @@ a song with a recording spends four of those builds on its first run up the ladd
 machine. The numbers that would settle it are on screen every pass (`N notes wrong of M`), which is deliberate: a bar that is
 too easy or too strict shows itself in one sitting rather than needing another round of guessing.
 
+## Is Bar 42 Getting Better
+
+*"Fang mit (a) an, dann b"* -- and (b) is the question the whole run history was kept for and that nothing could ask it. The list has three
+answers about an evening (the three percentages), and two pretend runs about all of them: **"best ever" keeps only every evening's PEAK** and
+**"frequent errors" only what is still wrong TODAY**. Neither can say whether the bar that went wrong last week is going better this week,
+because both throw the time axis away by construction.
+
+`T` in the stats overlay is that axis: **one column per bar, one row per evening, newest at the top**, and the answer is read down a column.
+Red at the bottom going green towards the top is a passage that was learnt; a column red the whole way up is the one to drill.
+
+- **A cell is the share of its bar's judged notes that were not missed**, ramped through the palette's own three feedback colours -- red,
+  the close yellow at a half, green -- so a cell reads the way a note reads and nothing new has to be learnt. **A ramp rather than bands,
+  because a band needs a threshold and there is nothing to fit one against**: the run history starts the day it ships. Same honest state as
+  `NEST_BRIDGE_BARS`.
+- **A bar with nothing judged in it is BLANK, not zero.** Nobody reached it, or it holds no note of this track. A 0 % there would say the
+  player got it wrong, and on a real history that is most of the right-hand side of the grid -- the staircase of where each evening stopped,
+  which is itself worth seeing.
+- **A bar nothing could check is DRAINED**, the same drain the board, the sheet and the strip already apply to one note. Binary -- any
+  checked verdict in the bar is enough -- so again no threshold.
+- **And a drained miss still counts against the bar, which is where `bar_scores` parts company with `is_error`.** The two answer different
+  questions and this was wrong for one build. `is_error` asks what the player can ACT on, so a verdict nothing stood behind abstains:
+  sending somebody to practise a bar on the strength of a strike the detector could make nothing of is convicting on absence of evidence.
+  `bar_scores` asks how the bar SCORED, and `counts()` puts `M` in the misses -- the percentage under the song is built on exactly that. A
+  trend that read the two differently would contradict the number printed beside it on the same row.
+- **The rows are in time order whatever the list is sorted by.** "Evenings down" only means something chronologically; sorted by score the
+  grid would read as a player who improved and then collapsed. The two pretend runs are left out for the same reason: neither has a date.
+- **ONE evening is drawn rather than refused.** A single row says which bars went wrong tonight, which is worth having on its own, and the
+  trend fills in underneath it. Refusing it would make the picture appear out of nowhere on the second run -- a feature that cannot be seen
+  working.
+- **The grid is one surface, built when the runs or the room change and blitted after that.** Twelve rows over 150 bars is 1800 cells; drawn
+  per frame that is the loop this display has had to move out of the frame three times already (the chord blocks, the note heads, the tab
+  page). Measured at 1920x1200 on 150 bars and 12 runs: **1.65 ms a frame against the list's 2.06**, and **18.1 ms on the one frame that
+  builds it** -- which is spent on a paused screen, because opening this overlay stops the clock.
+- **`runs.bar_scores` and the two layout helpers are arithmetic and nothing else**, so the rule is tested on strings and the geometry without
+  a screen -- the same seam as `error_nests` and `strip.py`. The drawing and the MOUSE read one list of columns, or a right-drag lands on the
+  neighbour of the bar under the pointer.
+- **The x axis is BARS, so a right-drag marks bars** rather than milliseconds, and clamps at the edges because the hand cannot feel them.
+  It lands the way every other passage in this app lands: loop set, jump, hands free, SPACE plays it. `N` still walks the cursor row's
+  mistakes, which is why entering the trend snaps the cursor onto a real evening -- left on "best ever" it would highlight no row and answer
+  about a run that is not in the picture.
+
+**And the help page overflowed again when three lines were added to it.** The stats overlay's keys had been living inside the "Playing" block,
+which was already within 5 px of a whole column -- the same failure the drill hit a week ago, fixed the same way: its own block. A page that
+paginates is not a page that may be filled without measuring.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

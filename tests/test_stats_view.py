@@ -1181,3 +1181,313 @@ class TestShiftNDrillsTheNest:
         first = screen._loop_start_ms
         overlay.handle_event(_key(pygame.K_n, mod=pygame.KMOD_LSHIFT))
         assert screen._loop_start_ms != first
+
+
+# -- the trend over evenings ------------------------------------------------
+
+class TestTheTrendArithmetic:
+    """The two pure helpers, without a screen."""
+
+    def test_the_columns_tile_the_whole_width_exactly(self):
+        cols = stats_view.trend_columns(7, 100)
+        assert cols[0][0] == 0
+        assert cols[-1][0] + cols[-1][1] == 100
+        for (x, w), (nx, _) in zip(cols, cols[1:]):
+            assert x + w == nx
+
+    def test_no_column_is_ever_zero_wide(self):
+        # A song longer than the grid is wide still draws every bar.
+        for (_, w) in stats_view.trend_columns(400, 300):
+            assert w >= 1
+
+    def test_no_bars_or_no_room_is_no_columns(self):
+        assert stats_view.trend_columns(0, 100) == []
+        assert stats_view.trend_columns(10, 0) == []
+
+    def test_the_heat_runs_through_the_palette_s_own_three(self, display):
+        theme = stats_view.get_theme()
+        assert stats_view.heat(1.0) == tuple(theme.feedback_hit[:3])
+        assert stats_view.heat(0.0) == tuple(theme.feedback_miss[:3])
+        assert stats_view.heat(0.5) == tuple(theme.feedback_close[:3])
+
+    def test_the_heat_is_a_ramp_rather_than_bands(self, display):
+        # No threshold, because there is nothing to fit one against: the run
+        # history starts the day it ships.
+        seen = {stats_view.heat(i / 20.0) for i in range(21)}
+        assert len(seen) > 10
+
+    def test_the_heat_is_clamped(self, display):
+        assert stats_view.heat(-5.0) == stats_view.heat(0.0)
+        assert stats_view.heat(9.0) == stats_view.heat(1.0)
+
+    def test_a_row_is_never_thinner_than_it_can_be_read_at(self):
+        assert stats_view.trend_row_height(12, 20) == stats_view.TREND_ROW_MIN
+
+    def test_and_never_just_air(self):
+        assert stats_view.trend_row_height(2, 4000) == stats_view.TREND_ROW_MAX
+
+
+class TestTheTrendOverEvenings:
+    """*"Raster: Takte quer, Abende untereinander. Die letzten 12, neueste
+    oben."*
+
+    The one question the list cannot answer: "best ever" keeps only every
+    evening's peak and "frequent errors" only what is still wrong today.
+    """
+
+    def _with_history(self, tmp_path, evenings=3):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        for day in range(evenings):
+            marks = ["h"] * len(song.notes)
+            # Bar 1 stays wrong on every evening; bar 2 is learnt.
+            marks[4] = marks[5] = "m"
+            if day < evenings - 1:
+                marks[8] = "m"
+            runs.append(screen._song_path,
+                        _run("".join(marks), f"2026-09-0{day + 1}T10:00:00+00:00"))
+        screen._stats.show()
+        return screen, screen._stats
+
+    def test_t_opens_it_and_t_goes_back(self, display, tmp_path):
+        _, overlay = self._with_history(tmp_path)
+        overlay.handle_event(_key(pygame.K_t))
+        assert overlay.mode == "trend"
+        overlay.handle_event(_key(pygame.K_t))
+        assert overlay.mode == "list"
+
+    def test_escape_goes_back_to_the_list_rather_than_closing(self, display,
+                                                              tmp_path):
+        _, overlay = self._with_history(tmp_path)
+        overlay.handle_event(_key(pygame.K_t))
+        overlay.handle_event(_key(pygame.K_ESCAPE))
+        assert overlay.mode == "list" and overlay.open
+
+    def test_the_newest_evening_is_the_top_row(self, display, tmp_path):
+        _, overlay = self._with_history(tmp_path)
+        rows = overlay._trend_entries()
+        stamps = [entry.run.started for _, entry in rows]
+        assert stamps == sorted(stamps, reverse=True)
+
+    def test_in_time_order_whatever_the_list_is_sorted_by(self, display,
+                                                          tmp_path):
+        # "Evenings down" only means something chronologically.
+        _, overlay = self._with_history(tmp_path)
+        overlay.sort = "score"
+        overlay._rebuild()
+        stamps = [e.run.started for _, e in overlay._trend_entries()]
+        assert stamps == sorted(stamps, reverse=True)
+
+    def test_the_two_pretend_runs_are_left_out(self, display, tmp_path):
+        _, overlay = self._with_history(tmp_path)
+        assert any(e.run.kind != "run" for e in overlay._entries)
+        assert all(e.run.kind == "run" for _, e in overlay._trend_entries())
+
+    def test_at_most_twelve_of_them(self, display, tmp_path):
+        _, overlay = self._with_history(tmp_path, evenings=9)
+        for day in range(10, 30):
+            runs.append(overlay._screen._song_path,
+                        _run("h" * 48, f"2026-10-{day}T10:00:00+00:00"))
+        overlay.show()
+        assert len(overlay._trend_entries()) == stats_view.TREND_RUNS
+
+    def test_the_run_in_progress_is_a_row_too(self, display, tmp_path):
+        screen, overlay = self._with_history(tmp_path)
+        for note in screen._timeline.notes[:6]:
+            screen._matcher._set_state(note, MatchType.HIT)
+        overlay.show()
+        labels = [e.run.label for _, e in overlay._trend_entries()]
+        assert "this run, not saved yet" in labels
+
+
+class TestTheTrendPicture:
+
+    def _overlay(self, tmp_path, marks_by_day):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        for day, marks in enumerate(marks_by_day):
+            runs.append(screen._song_path,
+                        _run(marks, f"2026-09-0{day + 1}T10:00:00+00:00"))
+        screen._stats.show()
+        screen._stats.mode = "trend"
+        return screen, screen._stats
+
+    def _cells(self, overlay, row_h=10, width=120):
+        rows = overlay._trend_entries()
+        _, measures = overlay._bars_of_notes()
+        cols = stats_view.trend_columns(len(measures), width)
+        overlay._trend_cols = cols
+        return rows, cols, overlay._trend_surface(rows, cols, row_h)
+
+    def test_a_bar_played_right_is_the_hit_colour(self, display, tmp_path):
+        _, overlay = self._overlay(tmp_path, ["h" * 48, "h" * 48])
+        _, cols, grid = self._cells(overlay)
+        x, w = cols[3]
+        assert grid.get_at((x + w // 2, 4))[:3] == stats_view.heat(1.0)
+
+    def test_a_bar_missed_outright_is_the_miss_colour(self, display, tmp_path):
+        marks = list("h" * 48)
+        marks[4:8] = "mmmm"          # all four notes of bar 1
+        _, overlay = self._overlay(tmp_path, ["".join(marks)] * 2)
+        _, cols, grid = self._cells(overlay)
+        x, w = cols[1]
+        assert grid.get_at((x + w // 2, 4))[:3] == stats_view.heat(0.0)
+
+    def test_a_bar_nobody_reached_is_blank(self, display, tmp_path):
+        # Blank, not a zero: a 0 % there would say the player got it wrong.
+        _, overlay = self._overlay(tmp_path, ["h" * 8 + "." * 40] * 2)
+        _, cols, grid = self._cells(overlay)
+        x, w = cols[6]
+        assert grid.get_at((x + w // 2, 4))[:3] == \
+            tuple(stats_view.get_theme().lane_bg_even[:3])
+
+    def test_a_bar_nothing_could_check_is_drained(self, display, tmp_path):
+        marks = list("h" * 48)
+        marks[4:8] = "HHHH"
+        _, overlay = self._overlay(tmp_path, ["".join(marks)] * 2)
+        _, cols, grid = self._cells(overlay)
+        x, w = cols[1]
+        assert grid.get_at((x + w // 2, 4))[:3] == \
+            tuple(stats_view.unsure(stats_view.heat(1.0))[:3])
+        # ...and it still counts: the drained hit is a hit-coloured cell.
+        assert grid.get_at((x + w // 2, 4))[:3] != stats_view.heat(0.0)
+
+    def test_the_grid_is_built_once_and_blitted_after_that(self, display,
+                                                           tmp_path):
+        # Rows times bars is a couple of thousand cells, and this display has
+        # had to move a loop out of the frame three times already.
+        _, overlay = self._overlay(tmp_path, ["h" * 48] * 2)
+        rows, cols, first = self._cells(overlay)
+        again = overlay._trend_surface(rows, cols, 10)
+        assert again is first
+
+    def test_a_different_run_builds_a_different_grid(self, display, tmp_path):
+        _, overlay = self._overlay(tmp_path, ["h" * 48] * 2)
+        rows, cols, first = self._cells(overlay)
+        other = [(i, stats_view.Entry(run=runs.Run(notes="m" * 48,
+                                                   note_count=48),
+                                      title="x", detail=""))
+                 for i, _ in rows]
+        assert overlay._trend_surface(other, cols, 10) is not first
+
+    def test_it_really_reaches_the_window(self, display, tmp_path):
+        # A picture nothing blits is a feature that ships doing nothing.
+        _, overlay = self._overlay(tmp_path, ["h" * 48] * 2)
+        surface = pygame.Surface((1280, 800))
+        overlay.draw(surface)
+        wanted = stats_view.heat(1.0)
+        found = sum(1 for x in range(0, 1280, 4) for y in range(0, 800, 4)
+                    if surface.get_at((x, y))[:3] == wanted)
+        assert found > 20
+
+    def test_a_tab_with_no_bar_lines_says_so(self, display, tmp_path):
+        song = Timeline([NoteEvent(timestamp_ms=0.0, duration_ms=100.0,
+                                   midi_note=40, string=1, fret=0)],
+                        SongMetadata(title="t", tempo=120))
+        screen = _screen(song, tmp_path)
+        runs.append(screen._song_path, _run("h", "2026-09-01T10:00:00+00:00"))
+        screen._stats.show()
+        screen._stats.mode = "trend"
+        surface = pygame.Surface((1280, 800))
+        screen._stats.draw(surface)      # must not raise, and must say why
+        assert screen._stats._trend_grid_rect is None
+
+    def test_one_evening_draws_its_single_row(self, display, tmp_path):
+        """Not refused: one row says which bars went wrong tonight, and the
+        trend fills in underneath it. Refusing it would make the picture
+        appear out of nowhere on the second run."""
+        _, overlay = self._overlay(tmp_path, ["h" * 48])
+        surface = pygame.Surface((1280, 800))
+        overlay.draw(surface)
+        assert overlay._trend_grid_rect is not None
+        assert len(overlay._trend_rows) == 1
+
+    def test_a_song_with_no_saved_run_says_so(self, display, tmp_path):
+        screen = _screen(_song(), tmp_path)
+        screen._stats.show()
+        screen._stats.mode = "trend"
+        surface = pygame.Surface((1280, 800))
+        screen._stats.draw(surface)
+        assert screen._stats._trend_grid_rect is None
+        assert screen._stats._trend_rows == []
+
+
+class TestPractisingFromTheTrend:
+
+    def _overlay(self, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        marks = list("h" * 48)
+        marks[4] = marks[5] = "m"
+        for day in range(2):
+            runs.append(screen._song_path,
+                        _run("".join(marks), f"2026-09-0{day + 1}T10:00:00+00:00"))
+        screen._stats.show()
+        screen._stats.handle_event(_key(pygame.K_t))
+        surface = pygame.Surface((1280, 800))
+        screen._stats.draw(surface)
+        return screen, screen._stats
+
+    def _drag(self, overlay, x0, x1, y):
+        overlay.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, button=3, pos=(x0, y)))
+        overlay.handle_event(pygame.event.Event(
+            pygame.MOUSEMOTION, pos=(x1, y)))
+        overlay.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONUP, button=3, pos=(x1, y)))
+
+    def test_entering_the_trend_puts_the_cursor_on_a_real_run(self, display,
+                                                              tmp_path):
+        _, overlay = self._overlay(tmp_path)
+        assert overlay.cursor in [i for i, _ in overlay._trend_entries()]
+
+    def test_right_dragging_the_bars_sets_the_loop_over_them(self, display,
+                                                             tmp_path):
+        screen, overlay = self._overlay(tmp_path)
+        grid = overlay._trend_grid_rect
+        cols = overlay._trend_cols
+        y = grid.y + 4
+        self._drag(overlay, grid.x + cols[2][0] + 1,
+                   grid.x + cols[4][0] + 1, y)
+        assert screen._loop_enabled
+        assert screen._loop_start_ms == pytest.approx(2 * BAR_MS)
+        assert screen._loop_end_ms == pytest.approx(5 * BAR_MS)
+
+    def test_and_waits_rather_than_playing(self, display, tmp_path):
+        # *"Loop setzen, hinspringen, warten."*
+        screen, overlay = self._overlay(tmp_path)
+        grid = overlay._trend_grid_rect
+        self._drag(overlay, grid.x + overlay._trend_cols[2][0] + 1,
+                   grid.x + overlay._trend_cols[3][0] + 1, grid.y + 4)
+        assert not screen._playing
+
+    def test_a_drag_leaving_the_grid_is_clamped_rather_than_lost(
+            self, display, tmp_path):
+        screen, overlay = self._overlay(tmp_path)
+        grid = overlay._trend_grid_rect
+        self._drag(overlay, grid.x + overlay._trend_cols[2][0] + 1,
+                   grid.right + 400, grid.y + 4)
+        assert screen._loop_end_ms == pytest.approx(12 * BAR_MS)
+
+    def test_clicking_a_row_stands_on_it(self, display, tmp_path):
+        _, overlay = self._overlay(tmp_path)
+        rows = overlay._trend_rows
+        index, rect = rows[-1]
+        overlay.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+        assert overlay.cursor == index
+
+    def test_up_and_down_walk_the_rows(self, display, tmp_path):
+        _, overlay = self._overlay(tmp_path)
+        first = overlay.cursor
+        overlay.handle_event(_key(pygame.K_DOWN))
+        assert overlay.cursor != first
+        overlay.handle_event(_key(pygame.K_UP))
+        assert overlay.cursor == first
+
+    def test_n_still_loops_the_cursor_row_s_mistakes(self, display, tmp_path):
+        screen, overlay = self._overlay(tmp_path)
+        overlay.handle_event(_key(pygame.K_n))
+        assert screen._loop_enabled
+        assert screen._loop_start_ms == pytest.approx(BAR_MS)
+        assert overlay.mode == "trend"

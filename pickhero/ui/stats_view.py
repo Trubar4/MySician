@@ -79,6 +79,28 @@ FRET_DIGIT_PX = 11
 #: Under one, because a label that filled the gap would touch the next one.
 LABEL_SHARE = 0.9
 
+#: How many evenings the trend shows, newest at the TOP. *"Die letzten 12,
+#: neueste oben."* Twelve is about a fortnight of practising one song, which
+#: is the span over which "is this bar getting better" has an answer -- and
+#: it is as many rows as fit on a screen at a height a date can be read at.
+TREND_RUNS = 12
+
+#: A trend row, between the smallest height that still reads as a band and
+#: the biggest that is not simply air.
+TREND_ROW_MIN = 9
+TREND_ROW_MAX = 26
+TREND_ROW_GAP = 2
+
+#: The date and the score beside each row. A constant, for the reason the
+#: list's own column is one: the grid starts where it ends, and a column that
+#: grew with the digits in it would move every bar sideways.
+TREND_LABEL_W = 170
+
+#: A bar is numbered in the ruler once its column is at least this wide; below
+#: it the numbers are thinned rather than overprinted, which is the rule the
+#: board's bar lines and the comparison's already follow.
+TREND_NUMBER_PX = 30
+
 #: At most this many bar surfaces are kept. Two in the comparison, a screenful
 #: in the list; past that the oldest go, because a bar is redrawn in a
 #: millisecond and a cache of every size ever asked for is a leak.
@@ -198,6 +220,52 @@ def size_ladder(floor: int, ceiling: int, steps: int = SIZE_STEPS) -> list[int]:
     return [floor + round(span * i / (steps - 1)) for i in range(steps)]
 
 
+def trend_columns(bars: int, width: int) -> list[tuple[int, int]]:
+    """Where each bar's column starts and how wide it is.
+
+    Tiled from rounded fractions of the width rather than from a fixed column
+    size, so the columns meet exactly and the last one ends on the right edge:
+    a grid of 150 bars at an integer width leaves a ragged margin that reads
+    as a stretch of song nobody played.
+
+    At least one pixel each, so a very long song still draws every bar --
+    blank where a bar was never judged, and blank is an answer.
+    """
+    bars = max(0, int(bars))
+    width = max(0, int(width))
+    if not bars or not width:
+        return []
+    edges = [round(i * width / bars) for i in range(bars + 1)]
+    return [(edges[i], max(1, edges[i + 1] - edges[i])) for i in range(bars)]
+
+
+def _mix(a, b, share: float) -> tuple[int, int, int]:
+    return tuple(int(round(a[i] + (b[i] - a[i]) * share)) for i in range(3))
+
+
+def heat(share: float) -> tuple[int, int, int]:
+    """A cell's colour, from the share of its notes that were not missed.
+
+    Through the palette's own three feedback colours -- red at nothing, the
+    close yellow halfway, green at everything -- so a cell reads the same way
+    a note does and nothing new has to be learnt. A RAMP rather than bands,
+    because a band needs a threshold and there is nothing to fit one against:
+    the run history starts the day it ships.
+    """
+    theme = get_theme()
+    share = max(0.0, min(1.0, float(share)))
+    if share <= 0.5:
+        return _mix(theme.feedback_miss, theme.feedback_close, share * 2.0)
+    return _mix(theme.feedback_close, theme.feedback_hit, (share - 0.5) * 2.0)
+
+
+def trend_row_height(rows: int, room: int) -> int:
+    """How tall a trend row may be, given the room and how many there are."""
+    rows = max(1, int(rows))
+    each = int(room) // rows - TREND_ROW_GAP
+    return max(TREND_ROW_MIN, min(TREND_ROW_MAX, each))
+
+
 def _display_surface(w: int, h: int) -> pygame.Surface:
     """A blank surface already in the display's pixel format.
 
@@ -237,7 +305,7 @@ class StatsOverlay:
         self._screen = screen
         self._font = font
         self.open = False
-        self.mode = "list"           # "list" or "compare"
+        self.mode = "list"           # "list", "compare" or "trend"
         self.cursor = 0
         self.first = 0
         self.sort = "date"
@@ -265,6 +333,17 @@ class StatsOverlay:
         self._nest_at = -1
         self._nest_note = ""
         self._note_bars: tuple[list[int], list] | None = None
+        # The trend: one grid surface, built when the runs or the room change
+        # and blitted after that. Rows times bars is a couple of thousand
+        # fills, and this display has had to move a loop out of the frame
+        # three times already.
+        self._trend_grid: pygame.Surface | None = None
+        self._trend_key: tuple | None = None
+        self._trend_rows: list[tuple[int, pygame.Rect]] = []
+        self._trend_cols: list[tuple[int, int]] = []
+        self._trend_grid_rect: pygame.Rect | None = None
+        self._trend_from_bar: int | None = None
+        self._trend_to_bar: int | None = None
 
     # -- opening and closing ------------------------------------------------
 
@@ -286,6 +365,8 @@ class StatsOverlay:
         self.selected = []
         self.cursor = self.first = 0
         self._bars.clear()
+        self._trend_grid = None
+        self._trend_key = None
         self._nest_of = ""
         self._nest_at = -1
         self._nest_note = ""
@@ -392,10 +473,25 @@ class StatsOverlay:
             self.close()
             return True
         if key == pygame.K_ESCAPE:
-            if self.mode == "compare":
+            if self.mode in ("compare", "trend"):
                 self.mode = "list"
             else:
                 self.close()
+            return True
+        if key == pygame.K_t:
+            # The trend is the one question the list cannot answer, and the
+            # key that opens it closes it again -- from the comparison too,
+            # because "is this bar getting better" is asked while looking at
+            # a bar that went wrong.
+            self.mode = "list" if self.mode == "trend" else "trend"
+            if self.mode == "trend":
+                # The cursor decides whose mistakes N walks, and the trend
+                # shows only real evenings -- so a cursor left on "best ever"
+                # would highlight no row at all and answer about a run that
+                # is not in the picture.
+                rows = [index for index, _ in self._trend_entries()]
+                if rows and self.cursor not in rows:
+                    self.cursor = rows[0]
             return True
         if key == pygame.K_n:
             # In both modes, because the question is the same one: a list
@@ -405,6 +501,16 @@ class StatsOverlay:
             # Shift tested first, because an `if` chain is read in order and
             # a shifted key placed after its unshifted twin is never reached.
             self._go_to_nest(drill=shift_held(event))
+            return True
+        if self.mode == "trend":
+            # Only the cursor moves here. There is nothing to zoom: the grid
+            # is the WHOLE song by construction -- a trend showing half of it
+            # could not answer which bar is getting better.
+            rows = [index for index, _ in self._trend_rows]
+            if key in (pygame.K_DOWN, pygame.K_UP) and rows:
+                at = rows.index(self.cursor) if self.cursor in rows else 0
+                step = 1 if key == pygame.K_DOWN else -1
+                self.cursor = rows[max(0, min(at + step, len(rows) - 1))]
             return True
         if self.mode == "list":
             if key == pygame.K_DOWN:
@@ -485,6 +591,9 @@ class StatsOverlay:
                             self.mode = "compare"
                         return
             return
+        if self.mode == "trend":
+            self._trend_mouse(event)
+            return
         self._compare_mouse(event)
 
     def _compare_mouse(self, event) -> None:
@@ -528,6 +637,124 @@ class StatsOverlay:
             return                  # a right click is also how a mouse is put down
         self.close()
         self._screen.take_passage(min(first, last), max(first, last))
+
+    # -- the trend: is this bar getting better ------------------------------
+
+    def _trend_entries(self) -> list[tuple[int, Entry]]:
+        """The rows of the trend: real runs of this song, newest FIRST.
+
+        In time order whatever the list is sorted by. "Evenings down" only
+        means something chronologically, and a grid sorted by score would
+        read as a trend that improved and then collapsed.
+
+        The two pretend runs are left out: they are not evenings. "Best ever"
+        is every evening's peak at once and "frequent errors" is a rule about
+        all of them, so a row of either in a picture about time would be
+        claiming a date it does not have.
+        """
+        rows = [(index, entry) for index, entry in enumerate(self._entries)
+                if entry.run.kind == "run" and entry.comparable]
+        rows.sort(key=lambda pair: pair[1].run.started, reverse=True)
+        return rows[:TREND_RUNS]
+
+    def _trend_surface(self, rows, cols, row_h: int) -> pygame.Surface:
+        """The whole grid, built once and blitted after that.
+
+        Twelve rows over a hundred and fifty bars is two thousand cells, and
+        this display has had to move a loop out of the frame three times --
+        the chord blocks, the note heads and the tab page. Keyed by the
+        VERDICTS rather than by the runs, because the list is rebuilt whenever
+        it is sorted and two runs with the same verdicts draw the same grid.
+        """
+        bars, _ = self._bars_of_notes()
+        width = cols[-1][0] + cols[-1][1] if cols else 1
+        height = len(rows) * (row_h + TREND_ROW_GAP)
+        key = (tuple(entry.run.notes for _, entry in rows),
+               width, row_h, len(cols), get_theme_name())
+        if self._trend_key == key and self._trend_grid is not None:
+            return self._trend_grid
+        theme = get_theme()
+        surface = _display_surface(max(1, width), max(1, height))
+        surface.fill(theme.bg)
+        for slot, (_, entry) in enumerate(rows):
+            y = slot * (row_h + TREND_ROW_GAP)
+            scored = runs_mod.bar_scores(entry.run.notes, bars)
+            for bar, (x, w) in enumerate(cols):
+                found = scored.get(bar)
+                if found is None:
+                    # A bar with nothing judged in it stays BLANK: nobody
+                    # reached it, or it holds no notes of this track. A zero
+                    # there would say the player got it wrong.
+                    surface.fill(theme.lane_bg_even, (x, y, w, row_h))
+                    continue
+                right, judged, checked = found
+                colour = heat(right / judged)
+                if not checked:
+                    # Nothing in this bar stood behind its verdict -- a strum
+                    # credited without a window, or strikes the detector could
+                    # make nothing of. It still counts; the colour says how
+                    # much the app could check, which is the same drain the
+                    # three views already apply to one note.
+                    colour = unsure(colour)
+                surface.fill(colour, (x, y, w, row_h))
+        self._trend_key = key
+        self._trend_grid = surface
+        return surface
+
+    def _trend_mouse(self, event) -> None:
+        """Click a row to stand on it; right-drag the bars to practise them.
+
+        The same two gestures as everywhere else in this overlay, over the
+        axis this picture has: the grid's x is BARS and not time, so a drag
+        marks the bars it crossed rather than a number of milliseconds -- and
+        the bars are what a loop is set in anyway.
+        """
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for index, rect in self._trend_rows:
+                if rect.collidepoint(event.pos):
+                    self.cursor = index
+                    return
+            return
+        grid = self._trend_grid_rect
+        if grid is None:
+            return
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+            if grid.collidepoint(event.pos):
+                at = self._bar_at(event.pos[0])
+                self._trend_from_bar = self._trend_to_bar = at
+        elif event.type == pygame.MOUSEMOTION and self._trend_from_bar is not None:
+            self._trend_to_bar = self._bar_at(event.pos[0])
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 3:
+            first, last = self._trend_from_bar, self._trend_to_bar
+            self._trend_from_bar = self._trend_to_bar = None
+            if first is None or last is None:
+                return
+            self._take_bars(min(first, last), max(first, last))
+
+    def _bar_at(self, x: int) -> int:
+        """Which bar the pointer is over, clamped to the song.
+
+        Clamped rather than refused, because a drag does not stop at an edge
+        the hand cannot feel -- the same reason the comparison measures its
+        drag against the first bar whatever the mouse is over.
+        """
+        grid = self._trend_grid_rect
+        count = max(1, len(self._trend_cols))
+        if grid is None or grid.width <= 0:
+            return 0
+        share = (x - grid.x) / grid.width
+        return max(0, min(count - 1, int(share * count)))
+
+    def _take_bars(self, first: int, last: int) -> None:
+        """Loop the bars that were dragged over, go there, and wait."""
+        _, measures = self._bars_of_notes()
+        if not measures or first >= len(measures):
+            return
+        last = min(last, len(measures) - 1)
+        start, end, where = self._nest_span(first, last)
+        self.close()
+        self._screen.take_passage(start, end)
+        self._screen.say(f"Loop set over {where} - SPACE plays it")
 
     # -- walking the places it went wrong -----------------------------------
 
@@ -855,6 +1082,8 @@ class StatsOverlay:
                             w - 2 * PANEL_PAD, h - 2 * PANEL_PAD)
         if self.mode == "compare":
             self._draw_compare(surface, panel)
+        elif self.mode == "trend":
+            self._draw_trend(surface, panel)
         else:
             self._draw_list(surface, panel)
 
@@ -988,8 +1217,180 @@ class StatsOverlay:
                 "No runs recorded yet — play the song and leave it",
                 True, theme.hud_text), (x, y))
         foot = ("SPACE or click picks two · ENTER compares · S sorts · "
-                "N loops the next mistake · Shift+N drills it · ESC closes")
+                "T is the trend over evenings · N loops the next mistake · "
+                "Shift+N drills it · ESC closes")
         self._blit_foot(surface, panel, x, panel.right - 12 - x, foot)
+
+    def _draw_trend(self, surface: pygame.Surface,
+                    panel: pygame.Rect) -> None:
+        """Bars across, evenings down, newest at the top.
+
+        *"Wird Takt 42 besser?"* -- which neither of the two pretend runs can
+        answer: "best ever" keeps only the peak of every evening and
+        "frequent errors" only what is still wrong today. Read a COLUMN here
+        and the answer is the picture: red at the bottom going green towards
+        the top is a passage that was learnt, and a column red all the way up
+        is the one to drill.
+        """
+        theme = get_theme()
+        title = self._font("consolas", 20)
+        small = self._font("arial", 13)
+        tiny = self._font("arial", 12)
+        rows = self._trend_entries()
+        x = panel.x + 12
+        width = panel.width - 24
+        y = panel.y + 10
+        meta = self._screen._timeline.metadata
+        head = f"Trend — {meta.title or 'this song'}"
+        surface.blit(title.render(head, True, theme.hud_text), (x, y))
+        y += title.get_height() + 4
+        _, measures = self._bars_of_notes()
+        if not rows or not measures:
+            # Two different nothings, said apart. A tab with no bar lines has
+            # no columns to draw and never will; a song nobody has finished
+            # has no row yet. A single sentence for both would send the
+            # player looking in the wrong place.
+            #
+            # ONE evening is not refused: a single row says which bars went
+            # wrong tonight, which is worth having on its own, and the trend
+            # fills in underneath it as the evenings accumulate. Refusing it
+            # would make the picture appear out of nowhere on the second run.
+            why = ("This tab has no bar lines, so there are no columns to "
+                   "compare" if not measures else
+                   "No run of this track is saved yet — play it and leave it")
+            surface.blit(small.render(self.fit(small, why, width), True,
+                                      theme.hud_text), (x, y))
+            pygame.draw.rect(surface, theme.lane_line,
+                             pygame.Rect(panel.x, panel.y, panel.width,
+                                         (y - panel.y) + 60), 1)
+            self._trend_rows = []
+            self._trend_grid_rect = None
+            self._blit_foot(surface, pygame.Rect(panel.x, panel.y, panel.width,
+                                                 (y - panel.y) + 60),
+                            x, width, "T or ESC goes back to the list")
+            return
+        surface.blit(tiny.render(
+            self.fit(tiny, "each column is one bar of the song, newest "
+                           "evening on top — read a column downwards", width),
+            True, theme.hud_accent), (x, y))
+        y += tiny.get_height() + 8
+
+        grid_x = x + TREND_LABEL_W
+        grid_w = max(1, panel.right - 12 - grid_x)
+        ruler_h = tiny.get_height() + 3
+        foot_h = tiny.get_height() * 2 + 14
+        room = panel.bottom - y - ruler_h - foot_h
+        row_h = trend_row_height(len(rows), room)
+        self._trend_cols = trend_columns(len(measures), grid_w)
+        grid = self._trend_surface(rows, self._trend_cols, row_h)
+
+        # The ruler sits ABOVE the grid, because that is where the eye is
+        # when it has found a column worth reading. Numbered as densely as
+        # the digits allow and no denser -- the fault the board's own bar
+        # lines and the comparison's were both thinned for.
+        self._draw_trend_ruler(surface, grid_x, y, tiny)
+        y += ruler_h
+
+        label_font = self._font("arial", max(9, min(13, row_h - 4)))
+        self._trend_rows = []
+        for slot, (index, entry) in enumerate(rows):
+            row_y = y + slot * (row_h + TREND_ROW_GAP)
+            rect = pygame.Rect(x, row_y, width, row_h)
+            self._trend_rows.append((index, rect))
+            colour = theme.hud_accent if index == self.cursor else theme.hud_text
+            when = entry.title
+            overall, _, _ = strip.split_percentages(entry.run.counts())
+            score = "" if overall is None else f"{overall:.0f}%"
+            n_w = label_font.size(score)[0] if score else 0
+            surface.blit(label_font.render(
+                self.fit(label_font, when, TREND_LABEL_W - 20 - n_w),
+                True, colour), (x, row_y + max(0, (row_h - label_font.get_height()) // 2)))
+            if score:
+                surface.blit(
+                    label_font.render(score, True, colour),
+                    (grid_x - 14 - n_w,
+                     row_y + max(0, (row_h - label_font.get_height()) // 2)))
+        surface.blit(grid, (grid_x, y),
+                     (0, 0, grid_w, len(rows) * (row_h + TREND_ROW_GAP)))
+        for index, rect in self._trend_rows:
+            if index == self.cursor:
+                # Drawn AFTER the grid, or the blit covers it. N acts on this
+                # row, so which one it is has to be visible at a glance --
+                # the same outline the list draws round its own cursor.
+                pygame.draw.rect(surface, theme.hud_accent,
+                                 rect.inflate(6, 4), 1)
+        grid_rect = pygame.Rect(grid_x, y, grid_w,
+                                len(rows) * (row_h + TREND_ROW_GAP)
+                                - TREND_ROW_GAP)
+        self._trend_grid_rect = grid_rect
+        pygame.draw.rect(surface, theme.lane_line, grid_rect, 1)
+        self._draw_trend_mark(surface, grid_rect)
+        y = grid_rect.bottom + 6
+
+        # Round what is in it, not round the room there is. Same rule as the
+        # list and the comparison, both of which were fixed for it.
+        used = (y - panel.y) + foot_h
+        panel = pygame.Rect(panel.x, panel.y, panel.width,
+                            max(140, min(panel.height, used)))
+        pygame.draw.rect(surface, theme.lane_line, panel, 1)
+        foot = (f"{len(rows)} run{'' if len(rows) == 1 else 's'} over "
+                f"{len(measures)} bars · click a row then N to loop its "
+                "mistakes · right-drag the bars to practise them · "
+                "T or ESC back to the list")
+        self._blit_foot(surface, panel, x, width, foot)
+
+    def _draw_trend_ruler(self, surface: pygame.Surface, grid_x: int,
+                          y: int, font) -> None:
+        """Bar numbers over the grid, thinned until they fit.
+
+        Numbered from 1, the way a player counts and the way every other bar
+        number in this app is written -- a column nobody can name is a column
+        nobody can loop.
+        """
+        theme = get_theme()
+        cols = self._trend_cols
+        if not cols:
+            return
+        each = cols[0][1]
+        every = 1 if each >= TREND_NUMBER_PX else \
+            max(1, -(-TREND_NUMBER_PX // max(1, each)))
+        for bar, (x, _) in enumerate(cols):
+            if bar % every:
+                continue
+            drawn = font.render(str(bar + 1), True, theme.hud_text)
+            surface.blit(drawn, (grid_x + x + 1, y))
+
+    def _draw_trend_mark(self, surface: pygame.Surface,
+                         rect: pygame.Rect) -> None:
+        """The bars being dragged over, and the loop in force.
+
+        Without the second, the key that sets a loop shows only where the
+        playhead landed -- and how far the passage REACHES is the thing being
+        chosen. The same pair the comparison draws, over bars instead of ms.
+        """
+        cols = self._trend_cols
+        if not cols:
+            return
+        theme = get_theme()
+        first, last = self._trend_from_bar, self._trend_to_bar
+        if first is None and self._screen._loop_enabled:
+            _, measures = self._bars_of_notes()
+            inside = [m.index for m in measures
+                      if self._screen._loop_start_ms <= m.start_ms
+                      < self._screen._loop_end_ms]
+            if inside:
+                first, last = min(inside), max(inside)
+        if first is None or last is None:
+            return
+        low, high = min(first, last), max(first, last)
+        if low >= len(cols):
+            return
+        high = min(high, len(cols) - 1)
+        x0 = cols[low][0]
+        x1 = cols[high][0] + cols[high][1]
+        shade = pygame.Surface((max(1, x1 - x0), rect.height), pygame.SRCALPHA)
+        shade.fill(theme.loop_region)
+        surface.blit(shade, (rect.x + x0, rect.y))
 
     def _draw_compare(self, surface: pygame.Surface,
                       panel: pygame.Rect) -> None:
@@ -1044,7 +1445,8 @@ class StatsOverlay:
         foot = (f"+/- zoom ({self.zoom + 1}/{ZOOM_STEPS}) · "
                 f"UP/DOWN bar size ({self.size + 1}/{len(ladder)}) · "
                 f"LEFT/RIGHT move — showing {seen} · "
-                "right-drag or N marks a passage · Shift+N drills it · ESC back")
+                "right-drag or N marks a passage · Shift+N drills it · "
+                "T is the trend · ESC back")
         self._blit_foot(surface, panel, x, width, foot)
 
     def _blit_foot(self, surface: pygame.Surface, panel: pygame.Rect,

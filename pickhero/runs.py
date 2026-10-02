@@ -317,6 +317,51 @@ def error_nests(notes: str, bars, bridge: int = NEST_BRIDGE_BARS
     return out
 
 
+def bar_scores(notes: str, bars) -> dict[int, tuple[int, int, int]]:
+    """How each bar went, as `{bar: (right, judged, checked)}`.
+
+    The arithmetic behind the trend: *"wird Takt 42 besser"*, which neither
+    "best ever" nor "frequent errors" can answer -- one keeps only the peak
+    and the other only today. A grid of bars across and evenings down answers
+    it by reading a column, and this is what fills one cell.
+
+    Takes the verdict string and the bar number of every note -- integers and
+    nothing else, so it is tested without a timeline and without a screen,
+    exactly as `error_nests` is.
+
+    - **`judged`** is every note that got a verdict at all. A bar with none
+      is simply ABSENT, so a bar nobody reached and a bar with no notes in
+      it read the same way: blank. Inventing a 0 % for either would say the
+      player got it wrong.
+    - **`right`** is the judged notes that are not a miss. A CLOSE counts as
+      right for the same reason it is not an error anywhere else in this
+      file: it is the correct note played off the beat, and the timing
+      percentage is what answers for that.
+    - **A DRAINED miss still counts against the bar**, which is where this
+      parts company with `is_error`. The two answer different questions.
+      `is_error` asks what the player can act on, so a verdict nothing stood
+      behind abstains -- sending somebody to practise a bar on the strength
+      of a strike the detector could make nothing of would be convicting on
+      absence of evidence. This asks how the bar SCORED, and the score on
+      screen counts a drained miss in the misses (`counts()` does, and the
+      percentage under the song is built on it). A trend that read the two
+      differently would disagree with the number beside it.
+    - **`checked`** is the judged notes something really stood behind. It
+      changes no share; it says how much of the cell the app could verify,
+      so the picture can be drained rather than claim more than it knows.
+    """
+    out: dict[int, tuple[int, int, int]] = {}
+    for i, char in enumerate(notes):
+        if i >= len(bars):
+            break
+        if char == NOTHING:
+            continue
+        right, judged, checked = out.get(bars[i], (0, 0, 0))
+        out[bars[i]] = (right + (0 if char.lower() == MISS else 1),
+                        judged + 1,
+                        checked + (1 if char.islower() else 0))
+    return out
+
 def merge_files(mine_path, theirs_path) -> int:
     """Pull the other machine's runs into this tab's file. Never raises.
 

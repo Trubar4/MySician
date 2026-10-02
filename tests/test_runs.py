@@ -331,3 +331,55 @@ class TestSayingWhyTheRowIsMissing:
             history = self._runs(*notes)
             assert (runs.common_errors(history) is None) == bool(
                 runs.why_no_errors(history))
+
+
+class TestHowEachBarWent:
+    """*"Wird Takt 42 besser?"* -- the arithmetic behind the trend, on
+    strings, with no timeline and no screen.
+
+    It deliberately does NOT agree with `error_nests` about a drained miss,
+    and that is the thing worth pinning: one asks what the player can act on
+    and the other how the bar scored.
+    """
+
+    def test_a_bar_is_the_share_of_its_notes_that_were_not_missed(self):
+        # bar 0: hit, close, miss -> two of three
+        scored = runs.bar_scores("hcm", [0, 0, 0])
+        assert scored[0] == (2, 3, 3)
+
+    def test_a_close_counts_as_right(self):
+        # The right note off the beat is what the timing percentage answers
+        # for -- counting it as a mistake here would paint most of a run red.
+        assert runs.bar_scores("cc", [0, 0])[0] == (2, 2, 2)
+
+    def test_a_bar_nobody_reached_is_absent_rather_than_zero(self):
+        # Blank is an answer; a 0 % would say the player got it wrong.
+        scored = runs.bar_scores("hh..", [0, 0, 1, 1])
+        assert 1 not in scored
+
+    def test_a_bar_past_the_end_of_the_run_is_absent(self):
+        assert runs.bar_scores("hh", [0, 0, 1, 1]) == {0: (2, 2, 2)}
+
+    def test_a_drained_miss_still_counts_against_the_bar(self):
+        # Where this parts company with `is_error`: `counts()` puts "M" in the
+        # misses and the percentage under the song is built on that, so a
+        # trend that read it the other way would contradict the number beside
+        # it.
+        assert runs.bar_scores("M", [0])[0] == (0, 1, 0)
+        assert not runs.is_error("M")
+
+    def test_a_drained_hit_counts_for_it(self):
+        assert runs.bar_scores("H", [0])[0] == (1, 1, 0)
+
+    def test_checked_counts_only_what_something_stood_behind(self):
+        right, judged, checked = runs.bar_scores("hhHH", [0, 0, 0, 0])[0]
+        assert (right, judged, checked) == (4, 4, 2)
+
+    def test_the_share_agrees_with_the_run_as_a_whole(self):
+        # One bar holding the whole song has to read what the run reads.
+        notes = "hcmHCM.h"
+        bars = [0] * len(notes)
+        right, judged, _ = runs.bar_scores(notes, bars)[0]
+        counted = runs.Run(notes=notes).counts()
+        assert judged == counted["total"]
+        assert right == counted["hits"] + counted["close"]
