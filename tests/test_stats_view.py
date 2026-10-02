@@ -1165,6 +1165,46 @@ class TestShiftNDrillsTheNest:
         assert screen._drill is None
         assert screen._loop_enabled
 
+    def _evenings(self, tmp_path, marks_per_day):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        for day, marks in enumerate(marks_per_day):
+            runs.append(screen._song_path,
+                        _run(marks, f"2026-09-0{day + 1}T10:00:00+00:00"))
+        screen._stats.show()
+        screen._stats.cursor = next(
+            i for i, e in enumerate(screen._stats._entries)
+            if e.run.kind == "run")
+        return screen, screen._stats
+
+    def test_it_says_how_often_that_passage_has_gone_clean(self, display,
+                                                           tmp_path):
+        """The one thing the ladder could not say about itself: whether two
+        clean passes is a formality here or an evening."""
+        wrong = list("h" * 48)
+        wrong[4] = "m"                      # bar 1 goes wrong on two evenings
+        right = list("h" * 48)
+        # The newest evening last, and it is one that still goes wrong --
+        # the cursor opens on it, and a run with no mistakes has no nest for
+        # N to walk.
+        _, overlay = self._evenings(
+            tmp_path, ["".join(right), "".join(wrong), "".join(wrong)])
+        overlay.handle_event(_key(pygame.K_n, mod=pygame.KMOD_LSHIFT))
+        assert "clean in 1 of 3 runs" in overlay._nest_note
+
+    def test_the_plain_key_says_it_too(self, display, tmp_path):
+        wrong = list("h" * 48)
+        wrong[4] = "m"
+        _, overlay = self._evenings(tmp_path, ["".join(wrong)] * 2)
+        overlay.handle_event(_key(pygame.K_n))
+        assert "clean in 0 of 2 runs" in overlay._nest_note
+
+    def test_one_run_is_not_a_rate(self, display, tmp_path):
+        # The same floor "frequent errors" refuses below.
+        _, overlay = self._evenings(tmp_path, ["h" * 4 + "m" + "h" * 43])
+        overlay.handle_event(_key(pygame.K_n, mod=pygame.KMOD_LSHIFT))
+        assert "clean in" not in overlay._nest_note
+
     def test_it_says_it_is_drilling(self, display, tmp_path):
         screen, overlay = self._with_errors(tmp_path)
         overlay.handle_event(_key(pygame.K_n, mod=pygame.KMOD_LSHIFT))
@@ -1219,6 +1259,21 @@ class TestTheTrendArithmetic:
     def test_the_heat_is_clamped(self, display):
         assert stats_view.heat(-5.0) == stats_view.heat(0.0)
         assert stats_view.heat(9.0) == stats_view.heat(1.0)
+
+    def test_a_row_names_the_speed_it_was_played_at(self):
+        """A bar goes green at 70 % exactly as it does at 100, so the column
+        cannot say whether the passage got easier or was slowed down."""
+        slow = runs.Run(notes="hhhh", tempo_percent=70)
+        assert stats_view.trend_row_label(slow) == ("70%", "100%")
+
+    def test_full_speed_says_nothing(self):
+        # "100 %" on every row is the wallpaper this screen was cut down to
+        # remove: it is what a song opens at.
+        pace, _ = stats_view.trend_row_label(runs.Run(notes="hhhh"))
+        assert pace == ""
+
+    def test_a_run_nothing_judged_has_no_score_rather_than_a_zero(self):
+        assert stats_view.trend_row_label(runs.Run(notes="....")) == ("", "")
 
     def test_a_row_is_never_thinner_than_it_can_be_read_at(self):
         assert stats_view.trend_row_height(12, 20) == stats_view.TREND_ROW_MIN
@@ -1476,6 +1531,26 @@ class TestPractisingFromTheTrend:
         overlay.handle_event(pygame.event.Event(
             pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
         assert overlay.cursor == index
+
+    def test_the_speed_really_reaches_the_window(self, display, tmp_path):
+        """A caveat nothing blits is a caveat nobody reads."""
+        song = _song()
+        screen = _screen(song, tmp_path)
+        runs.append(screen._song_path,
+                    runs.make("h" * 48, 60.0, 70, 0,
+                              started="2026-09-01T10:00:00+00:00"))
+        screen._stats.show()
+        screen._stats.handle_event(_key(pygame.K_t))
+        surface = pygame.Surface((1280, 800))
+        screen._stats.draw(surface)
+        wanted = tuple(stats_view.get_theme().feedback_streak[:3])
+        found = sum(1 for x in range(0, 300) for y in range(0, 400)
+                    if surface.get_at((x, y))[:3] == wanted)
+        # Antialiased type, so only the core of each stroke is the exact
+        # colour -- a handful of pixels is the whole of "70%". What is
+        # asserted is that it is THERE and in the streak colour, which no
+        # other thing in that corner is drawn in.
+        assert found > 0
 
     def test_up_and_down_walk_the_rows(self, display, tmp_path):
         _, overlay = self._overlay(tmp_path)

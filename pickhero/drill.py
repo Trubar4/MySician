@@ -121,3 +121,37 @@ def count(marks: str) -> tuple[int, int]:
     judged = sum(1 for c in marks if c != runs.NOTHING)
     wrong = sum(1 for c in marks if runs.is_error(c))
     return wrong, judged
+
+
+def clean_runs(passes) -> tuple[int, int]:
+    """(clean, reached) over several passes at one passage.
+
+    *"Wie demanding sind zwei saubere Durchgänge wirklich?"* -- the honest
+    answer at the time this shipped was that nothing had been measured,
+    because the run history starts the day it ships. It does not any more:
+    the player's own evenings are stored per note, so the same rule that
+    judges a drill pass can be run over every one of them and say how often
+    this passage has in fact been played clean.
+
+    - **The rule is `count` and nothing else**, so what the drill demands and
+      what the history reports are the same question. Two readers of one rule
+      is how they come to disagree, and here that would be a number that
+      quietly contradicts the ladder beside it.
+    - **A run that never reached the passage does not vote**, the way it does
+      not vote in "frequent errors": a note nobody got to is evidence of
+      neither, and counting it in the denominator would make every passage at
+      the end of a song look impossible.
+    - **This measures, it does not decide.** `CLEAN_PASSES` stays at two; what
+      changes is that the player can see whether two is trivial or brutal for
+      the bars in front of him, which is the thing a constant nobody has
+      fitted most needs beside it.
+    """
+    clean = reached = 0
+    for marks in passes:
+        wrong, judged = count(marks)
+        if not judged:
+            continue
+        reached += 1
+        if not wrong:
+            clean += 1
+    return clean, reached

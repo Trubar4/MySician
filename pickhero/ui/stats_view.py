@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 import pygame
 
+from pickhero import drill as drill_mod
 from pickhero import runs as runs_mod
 from pickhero.ui import strip
 from pickhero.ui.keys import shift_held
@@ -91,10 +92,10 @@ TREND_ROW_MIN = 9
 TREND_ROW_MAX = 26
 TREND_ROW_GAP = 2
 
-#: The date and the score beside each row. A constant, for the reason the
-#: list's own column is one: the grid starts where it ends, and a column that
-#: grew with the digits in it would move every bar sideways.
-TREND_LABEL_W = 170
+#: The date, the speed and the score beside each row. A constant, for the
+#: reason the list's own column is one: the grid starts where it ends, and a
+#: column that grew with the digits in it would move every bar sideways.
+TREND_LABEL_W = 200
 
 #: A bar is numbered in the ruler once its column is at least this wide; below
 #: it the numbers are thinned rather than overprinted, which is the rule the
@@ -257,6 +258,26 @@ def heat(share: float) -> tuple[int, int, int]:
     if share <= 0.5:
         return _mix(theme.feedback_miss, theme.feedback_close, share * 2.0)
     return _mix(theme.feedback_close, theme.feedback_hit, (share - 0.5) * 2.0)
+
+
+def trend_row_label(run) -> tuple[str, str]:
+    """What to write beside one trend row: the speed it was played at, and
+    how it scored.
+
+    **The speed is the half the grid cannot show.** A bar goes green at 70 %
+    exactly as it does at 100, so a column reading better upwards says
+    nothing about whether the passage got easier or the player simply slowed
+    it down -- and the drill moves the speed by itself, which makes that the
+    commonest case rather than a rare one. The run has carried
+    `tempo_percent` since the day it was stored; nothing new is measured.
+
+    **Said only where it is news.** Full speed is what a song opens at, so a
+    "100 %" on every row is the wallpaper this screen was cut down to remove.
+    """
+    overall, _, _ = strip.split_percentages(run.counts())
+    pace = int(getattr(run, "tempo_percent", 100) or 100)
+    return ("" if pace == 100 else f"{pace}%",
+            "" if overall is None else f"{overall:.0f}%")
 
 
 def trend_row_height(rows: int, room: int) -> int:
@@ -820,6 +841,35 @@ class StatsOverlay:
         end = notes[last].timestamp_ms + notes[last].duration_ms
         return start, end, f"{format_ms(start)}-{format_ms(end)}"
 
+    def _how_it_has_gone(self, first: int, last: int) -> str:
+        """How often these bars have been played clean, over the stored runs.
+
+        **The one thing the ladder could not say about itself.** `CLEAN_PASSES`
+        is two and nothing had been fitted against -- the run history starts
+        the day it ships -- so the demand sat there with no way to tell whether
+        two clean passes at 70 % is a formality or an evening. The evenings are
+        on disk now, judged per note, and the drill's own rule run over them
+        answers it before a note is played.
+
+        It MEASURES rather than decides: the constant is untouched, and what
+        changes is that the number is beside it.
+
+        Empty under two runs that reached the passage, because one run is not
+        a rate -- the same floor "frequent errors" refuses below.
+        """
+        bars, _ = self._bars_of_notes()
+        inside = [i for i, bar in enumerate(bars) if first <= bar <= last]
+        if not inside:
+            return ""
+        clean, reached = drill_mod.clean_runs(
+            "".join(entry.run.notes[i] for i in inside
+                    if i < len(entry.run.notes))
+            for entry in self._entries
+            if entry.run.kind == "run" and entry.comparable)
+        if reached < 2:
+            return ""
+        return f"clean in {clean} of {reached} runs"
+
     def _go_to_nest(self, drill: bool = False) -> None:
         """Set the loop over the next place this run went wrong, and wait.
 
@@ -850,6 +900,11 @@ class StatsOverlay:
             # Only the position moves: the zoom is the player's.
             seen = self.window()
             self.view_from_ms = (start + end) / 2.0 - (seen[1] - seen[0]) / 2.0
+        # How this passage has gone before, said at the moment the player is
+        # deciding whether to work on it -- and, for the drill, the only thing
+        # that says whether two clean passes is a formality here.
+        seen = self._how_it_has_gone(first, last)
+        seen = f" ({seen})" if seen else ""
         if drill:
             # The same passage, walked up the ladder instead of merely
             # looped. `start_drill` sets the loop itself, through the very
@@ -857,12 +912,12 @@ class StatsOverlay:
             # what marking a passage means.
             self._screen.start_drill(start, end, where)
             self._nest_note = (f"{self._nest_at + 1} of {len(self._nests)}: "
-                               f"drilling {where} - SPACE plays it")
+                               f"drilling {where}{seen} - SPACE plays it")
         else:
             self._screen.take_passage(start, end)
             self._nest_note = (f"{self._nest_at + 1} of {len(self._nests)}: "
                                f"{where}, {wrong} note{'' if wrong == 1 else 's'} "
-                               "wrong - SPACE plays the loop")
+                               f"wrong{seen} - SPACE plays the loop")
         self._screen.say(self._nest_note)
 
     # -- the bars -----------------------------------------------------------
@@ -1298,18 +1353,25 @@ class StatsOverlay:
             rect = pygame.Rect(x, row_y, width, row_h)
             self._trend_rows.append((index, rect))
             colour = theme.hud_accent if index == self.cursor else theme.hud_text
-            when = entry.title
-            overall, _, _ = strip.split_percentages(entry.run.counts())
-            score = "" if overall is None else f"{overall:.0f}%"
-            n_w = label_font.size(score)[0] if score else 0
-            surface.blit(label_font.render(
-                self.fit(label_font, when, TREND_LABEL_W - 20 - n_w),
-                True, colour), (x, row_y + max(0, (row_h - label_font.get_height()) // 2)))
+            text_y = row_y + max(0, (row_h - label_font.get_height()) // 2)
+            pace, score = trend_row_label(entry.run)
+            # Right to left from the grid's edge: the score, then the speed it
+            # was played at. The speed is in the STREAK colour rather than the
+            # row's own, because it is a caveat about the colours to its right
+            # and not another reading of them.
+            right = grid_x - 14
             if score:
+                right -= label_font.size(score)[0]
+                surface.blit(label_font.render(score, True, colour),
+                             (right, text_y))
+            if pace:
+                right -= label_font.size(pace)[0] + 8
                 surface.blit(
-                    label_font.render(score, True, colour),
-                    (grid_x - 14 - n_w,
-                     row_y + max(0, (row_h - label_font.get_height()) // 2)))
+                    label_font.render(pace, True, theme.feedback_streak),
+                    (right, text_y))
+            surface.blit(label_font.render(
+                self.fit(label_font, entry.title, max(10, right - 8 - x)),
+                True, colour), (x, text_y))
         surface.blit(grid, (grid_x, y),
                      (0, 0, grid_w, len(rows) * (row_h + TREND_ROW_GAP)))
         for index, rect in self._trend_rows:

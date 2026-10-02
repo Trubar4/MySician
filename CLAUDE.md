@@ -5749,6 +5749,11 @@ Red at the bottom going green towards the top is a passage that was learnt; a co
   sending somebody to practise a bar on the strength of a strike the detector could make nothing of is convicting on absence of evidence.
   `bar_scores` asks how the bar SCORED, and `counts()` puts `M` in the misses -- the percentage under the song is built on exactly that. A
   trend that read the two differently would contradict the number printed beside it on the same row.
+- **The row names the SPEED it was played at, and that is the half the grid cannot show.** A bar goes green at 70 % exactly as it does at
+  100, so a column reading better upwards says nothing about whether the passage got easier or was simply slowed down -- and the drill moves
+  the speed by itself, which makes that the commonest case rather than a rare one. `tempo_percent` has been stored with every run since the
+  day runs were stored; nothing new is measured. It is drawn in the STREAK colour because it is a caveat about the colours beside it and not
+  another reading of them, and **said only where it is news**: "100 %" on every row is the wallpaper this screen was cut down to remove.
 - **The rows are in time order whatever the list is sorted by.** "Evenings down" only means something chronologically; sorted by score the
   grid would read as a player who improved and then collapsed. The two pretend runs are left out for the same reason: neither has a date.
 - **ONE evening is drawn rather than refused.** A single row says which bars went wrong tonight, which is worth having on its own, and the
@@ -5769,6 +5774,27 @@ Red at the bottom going green towards the top is a passage that was learnt; a co
 **And the help page overflowed again when three lines were added to it.** The stats overlay's keys had been living inside the "Playing" block,
 which was already within 5 px of a whole column -- the same failure the drill hit a week ago, fixed the same way: its own block. A page that
 paginates is not a page that may be filled without measuring.
+
+## The Ladder Can Now Measure Its Own Demand
+
+The drill shipped with *"two clean passes"* and this file said in as many words that it had not been fitted against anything, because the run
+history starts the day it ships. That was honest and it left the player holding a constant with nothing beside it: **is two clean passes at
+70 % a formality on these bars, or an evening?**
+
+The evenings are on disk now, judged per note, so the drill's own rule run over them answers it before a note is played. `Shift+N` and the
+plain `N` both say it: *"drilling bars 12-14 (clean in 1 of 3 runs) - SPACE plays it"*.
+
+- **It MEASURES rather than decides.** `CLEAN_PASSES` is untouched at two. What changed is that the number nobody had fitted now has the
+  player's own history printed next to it -- which is this file's rule about a percentage being readable only beside what it is a percentage
+  of, applied to a constant.
+- **One rule, two readers by sharing it.** `drill.clean_runs` is `drill.count` in a loop, so what the ladder demands of a pass and what the
+  history reports about one are the same question. Two implementations is how they come to disagree, and here the disagreement would be a
+  number quietly contradicting the ladder beside it.
+- **A run that never reached the passage does not vote**, the same floor "frequent errors" refuses below -- and under two runs that reached it
+  nothing is said at all, because one run is not a rate.
+- **Said where the decision is made.** The sentence goes in the overlay's own footer and the status note, at the moment the player is choosing
+  whether to work on that passage. The drill's HUD line already carries `1 of 2 clean`; a second count of the same shape beside it would be
+  two numbers that look alike and mean different things.
 
 ## What NOT To Do
 

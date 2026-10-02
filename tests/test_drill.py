@@ -280,3 +280,38 @@ class TestTheLoopTurnDrivesIt:
         assert screen._drill.restore_tempo == 1.0
         screen._toggle_loop()
         assert screen._tempo_factor == 1.0
+
+
+class TestHowOftenThisPassageHasGoneClean:
+    """*"Zwei saubere Durchgänge ist nicht gegen deine echte Historie
+    geprüft."*  It is now -- not by moving the constant, but by running the
+    drill's own rule over the evenings already on disk.
+    """
+
+    def test_it_counts_the_passes_with_no_mistake(self):
+        assert drill_mod.clean_runs(["hhh", "hmh", "hhh"]) == (2, 3)
+
+    def test_a_run_that_never_reached_it_does_not_vote(self):
+        # The same floor "frequent errors" refuses below: a note nobody got
+        # to is evidence of neither.
+        assert drill_mod.clean_runs(["hhh", "...", "hmh"]) == (1, 2)
+
+    def test_a_drained_verdict_is_still_a_judged_note(self):
+        # A pass where everything was credited to a strum reached the bars,
+        # and `is_error` says a drained miss is not a mistake to act on --
+        # which is the rule the ladder itself uses, so they agree by sharing
+        # it rather than by being written twice.
+        assert drill_mod.clean_runs(["HHH"]) == (1, 1)
+
+    def test_nothing_at_all_is_no_rate(self):
+        assert drill_mod.clean_runs([]) == (0, 0)
+        assert drill_mod.clean_runs(["....", "...."]) == (0, 0)
+
+    def test_it_is_the_same_rule_the_ladder_judges_a_pass_by(self):
+        # Whatever marks are put in, a passage counted clean here is exactly
+        # one the drill would have accepted.
+        for marks in ("hhh", "hmh", "hch", "hHh", "hMh", "...", "h.m", "cCc"):
+            wrong, judged = drill_mod.count(marks)
+            clean, reached = drill_mod.clean_runs([marks])
+            assert reached == (1 if judged else 0)
+            assert clean == (1 if judged and not wrong else 0)
