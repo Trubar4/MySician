@@ -68,10 +68,39 @@ MIN_CONFIDENCE = 0.75
 # octave up is the detector being wrong, not the string being wrong.
 LOCKED_CENTS = 900.0
 
-# The needle's smoothing. A raw YIN reading on a decaying low string jitters
-# by a few cents, which makes a needle that never settles and cannot be
-# tuned against.
+# The needle's smoothing, and it is NOT what made the tuner look restless --
+# measured, because the obvious fix was the wrong one. Run over the six
+# open-string reference takes through the real detector, with the needle
+# sampled once a frame the way this screen samples it, the value moves
+# **0.08 cents from frame to frame in the median and 0.22 in the 90th
+# percentile** -- under two pixels on a 760 px needle. A slower smoothing
+# would have been a fix for nothing. What the player was seeing is the
+# reading APPEARING AND VANISHING, which is the two chapters below.
 SMOOTHING = 0.25
+
+# How far a FOLDED reading may sit from the string the player named. Half a
+# semitone: a fold is only ever offered for a reading nothing else explains,
+# and a fold that lands further off than this is not that string's harmonic
+# series, it is a coincidence.
+FOLD_CENTS = 50.0
+
+# What a subharmonic reading may be multiplied by. Measured rather than
+# chosen: on a hot, clean take of the low E (-11.5 dB peak) aubio's yinfast
+# returns **a third of the pitch on 301 of 301 confident readings** -- 27.3 Hz
+# against 82.4 -- so the low E of a guitar is, through this detector, simply
+# not readable directly at all. Two is in the list for the ordinary octave
+# error. Four and five are NOT, and the reason is arithmetic rather than
+# taste: A2 over four is 27.5 Hz and E2 over three is 27.47, two cents apart,
+# so a reading there cannot be attributed to a string by any rule.
+FOLD_MULTIPLES = (2, 3)
+
+# Below this the pitch stops being worth reading -- the same knee the playing
+# screen's QUIET_PEAK_DB sits at, measured the same way. Normalising the
+# reference takes to -12 dBFS takes the B string from 18 % of readings usable
+# to 88 % and the high e from 13 % to 71 %, with nothing else changed. So a
+# tuner that says nothing about the level is a tuner that looks broken on a
+# signal the player could simply turn up.
+QUIET_PEAK_DB = -38.0
 
 
 def nearest_string(freq: float, tuning: dict[int, int]) -> tuple[int, float] | None:
@@ -125,6 +154,10 @@ class TunerMenuScreen:
         #: far out for any of them to own it.
         self._locked: int | None = None
         self._last_heard = 0.0
+        #: The loudest level heard while a pitch was coming through.
+        self._peak_db = -120.0
+        #: (when, Hz) of the last confident reading no string owned.
+        self._stray: tuple[float, float] | None = None
         self._start_capture()
 
     @staticmethod
@@ -174,6 +207,8 @@ class TunerMenuScreen:
         self._steady_since.clear()
         self._done.clear()
         self._active = None
+        # Measured against targets that are no longer the question.
+        self._stray = None
 
     def update(self) -> None:
         if self._capture is None:
@@ -182,9 +217,22 @@ class TunerMenuScreen:
         freq, confidence = self._capture.get_tuner_data(raw=True)
         if freq <= 0 or confidence < MIN_CONFIDENCE:
             return
+        # The loudest thing heard while a pitch was coming through, which is
+        # "while playing". No decay: a tuner is up for half a minute and the
+        # question is whether the signal is ever strong enough, not what it
+        # is doing this instant.
+        self._peak_db = max(self._peak_db, self._capture.get_signal_db())
         found = self._reading(float(freq))
         if found is None:
+            # A confident reading that no string owns. Until now this was
+            # simply dropped, and the screen went on saying "Play a string"
+            # while the player was playing one -- which is this project's
+            # own definition of a feature that cannot be told from a broken
+            # one. It is remembered so the screen can say what it heard and
+            # what to press.
+            self._stray = (time.perf_counter() * 1000.0, float(freq))
             return
+        self._stray = None
         string, cents = found
         now = time.perf_counter() * 1000.0
         self._last_heard = now
@@ -213,7 +261,37 @@ class TunerMenuScreen:
         if freq <= 0 or target <= 0:
             return None
         cents = 1200.0 * math.log2(freq / target)
-        return (self._locked, cents) if abs(cents) <= LOCKED_CENTS else None
+        if abs(cents) <= LOCKED_CENTS:
+            return (self._locked, cents)
+        return self._folded(freq, target)
+
+    def _folded(self, freq: float, target: float) -> tuple[int, float] | None:
+        """A subharmonic of the NAMED string, read as that string.
+
+        The low E of a guitar comes back from yinfast as a third of its
+        pitch, on every confident reading of a clean take -- so without this
+        the bottom string of every tuning cannot be tuned at all, by the
+        automatic path or by naming it. Multiplying the reading back up is
+        exact: if the detector found the period of three cycles then
+        `1200*log2(3f/target)` is the cents of the fundamental to the last
+        decimal, so nothing is estimated and no bias is introduced.
+
+        **Only with the string named**, and that is the whole safety
+        argument rather than a convenience. A reading of 27.5 Hz is the low
+        E over three AND the A string over four, two cents apart -- and the
+        second really happens: on a weak take in the reference set the A
+        string reads a quarter of its pitch on 237 consecutive readings, so
+        an automatic fold would have shown "E" to a player holding the A
+        string and had them tune it down a fifth. A run-length rule does not
+        separate those two cases (237 against 301) and was dropped for
+        changing nothing. What separates them is the player saying which
+        string is in their hand.
+        """
+        for mult in FOLD_MULTIPLES:
+            cents = 1200.0 * math.log2(freq * mult / target)
+            if abs(cents) <= FOLD_CENTS:
+                return (self._locked, cents)
+        return None
 
     def _lock(self, string: int) -> None:
         """Name a string, or let go of the one already named.
@@ -255,6 +333,8 @@ class TunerMenuScreen:
             self._done.clear()
             self._active = None
             self._locked = None
+            self._stray = None
+            self._peak_db = -120.0
         return None
 
     # -- drawing -------------------------------------------------------
@@ -293,6 +373,38 @@ class TunerMenuScreen:
             return "Hold it…", note
         return ("Too low — tighten" if cents < 0
                 else "Too high — loosen"), note
+
+    #: How long a stray reading is still news.
+    STRAY_MS = 2000.0
+
+    def notes(self) -> list[str]:
+        """What the screen has to say beyond the needle, newest first.
+
+        Two states that used to be invisible, and both of them look exactly
+        like a tuner that does not work:
+
+        - a confident reading no string owns, which on the bottom string of
+          any tuning is EVERY reading (see `_folded`), and
+        - a signal too weak for the pitch to be worth reading, which on the
+          reference takes costs the B string 70 points of its readings.
+
+        Returned rather than drawn, so the rule is testable without a
+        screen and the words are in one place.
+        """
+        out: list[str] = []
+        if self._stray is not None and self._locked is None:
+            when, freq = self._stray
+            if time.perf_counter() * 1000.0 - when <= self.STRAY_MS:
+                out.append(
+                    f"Heard {freq:.0f} Hz — no string of {self.tuning_name} "
+                    f"is near it. Press 1-6 to say which string you are "
+                    f"playing.")
+        if self._peak_db > -120.0 and self._peak_db < QUIET_PEAK_DB:
+            out.append(
+                f"Input is quiet ({self._peak_db:.0f} dB) — turn the "
+                f"interface up. The pitch stops being reliable below "
+                f"{QUIET_PEAK_DB:.0f} dB.")
+        return out
 
     def render(self, surface: pygame.Surface) -> None:
         """One string, big, and six pips for the rest.
@@ -389,12 +501,23 @@ class TunerMenuScreen:
                                   else t.signal_cold)
             surface.blit(number, (x - number.get_width() // 2, pips_y + 40))
 
+        # Everything between the pips and the shortcut line stacks UPWARD
+        # from h-80 on measured heights, so a second line pushes the block
+        # up instead of through the one above it -- the rule the playing
+        # screen's footer, its sync panel and its completion overlay have
+        # each been fixed for once already.
+        tail: list[tuple[str, tuple[int, int, int]]] = []
         if self._locked is not None:
             note = midi_to_name(self.tuning[self._locked])
-            told = small.render(
-                f"Listening only to string {self._locked} ({note}) — "
-                f"{self._locked} again for automatic", True, t.hud_accent)
-            surface.blit(told, (w // 2 - told.get_width() // 2, h - 80))
+            tail.append((f"Listening only to string {self._locked} ({note}) — "
+                         f"{self._locked} again for automatic", t.hud_accent))
+        for line in self.notes():
+            tail.append((line, t.feedback_close))
+        y = h - 80
+        for text, colour in reversed(tail):
+            surf = small.render(text, True, colour)
+            y -= surf.get_height() + 4
+            surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
 
         done = small.render(
             f"{len(self._done)} of 6 in tune   |   1-6: pick the string   "

@@ -40,12 +40,12 @@ class TestTheListNeverReachesTheBottomBlock:
             w, h = size
             hint_font = _get_font("arial", 16)
             block_top = h - screen._bottom_height(w, hint_font)
-            # The last row, plus the whole "more" line drawn under it --
-            # not the 4 px of leading it used to be checked with, which let
-            # the arrow itself overlap while every row was clear.
+            # The last row. The "more" line that used to be drawn under it
+            # is gone -- the scrollbar on the right says the same thing --
+            # so the rows get that height back and nothing is drawn below
+            # them but the block along the bottom.
             last_row = (screen._list_top
-                        + screen._visible_items * screen._item_h
-                        + 4 + hint_font.get_height())
+                        + screen._visible_items * screen._item_h)
             assert last_row <= block_top, (
                 f"{w}x{h}: the list runs {last_row - block_top} px into the "
                 f"lines along the bottom")

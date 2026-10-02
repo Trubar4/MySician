@@ -2328,6 +2328,18 @@ class PlayingScreen:
             self._toggle_chord_mode()
         elif event.key == pygame.K_j:
             self._toggle_chord_verify()
+        elif event.key == pygame.K_g and shift_held(event):
+            # The tuner, on the tuning this song is being PLAYED in. Tested
+            # BEFORE the plain G, because an `if` chain is read in order and
+            # a shifted key placed after its unshifted twin is never reached
+            # -- which is how the chord view once shipped inert.
+            #
+            # G rather than a letter of its own because every single letter
+            # on this screen is taken: G is what opens the calibration
+            # wizard from the song list -- the app's other "set the guitar
+            # up" screen -- and the tuner already takes G as its own way
+            # back out.
+            return "tuner"
         elif event.key == pygame.K_g:
             self._cycle_timing_window()
         elif event.key == pygame.K_TAB:
@@ -7250,6 +7262,8 @@ class PlayingScreen:
                  + (" (auto)" if self._auto_gate else "")),
                 ("G: hit window — how far off the beat still counts",
                  f"±{int(self._config.timing_window_ms)} ms"),
+                ("Shift+G: tuner, on the tuning this song is played in",
+                 " ".join(tuning_notes(self._timeline.metadata.tuning))),
                 ("K: measure your timing offset     Shift+K: back to 0",
                  f"{int(self._config.audio_latency_offset_ms):+d} ms"),
                 ",/.: nudge that offset by 10 ms",
@@ -7880,6 +7894,31 @@ class PlayingScreen:
         """Stop audio capture."""
         if self._audio_capture is not None:
             self._audio_capture.stop()
+
+    def release_input(self) -> str:
+        """Give the input device up, and say what this song is tuned to.
+
+        The tuner opens an `AudioCapture` of its own, and `start()` builds a
+        NEW stream and a new ring every time -- on a capture already running
+        the old stream is never closed and goes on writing into the same
+        ring, so the sample counter advances at twice real time and every
+        strike after that is stamped into the future. That is not a taste
+        decision about whether the song should keep running: two streams on
+        one device is a fault this project has already paid for once, so the
+        song PAUSES and the stream is closed.
+
+        Nothing has to be undone on the way back. The next space bar reaches
+        `_resume_audio`, which opens a fresh stream when there is none --
+        the ordinary resume path, unchanged.
+
+        The letters are the tuning being PLAYED, not the one the tab was
+        written in: a Drop C song transposed up two is played on a guitar in
+        Drop D, and that is the guitar in the player's hands.
+        """
+        if self._playing:
+            self.toggle_play()
+        self._stop_audio()
+        return " ".join(tuning_notes(self._timeline.metadata.tuning))
 
     def current_run(self) -> runs.Run:
         """This sitting as the matcher judged it: one character per note.

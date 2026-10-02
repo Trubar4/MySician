@@ -530,6 +530,17 @@ class App:
             self._load_song(self._current_song_path, result[1][0],
                             resume_at_ms=where, merge=result[1])
             return
+        if result == "tuner":
+            # The song keeps everything -- its position, its verdicts, its
+            # matcher -- and gives up only the input device, which the tuner
+            # needs for itself. See PlayingScreen.release_input.
+            letters = self._playing_screen.release_input()
+            song = (self._current_song_path.stem
+                    if self._current_song_path is not None else "")
+            self._tuner_menu = TunerMenuScreen(self._config, letters, song)
+            self._return_to = "playing"
+            self._state = "tuner"
+            return
         if result == "menu":
             self._playing_screen.stop_audio()      # writes the sitting
             # And the song's settings back beside the song, so copying the

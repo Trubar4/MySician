@@ -5550,6 +5550,138 @@ the one you played is something you can see, where a number on its own is not.
 imported inside the function that uses it, so nothing in the static graph reaches it and the EXE would have shipped
 without it. Named in the spec now.
 
+## The Needle Was Steady And The Bottom String Was Missing
+
+*"Das Stimmgerät ist sehr zappelig. Können wir es träger machen? Andere Stimmgeräte sind viel ruhiger."* The complaint is
+real, the diagnosis in it is not, and measuring the proposed fix first is what caught that. Run the six open-string
+reference takes through the real detector with the needle sampled once a frame the way the screen samples it:
+
+| rule | frame-to-frame movement, median | 90th percentile |
+|---|---|---|
+| raw, no smoothing at all | 0.14 ¢ | 0.37 ¢ |
+| **EMA 0.25 (what ships)** | **0.08 ¢** | **0.22 ¢ — 1.7 px on a 760 px needle** |
+| EMA 0.05 | 0.07 | 0.15 |
+| median of 15 + EMA | 0.07 | 0.18 |
+
+**A slower needle would have been a fix for nothing.** The value barely moves. What the player is watching is the reading
+APPEARING AND VANISHING, and there are two reasons for that.
+
+**The bottom string of every tuning could not be tuned at all.** On a hot, clean take of the open low E (−11.5 dB peak)
+yinfast returns **a third of the pitch on 301 of 301 confident readings** — 27.3 Hz against 82.4. `nearest_string` rightly
+refuses it, so the needle never moved; and pressing `6` did not help either, because 27.3 against 82.4 is 1902 cents and
+`LOCKED_CENTS` is 900. Swept across every algorithm aubio offers and every window from 4096 to 16384: `yin`, `yinfast`
+and `yinfft` read it at **0–1 %** at any level. Only `fcomb` reads it (73 %), and `fcomb` sits 2–5 cents off `yinfast` on
+the five strings both can read — which a tuner whose band is ±5 cents cannot spend.
+
+- **So the reading is folded back up, and the fold is exact.** If the detector found the period of three cycles then
+  `1200·log2(3f/target)` is the fundamental's cents to the last decimal: nothing is estimated and no bias is introduced,
+  which is why this beats changing algorithm. Measured end to end through the real tuner on that take: **359 frames on
+  string 6 at −21.0 cents**, agreeing with the A at −28.9, the D at −23.8 and the G at −17.6. That guitar was flat.
+- **Only with the string NAMED, and that is the whole safety argument.** A reading of 27.5 Hz is the low E over three AND
+  the A string over four, **two cents apart** — and the second really happens: on a weak take in the reference set the A
+  string reads a quarter of its pitch on **237 consecutive** readings, so an automatic fold would show "E" to a player
+  holding the A string and have them tune it down a fifth. That is the exact harm this file already warns about for the
+  calibration's octave error.
+- **A run-length rule was built and thrown away for changing nothing.** The honest take gives a run of 301 and the
+  dishonest one a run of 237; no threshold separates them. A knob that changes nothing is a knob nobody can calibrate —
+  the reason `onset_min_interval_ms` lasted an hour.
+- **Four and five are not in the multiples**, for the arithmetic above: a reading there cannot be attributed to a string
+  by any rule at all, so the tuner says nothing rather than guessing.
+
+**And the high strings are the LEVEL, which the tuner said nothing about.** The same takes normalised to −12 dBFS, with
+nothing else changed:
+
+| | as recorded | normalised |
+|---|---|---|
+| D | 76 % of readings usable | 100 % |
+| G | 71 % | 96 % |
+| **B** (−40.8 dB peak) | **18 %** | **88 %** |
+| **high e** (−43.9 dB) | **13 %** | **71 %** |
+
+That is the knee this project already measured for the playing path — the pitch rots below −38 dB and collapses under
+−44 — and the tuner is the one screen that never mentioned it. It does now.
+
+**Both of the states that used to be invisible now have a sentence.** A confident reading no string owns said nothing at
+all, so the screen went on reading "Play a string" while the player was playing one; it names the frequency and the key
+to press. A weak input said nothing, so it looked like a tuner that does not work; it names the level and the floor.
+`notes()` returns them rather than drawing them, so the rule is tested without a screen, and they stack UPWARD on
+measured heights — the rule the footer, the sync panel and the completion overlay have each been fixed for once already.
+
+## The Tuner Inside The Song, And Why It Has To Stop The Song
+
+*"Auf Stimmgerät wechseln innerhalb eines Songs -> mit richtiger Stimmung eingestellt."* `Shift+G`, and the only part of
+it that was a decision is the letter: **every single letter a–z on the playing screen is taken**, and so is
+Shift+A/B/C/D/K/M/N/R/S/T/U/Y/Z. `G` is what opens the calibration wizard from the song list — the app's other "set the
+guitar up" screen — and the tuner already takes `G` as its own way back out. Tested BEFORE the plain `G`, because an `if`
+chain is read in order and a shifted key placed after its unshifted twin is never reached, which is how the chord view
+once shipped inert.
+
+- **It opens on the tuning being PLAYED, not the one written.** A Drop C song transposed up two is played on a guitar in
+  Drop D, and the guitar in the player's hands is what a tuner is about. The HUD has named both for months
+  (`Tuning: Drop D … (written Drop C, +2 — R)`); this takes the first.
+- **The song pauses and gives the input device up, and that is not a taste decision.** `AudioCapture.start()` builds a NEW
+  stream and a new ring every time — on a capture already running the old stream is never closed and goes on writing into
+  the same ring, so the sample counter advances at twice real time and every strike after that is stamped into the
+  future. Two streams on one device is a fault this project has already paid for once.
+- **Nothing about the run is thrown away.** It is not `stop_audio`, which writes the sitting and the run log and closes
+  the backing track; going to tune up and coming back is one run, not two. Nothing has to be undone on the way back
+  either: the next space bar reaches `_resume_audio`, which opens a fresh stream when there is none — the ordinary resume
+  path, unchanged.
+
+## The Wheel Moved A Cursor Nobody Could See
+
+*"Mit dem Mausrad kann ich zwar scrollen, aber nicht so, dass sich Songs außerhalb des Bildschirms nach oben bewegen."*
+Precisely right, and worse than it sounds. Reproduced on the real song list, 60 songs, 18 rows:
+
+```
+after wheel 1: selected   3  offset 0  first row 'Song 00'
+after wheel 6: selected  18  offset 0  first row 'Song 00'   cursor on screen: False
+```
+
+**The list never moved at all, and past row 18 the highlight left the screen**, after which the wheel went on moving a
+selection nobody could see. `_ensure_visible` is called by every key handler and was not called by the wheel's.
+
+**And the comment sitting over that handler described a rule the code never had**: *"the scroll offset is derived from
+the selection on every frame, so a wheel that only moved the view would be dragged straight back by the next redraw"*. It
+is not derived every frame; it is a stored field that only `_ensure_visible` ever writes. The handler was written against
+the documentation rather than against the code, which is a new shape of this project's oldest fault.
+
+- **A scrollbar, because he asked for one and because it answers more than the arrows did.** Not only THAT the list
+  continues but how far and in which direction. In the 60 px margin outside the list, so it never covers a song name, and
+  absent entirely when everything fits — a bar that is always there and usually full-length is a decoration.
+- **The thumb has a floor** (`SCROLLBAR_MIN_THUMB`), or at four hundred songs its true share of the track is a couple of
+  pixels and it cannot be grabbed.
+- **Dragging it moves the VIEW and leaves the cursor alone, which is the opposite of the wheel and deliberate.** A wheel
+  notch is a way of browsing WITH the cursor; dragging the bar is a way of looking somewhere else. The next arrow key
+  calls `_ensure_visible` and pulls the view back to the selection, which is what every list does. The grab records where
+  on the thumb it was taken, or the thumb jumps under the pointer on the first pixel of movement.
+- **A dragged offset is clamped in `render`.** `_ensure_visible` can never produce one past the end; a drag followed by a
+  filter or a resize can, and the list would then draw nothing at all.
+- **The "▲ more" / "▼ more" lines are gone**, because the bar says the same thing and more of it, and keeping both cost
+  something real: the top arrow was drawn 20 px above the list, which on a folder with ten tunings runs straight through
+  the chip strip, and the bottom one's reserved line was a song row.
+
+## Sorted By Hand, And "Added" Is The File's Own Time
+
+*"Kann ich eine Sortierung haben — zuletzt hinzugefügt? Ich hätte die Sortiervarianten gerne wie die Stimmungen zum
+Anklicken."* Both, on a second labelled strip under the first.
+
+- **"Added" is the file's modification time, and that is the only answer that works RETROACTIVELY.** A "first seen here"
+  field would be correct from the day it shipped and would stamp every song already in the folder with today, which is a
+  sort nobody could use on the first day. It is also the quantity the index already orders its background read by —
+  *"newest first: a file just copied in is the one being looked for"* — so there is one idea of what "new in this folder"
+  means and not two. **The price is named rather than hidden:** a song copied from the other laptop keeps its original
+  date, because that is what the file says.
+- **A file whose time cannot be read goes last and never raises.** An unreadable stat is not news, and a sort that raises
+  is a song list that does not come up — the fault `scan_files` already carries a scar for.
+- **`N` and the chips go through one setter.** The strip can never show an order the key does not produce, which is the
+  property `K` and its HUD line are held to, and the test walks `N` over the whole ladder rather than asserting any
+  wording.
+- **Both strips are labelled.** Either would be self-evident alone; two unlabelled rows of pills under each other read as
+  one strip, and "Added" beside "Drop D 20" says nothing about which question either answers.
+- **One `_draw_chips` for both**, because two copies of it is two ideas of what a chip looks like — the "four readers of
+  one plan" fault at the size of a pill.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

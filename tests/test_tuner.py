@@ -74,6 +74,9 @@ class TestTheScreen:
             def get_tuner_data(self, raw=False):
                 assert raw, "a tuner must read the pitch before the calibration"
                 return (freq, conf)
+
+            def get_signal_db(self):
+                return -12.0
         screen._capture = _Fake()
         for _ in range(times):
             screen.update()
@@ -247,6 +250,8 @@ class TestNamingTheStringYourself:
         screen._active = None
         screen._locked = None
         screen._last_heard = 0.0
+        screen._peak_db = -120.0
+        screen._stray = None
         return screen
 
     def _press(self, screen, key):
@@ -371,3 +376,141 @@ def nearest_string_of(screen, freq):
     from pickhero.ui.tuner_menu import nearest_string
     found = nearest_string(freq, screen.tuning)
     return found[0] if found else None
+
+
+class TestTheBottomStringCanBeTunedAtAll:
+    """Measured, and it could not be.
+
+    On a hot, clean take of the open low E (-11.5 dB peak) aubio's yinfast
+    returns a THIRD of the pitch -- 27.3 Hz against 82.4 -- on 301 of 301
+    confident readings. `nearest_string` rightly refuses it, so the needle
+    never moved; and naming the string did not help either, because 27.3
+    against 82.4 is 1902 cents and `LOCKED_CENTS` is 900. The bottom string
+    of every tuning was simply not tunable.
+    """
+
+    def _tuner(self, locked):
+        screen = TunerMenuScreen.__new__(TunerMenuScreen)
+        screen._config = Config()
+        screen._capture = None
+        screen._error = ""
+        screen._tuning_index = 0
+        screen._song = ""
+        screen._cents = {}
+        screen._steady_since = {}
+        screen._done = set()
+        screen._active = None
+        screen._locked = locked
+        screen._last_heard = 0.0
+        screen._peak_db = -120.0
+        screen._stray = None
+        return screen
+
+    def test_a_third_of_the_low_e_is_read_as_the_low_e(self):
+        screen = self._tuner(locked=6)
+        found = screen._reading(midi_to_freq(40) / 3.0)
+        assert found is not None
+        assert found[0] == 6
+        assert found[1] == pytest.approx(0.0, abs=0.01)
+
+    def test_and_the_cents_survive_the_fold_exactly(self):
+        """Nothing is estimated: if the detector found the period of three
+        cycles then multiplying back gives the fundamental's cents to the
+        last decimal, so a flat string reads as flat by the same amount."""
+        screen = self._tuner(locked=6)
+        flat = _cents(40, -23.5) / 3.0
+        found = screen._reading(flat)
+        assert found is not None
+        assert found[1] == pytest.approx(-23.5, abs=0.01)
+
+    def test_an_octave_low_folds_too(self):
+        screen = self._tuner(locked=5)
+        found = screen._reading(midi_to_freq(45) / 2.0)
+        assert found is not None and found[0] == 5
+
+    def test_nothing_folds_without_a_string_named(self):
+        """The whole safety argument. A reading of 27.5 Hz is the low E over
+        three AND the A string over four, two cents apart -- and the second
+        really happens: on a weak take in the reference set the A string
+        reads a quarter of its pitch on 237 consecutive readings. An
+        automatic fold would show "E" to a player holding the A string and
+        have them tune it down a fifth."""
+        screen = self._tuner(locked=None)
+        assert screen._reading(midi_to_freq(40) / 3.0) is None
+
+    def test_a_quarter_is_not_folded(self):
+        """Four is deliberately not in the multiples: A2/4 is 27.5 Hz and
+        E2/3 is 27.47, so a reading there cannot be attributed to a string
+        by any rule at all."""
+        screen = self._tuner(locked=6)
+        assert screen._reading(midi_to_freq(40) / 4.0) is None
+
+    def test_a_pitch_that_is_simply_wrong_is_still_refused(self):
+        screen = self._tuner(locked=6)
+        assert screen._reading(midi_to_freq(40) / 3.0 * 1.08) is None
+
+
+class TestItSaysWhatItCannotShow:
+    """Both of these used to be invisible, and both look exactly like a
+    tuner that does not work."""
+
+    def _screen(self, monkeypatch):
+        monkeypatch.setattr(TunerMenuScreen, "_start_capture",
+                            lambda self: None)
+        screen = TunerMenuScreen(Config())
+        screen._capture = None
+        return screen
+
+    def _hear(self, screen, freq, db=-12.0, conf=0.9, times=1):
+        class _Fake:
+            def get_tuner_data(self, raw=False):
+                return (freq, conf)
+
+            def get_signal_db(self):
+                return db
+        screen._capture = _Fake()
+        for _ in range(times):
+            screen.update()
+
+    def test_a_reading_no_string_owns_is_named(self):
+        screen = self._screen(pytest.MonkeyPatch())
+        self._hear(screen, midi_to_freq(40) / 3.0)
+        said = " ".join(screen.notes())
+        assert "27" in said and "1-6" in said
+
+    def test_and_says_nothing_once_a_string_is_named(self):
+        screen = self._screen(pytest.MonkeyPatch())
+        screen._locked = 6
+        self._hear(screen, midi_to_freq(40) / 3.0)
+        assert not any("1-6" in line for line in screen.notes())
+
+    def test_a_quiet_input_is_named(self):
+        screen = self._screen(pytest.MonkeyPatch())
+        self._hear(screen, midi_to_freq(45), db=-46.0)
+        assert any("quiet" in line for line in screen.notes())
+
+    def test_a_healthy_input_is_not(self):
+        screen = self._screen(pytest.MonkeyPatch())
+        self._hear(screen, midi_to_freq(45), db=-12.0)
+        assert not any("quiet" in line for line in screen.notes())
+
+    def test_silence_says_nothing_about_the_level(self):
+        """Nothing heard is not a quiet input, and claiming it is would put
+        a fault on screen before the player has touched the guitar."""
+        screen = self._screen(pytest.MonkeyPatch())
+        assert screen.notes() == []
+
+    def test_the_lines_do_not_overlap(self):
+        """Both at once, which is the case each was laid out without."""
+        pygame.init()
+        pygame.display.set_mode((320, 240))
+        try:
+            screen = self._screen(pytest.MonkeyPatch())
+            screen._locked = None
+            self._hear(screen, midi_to_freq(40) / 3.0, db=-46.0)
+            assert len(screen.notes()) == 2
+            surface = pygame.Surface((1280, 720))
+            screen.render(surface)      # must not raise
+        finally:
+            pygame.display.quit()
+            pygame.quit()

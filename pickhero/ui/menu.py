@@ -38,13 +38,46 @@ VISIBLE_ITEMS = 18
 #: jumped a screenful would be a second Page Down rather than a way to browse.
 WHEEL_ROWS = 3
 
-SORT_MODES = ["name_asc", "name_za", "accuracy", "last_played"]
+#: The sort orders, in the order `N` walks them and the order the chips are
+#: drawn in. "added" is the file's own modification time, which is the only
+#: answer that works RETROACTIVELY: a "first seen here" field would be
+#: correct from the day it shipped and would stamp every song already in the
+#: folder with today, which is a sort nobody could use on the first day. It
+#: is the same quantity the index already orders its background read by --
+#: *"newest first: a file just copied in is the one being looked for"* -- so
+#: there is one idea of what "new in this folder" means and not two. The
+#: price is named rather than hidden: a song copied from the other laptop
+#: keeps its original date, because that is what the file says.
+SORT_MODES = ["name_asc", "name_za", "added", "accuracy", "last_played"]
 SORT_LABELS = {
     "name_asc": "Name A-Z",
     "name_za": "Name Z-A",
+    "added": "Added",
     "accuracy": "Best %",
     "last_played": "Recent",
 }
+
+#: The scrollbar on the right of the list: the track's width, and the gap
+#: between the list's right edge and it. `list_width` is `w - 120`, so there
+#: are 60 px of margin to put it in and it never covers a song name.
+SCROLLBAR_W = 10
+SCROLLBAR_GAP = 12
+#: A thumb has to stay grabbable on a folder of hundreds, where its true
+#: share of the track would be a couple of pixels.
+SCROLLBAR_MIN_THUMB = 24
+
+
+def _file_mtime(path) -> float:
+    """When the file was last written, or 0 where that cannot be read.
+
+    Zero rather than an exception: a folder the app cannot stat is a sort
+    order that still comes out, which is the rule `scan_files` already
+    follows for a folder it cannot read at all.
+    """
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _get_font(name: str, size: int) -> pygame.font.Font:
@@ -116,6 +149,15 @@ class MenuScreen:
         #: click is tested against -- the drawing and the mouse read
         #: the same list, so they cannot disagree about where one is.
         self._tuning_chips: list[chips.Chip] = []
+        #: The sort chips, same contract.
+        self._sort_chips: list[chips.Chip] = []
+        #: The scrollbar's track and thumb, as the last frame drew them, for
+        #: the same reason: a click is tested against what is on screen.
+        self._scroll_track: pygame.Rect | None = None
+        self._scroll_thumb: pygame.Rect | None = None
+        #: How far down the thumb the drag was grabbed, so it does not jump
+        #: under the pointer on the first pixel of movement.
+        self._scroll_grab: int | None = None
         self._search_text: str = ""
         self._search_active: bool = False
         self._filtered_files: list[Path] = []
@@ -250,6 +292,11 @@ class MenuScreen:
                     return (0, -rec.best_accuracy)  # played: sort by accuracy desc
                 return (1, 0.0)  # unplayed at bottom
             self._filtered_files.sort(key=acc_key)
+        elif mode == "added":
+            # Newest first, and a file whose time cannot be read goes last
+            # rather than to the top: an unreadable stat is not news.
+            self._filtered_files.sort(
+                key=lambda p: -_file_mtime(p))
         elif mode == "last_played":
             def played_key(p: Path) -> tuple[int, str]:
                 rec = self._progress.get_best(p.stem) if self._progress else None
@@ -260,15 +307,80 @@ class MenuScreen:
             self._filtered_files.sort(key=played_key, reverse=True)
 
     def _cycle_sort(self) -> None:
-        """Advance to the next sort mode."""
-        idx = SORT_MODES.index(self._sort_mode) if self._sort_mode in SORT_MODES else 0
-        self._sort_mode = SORT_MODES[(idx + 1) % len(SORT_MODES)]
+        """Advance to the next sort mode.
+
+        `N` and the chips go through one setter, so the strip can never
+        show an order the key does not produce -- the property `K` and its
+        HUD line are held to on the playing screen.
+        """
+        idx = (SORT_MODES.index(self._sort_mode)
+               if self._sort_mode in SORT_MODES else 0)
+        self._set_sort_mode(SORT_MODES[(idx + 1) % len(SORT_MODES)])
+
+    def _set_sort_mode(self, mode: str) -> None:
+        """Sort by this, and remember it."""
+        if mode not in SORT_MODES:
+            return
+        self._sort_mode = mode
         self._sort_files()
         self._selected = 0
         self._scroll_offset = 0
         if self._config:
             self._config.sort_mode = self._sort_mode
             self._config.save()
+
+    # -- the scrollbar ----------------------------------------------------
+
+    def _scroll_press(self, pos) -> bool:
+        """A click on the bar: grab the thumb, or jump a screenful.
+
+        True when the click belonged to the bar, so a miss on the track
+        never also moves the cursor.
+        """
+        if self._scroll_track is None or self._scroll_thumb is None:
+            return False
+        if not self._scroll_track.collidepoint(pos):
+            return False
+        if self._scroll_thumb.collidepoint(pos):
+            # Grabbed where it was grabbed, or the thumb jumps under the
+            # pointer on the first pixel of movement.
+            self._scroll_grab = pos[1] - self._scroll_thumb.y
+            return True
+        # Above or below it is a page, the way every scrollbar behaves.
+        page = max(1, self._visible_items)
+        self._scroll_to(self._scroll_offset
+                        + (page if pos[1] > self._scroll_thumb.y else -page))
+        return True
+
+    def _scroll_drag(self, pos) -> None:
+        """Follow the pointer while the thumb is held."""
+        if (self._scroll_grab is None or self._scroll_track is None
+                or self._scroll_thumb is None):
+            return
+        files = len(self._display_files)
+        hidden = max(0, files - self._visible_items)
+        if hidden <= 0:
+            return
+        travel = self._scroll_track.h - self._scroll_thumb.h
+        if travel <= 0:
+            return
+        top = pos[1] - self._scroll_grab - self._scroll_track.y
+        self._scroll_to(round(top / travel * hidden))
+
+    def _scroll_to(self, offset: int) -> None:
+        """Move the VIEW, and leave the cursor where the player put it.
+
+        That is the opposite of the wheel, and deliberately: a wheel notch
+        is a way of browsing WITH the cursor, where dragging the bar is a
+        way of looking somewhere else. The next arrow key calls
+        `_ensure_visible` and pulls the view back to the selection, which is
+        what every list does.
+        """
+        hidden = max(0, len(self._display_files) - self._visible_items)
+        self._scroll_offset = max(0, min(hidden, int(offset)))
+
+    def _scroll_release(self) -> None:
+        self._scroll_grab = None
 
     def scan_files(self) -> None:
         """Scan songs directory (recursively) for GP files, and read the diary.
@@ -830,13 +942,13 @@ class MenuScreen:
         `_footer_block` on the playing screen, for the same reason.
         """
         if self._search_active:
-            return "Type to search  |  UP/DOWN or a click: leave the box, keep the filter  |  TAB or click: tuning  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+N: not new (Ctrl+Shift+N: new)  |  DEL: delete song (Ctrl+Z undo)  |  Ctrl+I: import  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
+            return "Type to search  |  UP/DOWN or a click: leave the box, keep the filter  |  TAB or click: tuning  |  click: sort  |  Shift+U: tuner (keeps the search)  |  Ctrl+M: favourite (Ctrl+Shift+M: not)  |  Ctrl+N: not new (Ctrl+Shift+N: new)  |  DEL: delete song (Ctrl+Z undo)  |  Ctrl+I: import  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  BACKSPACE: edit  |  ESC: clear  |  ENTER: select  |  UP/DOWN: navigate"
         else:
             sort_label = SORT_LABELS.get(self._sort_mode, "Name A-Z")
             tune_label = self._tuning_filter or "all"
             fav = "on" if self._favourites_only else "off"
             new_f = "on" if self._new_only else "off"
-            return f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  Ctrl+N / Ctrl+Shift+N: not new / new (Shift+N: only, {new_f})  |  TAB or a click: tuning ({tune_label})  |  R: rename  |  DEL: delete song (Ctrl+Z undo)  |  Ctrl+I: import from another PC  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  N: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
+            return f"F or /: search  |  M: favourite (Ctrl+M / Ctrl+Shift+M set / unset, Shift+M: only, {fav})  |  Ctrl+N / Ctrl+Shift+N: not new / new (Shift+N: only, {new_f})  |  TAB or a click: tuning ({tune_label})  |  R: rename  |  DEL: delete song (Ctrl+Z undo)  |  Ctrl+I: import from another PC  |  Ctrl+E: export history  |  Ctrl+C: copy screen  |  F5: reload list  |  N or a click: sort ({sort_label})  |  ENTER: select  |  O: settings  |  S: get a song (tab+sync+audio)  |  D: audio device  |  U: tuner (Shift+U while searching)  |  G: calibrate  |  T: theme  |  ESC: quit"
 
     def _bottom_height(self, w: int, hint_font) -> int:
         """How much of the window the block along the bottom edge takes.
@@ -1185,6 +1297,23 @@ class MenuScreen:
                 step = -event.y * WHEEL_ROWS
                 self._selected = max(0, min(len(files) - 1,
                                             self._selected + step))
+                # ...and the view follows it. This was missing: every key
+                # handler called it and the wheel did not, so the highlight
+                # walked down an unmoving list and off the bottom of the
+                # screen -- *"mit dem Mausrad kann ich zwar scrollen, aber
+                # nicht so, dass sich Songs nach oben bewegen"*, measured at
+                # 60 songs as offset 0 after six notches with the cursor on
+                # row 18 and invisible. The comment above described a rule
+                # the code never had.
+                self._ensure_visible()
+            return None
+
+        elif event.type == pygame.MOUSEMOTION:
+            self._scroll_drag(event.pos)
+            return None
+
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            self._scroll_release()
             return None
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -1197,10 +1326,16 @@ class MenuScreen:
             # A chip before a row: the strip sits above the list, so nothing
             # can be both, but the tuning is what this click is ABOUT and a
             # miss must not move the cursor as a side effect.
+            for chip in self._sort_chips:
+                if chip.hit(event.pos):
+                    self._set_sort_mode(chip.value)
+                    return None
             for chip in self._tuning_chips:
                 if chip.hit(event.pos):
                     self._set_tuning_filter(chip.value)
                     return None
+            if self._scroll_press(event.pos):
+                return None
             idx = self._hit_test(event.pos)
             if idx is not None and files:
                 now = pygame.time.get_ticks()
@@ -1337,8 +1472,29 @@ class MenuScreen:
         # one row on either of his screens; 1204 px at 1280, where it takes
         # two and costs six song rows. Commonest first is what makes that
         # acceptable: the wrap puts the tunings nobody has on the second row.
-        present = self._index.tunings_present(self._files)
+        # Two strips, each labelled. One of them would be self-evident on
+        # its own; two unlabelled rows of pills under each other read as one
+        # strip, and "Added" beside "Drop D 20" says nothing about which
+        # question either answers.
+        mouse = pygame.mouse.get_pos()
         chips_top = box.bottom + 8
+
+        sort_lead = hint_font.render("Sort", True, t.hud_text)
+        surface.blit(sort_lead,
+                     (box.x, chips_top + (chips.CHIP_H
+                                          - sort_lead.get_height()) // 2))
+        self._sort_chips = chips.lay_out(
+            [(m, SORT_LABELS[m]) for m in SORT_MODES],
+            lambda text: hint_font.size(text)[0],
+            left=box.x + sort_lead.get_width() + 10, top=chips_top,
+            right=w - 24)
+        self._draw_chips(surface, self._sort_chips, hint_font, mouse,
+                         lambda c: c.value == self._sort_mode)
+        chips_top = chips_top + chips.height(
+            self._sort_chips, chips_top) + chips.ROW_GAP
+
+        # Every tuning in the folder, as a chip you can click.
+        present = self._index.tunings_present(self._files)
         if len(present) < 2:
             # One tuning is not a choice, and no tuning is not a strip.
             self._tuning_chips = []
@@ -1346,32 +1502,16 @@ class MenuScreen:
             counts = self._index.tuning_counts(self._files)
             entries = [("", f"All {len(self._files)}")]
             entries += [(t, f"{tuning_label(t)} {counts[t]}") for t in present]
+            tune_lead = hint_font.render("Tuning", True, t.hud_text)
+            surface.blit(tune_lead,
+                         (box.x, chips_top + (chips.CHIP_H
+                                              - tune_lead.get_height()) // 2))
             self._tuning_chips = chips.lay_out(
                 entries, lambda text: hint_font.size(text)[0],
-                left=box.x, top=chips_top, right=w - 24)
-        mouse = pygame.mouse.get_pos()
-        for chip in self._tuning_chips:
-            rect = pygame.Rect(chip.rect)
-            on = chip.value == self._tuning_filter
-            hover = rect.collidepoint(mouse)
-            if on:
-                pygame.draw.rect(surface, t.hud_accent, rect,
-                                 border_radius=chips.CHIP_H // 2)
-            elif hover:
-                # A chip that does not react to the pointer reads as a label.
-                pygame.draw.rect(surface, t.menu_selected_bg, rect,
-                                 border_radius=chips.CHIP_H // 2)
-            pygame.draw.rect(surface,
-                             t.hud_accent if on or hover else t.hud_text,
-                             rect, width=1, border_radius=chips.CHIP_H // 2)
-            label = hint_font.render(chip.label, True,
-                                     t.menu_bg if on else t.menu_item)
-            # Clipped, because a chip wider than the room is clamped to it
-            # and its text would otherwise run over the one beside it.
-            surface.blit(label, (rect.x + chips.CHIP_PAD,
-                                 rect.y + (rect.h - label.get_height()) // 2),
-                         pygame.Rect(0, 0, max(0, chip.w - 2 * chips.CHIP_PAD),
-                                     label.get_height()))
+                left=box.x + tune_lead.get_width() + 10, top=chips_top,
+                right=w - 24)
+            self._draw_chips(surface, self._tuning_chips, hint_font, mouse,
+                             lambda c: c.value == self._tuning_filter)
 
         # The strip pushes the list down, so this cannot be the constant it
         # was -- the same fault VISIBLE_ITEMS and the footer each paid for.
@@ -1382,16 +1522,16 @@ class MenuScreen:
         # footer -- all three of which the player's screenshot has printed
         # over each other and over the songs. It is the room there is now,
         # and never more than the constant, so a tall window is unchanged.
-        # The "more" line is drawn UNDER the last row, so the rows have to
-        # leave room for the whole of it -- a 4 px allowance was all it had,
-        # and the arrow that says the list continues was then printed over
-        # the lines along the bottom on a short window. Found by the test
-        # above when the footer grew by one entry.
-        arrow_room = 4 + hint_font.get_height()
-        rows = max(3, (h - list_top - arrow_room
+        rows = max(3, (h - list_top
                        - self._bottom_height(w, hint_font)) // item_h)
         visible = min(VISIBLE_ITEMS, rows)
         self._visible_items = visible
+        # A view dragged down a long list, then filtered or the window
+        # resized, would otherwise keep an offset past the end and draw
+        # nothing at all. `_ensure_visible` can never produce one, so this
+        # only ever catches a drag.
+        self._scroll_offset = max(0, min(self._scroll_offset,
+                                         max(0, len(files) - visible)))
 
         # Empty states
         if not files:
@@ -1415,6 +1555,9 @@ class MenuScreen:
             surface.blit(msg_surf, (w // 2 - msg_surf.get_width() // 2, h // 2))
         else:
             # File list
+            self._draw_scrollbar(surface, list_left + list_width
+                                 + SCROLLBAR_GAP, list_top,
+                                 visible * item_h, len(files), visible)
             visible_end = min(self._scroll_offset + visible, len(files))
             for i in range(self._scroll_offset, visible_end):
                 y = list_top + (i - self._scroll_offset) * item_h
@@ -1486,14 +1629,14 @@ class MenuScreen:
                 text_surf = item_font.render(label, True, color)
                 surface.blit(text_surf, (list_left + star_w, y + 4))
 
-            # Scroll indicators
-            if self._scroll_offset > 0:
-                arrow = hint_font.render("▲ more", True, t.hud_text)
-                surface.blit(arrow, (w // 2 - arrow.get_width() // 2, list_top - 20))
-            if visible_end < len(files):
-                arrow = hint_font.render("▼ more", True, t.hud_text)
-                y_bottom = list_top + visible * item_h + 4
-                surface.blit(arrow, (w // 2 - arrow.get_width() // 2, y_bottom))
+            # The "▲ more" / "▼ more" lines were here and are gone: the bar
+            # on the right says the same thing and says more of it -- not
+            # only THAT the list continues but how far and in which
+            # direction. Two answers to one question is what this project
+            # keeps paying for, and these two cost something real: the top
+            # arrow was drawn 20 px above the list, which on a folder with
+            # ten tunings runs straight through the chip strip, and the
+            # bottom one's reserved line was a song row.
 
         # Controls hint. Drawn FIRST and reporting the y it starts at, so
         # everything else along the bottom stacks upward from it -- a
@@ -1547,6 +1690,70 @@ class MenuScreen:
         self._item_h = item_h
         self._list_left = list_left
         self._list_width = list_width
+
+    def _draw_scrollbar(self, surface, x: int, top: int, height: int,
+                        total: int, visible: int) -> None:
+        """The bar on the right of the list, or nothing when it all fits.
+
+        A bar that is always there and usually full-length is a decoration;
+        one that appears exactly when there is something off screen is the
+        answer to "is there more". It is drawn in the 60 px margin outside
+        the list, so it never covers a song name.
+        """
+        t = get_theme()
+        if total <= visible or height <= 0:
+            self._scroll_track = self._scroll_thumb = None
+            return
+        track = pygame.Rect(x, top, SCROLLBAR_W, height)
+        self._scroll_track = track
+        # The thumb's share of the track is the share of the list on screen,
+        # floored so it stays grabbable on a folder of hundreds -- at 400
+        # songs its true size would be a couple of pixels.
+        thumb_h = max(SCROLLBAR_MIN_THUMB,
+                      int(height * visible / total))
+        travel = height - thumb_h
+        hidden = total - visible
+        thumb_y = top + (round(travel * self._scroll_offset / hidden)
+                         if hidden > 0 else 0)
+        thumb = pygame.Rect(x, thumb_y, SCROLLBAR_W, thumb_h)
+        self._scroll_thumb = thumb
+        pygame.draw.rect(surface, t.menu_selected_bg, track,
+                         border_radius=SCROLLBAR_W // 2)
+        held = self._scroll_grab is not None
+        pygame.draw.rect(surface,
+                         t.hud_accent if held else t.hud_text, thumb,
+                         border_radius=SCROLLBAR_W // 2)
+
+    @staticmethod
+    def _draw_chips(surface, strip, font, mouse, is_on) -> None:
+        """One drawing for both strips.
+
+        Two copies of this is two ideas of what a chip looks like, which is
+        the "four readers of one plan" fault at the size of a pill.
+        """
+        t = get_theme()
+        for chip in strip:
+            rect = pygame.Rect(chip.rect)
+            on = is_on(chip)
+            hover = rect.collidepoint(mouse)
+            if on:
+                pygame.draw.rect(surface, t.hud_accent, rect,
+                                 border_radius=chips.CHIP_H // 2)
+            elif hover:
+                # A chip that does not react to the pointer reads as a label.
+                pygame.draw.rect(surface, t.menu_selected_bg, rect,
+                                 border_radius=chips.CHIP_H // 2)
+            pygame.draw.rect(surface,
+                             t.hud_accent if on or hover else t.hud_text,
+                             rect, width=1, border_radius=chips.CHIP_H // 2)
+            label = font.render(chip.label, True,
+                                t.menu_bg if on else t.menu_item)
+            # Clipped, because a chip wider than the room is clamped to it
+            # and its text would otherwise run over the one beside it.
+            surface.blit(label, (rect.x + chips.CHIP_PAD,
+                                 rect.y + (rect.h - label.get_height()) // 2),
+                         pygame.Rect(0, 0, max(0, chip.w - 2 * chips.CHIP_PAD),
+                                     label.get_height()))
 
     def _ensure_visible(self) -> None:
         """Adjust scroll offset so selected item is visible."""
