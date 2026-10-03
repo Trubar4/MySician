@@ -52,6 +52,7 @@ from pickhero.ui.colors import (
 )
 from pickhero.ui.feedback import FeedbackRenderer
 from pickhero.ui import clickable
+from pickhero.ui import help_search
 from pickhero.ui import sheet
 from pickhero.ui import strip
 from pickhero.ui.stats_view import StatsOverlay
@@ -1523,6 +1524,10 @@ class PlayingScreen:
         # Help overlay
         self._show_help: bool = False
         self._help_page: int = 0
+        #: What is typed into the help page's search, or None while the box
+        #: is shut. Empty string is a box that is open and empty, which is a
+        #: different state: the page then says what to type.
+        self._help_find: str | None = None
         self._show_timing: bool = False
         self._timing_export_note: str = ""
         self._run_log_note: str = ""
@@ -2300,6 +2305,22 @@ class PlayingScreen:
         # the selection instead of seeking through the song
         if self._track_menu_open:
             return self._handle_track_menu_event(event)
+
+        # A text box is a text box wherever it is asked about: while the help
+        # page's search owns the letters, `h` is an h and `o` is an o. The
+        # same rule the rename editor needed, and the reason it is here at
+        # the top rather than beside the help key -- every letter below this
+        # line is a shortcut.
+        if self._help_find is not None:
+            return self._help_typing(event)
+        if (self._show_help
+                and (event.key == pygame.K_SLASH or event.unicode == "/")):
+            # The character as well as the key, because a slash is Shift+7
+            # on a German keyboard and the key code is then whatever the
+            # layout happens to send -- the same three-signal lesson as
+            # `shift_held`.
+            self._help_find = ""
+            return None
 
         if event.key == pygame.K_SPACE:
             self.toggle_play()
@@ -7425,6 +7446,34 @@ class PlayingScreen:
             self._show_help = False
             self._help_page = 0
 
+    def _help_typing(self, event: pygame.event.Event):
+        """Every key while the help page's search box owns them.
+
+        ESC and ENTER both shut the box and put the pages back -- two ways
+        out because the player arrives at this screen with ESC under his
+        finger and ENTER is what a text box means by "done". Neither leaves
+        the song: ESC is the way back to the song list everywhere else, and
+        falling through to that while typing would throw the run away.
+        """
+        if event.key in (pygame.K_ESCAPE, pygame.K_RETURN):
+            self._help_find = None
+            return None
+        if event.key == pygame.K_BACKSPACE:
+            # An empty box takes one more backspace to shut, so a key held
+            # down to clear a query does not also close the search.
+            self._help_find = self._help_find[:-1] or ""
+            return None
+        ch = event.unicode
+        if ch and ch.isprintable() and ch not in ("\r", "\n", "\t"):
+            self._help_find += ch
+        return None
+
+    def help_hits(self):
+        """What the search has to show, or [] while nothing is typed."""
+        if not self._help_find:
+            return []
+        return help_search.search(self._help_find, self.help_blocks())
+
     def _help_page_count(self) -> int:
         """How many pages the help needs at the window it is drawn in."""
         h = self._last_layout.screen_h if self._last_layout else 720
@@ -7546,7 +7595,12 @@ class PlayingScreen:
                 ("TAB: choose track (M combines two)", meta.track_name or "—"),
                 ("Q: the easier reading — drops notes a lower string is "
                  "already sounding", self._simplify_help()),
-                "H: this help",
+                # On ONE line with H, deliberately. Three added lines put a
+                # block onto a second page at 1080 and the suite said so --
+                # a page that paginates is not a page that may be filled
+                # without measuring, which this project has now paid for
+                # three times.
+                "H: this help      /: search it, by key or by word",
                 ], "small"),
 
                 ("What you see", [
@@ -7676,16 +7730,8 @@ class PlayingScreen:
         One reader for three item shapes, so the test that checks every
         bound key is written down cannot disagree with what is drawn.
         """
-        out = []
-        for _, items, _ in self.help_blocks():
-            for item in items:
-                if isinstance(item, str):
-                    out.append(item)
-                elif isinstance(item[0], tuple):
-                    out.append(item[1])                 # colour swatch
-                else:
-                    out.append(f"{item[0]}   {item[1]}")
-        return out
+        return [help_search.item_text(item)
+                for _, items, _ in self.help_blocks() for item in items]
 
     def _sync_span_label(self) -> str:
         """What the automatic pass has measured, in one phrase."""
@@ -7693,6 +7739,83 @@ class PlayingScreen:
         if not points:
             return "not measured"
         return f"{points} points"
+
+    def _draw_help_item(self, surface: pygame.Surface, item, font,
+                        x: int, y: int, value_x: int) -> None:
+        """One help line: a swatch, a label with its value, or prose.
+
+        One implementation, because the pages and the search results draw
+        the same items -- and a second copy is how the two would come to
+        underline different words.
+        """
+        t = get_theme()
+        if isinstance(item, tuple) and isinstance(item[0], tuple):
+            colour, label = item
+            pygame.draw.rect(surface, colour, (x, y + 3, 13, 13),
+                             border_radius=2)
+            surface.blit(font.render(label, True, t.hud_text), (x + 20, y))
+        elif isinstance(item, tuple):
+            label, value = item
+            clickable.blit(surface, font, label, x, y, t.hud_text, self._links)
+            surface.blit(font.render(value, True, t.hud_accent),
+                         (x + value_x, y))
+        else:
+            clickable.blit(surface, font, item, x, y, t.hud_text, self._links)
+
+    def _draw_help_search(self, surface: pygame.Surface, w: int, top: int,
+                          bottom: int, fonts: dict, section_font) -> None:
+        """The search box and what it found, in place of the pages.
+
+        *"Wenn ich eine Taste eingebe, kommen die Befehle dieser Taste. Wenn
+        ich ein Wort eingebe, wie drill, kommen die Befehle dazu."*
+
+        One column rather than three: a result list is read top to bottom,
+        and three columns of unrelated lines is the page it replaces.
+        """
+        t = get_theme()
+        font, step = fonts["small"], HELP_STEP_PX["small"]
+        query = self._help_find or ""
+        hits = self.help_hits()
+
+        box = pygame.Rect(30, top, w - 60, 30)
+        pygame.draw.rect(surface, t.lane_bg_even, box, border_radius=4)
+        pygame.draw.rect(surface, t.hud_accent, box, 1, border_radius=4)
+        surface.blit(fonts["body"].render(f"/ {query}|", True, t.hud_accent),
+                     (box.left + 8, box.top + 5))
+        # What the box has found, beside the box. A count is the difference
+        # between "nothing matches that" and "keep typing", and a search
+        # that says neither looks broken on an unlucky word.
+        said = ("type a key (N, Shift+P, PgDn) or a word (drill, tempo, "
+                "stimmung)" if not query else
+                f"{len(hits)} of {len(self.help_lines())} lines"
+                if hits else "nothing on this page says that")
+        surface.blit(font.render(said, True, t.hud_text),
+                     (box.left + 8, box.bottom + 4))
+
+        y = box.bottom + 4 + step + 6
+        heading, value_x = "", 0
+        for index, hit in enumerate(hits):
+            if y + step > bottom - step:
+                surface.blit(font.render(f"+ {len(hits) - index} more - "
+                                         f"keep typing", True, t.hud_text),
+                             (30, y))
+                return
+            if hit.heading != heading:
+                heading = hit.heading
+                surface.blit(section_font.render(heading, True, t.hud_accent),
+                             (30, y))
+                y += HELP_HEADING_PX
+                # The value column is set per HEADING and over the labels
+                # that HAVE a value, exactly as the pages do it. Measured
+                # over every hit instead, one long line of prose pushed the
+                # settings four hundred pixels off to the right.
+                value_x = max(
+                    (font.size(help_search.item_label(other.item))[0]
+                     for other in hits if other.heading == heading
+                     and isinstance(other.item, tuple)
+                     and isinstance(other.item[0], str)), default=0) + 16
+            self._draw_help_item(surface, hit.item, font, 46, y, value_x)
+            y += step
 
     def _draw_help_overlay(self, surface: pygame.Surface, layout: _Layout) -> None:
         """Explain the track, the note colours, the techniques and the keys.
@@ -7725,9 +7848,20 @@ class PlayingScreen:
         page = max(0, min(self._help_page, len(pages) - 1))
 
         cx = w // 2
-        heading = "Help" if len(pages) < 2 else f"Help  {page + 1}/{len(pages)}"
+        searching = self._help_find is not None
+        heading = ("Help" if searching or len(pages) < 2
+                   else f"Help  {page + 1}/{len(pages)}")
         title_surf = title_font.render(heading, True, t.hud_accent)
         surface.blit(title_surf, (cx - title_surf.get_width() // 2, 12))
+
+        if searching:
+            self._draw_help_search(surface, w, top, bottom, fonts,
+                                   section_font)
+            hint = "ESC or ENTER closes the search"
+            width = hint_font.size(hint)[0]
+            clickable.blit(surface, hint_font, hint, cx - width // 2, h - 20,
+                           t.hud_accent, self._links, lead=True)
+            return
 
         for index, col, y in pages[page]:
             title, items, size = blocks[index]
@@ -7743,21 +7877,7 @@ class PlayingScreen:
             value_x = (max(font.size(text)[0] for text in labels) + 16
                        if labels else 0)
             for item in items:
-                if isinstance(item, tuple) and isinstance(item[0], tuple):
-                    colour, label = item
-                    pygame.draw.rect(surface, colour, (x, y + 3, 13, 13),
-                                     border_radius=2)
-                    surface.blit(font.render(label, True, t.hud_text),
-                                 (x + 20, y))
-                elif isinstance(item, tuple):
-                    label, value = item
-                    clickable.blit(surface, font, label, x, y, t.hud_text,
-                                   self._links)
-                    surface.blit(font.render(value, True, t.hud_accent),
-                                 (x + value_x, y))
-                else:
-                    clickable.blit(surface, font, item, x, y, t.hud_text,
-                                   self._links)
+                self._draw_help_item(surface, item, font, x, y, value_x)
                 y += step
 
         # Not `lead`: this page is prose as well as keys, and its badge

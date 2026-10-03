@@ -2781,6 +2781,41 @@ it to run a script from — but `_search_folders` looks **beside the executable*
 no rebuild at all. `missing()` says that sentence when frozen and `python tools/fetch_ffmpeg.py` when not. Telling somebody to `pip
 install` inside an .exe is advice they cannot act on.
 
+### The Download Says The Tuning. There Is No Author And No Date
+
+*"Kannst du mir beim Herunterladen mit Songsterr noch mehr Details geben? Stimmung, Autor, Datum"* -- one of those three is a fact, and the
+other two were measured rather than guessed at before anything was built.
+
+**The tabs carry no author.** Over the player's eight files the GPIF `<Score>` block has `Words`, `Music`, `WordsAndMusic` and `Copyright`
+**empty in all eight**, and `Tabber` says "Songsterr Downloader" -- the tool, not a person. The same story as the fingering (0 of 6193 notes)
+and the chord names (0 of 5601 beats): the field exists and transcribers leave it blank.
+
+**Nothing carries a date.** Not the Guitar Pro format, and not the cached Songsterr replies, which keep `songId, revisionId, title, artist,
+entries` and whose entries hold `videoId, feature, status, points`.
+
+So the screen says what is known:
+
+- **The tuning, read out of the file that just landed** (`describe_tab`), through the same `describe_file` the song list uses -- one
+  implementation, so the two can never disagree about what a song is tuned to. The NAME and the letters together ("Drop C (C G C F A D)"),
+  where the song list shows the letters alone: a row is one of fifty and this is read once, about one song.
+- **The written length in m:ss and the bar count.** That is the number he compares against YouTube before concluding he has the wrong tab, and
+  it is the WRITTEN length -- a song is as long as its bars, not as long as its last note. Cross-checked against this file's own recorded
+  numbers: Thunder 4:40 in 91 bars, What's Up 4:55 in 80, Bon Jovi 4:27.
+- **The bar map's count BESIDE the tab's**, where they differ. A map whose count does not match is refused later, and the two numbers together
+  are what says why.
+- **`aiGenerated`, which is the closest thing their API has to an author** -- their own transcription from the audio against one somebody
+  uploaded. Read only where the reply really carries a bool: **an absent field is not a person.**
+- **The revision, and whether it is the newest.** The walk back for a revision that still has a file often lands on an older edit, and what
+  landed is then not what Songsterr shows on its own site.
+- **A date, where the server sends one.** `Last-Modified` on the file itself, said as what it is -- when the FILE last changed on their server,
+  not when anybody transcribed it. `download_tab` returns it; empty where there is none, never the local file's own time, which is the moment
+  of the download and tells the player nothing.
+
+**And what cannot be answered from here gets a tool rather than a guess.** songsterr.com is unreachable from the machine this was written on,
+so whether the live reply carries more than the four fields `save_cache` keeps is not knowable here. `tools/songsterr_fields.py` prints every
+key of every reply -- meta, each revision of the walk, the video points -- on a machine that can reach it. If an author or a date is in there
+it goes on the screen; if it is not, that is the answer and the screen stops promising one.
+
 ### DEL Deletes The Song, Not The File
 
 *"Ich brauche eine Möglichkeit Tabs inkl. allem (außer History) zu löschen."*
@@ -4997,6 +5032,37 @@ is keyed by KEY and not by COMBINATION: `"a": "A: audio"` covers `Shift+A` as fa
 `Shift+C`, `Shift+D`, `Shift+R`, `Shift+S`, `Shift+T`, `Shift+U`, `Shift+Y` and `Shift+Z`. Every one of them could go undocumented without
 anything turning red.
 
+
+### Searching It, By Key Or By Word
+
+*"Koennen wir in die Hilfe Schlagworte aufnehmen? Wenn ich eine Taste eingebe, kommen die Befehle dieser Taste. Wenn ich ein Wort eingebe, wie
+drill, kommen die Befehle dazu."*
+
+`/` opens a box on the help page. **The first half needs no text matching at all**: `clickable` already parses which keys each line names, so
+that it can be clicked -- so a search for `N` asks that parser rather than looking for the letter n, which would hit every line with an n in
+it. One reader for the buttons and the search, so the search can never offer a key the page does not itself treat as one.
+
+- **A bare letter means every modifier.** *"Die Befehle dieser Taste"* is all of them, and N, Shift+N and Ctrl+N are three different commands
+  on one key; `Shift+N` typed out means that one. `Strg` is `Ctrl`, because that is what his keyboard says.
+- **`lead` is ON for the search where it is off for the DRAWING**, and the asymmetry is deliberate. The page must not underline a badge letter
+  as a button -- `X` is the dead note, `P` the pull-off -- but in a search a letter at the front of a line is what the player meant, and "N
+  loops the next place that run went wrong" is a command on N however it is written. A false hit costs one line he can read; a miss costs a
+  command he cannot find.
+- **A query that is BOTH is answered as both.** `TAB` is a key and "tab page" is a view; the same rule the song search follows for a bare
+  number, where reading `2112` only as an id would make a song named after a number unfindable. Keys first.
+- **German words reach an English page.** The help is written in English and the player is not, so `SYNONYMS` maps "tempo" to "practice speed"
+  and "stimmung" to "tuning", matched on a prefix either way round so a plural needs no row of its own and a half-typed word already finds
+  something. Umlauts are folded, since he types whichever spelling his keyboard gives him first.
+- **A synonym that points at nothing is a search that silently finds nothing**, so the suite asserts that every target really appears on the
+  page AND that every synonym really finds a line. That is what caught `"aufnahme" -> "recording"`: the key that switches it on says
+  **recorded** backing, so the synonym missed the one line it was about. It is `record` now.
+- **The box owns the letters while it is open**, guarded at the top of `handle_event` -- a text box is a text box wherever it is asked about,
+  and every letter below that line is a shortcut. ESC and ENTER both shut it, and ESC while typing never leaves the song.
+- **`/` is read as a CHARACTER as well as a key code**, because a slash is Shift+7 on a German keyboard -- the same three-signal lesson as
+  `shift_held`.
+- **It is documented on the same line as `H`.** Three added lines put a block onto a second page at 1080 and the suite said so: a page that
+  paginates is not a page that may be filled without measuring, and this project has now paid for that three times.
+
 ## One Map Began Before Zero, And A Nudge Outlived Its Map
 
 *"Warum ist der Song Californication mit dem Video bei Songsterr selbst perfekt sync? Mit Listen only ist es bei mir auch nicht Sync."*
@@ -5994,6 +6060,39 @@ shipped a sentence nobody can see, and the second time in the same overlay.
   sentence can say it where it will be read.
 - **The key was never broken in the SONG**, which is why it took a report: pressed there, with a loop landed from the overlay, it drills and
   always did. Only the one place that advertises it could not do it.
+
+### A Card Short Enough To Be Free Is Not A Diagram
+
+*"Um wieviel groesser kannst du die Tabview noch machen in der chord Ansicht?"* -- measured over all eight songs in `songs/` before anything
+was built, at both of his screens:
+
+| | Kopf | Takte/Zeile @1080 | @1200 |
+|---|---|---|---|
+| chords off (the comparison) | 60.5 | 2 | 2 |
+| **chords on, as it ships** | **52.3** | **3** | **2** |
+| chords on, the names over the rows off | 55.4 | 3 | 2 |
+| chords on, the cards out of the top band | 57.4 | 2 | 2 |
+| both | 60.5 | 2 | 2 |
+
+**On the 1200 px laptop the chord view already costs nothing** -- 2 bars a row with it and without, on 6 of 8 songs. On 1080 it costs one bar,
+and 5.1 of the 8.2 px are the CARDS.
+
+So the obvious move was a shorter card: name beside the grid, no footer row, 136 px down to 109. Swept instead of built, and the sweep killed
+it:
+
+| card height | 136 | 120 | 109 | 100 | 90 | 80 | 70 | **64** | 56 |
+|---|---|---|---|---|---|---|---|---|---|
+| Thunder, Bon Jovi, What's Up @1080 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | **2** | 2 |
+| head px | 52.3 | 53.5 | 54.2 | 54.9 | 55.6 | 56.3 | 57.0 | 57.4 | 57.4 |
+
+**It is a step function and the step is at 64 px**, which is exactly where `max(text 70, 6 + card)` stops seeing the card at all. Every height
+in between buys 1-5 px of head and **zero** bars on 7 of the 8 songs. And 64 px is a five-fret grid in about 25 pixels -- six strings 5 px
+apart, which is not a diagram.
+
+- **The band is full width, so there is nowhere else to put them.** The sheet's rows span the window; a notch cut into the top row only would
+  re-break the music at every page turn, and a card over the music covers the row being played.
+- **Not built, and the measurement is why** -- the same answer as `onset_min_interval_ms` and the 80 ms hit window. What would give the bar
+  back is the cards not being there, and that is `Shift+C`.
 
 ## Every Shortcut Is A Button, And Nothing Else Is
 

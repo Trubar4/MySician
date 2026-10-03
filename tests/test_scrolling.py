@@ -1340,7 +1340,7 @@ class TestEveryKeyIsWrittenDownSomewhere:
         "t": "T: theme", "u": "U: recorded backing", "v": "V: chord scoring",
         "w": "W: wait mode", "x": "X/C", "y": "Y: timing report",
         "z": "Z: vsync",
-        "COMMA": ",/.", "PERIOD": ",/.",
+        "COMMA": ",/.", "PERIOD": ",/.", "SLASH": "/: search it",
         "PLUS": "+/-", "EQUALS": "+/-", "MINUS": "+/-",
         "KP_PLUS": "+/-", "KP_MINUS": "+/-",
         "F1": "F1-F6", "F2": "F1-F6", "F3": "F1-F6",

@@ -44,11 +44,44 @@ class SongsterrResult:
     by_id: bool = False
 
 
-def _urlopen(url: str, timeout: int = REQUEST_TIMEOUT) -> bytes:
-    """Fetch a URL with browser-like headers. Returns response body bytes."""
+def _urlopen_full(url: str, timeout: int = REQUEST_TIMEOUT):
+    """(body bytes, the response headers) for a URL.
+
+    The headers come back because `Last-Modified` is the one DATE anything
+    in this path carries. Neither Songsterr's meta reply nor the Guitar Pro
+    format has a date field -- measured on the player's own eight tabs,
+    where `Words`, `Music`, `Copyright` and `Tabber` are empty or name the
+    downloader rather than a person -- so what their server says about the
+    file is all there is, and it is a fact rather than an inference.
+    """
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+        return resp.read(), resp.headers
+
+
+def _urlopen(url: str, timeout: int = REQUEST_TIMEOUT) -> bytes:
+    """Fetch a URL with browser-like headers. Returns response body bytes."""
+    return _urlopen_full(url, timeout)[0]
+
+
+def _header_date(headers) -> str:
+    """"2026-03-11" from an HTTP date header, or "" if there is not one.
+
+    The day only: an hour on a CDN is the hour the file was copied there and
+    says nothing a player would act on.
+    """
+    raw = ""
+    try:
+        raw = headers.get("Last-Modified") or ""
+    except AttributeError:
+        return ""
+    if not raw:
+        return ""
+    from email.utils import parsedate_to_datetime
+    try:
+        return parsedate_to_datetime(raw).date().isoformat()
+    except (TypeError, ValueError):
+        return ""
 
 
 def _fetch_json(url: str) -> dict | list | None:
@@ -245,30 +278,104 @@ def suffix_for(source_url: str) -> str:
     return found if found in GP_EXTENSIONS else ".gp5"
 
 
-def download_tab(song_id: int,
-                 output_path: str | Path) -> tuple[Path | None, int, str]:
-    """Download a tab. Returns (what was written, its revision, why not).
+def download_tab(song_id: int, output_path: str | Path
+                 ) -> tuple[Path | None, int, str, str]:
+    """Download a tab. (what was written, its revision, why not, its date).
 
     `output_path`'s SUFFIX IS REPLACED by whatever Songsterr actually holds
     -- the caller knows the name, not the format. The revision comes back so
     the bar map can be asked for from the SAME edit of the song.
+
+    The date is Songsterr's own `Last-Modified` for the file and is empty
+    where their server does not send one. It is deliberately NOT the local
+    file's time, which is the moment of the download and tells the player
+    nothing he does not already know.
     """
     source_url, revision_id, why = _source_of(song_id)
     if not source_url:
-        return None, 0, why
+        return None, 0, why, ""
 
     try:
-        file_data = _urlopen(source_url)
+        file_data, headers = _urlopen_full(source_url)
     except (urllib.error.URLError, OSError) as exc:
-        return None, 0, f"The file could not be fetched: {exc}"
+        return None, 0, f"The file could not be fetched: {exc}", ""
 
     output = Path(output_path).with_suffix(suffix_for(source_url))
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(file_data)
     except OSError as exc:
-        return None, 0, f"It could not be saved: {exc}"
-    return output, revision_id, ""
+        return None, 0, f"It could not be saved: {exc}", ""
+    return output, revision_id, "", _header_date(headers)
+
+
+def _mmss(ms: float) -> str:
+    """"4:40", the unit a song length is compared in."""
+    total = int(round(max(0.0, ms) / 1000.0))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def describe_tab(path: str | Path) -> tuple[list[str], int]:
+    """(lines about the file that just landed, how many bars it has).
+
+    Tuning, tracks, length, bars.
+
+    *"Kannst du mir beim Herunterladen noch mehr Details geben? Stimmung,
+    Autor, Datum"* -- and the tuning is the one of those three that is a
+    FACT rather than a field somebody forgot to fill in. It is read out of
+    the file itself, through the same `describe_file` the song list uses, so
+    the two can never disagree about what a song is tuned to.
+
+    The length is here because it is the number the player compares against
+    YouTube before concluding he has the wrong tab, and it is the WRITTEN
+    length -- a song is as long as its bars, not as long as its last note.
+
+    The bar count comes back as well as being said, because the bar map is
+    refused when its own count differs -- and "72 bars against this tab's
+    80" is a thing to act on where either number alone is not.
+
+    Never raises: a file this cannot read is still a file that downloaded,
+    and a detail line is not worth losing a song over.
+    """
+    from pickhero.audio.note_utils import tuning_label
+
+    path = Path(path)
+    out: list[str] = []
+    try:
+        from pickhero.tabs.song_index import describe_file
+        info = describe_file(path)
+    except Exception:
+        return out, 0
+    if info.readable and info.tracks:
+        word = "guitar track" if info.tracks == 1 else "guitar tracks"
+        tunings = info.distinct_tunings
+        # The name AND the letters, where the tuning has a name. The song
+        # list shows the letters alone because it has one short row for
+        # every song; this is read once, about one song, and "Drop D" is
+        # what the player calls it while "D A D G B E" is what he checks.
+        said = []
+        for letters in tunings[:2]:
+            name = tuning_label(letters)
+            said.append(f"{name} ({letters})" if name != letters else letters)
+        if len(tunings) > 2:
+            said.append(f"+{len(tunings) - 2} more")
+        head = f"{info.tracks} {word}"
+        out.append(f"{head} - {', '.join(said)}" if said else head)
+    elif info.readable:
+        out.append("No guitar track in it.")
+    else:
+        out.append("The file could not be read.")
+
+    try:
+        from pickhero.tabs.loader import load_gp_file
+        timeline = load_gp_file(path, 0)
+    except Exception:
+        return out, 0
+    bars = len(timeline.measures)
+    if bars:
+        out.append(f"{_mmss(timeline.duration_ms)} of music in {bars} "
+                   f"{'bar' if bars == 1 else 'bars'}")
+    return out, bars
 
 
 def download_gp5(song_id: int, output_path: str | Path) -> bool:
@@ -310,6 +417,22 @@ class Grab:
     video_id: str = ""
     bars: int = 0
     audio_path: Path | None = None
+    #: The revision the FILE came from, and the newest one Songsterr has.
+    #: They differ whenever the walk had to go back for a revision that
+    #: still has a Guitar Pro file behind it, and that is worth saying: a
+    #: tab from one edit timed by a bar map from another is two different
+    #: transcriptions pretending to be one.
+    revision_id: int = 0
+    latest_revision_id: int = 0
+    #: How many bars the TAB has, which is what the bar map's own count is
+    #: judged against: a map of a different edit is refused on that count.
+    tab_bars: int = 0
+    #: Songsterr's own `Last-Modified` for the file, "YYYY-MM-DD" or empty.
+    file_date: str = ""
+    #: True where Songsterr says they transcribed it from the audio
+    #: themselves. **None where the reply does not say** -- an absent field
+    #: is not evidence that a person uploaded it.
+    ai_generated: bool | None = None
     #: In the player's words, one line per thing that happened. Shown on the
     #: download screen, because a step that fails silently is a step the
     #: player will spend an evening looking for.
@@ -327,6 +450,38 @@ class Grab:
         still a song to practise -- it just syncs the way it did before.
         """
         return self.tab_path is not None
+
+
+def _revision_notes(grab: "Grab") -> list[str]:
+    """What Songsterr says about WHICH transcription this is.
+
+    The closest thing their API has to an author. `aiGenerated` separates
+    their own pipeline's transcription from one a person uploaded -- which
+    is a quality signal a player can act on -- and the revision says which
+    edit of the tab is on disk. Everything the player asked for by the name
+    "Autor" is empty in the files themselves: measured over his eight tabs,
+    `Words`, `Music`, `WordsAndMusic` and `Copyright` are blank in all
+    eight and `Tabber` says "Songsterr Downloader", which is the tool.
+
+    Nothing is said where nothing is known. An absent `aiGenerated` is not
+    a person, and a revision of 0 is a tab that did not download.
+    """
+    out: list[str] = []
+    if grab.ai_generated is True:
+        out.append("Songsterr transcribed this one from the audio")
+    elif grab.ai_generated is False:
+        out.append("A person uploaded this transcription")
+    if not grab.revision_id:
+        return out
+    if grab.latest_revision_id and grab.latest_revision_id != grab.revision_id:
+        # Worth its own sentence: the newest revision often has no Guitar
+        # Pro file and an older one does, so what landed is not the edit
+        # Songsterr shows on its own site.
+        out.append(f"Revision {grab.revision_id} - not the newest "
+                   f"({grab.latest_revision_id}), which has no file")
+    else:
+        out.append(f"Revision {grab.revision_id}")
+    return out
 
 
 def grab_song(song_id: int, output_path: str | Path,
@@ -360,7 +515,9 @@ def grab_song(song_id: int, output_path: str | Path,
     # it `.gp5` was a lie on disk that only did not break the app because the
     # loader reads the CONTENT. Everything after this point takes its names
     # from what was actually written.
-    written, revision_id, why = download_tab(song_id, out)
+    written, revision_id, why, file_date = download_tab(song_id, out)
+    grab.revision_id = revision_id
+    grab.file_date = file_date
     if written is None:
         # **Carry on anyway.** Songsterr does not hold a Guitar Pro file for
         # every tab -- the player hit this on four songs in a row and
@@ -375,6 +532,14 @@ def grab_song(song_id: int, output_path: str | Path,
         out = written
         grab.tab_path = out
     grab.wanted_name = out.name
+    if grab.tab_path is not None:
+        lines, grab.tab_bars = describe_tab(grab.tab_path)
+        grab.notes += lines
+    if file_date:
+        # Said as what it is. Songsterr's reply carries no transcription
+        # date and neither does the Guitar Pro format, so this is when the
+        # FILE last changed on their server and nothing more.
+        grab.notes.append(f"Songsterr's file last changed {file_date}")
 
     # The bar map, cached BESIDE THE TAB. Asked for here rather than the
     # first time the player presses Ctrl+S, so the song works on a machine
@@ -399,6 +564,12 @@ def grab_song(song_id: int, output_path: str | Path,
             entries = songsterr.fetch_entries(song_id,
                                               int(meta["revisionId"]))
         songsterr.save_cache(out, song_id, meta, entries)
+        grab.latest_revision_id = int(meta["revisionId"])
+        # Only where the reply says so, either way. A missing field means
+        # Songsterr did not answer the question, not that it answered no.
+        if isinstance(meta.get("aiGenerated"), bool):
+            grab.ai_generated = bool(meta["aiGenerated"])
+        grab.notes += _revision_notes(grab)
     except songsterr.NotFound as exc:
         grab.notes.append(f"No bar map: {exc}")
         return grab
@@ -412,7 +583,15 @@ def grab_song(song_id: int, output_path: str | Path,
         return grab
     grab.video_id = songsterr.video_id_of(chosen)
     grab.bars = len(songsterr.bar_times_of_entry(chosen))
-    grab.notes.append(f"Bar map: {grab.bars} bars.")
+    # Beside the tab's own count, where they differ. A map whose count does
+    # not match is refused later, and the two numbers together are what says
+    # why -- a tab padded out to the end of the sheet has empty bars the map
+    # never timed, and that case is accepted.
+    if grab.tab_bars and grab.bars != grab.tab_bars:
+        grab.notes.append(f"Bar map: {grab.bars} bars - the tab has "
+                          f"{grab.tab_bars}")
+    else:
+        grab.notes.append(f"Bar map: {grab.bars} bars.")
 
     if not want_audio:
         return grab

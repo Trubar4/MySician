@@ -14,6 +14,7 @@ than leaving a song that looks downloaded and is not.
 import json
 import sys
 import types
+from pathlib import Path
 
 import pygame
 
@@ -192,11 +193,11 @@ class TestNamingTheRecording:
 
 def _writes_a_tab(song_id, out):
     """Stand in for the network. Writes the file and answers like the real
-    one: (what was written, why nothing was)."""
+    one: (what was written, its revision, why nothing was, its date)."""
     from pathlib import Path
     written = Path(out).with_suffix(".gp5")
     written.write_bytes(b"gp")
-    return written, 0, ""
+    return written, 0, "", ""
 
 
 def _fake_songsterr(monkeypatch, entries=ENTRIES, raises=None):
@@ -251,7 +252,7 @@ class TestOneEnterFetchesTheSong:
         monkeypatch.setattr(
             downloader, "download_tab",
             lambda sid, out: (None, 0, "Songsterr holds no Guitar Pro file "
-                                       "for this tab"))
+                                       "for this tab", ""))
         _fake_songsterr(monkeypatch, raises=songsterr.NotFound("no map"))
         grab = downloader.grab_song(1, tmp_path / "s.gp5", want_audio=False)
         assert not grab.ok
@@ -266,7 +267,7 @@ class TestOneEnterFetchesTheSong:
         where the tab would have gone."""
         monkeypatch.setattr(downloader, "download_tab",
                             lambda sid, out: (None, 0,
-                                              "no file for this tab"))
+                                              "no file for this tab", ""))
         _fake_songsterr(monkeypatch)
         grab = downloader.grab_song(2333598, tmp_path / "Thunder.gp5",
                                     want_audio=False)
@@ -279,7 +280,7 @@ class TestOneEnterFetchesTheSong:
         the useful thing to tell him is the NAME."""
         monkeypatch.setattr(downloader, "download_tab",
                             lambda sid, out: (None, 0,
-                                              "no file for this tab"))
+                                              "no file for this tab", ""))
         _fake_songsterr(monkeypatch)
         grab = downloader.grab_song(1, tmp_path / "Billy Talent - x.gp5",
                                     want_audio=False)
@@ -632,3 +633,126 @@ class TestTheSearchBoxTakesAPastedLink:
     def test_no_desktop_to_ask_is_not_a_crash(self):
         from pickhero.ui.clipboard import clipboard_text
         assert isinstance(clipboard_text(), str)
+
+
+class TestWhatTheDownloadSaysAboutTheSong:
+    """*"Kannst du mir beim Herunterladen noch mehr Details geben? Stimmung,
+    Autor, Datum"*
+
+    The tuning is the one of those three that is a FACT. The other two were
+    measured before anything was built: over the player's eight tabs the
+    GPIF `<Score>` block has `Words`, `Music`, `WordsAndMusic` and
+    `Copyright` empty in all eight and `Tabber` says "Songsterr Downloader",
+    and no date exists in the Guitar Pro format or in the cached Songsterr
+    replies at all. So the screen says what is known and stays quiet about
+    what is not -- `tools/songsterr_fields.py` is what settles whether the
+    live reply carries more.
+    """
+
+    FIXTURE = Path(__file__).parent / "fixtures" / "Demo_v5.gp5"
+
+    def test_it_names_the_tuning_the_tracks_the_length_and_the_bars(self):
+        lines, bars = downloader.describe_tab(self.FIXTURE)
+        said = " | ".join(lines)
+        assert "Standard" in said and "E A D G B E" in said, \
+            "the name to call it and the letters to check it against"
+        assert "guitar track" in said
+        assert ":" in said and "bars" in said, "m:ss, the unit YouTube uses"
+        assert bars == 52
+
+    def test_a_tuning_nobody_named_shows_its_letters_once(self, monkeypatch):
+        """A mixed strip is the price of not inventing names, and the letters
+        must not then be printed twice."""
+        from pickhero.tabs import song_index
+        monkeypatch.setattr(song_index, "describe_file",
+                            lambda path: song_index.SongInfo(
+                                tracks=1, tunings=["C F A# D# G C"]))
+        lines, _ = downloader.describe_tab(self.FIXTURE)
+        assert lines[0].count("C F A# D# G C") == 1
+
+    def test_a_file_it_cannot_read_says_so_and_does_not_raise(self, tmp_path):
+        junk = tmp_path / "x.gp5"
+        junk.write_bytes(b"not a tab")
+        lines, bars = downloader.describe_tab(junk)
+        assert bars == 0
+        assert lines and "could not be read" in lines[0]
+
+    def test_a_single_bar_is_a_bar(self):
+        lines, _ = downloader.describe_tab(
+            Path(__file__).parent / "fixtures" / "notes.gp5")
+        assert "1 bars" not in " ".join(lines)
+
+    def test_the_date_is_the_servers_own_and_the_day_only(self):
+        assert downloader._header_date(
+            {"Last-Modified": "Tue, 11 Mar 2025 09:00:00 GMT"}) == "2025-03-11"
+
+    def test_a_header_that_is_not_a_date_is_no_date(self):
+        for headers in ({}, {"Last-Modified": ""},
+                        {"Last-Modified": "whenever"}, None):
+            assert downloader._header_date(headers) == ""
+
+    def test_only_what_songsterr_actually_said_about_the_transcription(self):
+        """An absent `aiGenerated` is not a person. The field is read only
+        where it is a bool -- the presumption of innocence this project runs
+        on, applied to a metadata field."""
+        said = downloader._revision_notes(
+            downloader.Grab(song_id=1, revision_id=9, ai_generated=None))
+        assert not any("person" in line or "Songsterr transcribed" in line
+                       for line in said)
+        assert downloader._revision_notes(
+            downloader.Grab(song_id=1, revision_id=9, ai_generated=True))[0] \
+            .startswith("Songsterr transcribed")
+        assert "person" in downloader._revision_notes(
+            downloader.Grab(song_id=1, revision_id=9,
+                            ai_generated=False))[0]
+
+    def test_an_older_revision_is_named_as_one(self):
+        """The newest revision often has no Guitar Pro file and an older one
+        does, so what landed is not the edit Songsterr shows on its site --
+        and a tab from one edit timed by a map from another is two
+        transcriptions pretending to be one."""
+        said = " ".join(downloader._revision_notes(downloader.Grab(
+            song_id=1, revision_id=5981666, latest_revision_id=6688469)))
+        assert "5981666" in said and "6688469" in said
+
+    def test_the_same_revision_is_not_made_to_sound_like_a_problem(self):
+        said = " ".join(downloader._revision_notes(downloader.Grab(
+            song_id=1, revision_id=77, latest_revision_id=77)))
+        assert said == "Revision 77"
+
+    def test_a_tab_that_did_not_download_claims_no_revision(self):
+        assert downloader._revision_notes(downloader.Grab(song_id=1)) == []
+
+    def test_the_grab_puts_them_where_the_screen_reads_them(self, tmp_path,
+                                                            monkeypatch):
+        """The notes are the one list the done screen draws, so a detail
+        that is not in them is a detail nobody sees."""
+        def writes_the_fixture(song_id, out):
+            written = Path(out).with_suffix(".gp5")
+            written.write_bytes(self.FIXTURE.read_bytes())
+            return written, 4242, "", "2025-03-11"
+
+        monkeypatch.setattr(downloader, "download_tab", writes_the_fixture)
+        _fake_songsterr(monkeypatch)
+        grab = downloader.grab_song(1, tmp_path / "s.gp5", want_audio=False)
+
+        said = " | ".join(grab.notes)
+        assert "E A D G B E" in said
+        assert "2025-03-11" in said
+        assert "4242" in said
+        assert grab.tab_bars == 52
+
+    def test_the_bar_map_is_counted_against_the_tabs_own_bars(self, tmp_path,
+                                                              monkeypatch):
+        """A map whose count differs is refused later, and the two numbers
+        together are what says why."""
+        def writes_the_fixture(song_id, out):
+            written = Path(out).with_suffix(".gp5")
+            written.write_bytes(self.FIXTURE.read_bytes())
+            return written, 0, "", ""
+
+        monkeypatch.setattr(downloader, "download_tab", writes_the_fixture)
+        _fake_songsterr(monkeypatch)
+        grab = downloader.grab_song(1, tmp_path / "s.gp5", want_audio=False)
+        line = [n for n in grab.notes if n.startswith("Bar map")][0]
+        assert "4 bars" in line and "52" in line

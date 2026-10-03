@@ -8,6 +8,7 @@ from pickhero.tabs.downloader import (
     SongsterrResult,
     _get_source_url,
     download_gp5,
+    download_tab,
     get_songsterr_url,
     sanitize_filename,
     search,
@@ -131,22 +132,27 @@ class TestGetSourceUrl:
 
 
 class TestDownloadGp5:
+    """The file fetch goes through `_urlopen_full`, which is the one network
+    call in this module -- it hands back the response HEADERS as well, and
+    `Last-Modified` is the only DATE anything in this path carries. The JSON
+    helper goes through it too, so one patch covers all three requests."""
+
     def test_success(self, tmp_path):
         source_url = "https://gp.songsterr.com/export.abc.gp"
         file_bytes = b"\x00GP5_FAKE_DATA"
 
-        def fake_urlopen(url, timeout=15):
+        def fake(url, timeout=15):
             if "meta" in url:
-                return json.dumps({"revisionId": 999}).encode()
+                return json.dumps({"revisionId": 999}).encode(), {}
             if "revision" in url:
-                return json.dumps({"source": source_url}).encode()
-            return file_bytes
+                return json.dumps({"source": source_url}).encode(), {}
+            return file_bytes, {"Last-Modified": "Tue, 11 Mar 2025 09:00:00 GMT"}
 
         output = tmp_path / "test.gp5"
-        with patch("pickhero.tabs.downloader._urlopen", side_effect=fake_urlopen):
-            result = download_gp5(42, output)
+        with patch("pickhero.tabs.downloader._urlopen_full", side_effect=fake):
+            written, _, why, date = download_tab(42, output)
 
-        assert result is True
+        assert written is not None and not why
         # The SOURCE decides the suffix, not the name it was asked for. This
         # test used to assert `test.gp5` while the source it mocked ends in
         # `.gp` -- so it asserted the bug the player reported: *"Why does it
@@ -156,6 +162,20 @@ class TestDownloadGp5:
         # Pro itself.
         assert not output.exists()
         assert (tmp_path / "test.gp").read_bytes() == file_bytes
+        assert date == "2025-03-11", "the day, out of the response's own header"
+
+    def test_a_server_that_sends_no_date_reports_none(self, tmp_path):
+        """Rather than the local file's time, which is the moment of the
+        download and tells the player nothing he does not know."""
+        def fake(url, timeout=15):
+            if "meta" in url:
+                return json.dumps({"revisionId": 9}).encode(), {}
+            if "revision" in url:
+                return json.dumps({"source": "https://gp/x.gp5"}).encode(), {}
+            return b"gp", {}
+
+        with patch("pickhero.tabs.downloader._urlopen_full", side_effect=fake):
+            assert download_tab(42, tmp_path / "t.gp5")[3] == ""
 
     def test_source_url_not_found(self, tmp_path):
         with patch("pickhero.tabs.downloader._urlopen",
@@ -167,16 +187,16 @@ class TestDownloadGp5:
         source_url = "https://gp.songsterr.com/export.abc.gp"
         calls = [0]
 
-        def fake_urlopen(url, timeout=15):
+        def fake(url, timeout=15):
             calls[0] += 1
             if calls[0] == 1:
-                return json.dumps({"revisionId": 999}).encode()
+                return json.dumps({"revisionId": 999}).encode(), {}
             if calls[0] == 2:
-                return json.dumps({"source": source_url}).encode()
+                return json.dumps({"source": source_url}).encode(), {}
             raise urllib.error.URLError("download fail")
 
         output = tmp_path / "test.gp5"
-        with patch("pickhero.tabs.downloader._urlopen", side_effect=fake_urlopen):
+        with patch("pickhero.tabs.downloader._urlopen_full", side_effect=fake):
             result = download_gp5(42, output)
 
         assert result is False
@@ -185,15 +205,15 @@ class TestDownloadGp5:
     def test_creates_parent_dirs(self, tmp_path):
         source_url = "https://gp.songsterr.com/export.abc.gp"
 
-        def fake_urlopen(url, timeout=15):
+        def fake(url, timeout=15):
             if "meta" in url:
-                return json.dumps({"revisionId": 999}).encode()
+                return json.dumps({"revisionId": 999}).encode(), {}
             if "revision" in url:
-                return json.dumps({"source": source_url}).encode()
-            return b"data"
+                return json.dumps({"source": source_url}).encode(), {}
+            return b"data", {}
 
         output = tmp_path / "sub" / "dir" / "test.gp5"
-        with patch("pickhero.tabs.downloader._urlopen", side_effect=fake_urlopen):
+        with patch("pickhero.tabs.downloader._urlopen_full", side_effect=fake):
             result = download_gp5(42, output)
 
         assert result is True
