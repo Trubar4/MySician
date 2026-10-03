@@ -54,6 +54,33 @@ SEARCH = 256
 # the disk.
 MAX_CACHED = 24
 
+#: Taps of the resampling kernel, and how finely its fractional position is
+#: tabulated. Measured on the player's own mix against an ideal (FFT)
+#: resample of the same audio -- full band, and below 18 kHz, where the
+#: kernel's own transition stops being the whole of the error:
+#:
+#:     taps   +2 st          -2 st         per minute of stereo
+#:        8   43.9 / 43.9    49.0 / 49.9    0.35 s
+#:       16   61.5 / 62.7    67.3 / 76.7    0.46 s
+#:       24   69.4 / 85.4    69.4 / 84.8    0.62 s
+#:       32   70.8 / 98.0    70.7 / 92.5    0.82 s
+#:       48   72.6 / 109.1   72.4 / 106.8   1.32 s
+#:
+#: 32 is where the curve stops paying for itself. The 512 tabulated phases
+#: are interpolated between, which reproduces all four figures to the first
+#: decimal against computing the kernel per sample -- for 0.82 s a minute
+#: against 5.09. Without that interpolation 512 phases measure 65.6 / 67.5,
+#: so the interpolation IS the table rather than a refinement of it.
+TAPS = 32
+PHASES = 512
+
+#: Output frames resampled at a time. What is held is BLOCK x TAPS of
+#: kernel and BLOCK x TAPS x channels of gathered audio, so this is a few
+#: megabytes and nothing here grows with the length of a song. Measured
+#: flat from 8192 to 32768 and half again as slow at 131072, which is where
+#: the gather stops fitting in cache.
+BLOCK = 1 << 15
+
 
 class Cancelled(RuntimeError):
     """The stretch was abandoned because nobody wants it any more."""
@@ -216,17 +243,90 @@ def pitch_shift(samples: np.ndarray, semitones: float,
     return _resample(stretch(samples, ratio, progress), ratio, len(samples))
 
 
+def _kernel_table(cutoff: float) -> tuple[np.ndarray, np.ndarray]:
+    """`PHASES + 1` rows of a windowed sinc, one per fractional position.
+
+    Row `p` is the kernel for a wanted position `p / PHASES` of a sample
+    past its left-hand tap. The extra row is the one the interpolation
+    between neighbours needs at the top end.
+
+    Every row is normalised to sum to one, so the gain at DC is exactly one
+    whatever the fractional position -- and so is any interpolation between
+    two rows. Without that the level ripples at the fraction's own period,
+    which is a tone of its own rather than a loss of one.
+    """
+    half = TAPS // 2
+    offs = np.arange(-half + 1, half + 1, dtype=np.float64)
+    frac = (np.arange(PHASES + 1) / PHASES).reshape(-1, 1)
+    gap = offs.reshape(1, -1) - frac       # tap distance, in input samples
+    span = (gap + half) / TAPS
+    window = (0.42 - 0.5 * np.cos(2.0 * np.pi * span)
+              + 0.08 * np.cos(4.0 * np.pi * span))
+    kernel = np.sinc(cutoff * gap) * window
+    kernel /= kernel.sum(axis=1, keepdims=True)
+    return kernel.astype(np.float32), offs.astype(np.int64)
+
+
 def _resample(samples: np.ndarray, ratio: float, out_n: int) -> np.ndarray:
     """Read `samples` back at `ratio` times the rate, into `out_n` frames.
 
     Length and pitch both move, which is what makes it the other half of a
     pitch shift: the stretch put the length back where a resample takes it.
+
+    A windowed sinc, because linear interpolation is not a resampler.
+    Measured against an ideal (FFT) resample of the player's own mix, linear
+    managed **29.8 dB** of signal to noise at +2 semitones and 29.4 at -2 --
+    and lowpassing both to 18 kHz left it at 29.8, so that error was not a
+    band edge being fudged, it was noise across the whole band. At -2 it
+    also put **+17.9 dB** into 16-20 kHz where there should have been
+    nothing at all: everything above the new Nyquist, folded back down.
+
+    This reads 70.8 and 70.7 dB over the full band on the same audio, and
+    **98.0 and 92.5 below 18 kHz** -- so what is left of it lives in the
+    top two kilohertz, which is the kernel's own transition and where a
+    192 kbps mix has almost nothing anyway. Over three of his recordings
+    and five places in each, `tools/check_resampler.py` reads 54 to 73 dB
+    full band and **88 to 106 dB below 18 kHz**, against linear's 27 to 43
+    either way. Forty decibels, for **1.2 s on a four-and-a-half minute
+    song at the written tuning's speed and 2.7 s at 80 %** -- and only on a
+    song being transposed at all. Untransposed this is never called.
+
+    **The cutoff follows the ratio** (`min(1, 1 / ratio)`). Reading faster
+    than the file throws samples away, so everything above the new Nyquist
+    has to go BEFORE it folds back down; that fold is the +17.9 dB above
+    and no tap count fixes it.
     """
-    index = np.arange(max(0, out_n), dtype=np.float64) * ratio
-    low = np.clip(index.astype(np.int64), 0, max(0, len(samples) - 2))
-    frac = (index - low).astype(np.float32).reshape(-1, 1)
-    return (samples[low] * (1.0 - frac)
-            + samples[low + 1] * frac).astype(np.float32)
+    out_n = max(0, out_n)
+    tail = samples.shape[1:]
+    if not out_n or not len(samples):
+        return np.zeros((out_n,) + tail, dtype=np.float32)
+    n = len(samples)
+    flat = samples.reshape(n, -1)
+    table, offs = _kernel_table(min(1.0, 1.0 / max(ratio, 1e-9)))
+    out = np.empty((out_n, flat.shape[1]), dtype=np.float32)
+    for start in range(0, out_n, BLOCK):
+        stop = min(out_n, start + BLOCK)
+        index = np.arange(start, stop, dtype=np.float64) * ratio
+        base = np.floor(index).astype(np.int64)
+        phase = (index - base) * PHASES
+        row = phase.astype(np.int64)
+        over = (phase - row).astype(np.float32).reshape(-1, 1)
+        kernel = table[row] * (1.0 - over) + table[row + 1] * over
+        taken = base.reshape(-1, 1) + offs.reshape(1, -1)
+        if taken[0, 0] < 0 or taken[-1, -1] >= n:
+            # Outside the file is silence, not the edge sample held: the
+            # recording really does stop there. Only the first and last
+            # block of a song can reach past an end, so the mask is built
+            # for those two and never for the thousand in between.
+            kernel = np.where((taken >= 0) & (taken < n), kernel,
+                              np.float32(0.0))
+        # `take` with mode="clip", not `flat[taken]`: measured on a minute
+        # of stereo, fancy indexing is 1.77 s and this is 0.84 -- the whole
+        # difference between a resampler that costs ten seconds on a
+        # transposed song and one that costs two.
+        out[start:stop] = np.einsum(
+            'ijc,ij->ic', np.take(flat, taken, axis=0, mode='clip'), kernel)
+    return out.reshape((out_n,) + tail)
 
 
 def cache_name(path: Path, tempo_factor: float,

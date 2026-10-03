@@ -4102,6 +4102,7 @@ pickhero/
 ## Testing
 
 - `tests/test_detector.py` — feed known sine waves to aubio, verify correct note detection
+- `tests/test_resampler.py` — what survives a resample and what arrives that was never played; seven of its tests fail on linear interpolation
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
@@ -6233,6 +6234,57 @@ loads the file itself and builds nothing. So the resampler is a real fault and i
   machine -- and one clean resample is not obviously "wesentlich schlechter". What makes it worth doing anyway is that it costs nothing, that
   it is right on its own terms, and that the next run log then names the device's real rate instead of the app's wish.
 - **Two of his seven recordings are 64 kbps** (Godsmack, Kid Rock). That sounds poor in every player and explains no difference between them.
+
+### And the resampler is fixed, which was the one measured fault
+
+*"Reparier den sampler bitte."* Done, and the number it replaces needed correcting first.
+
+**The 21.0 dB written above is too harsh, and the method is why.** `_resample` maps output sample `n` to input position `n x ratio`, with
+`ratio` irrational -- so comparing it against an FFT reference, whose own ratio is the rational `in_n / out_n`, measures the drift between two
+grids on top of whatever the resampler did. Each segment is cut to exactly the length that makes the ratio rational now, and the resampler is
+handed that same ratio. Re-measured at five places in the song, linear reads **27 to 30 dB** rather than one number, and **27 to 43 dB** over
+three of his recordings. Same fault, a fairer figure -- and the chapter above had quoted one window of one method as though it were the answer.
+
+**What is now there is a windowed sinc**, 32 taps, tabulated at 512 fractional positions and interpolated between them. Two things it has to
+get right beyond the kernel shape, and each was measured rather than reasoned:
+
+- **The cutoff follows the ratio** (`min(1, 1 / ratio)`). Reading faster than the file throws samples away, so everything above the new
+  Nyquist has to go BEFORE it folds back down. That fold is the **+17.9 dB in 16-20 kHz** linear produced at -2 semitones, and no tap count
+  fixes it: it is a missing filter, not a blunt one.
+- **Every tabulated row sums to one**, so the gain at DC is exactly one whatever the fractional position -- and so is any interpolation
+  between two rows. Measured with the normalisation taken out: a constant 0.5 comes back rippling by **0.061**, a dB of level moving at the
+  fraction's own period, which is a tone of its own rather than the loss of one.
+
+| | full band | below 18 kHz |
+|---|---|---|
+| linear (was), three songs x five places | **27 - 43 dB** | 27 - 43 dB |
+| **windowed sinc, 32 taps** | 54 - 73 dB | **88 - 106 dB** |
+
+**Two numbers, because they are two faults.** A windowed sinc rolls off across the top of its own band by construction; linear's error is the
+same either way, and THAT is what says it was noise rather than a band edge. The band table says the rest: linear took 1.0 dB off 8-12 kHz
+and 2.2 off 12-16 before any aliasing, which is a mix going dull.
+
+- **The full-band figure is about the SONG, not about the resampler**, which is why `check_resampler.py` gates on the clear band and keeps the
+  other as a loose sanity floor. Californication reads **53.7 dB** at +2 where Bon Jovi reads 70.8 -- and **101.6 against 98.0** below 18 kHz.
+  It is the brighter master, so it has more sitting in the top two kilohertz for the transition to roll off. A floor fitted to the better of
+  those two would fail a bright mix for being bright.
+- **32 taps is where the curve stops paying for itself**, fitted rather than chosen: 8 taps read 43.9 / 43.9, 16 read 61.5 / 62.7, 24 read
+  69.4 / 85.4, 32 read 70.8 / 98.0 and 48 read 72.6 / 109.1, at 0.35, 0.46, 0.62, 0.82 and 1.32 s a minute of stereo.
+- **The phase table IS the fix for the cost, and the interpolation is the table.** Computing the kernel per output sample reads the same four
+  figures and costs **5.09 s a minute** against 0.82. Without interpolating between neighbouring rows, 512 phases measure 65.6 / 67.5 -- so
+  the interpolation is not a refinement of the table, it is what makes a table possible at all.
+- **`np.take(..., mode="clip")` rather than `flat[taken]`** is 0.84 s a minute against 1.77 for the identical arithmetic. That one line is the
+  difference between a resampler costing ten seconds on a transposed song and one costing two. The thing that is slow is not the thing that
+  looks expensive, for the third time in this file.
+- **What it costs, end to end on his own 4:30 song**: 8.2 -> 9.4 s at the written speed with +2 semitones, and 9.0 -> 11.7 s at 80 %. **At the
+  written tuning nothing is built and this is never called**, so the common path is untouched -- 4.4 against 4.8 s at 80 % with no transpose,
+  which is run-to-run spread on a build that does not reach this code.
+- **The pitch is still exact**: +2, -2, +1, +5, -5 and +0.5 semitones land within **0.23 cents** on a sine of known pitch, and the length is
+  unchanged to the sample -- which is what keeps every sync point and every offset describing the file.
+
+**And this is still not the fault he reported**, which is the half worth keeping straight. He hears it at 100 % speed and the written tuning,
+where no copy is built and this code never runs. The resampler was a real fault found while looking for his, it is fixed, and the mixer-rate
+change above remains the best-founded suspect for what he is actually hearing.
 
 ## What NOT To Do
 
