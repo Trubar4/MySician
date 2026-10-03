@@ -111,6 +111,34 @@ class Drill:
                 self.step += 1
         return CLEAN
 
+    def move_step(self, delta: int) -> bool:
+        """The player says the next speed is right, or that it was not.
+
+        *"Wie kann ich entscheiden, dass naechste Tempostufe fuer mich jetzt
+        passt?"* -- and until now the answer was that he could not: PgUp ends
+        the drill, deliberately, so there was no way to say "this is fine,
+        move on" without killing the session.
+
+        **The clean counter goes back to zero and nothing is credited.** The
+        step is the player's to choose; the PASSES are a measurement, and
+        `clean_runs` reads the same rule over the stored history to say how
+        demanding two of them really are. Crediting a pass nobody played
+        would make that number describe runs that never happened -- the
+        presumption of innocence this file runs on, pointed at the ladder
+        itself.
+
+        Returns whether anything moved, so the caller can say "already at the
+        top" rather than looking like a dead key.
+        """
+        if self.finished:
+            return False
+        want = max(0, min(self.step + int(delta), len(LADDER) - 1))
+        if want == self.step:
+            return False
+        self.step = want
+        self.clean = 0
+        return True
+
     def line(self) -> str:
         """The one line the HUD shows while this is running."""
         if self.finished:

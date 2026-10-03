@@ -40,7 +40,7 @@ from pickhero.audio.note_utils import (
     tuning_notes,
 )
 from pickhero.ui.footer import wrap_on_bars as _wrap_on_bars
-from pickhero.ui.keys import shift_held  # noqa: F401  (re-exported)
+from pickhero.ui.keys import ctrl_held, shift_held  # noqa: F401  (re-exported)
 from pickhero.ui.colors import (
     OPEN_STRING_COLOR,
     STRING_COLORS,
@@ -2295,6 +2295,14 @@ class PlayingScreen:
                 self._reopen_output()
             else:
                 self._toggle_audio()
+        elif (event.key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN)
+              and ctrl_held(event) and self._drill is not None
+              and not self._drill.finished):
+            # The one thing the ladder could not be told. Tested BEFORE the
+            # plain keys, because an `if` chain is read in order -- and those
+            # two END the drill by design, which is the right answer for a
+            # hand on the speed and the wrong one for "this step is fine".
+            self._drill_step(1 if event.key == pygame.K_PAGEUP else -1)
         elif event.key == pygame.K_PAGEDOWN:
             if self._step_key_ready(event.key):
                 self.set_tempo_factor(self._tempo_factor - 0.05)
@@ -2305,6 +2313,10 @@ class PlayingScreen:
             self._set_loop_start(self._playback_ms)
         elif event.key == pygame.K_o:
             self._set_loop_end(self._playback_ms)
+        elif event.key == pygame.K_p and shift_held(event):
+            # P is the loop; Shift+P drills the loop. Tested first, because
+            # a shifted key placed after its unshifted twin is never reached.
+            self.drill_current_loop()
         elif event.key == pygame.K_p:
             self._toggle_loop()
         elif event.key == pygame.K_r:
@@ -5291,6 +5303,51 @@ class PlayingScreen:
         self._say(f"Drill — SPACE plays it at "
                   f"{int(round(self._drill.tempo * 100))} %")
 
+    def _drill_step(self, delta: int) -> None:
+        """Move the drill's ladder step because the PLAYER said so.
+
+        The speed moves through `set_tempo_factor(by_hand=False)`, or the
+        drill would end itself on the very keypress that is meant to steer
+        it -- which is the whole point of that flag.
+        """
+        if self._drill is None or self._drill.finished:
+            return
+        if not self._drill.move_step(delta):
+            self._say("Drill — already at the "
+                      + ("top" if delta > 0 else "bottom") + " of the ladder")
+            return
+        self.set_tempo_factor(self._drill.tempo, by_hand=False)
+        self._say(f"Drill — {int(round(self._drill.tempo * 100))} %, "
+                  f"{drill_mod.CLEAN_PASSES} clean passes from here")
+
+    def drill_current_loop(self) -> None:
+        """Walk the loop that is SET up the ladder.
+
+        *"Wie kann ich im Drill mit dem Zeiger wohin springen, um zu
+        markieren?"* -- the keys for that already existed: the arrows move
+        the playhead by a beat, a bar or thirty seconds, and `I` and `O` set
+        the ends. What was missing is the one that drills what they marked,
+        so this is a way IN to the ladder and not a second way to mark a
+        passage: `start_drill` is the same call `Shift+N` makes in the stats
+        overlay.
+        """
+        start, end = self._loop_start_ms, self._loop_end_ms
+        if start is None or end is None or end <= start:
+            self._say("Set a loop first — I and O, or right-drag the strip")
+            return
+        where = self._bars_between(start, end)
+        self.start_drill(start, end, where)
+
+    def _bars_between(self, start_ms: float, end_ms: float) -> str:
+        """"bars 12-14" for a stretch of song, or empty where it has none."""
+        measures = getattr(self._timeline, "measures", None) or []
+        inside = [m.index for m in measures
+                  if m.end_ms > start_ms and m.start_ms < end_ms]
+        if not inside:
+            return ""
+        first, last = min(inside) + 1, max(inside) + 1
+        return f"bar {first}" if first == last else f"bars {first}-{last}"
+
     def _end_drill(self, note: str = "", restore: bool = True) -> None:
         """Stop the drill and put the practice speed back.
 
@@ -7406,8 +7463,12 @@ class PlayingScreen:
                  "on" if self._wait_mode else "off"),
                 ("E: skip a long rest (jumps to 3 s before the next note)",
                  "a rest is here" if self._rest_hud_text() else "nothing to skip"),
-                ("I/O: loop markers     P: loop on/off",
-                 self._loop_hud_text() or "no loop set"),
+                ("I/O: loop markers   P: loop   Shift+P: drill it",
+                 (self._drill.line() if self._drill is not None
+                  and not self._drill.finished
+                  else self._loop_hud_text() or "no loop set")),
+                "  In a drill Ctrl+PgUp/PgDn steps the speed yourself and "
+                "the clean passes start again; plain PgUp/PgDn ends it.",
                 "L: loop the weakest part",
                 ("TAB: choose track (M combines two)", meta.track_name or "—"),
                 ("Q: the easier reading — drops notes a lower string is "

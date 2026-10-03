@@ -409,3 +409,106 @@ class TestTheBreathAtTheLoopTurn:
         screen = self._held()
         screen.seek(8000.0)
         assert screen._breath_s == 0.0
+
+
+def _press(screen, key, mod=0, char=""):
+    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, key=key, mod=mod,
+                                           unicode=char, scancode=0))
+
+
+class TestSteppingTheLadderByHand:
+    """*"Wie kann ich entscheiden, dass naechste Tempostufe fuer mich jetzt
+    passt?"* Until this, he could not: PgUp ENDS the drill by design, so
+    there was no way to say "this is fine, move on" without killing it.
+    """
+
+    def _drilling(self):
+        screen = _screen()
+        screen.start_drill(0.0, 4000.0, "bars 1-2")
+        return screen
+
+    def test_ctrl_pgup_steps_up_and_keeps_drilling(self):
+        screen = self._drilling()
+        _press(screen, pygame.K_PAGEUP, pygame.KMOD_LCTRL)
+        assert screen._drill is not None
+        assert screen._drill.step == 1
+        assert screen._tempo_factor == LADDER[1]
+
+    def test_and_the_clean_passes_start_again(self):
+        """A step the PLAYER chose credits nothing. `clean_runs` reads the
+        same rule over the stored history to say how demanding two clean
+        passes are, and a pass nobody played would make that number describe
+        runs that never happened."""
+        screen = self._drilling()
+        _judge(screen, MatchType.HIT, 0, 4000.0)
+        _turn(screen)
+        assert screen._drill.clean == 1
+        _press(screen, pygame.K_PAGEUP, pygame.KMOD_LCTRL)
+        assert screen._drill.clean == 0
+        assert screen._drill.passes == 1, "the pass that happened still counts"
+
+    def test_ctrl_pgdn_goes_back_down(self):
+        screen = self._drilling()
+        _press(screen, pygame.K_PAGEUP, pygame.KMOD_LCTRL)
+        _press(screen, pygame.K_PAGEDOWN, pygame.KMOD_LCTRL)
+        assert screen._drill.step == 0
+        assert screen._tempo_factor == LADDER[0]
+
+    def test_the_top_of_the_ladder_says_so(self):
+        screen = self._drilling()
+        for _ in range(len(LADDER) + 3):
+            _press(screen, pygame.K_PAGEUP, pygame.KMOD_LCTRL)
+        assert screen._drill.step == len(LADDER) - 1
+        assert "already at the top" in (screen._status_note or "")
+
+    def test_the_plain_key_still_ends_the_drill(self):
+        """Shift and Ctrl are tested FIRST, because an `if` chain is read in
+        order -- and a hand on the bare speed key must still end it."""
+        screen = self._drilling()
+        _press(screen, pygame.K_PAGEUP)
+        assert screen._drill is None
+
+    def test_without_a_drill_it_is_the_ordinary_speed_key(self):
+        """The guard is tested first and asks for a RUNNING drill, so with
+        none the Ctrl press falls through to the key it was always."""
+        screen = _screen()
+        before = screen._tempo_factor
+        _press(screen, pygame.K_PAGEDOWN, pygame.KMOD_LCTRL)
+        assert screen._tempo_factor < before
+
+
+class TestDrillingTheLoopYouSet:
+    """*"Wie kann ich mit dem Zeiger wohin springen, um zu markieren?"* The
+    keys for marking already existed -- arrows, then I and O. What was
+    missing is the one that drills what they marked."""
+
+    def test_shift_p_drills_the_loop(self):
+        screen = _screen()
+        screen._set_loop_start(2000.0)
+        screen._set_loop_end(6000.0)
+        _press(screen, pygame.K_p, pygame.KMOD_LSHIFT, "P")
+        assert screen._drill is not None
+        assert (screen._drill.start_ms, screen._drill.end_ms) == (2000.0, 6000.0)
+        assert screen._tempo_factor == LADDER[0]
+
+    def test_it_names_the_bars(self):
+        screen = _screen()
+        screen._set_loop_start(2000.0)
+        screen._set_loop_end(6000.0)
+        _press(screen, pygame.K_p, pygame.KMOD_LSHIFT, "P")
+        assert screen._drill.where == "bars 2-3"
+
+    def test_with_no_loop_it_says_so_and_drills_nothing(self):
+        screen = _screen()
+        _press(screen, pygame.K_p, pygame.KMOD_LSHIFT, "P")
+        assert screen._drill is None
+        assert "loop" in (screen._status_note or "").lower()
+
+    def test_the_plain_key_still_toggles_the_loop(self):
+        screen = _screen()
+        screen._set_loop_start(2000.0)      # it refuses without both markers
+        screen._set_loop_end(6000.0)
+        was = screen._loop_enabled
+        _press(screen, pygame.K_p)
+        assert screen._loop_enabled != was
+        assert screen._drill is None

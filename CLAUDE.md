@@ -5869,6 +5869,45 @@ passage and back to the first fret of it. So a drilled passage stands still at t
 - **Anything that leaves ends it**: the drill finishing, the loop being switched off, an arrow key. A breath held through a seek would stand the
   song still wherever the key landed, which is a key that looks dead.
 
+## The Ladder Had No Way In And No Way To Say "Enough"
+
+Three questions in one message, and each named a gap the drill shipped with.
+
+**"Wie kann ich entscheiden, dass naechste Tempostufe fuer mich jetzt passt?"** He could not. `PgUp` ENDS the drill, deliberately — *"an
+automatic that silently undoes what you just set by hand is worse than one that was never offered"* — which is the right answer for a hand on
+the speed and leaves no way at all to say *"this step is fine, move on"*. **`Ctrl+PgUp` / `Ctrl+PgDn`** step the ladder and keep drilling.
+
+- **The clean counter goes back to zero and nothing is credited.** The step is the player's to choose; the PASSES are a measurement, and
+  `clean_runs` reads the same rule over the stored history to say how demanding two of them really are. Crediting a pass nobody played would
+  make that number describe runs that never happened — the presumption of innocence this file runs on, pointed at the ladder itself.
+- **Tested BEFORE the plain keys**, because an `if` chain is read in order, and with no drill running the Ctrl press falls through to the
+  speed key it has always been.
+- **An end of the ladder is a sentence**, not a dead key — the same rule as `R` walking the tunings and the scroll floor.
+
+**"Wie kann ich mit dem Zeiger wohin springen, um zu markieren? Pfeiltasten waeren noch besser."** Half of that already existed and was
+nowhere he would look: in the SONG the arrows move the playhead by a beat, a bar (`Shift`) or thirty seconds (`Ctrl`), and `I` and `O` set the
+loop. What was missing is the key that drills what they marked — so **`Shift+P`** does, in the song and in the stats overlay, through the same
+`start_drill` that `Shift+N` calls. P is the loop; Shift+P drills the loop.
+
+**And the overlay got the arrows he asked for.** Right-drag has marked a passage since it was built, and a hand on a mouse is a hand off the
+guitar. **`Shift+LEFT`/`Shift+RIGHT`** walk a bar cursor, **`I`** marks the start and **`O`** lands it — loop set, jump, hands free, `SPACE`
+plays it, which is where every other passage in this app lands.
+
+- **The same two letters as the song.** A third way to mark a passage would be a third answer to what marking one means; these are the
+  existing two keys reaching one view further out.
+- **The cursor starts where the SONG is**, not at bar one. The overlay was opened from somewhere and that somewhere is the passage being
+  worked on; starting at the front would mean walking the whole way back every time.
+- **One mapping and one drawing site.** Each mode records the rect it drew its bars in and over what stretch of song (`_bar_area`,
+  `_bar_view`), and the cursor is drawn last, over whatever is there. Three drawing sites — one per mode — is how the line and the keys come
+  to disagree about which bar is under the cursor, which is this project's oldest fault at the size of a vertical line. The trend lays its
+  bars out as equal COLUMNS and says so by leaving the view `None`; the list and the comparison lay them out in time, so a zoomed comparison
+  places the cursor where it really drew that bar.
+- **Unshifted arrows still do exactly what they did** in all three modes, which is what the last test of the class pins.
+
+**And the help page overflowed again** — four added lines put a block onto a second page at 1080, which is the player's own screen, so the
+pagination would have cost him a second `H` on every look. Folded into one entry and one line instead. **A page that paginates is not a page
+that may be filled without measuring**, for the second time in a week.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

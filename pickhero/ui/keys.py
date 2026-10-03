@@ -36,3 +36,19 @@ def shift_held(event) -> bool:
         pass
     letter = getattr(event, "unicode", "") or ""
     return len(letter) == 1 and letter.isalpha() and letter.isupper()
+
+
+def ctrl_held(event) -> bool:
+    """Was CTRL down for this key press.
+
+    Two signals rather than `shift_held`'s three: a modifier produces no
+    character of its own, so there is nothing to read off `unicode`. The live
+    keyboard state is guarded for the same reason as there -- a key handler
+    that can raise takes the app down with it.
+    """
+    if getattr(event, "mod", 0) & pygame.KMOD_CTRL:
+        return True
+    try:
+        return bool(pygame.key.get_mods() & pygame.KMOD_CTRL)
+    except pygame.error:
+        return False

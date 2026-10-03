@@ -1335,7 +1335,7 @@ class TestEveryKeyIsWrittenDownSomewhere:
         "f": "F: fret limit", "g": "G: hit window", "h": "H: this help",
         "i": "I/O", "j": "J: per-string", "k": "K: measure",
         "l": "L: loop the weakest", "m": "N/M", "n": "N/M",
-        "o": "I/O", "p": "P: loop on/off", "q": "Q: the easier reading",
+        "o": "I/O", "p": "P: loop", "q": "Q: the easier reading",
         "r": "R / Shift+R", "s": "S opens the sync panel",
         "t": "T: theme", "u": "U: recorded backing", "v": "V: chord scoring",
         "w": "W: wait mode", "x": "X/C", "y": "Y: timing report",

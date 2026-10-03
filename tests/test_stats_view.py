@@ -1699,3 +1699,80 @@ class TestTheMergedPartIsItsOwnHistory:
         entries = screen._stats._entries
         assert any(e.run.kind == "best" for e in entries)
         assert all(e.comparable for e in entries)
+
+
+class TestMarkingAPassageFromTheKeyboard:
+    """*"Wie kann ich im Drill mit dem Zeiger wohin springen, um zu
+    markieren? Pfeiltasten waeren noch besser."*
+
+    Right-drag has marked a passage since this overlay was built, and a hand
+    on a mouse is a hand off the guitar. Shift+LEFT/RIGHT walks a bar cursor,
+    `I` marks the start and `O` lands it -- the same two letters the song
+    itself uses for its loop markers.
+    """
+
+    def _with_runs(self, tmp_path, at_ms=6000.0):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        for day in range(2):
+            runs.append(screen._song_path,
+                        _run("h" * len(song.notes),
+                             f"2026-09-0{day + 1}T10:00:00+00:00"))
+        screen._playback_ms = at_ms
+        screen._stats.show()
+        return screen, screen._stats
+
+    def test_the_cursor_starts_where_the_song_is(self, display, tmp_path):
+        """Not at bar one: the overlay was opened from somewhere, and that
+        somewhere is the passage being worked on."""
+        _, overlay = self._with_runs(tmp_path, at_ms=6500.0)
+        overlay.handle_event(_key(pygame.K_RIGHT, mod=pygame.KMOD_LSHIFT))
+        assert overlay._mark_bar == 4          # bar 4 (0-based 3) and one on
+
+    def test_shift_arrows_walk_it(self, display, tmp_path):
+        _, overlay = self._with_runs(tmp_path)
+        for _ in range(3):
+            overlay.handle_event(_key(pygame.K_RIGHT, mod=pygame.KMOD_LSHIFT))
+        overlay.handle_event(_key(pygame.K_LEFT, mod=pygame.KMOD_LSHIFT))
+        assert overlay._mark_bar == 5
+        assert "bar 6" in overlay._nest_note
+
+    def test_i_then_o_lands_the_passage(self, display, tmp_path):
+        screen, overlay = self._with_runs(tmp_path)
+        overlay.handle_event(_key(pygame.K_i))
+        for _ in range(2):
+            overlay.handle_event(_key(pygame.K_RIGHT, mod=pygame.KMOD_LSHIFT))
+        overlay.handle_event(_key(pygame.K_o))
+        assert not overlay.open, "it lands the way a right-drag does"
+        assert screen._loop_enabled
+        assert (screen._loop_start_ms, screen._loop_end_ms) == (6000.0, 12000.0)
+        assert not screen._playing, "hands free, SPACE plays it"
+
+    def test_o_on_its_own_marks_the_one_bar(self, display, tmp_path):
+        screen, overlay = self._with_runs(tmp_path)
+        overlay.handle_event(_key(pygame.K_o))
+        assert (screen._loop_start_ms, screen._loop_end_ms) == (6000.0, 8000.0)
+
+    def test_shift_p_drills_what_was_marked(self, display, tmp_path):
+        """One key and one call in the song and in the overlay, so there is
+        one answer in the app to "walk this passage up the ladder"."""
+        screen, overlay = self._with_runs(tmp_path)
+        overlay.handle_event(_key(pygame.K_i))
+        overlay.handle_event(_key(pygame.K_RIGHT, mod=pygame.KMOD_LSHIFT))
+        overlay.handle_event(_key(pygame.K_o))
+        screen._stats.show()
+        screen._stats.handle_event(_key(pygame.K_p, mod=pygame.KMOD_LSHIFT))
+        assert screen._drill is not None
+        assert (screen._drill.start_ms, screen._drill.end_ms) == (6000.0,
+                                                                  10000.0)
+
+    def test_the_plain_arrows_still_do_what_they_did(self, display, tmp_path):
+        _, overlay = self._with_runs(tmp_path)
+        overlay.selected = [i for i, e in enumerate(overlay._entries)
+                            if e.comparable][:2]
+        overlay.mode = "compare"
+        overlay.set_zoom(3)
+        before = overlay.view_from_ms
+        overlay.handle_event(_key(pygame.K_RIGHT))
+        assert overlay.view_from_ms > before
+        assert overlay._mark_bar is None, "an unshifted arrow is not a mark"

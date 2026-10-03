@@ -381,6 +381,18 @@ class StatsOverlay:
         self._trend_grid_rect: pygame.Rect | None = None
         self._trend_from_bar: int | None = None
         self._trend_to_bar: int | None = None
+        # The keyboard's own way of marking a passage: a bar cursor moved
+        # with Shift+LEFT/RIGHT, `I` for the start and `O` for the end. The
+        # mouse has had right-drag since the day this overlay was built, and
+        # a hand on a mouse is a hand off the guitar.
+        self._mark_bar: int | None = None
+        self._mark_from: int | None = None
+        #: Where the bars are DRAWN this frame, and over what stretch of
+        #: song, so the cursor is placed by one mapping in every mode rather
+        #: than by three that can disagree. `None` for the view means the x
+        #: axis is columns of bars, which is what the trend draws.
+        self._bar_area: pygame.Rect | None = None
+        self._bar_view: tuple[float, float] | None = None
 
     # -- opening and closing ------------------------------------------------
 
@@ -558,6 +570,26 @@ class StatsOverlay:
             # Shift tested first, because an `if` chain is read in order and
             # a shifted key placed after its unshifted twin is never reached.
             self._go_to_nest(drill=shift_held(event))
+            return True
+        if key == pygame.K_p and shift_held(event):
+            # Shift+P drills whatever loop is set -- the same key and the
+            # same call as in the song, so there is one answer in the app to
+            # "walk this passage up the ladder".
+            self._screen.drill_current_loop()
+            return True
+        if key in (pygame.K_LEFT, pygame.K_RIGHT) and shift_held(event):
+            self._move_mark(1 if key == pygame.K_RIGHT else -1)
+            return True
+        if key == pygame.K_i:
+            self._mark_from = self._mark_at()
+            self._say_mark()
+            return True
+        if key == pygame.K_o:
+            first = self._mark_from
+            last = self._mark_at()
+            if first is None:
+                first = last
+            self._take_bars(min(first, last), max(first, last))
             return True
         if self.mode == "trend":
             # Only the cursor moves here. There is nothing to zoom: the grid
@@ -789,6 +821,96 @@ class StatsOverlay:
             if first is None or last is None:
                 return
             self._take_bars(min(first, last), max(first, last))
+
+    # -- marking a passage from the keyboard --------------------------------
+
+    def _mark_at(self) -> int:
+        """The bar the cursor is on, starting where the SONG is.
+
+        Not at bar one: the player opened this overlay from somewhere, and
+        that somewhere is the passage being worked on. Starting at the front
+        of the song would mean walking the whole way back every time.
+        """
+        _, measures = self._bars_of_notes()
+        if self._mark_bar is None:
+            here = getattr(self._screen, "_playback_ms", 0.0) or 0.0
+            at = 0
+            for measure in measures:
+                if measure.start_ms <= here:
+                    at = measure.index
+            self._mark_bar = at
+        return max(0, min(self._mark_bar, max(0, len(measures) - 1)))
+
+    def _move_mark(self, delta: int) -> None:
+        _, measures = self._bars_of_notes()
+        if not measures:
+            return
+        self._mark_bar = max(0, min(self._mark_at() + int(delta),
+                                    len(measures) - 1))
+        self._say_mark()
+
+    def _say_mark(self) -> None:
+        """What the cursor is on, and what the two keys will do with it.
+
+        In the overlay's own footer rather than only through `say()`: the
+        panel covers the HUD, so a status note is behind it while this is up.
+        """
+        at = self._mark_at() + 1
+        if self._mark_from is None:
+            self._nest_note = f"bar {at} — I marks the start, O the end"
+            return
+        first, last = sorted((self._mark_from + 1, at))
+        where = f"bar {first}" if first == last else f"bars {first}-{last}"
+        self._nest_note = f"{where} — O lands it, Shift+P drills it"
+
+    def _draw_mark(self, surface: pygame.Surface) -> None:
+        """The bar cursor, over whichever picture this mode drew.
+
+        One mapping and one drawing site. Three of them -- one per mode --
+        is how the line and the keys would come to disagree about which bar
+        is under the cursor, which is this project's oldest fault at the size
+        of a vertical line.
+        """
+        area = self._bar_area
+        if area is None or self._mark_bar is None or area.width <= 0:
+            return
+        _, measures = self._bars_of_notes()
+        if not measures:
+            return
+        theme = get_theme()
+        at = self._mark_at()
+        first = at if self._mark_from is None else min(self._mark_from, at)
+        last = at if self._mark_from is None else max(self._mark_from, at)
+        left = self._mark_x(first, area, measures)
+        right = self._mark_x(last + 1, area, measures)
+        if self._mark_from is not None and right > left:
+            shade = pygame.Surface((right - left, area.height), pygame.SRCALPHA)
+            shade.fill((*theme.hud_accent, 40))
+            surface.blit(shade, (left, area.y))
+        x = self._mark_x(at, area, measures)
+        surface.fill(theme.hud_accent, (x, area.y, 2, area.height))
+        label = self._font("arial", 11).render(str(at + 1), True,
+                                               theme.hud_accent)
+        surface.blit(label, (min(x + 3, area.right - label.get_width()),
+                             area.y - label.get_height() - 1))
+
+    def _mark_x(self, bar: int, area: pygame.Rect, measures) -> int:
+        """Where a bar line sits in the picture this mode drew.
+
+        The trend lays its bars out as equal COLUMNS, so a bar is its index;
+        the list and the comparison lay them out in time. Both are read off
+        `_bar_view`, which the drawing sets -- so a zoomed comparison places
+        the cursor where it really drew that bar.
+        """
+        count = max(1, len(measures))
+        if self._bar_view is None:
+            return area.x + int(area.width * min(bar, count) / count)
+        start, end = self._bar_view
+        span = max(1.0, end - start)
+        index = max(0, min(bar, count - 1))
+        ms = (measures[index].start_ms if bar < count
+              else measures[-1].end_ms)
+        return area.x + int(strip.x_for_ms(ms - start, span, area.width))
 
     def _bar_at(self, x: int) -> int:
         """Which bar the pointer is over, clamped to the song.
@@ -1173,12 +1295,16 @@ class StatsOverlay:
         surface.fill(theme.bg)
         panel = pygame.Rect(PANEL_PAD, PANEL_PAD,
                             w - 2 * PANEL_PAD, h - 2 * PANEL_PAD)
+        self._bar_area = None
         if self.mode == "compare":
             self._draw_compare(surface, panel)
         elif self.mode == "trend":
             self._draw_trend(surface, panel)
         else:
             self._draw_list(surface, panel)
+        # Last, over whatever was drawn: a cursor under the picture is a
+        # cursor nobody can see.
+        self._draw_mark(surface)
 
     @staticmethod
     def fit(font, text: str, width: int) -> str:
@@ -1304,6 +1430,11 @@ class StatsOverlay:
                 # would be a comparison nobody asked for.
                 surface.blit(self.bar(entry.run, bar_w, strip.STRIP_HEIGHT),
                              (bar_x, y))
+            if bar_w > 40:
+                band = pygame.Rect(bar_x, y, bar_w, strip.STRIP_HEIGHT)
+                self._bar_area = (band if self._bar_area is None
+                                  else self._bar_area.union(band))
+                self._bar_view = (0.0, max(1.0, self._song().duration_ms))
             y += ROW_H
         if not self._entries:
             surface.blit(small.render(
@@ -1311,7 +1442,8 @@ class StatsOverlay:
                 True, theme.hud_text), (x, y))
         foot = ("SPACE or click picks two · ENTER compares · S sorts · "
                 "T is the trend over evenings · N loops the next mistake · "
-                "Shift+N drills it · ESC closes")
+                "Shift+N drills it · Shift+LEFT/RIGHT then I/O marks a "
+                "passage · ESC closes")
         self._blit_foot(surface, panel, x, panel.right - 12 - x, foot)
 
     def _draw_trend(self, surface: pygame.Surface,
@@ -1423,6 +1555,10 @@ class StatsOverlay:
                                 len(rows) * (row_h + TREND_ROW_GAP)
                                 - TREND_ROW_GAP)
         self._trend_grid_rect = grid_rect
+        # The trend lays its bars out as equal COLUMNS, so the cursor is
+        # placed by index here rather than by time.
+        self._bar_area = grid_rect
+        self._bar_view = None
         pygame.draw.rect(surface, theme.lane_line, grid_rect, 1)
         self._draw_trend_mark(surface, grid_rect)
         y = grid_rect.bottom + 6
@@ -1434,9 +1570,9 @@ class StatsOverlay:
                             max(140, min(panel.height, used)))
         pygame.draw.rect(surface, theme.lane_line, panel, 1)
         foot = (f"{len(rows)} run{'' if len(rows) == 1 else 's'} over "
-                f"{len(measures)} bars · click a row then N to loop its "
-                "mistakes · right-drag the bars to practise them · "
-                "T or ESC back to the list")
+                f"{len(measures)} bars · N loops the next mistake · "
+                "right-drag, or Shift+LEFT/RIGHT then I/O, marks a passage · "
+                "Shift+P drills it · T or ESC back to the list")
         self._blit_foot(surface, panel, x, width, foot)
 
     def _draw_trend_ruler(self, surface: pygame.Surface, grid_x: int,
@@ -1539,13 +1675,17 @@ class StatsOverlay:
             self._draw_marks(surface, rect, view)
             pygame.draw.rect(surface, theme.lane_line, rect, 1)
             self._bar_rects.append((slot, rect))
+            self._bar_area = (rect if self._bar_area is None
+                              else self._bar_area.union(rect))
+            self._bar_view = view
             y += bar_h + 14
         seen = (f"{format_ms(view[0])}–{format_ms(view[1])}"
                 if self.zoom else "the whole song")
         foot = (f"+/- zoom ({self.zoom + 1}/{ZOOM_STEPS}) · "
                 f"UP/DOWN bar size ({self.size + 1}/{len(ladder)}) · "
                 f"LEFT/RIGHT move — showing {seen} · "
-                "right-drag or N marks a passage · Shift+N drills it · "
+                "right-drag or Shift+LEFT/RIGHT then I/O marks a passage · "
+                "N walks the mistakes · Shift+N or Shift+P drills · "
                 "T is the trend · ESC back")
         self._blit_foot(surface, panel, x, width, foot)
 
