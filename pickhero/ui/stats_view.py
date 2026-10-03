@@ -583,10 +583,7 @@ class StatsOverlay:
             self._go_to_nest(drill=shift_held(event))
             return True
         if key == pygame.K_p and shift_held(event):
-            # Shift+P drills whatever loop is set -- the same key and the
-            # same call as in the song, so there is one answer in the app to
-            # "walk this passage up the ladder".
-            self._screen.drill_current_loop()
+            self._drill_here()
             return True
         if key in (pygame.K_LEFT, pygame.K_RIGHT) and shift_held(event):
             self._move_mark(1 if key == pygame.K_RIGHT else -1)
@@ -859,6 +856,37 @@ class StatsOverlay:
         self._mark_bar = max(0, min(self._mark_at() + int(delta),
                                     len(measures) - 1))
         self._say_mark()
+
+    def _drill_here(self) -> None:
+        """Shift+P: walk up the ladder whatever this overlay is pointing at.
+
+        It called `drill_current_loop` straight through, which looks at the
+        SCREEN's loop -- and `I` never sets one. So in the comparison, where
+        this overlay's own line says *"bars 3-5 — O lands it, Shift+P drills
+        it"*, the key refused; and the refusal went to the screen's status
+        note, which this panel is drawn over. Nothing happened and nothing
+        was said, which is how it came back as *"funktioniert nicht"* --
+        the fifth time this project has shipped a sentence nobody can see.
+
+        Two things can be meant and they are tried in the order of how
+        recently the player said them: a start marked with `I`, which is the
+        one thing `O` would otherwise have to finish, and the loop that was
+        already set when the overlay was opened. With neither, the cursor
+        line says what to press rather than the key doing nothing -- and it
+        is the SAME line `_say_mark` already writes, so there are not two
+        sentences about one state.
+        """
+        if self._mark_from is not None:
+            first, last = sorted((self._mark_from, self._mark_at()))
+            self._take_bars(first, last)
+        if not self._screen.has_loop():
+            self._say_mark()
+            return
+        # The drill lands with the hands free and its own HUD line, both of
+        # which are behind this panel. `_take_bars` already closes for that
+        # reason; a loop set before the overlay was opened needs it too.
+        self.close()
+        self._screen.drill_current_loop()
 
     def _say_mark(self) -> None:
         """What the cursor is on, and what the two keys will do with it.

@@ -5366,8 +5366,19 @@ class PlayingScreen:
         self._say(f"Drill — {int(round(self._drill.tempo * 100))} %, "
                   f"{drill_mod.CLEAN_PASSES} clean passes from here")
 
-    def drill_current_loop(self) -> None:
-        """Walk the loop that is SET up the ladder.
+    def has_loop(self) -> bool:
+        """Is there a stretch set for `Shift+P` to walk up the ladder.
+
+        One definition, because the stats overlay has to ask the same
+        question before it decides what `Shift+P` is pointing AT -- and two
+        readings of "is a loop set" is how one of them comes to drill
+        something the other says is not there.
+        """
+        start, end = self._loop_start_ms, self._loop_end_ms
+        return start is not None and end is not None and end > start
+
+    def drill_current_loop(self) -> bool:
+        """Walk the loop that is SET up the ladder. True when it started.
 
         *"Wie kann ich im Drill mit dem Zeiger wohin springen, um zu
         markieren?"* -- the keys for that already existed: the arrows move
@@ -5376,13 +5387,18 @@ class PlayingScreen:
         so this is a way IN to the ladder and not a second way to mark a
         passage: `start_drill` is the same call `Shift+N` makes in the stats
         overlay.
+
+        It ANSWERS rather than only refusing, because the stats overlay
+        covers this screen's status note: a refusal said here while that is
+        up is a sentence nobody can see, which is exactly how this key came
+        back as *"funktioniert nicht"*.
         """
-        start, end = self._loop_start_ms, self._loop_end_ms
-        if start is None or end is None or end <= start:
+        if not self.has_loop():
             self._say("Set a loop first — I and O, or right-drag the strip")
-            return
-        where = self._bars_between(start, end)
-        self.start_drill(start, end, where)
+            return False
+        start, end = self._loop_start_ms, self._loop_end_ms
+        self.start_drill(start, end, self._bars_between(start, end))
+        return True
 
     def _bars_between(self, start_ms: float, end_ms: float) -> str:
         """"bars 12-14" for a stretch of song, or empty where it has none."""

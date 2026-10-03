@@ -1766,6 +1766,29 @@ class TestMarkingAPassageFromTheKeyboard:
         assert (screen._drill.start_ms, screen._drill.end_ms) == (6000.0,
                                                                   10000.0)
 
+    def test_shift_p_finishes_a_mark_o_never_landed(self, display, tmp_path):
+        """`I` sets no loop, so the key looked at the SCREEN and found none --
+        while this overlay's own line was already promising "Shift+P drills
+        it". Reported as *"funktioniert nicht"*."""
+        screen, overlay = self._with_runs(tmp_path)
+        overlay.handle_event(_key(pygame.K_i))
+        overlay.handle_event(_key(pygame.K_RIGHT, mod=pygame.KMOD_LSHIFT))
+        overlay.handle_event(_key(pygame.K_p, mod=pygame.KMOD_LSHIFT))
+        assert screen._drill is not None
+        assert (screen._drill.start_ms, screen._drill.end_ms) == (6000.0,
+                                                                  10000.0)
+        assert not overlay.open, "the drill lands behind this panel"
+
+    def test_and_with_nothing_marked_it_says_so_where_it_can_be_read(
+            self, display, tmp_path):
+        """The screen's status note is BEHIND this panel, so a refusal said
+        there is a key that does nothing and says nothing."""
+        screen, overlay = self._with_runs(tmp_path)
+        overlay.handle_event(_key(pygame.K_p, mod=pygame.KMOD_LSHIFT))
+        assert screen._drill is None
+        assert overlay.open
+        assert "I marks the start" in overlay._nest_note
+
     def test_the_plain_arrows_still_do_what_they_did(self, display, tmp_path):
         _, overlay = self._with_runs(tmp_path)
         overlay.selected = [i for i, e in enumerate(overlay._entries)

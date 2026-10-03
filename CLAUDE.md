@@ -5934,6 +5934,29 @@ Song direkt oeffne?"* — `Shift+D` opens the stats on the STORED evenings, whic
 loop by hand with the arrows and `I`/`O` and press `Shift+P`. Both already worked. **A feature that only the person who built it can find is
 the same fault as one that does not work**, which is why the answer here was a sentence on screen rather than an explanation in chat.
 
+## The Key Its Own Line Was Advertising
+
+*"sh+P sollte den Drill starten (zB aus Stats mit 2er Vergleich). Das funktioniert nicht. Weder mit Mausklick noch mit Shortcut."*
+
+Reproduced in one run, and the overlay was promising it in as many words. `_say_mark` writes *"bars 3-5 — O lands it, Shift+P drills it"* the
+moment `I` is pressed — and `I` sets no loop. `Shift+P` called `drill_current_loop`, which looks at the SCREEN's loop, found none, and refused.
+
+**And the refusal went to `_say`, which this panel is drawn over.** So the key did nothing and said nothing: the fifth time this project has
+shipped a sentence nobody can see, and the second time in the same overlay.
+
+- **Two things can be meant, tried in the order the player said them**: a start marked with `I` — which is the one thing `O` would otherwise
+  have to finish — and the loop already set when the overlay was opened. `_take_bars` is the one implementation either way, so this is not a
+  third answer to what marking a passage means.
+- **With neither, the cursor line says what to press**, and it is the SAME line `_say_mark` already writes. Two sentences about one state is how
+  one of them comes to name the wrong key.
+- **It closes the overlay before drilling.** The drill lands with the hands free and puts its own line on the HUD, and both are behind this
+  panel; `_take_bars` has closed for that reason since it was written, and a loop set before the overlay was opened needs it too.
+- **`has_loop()` is one definition**, asked by the screen and by the overlay. Two readings of "is a loop set" is how one of them drills something
+  the other says is not there — and `drill_current_loop` ANSWERS now rather than only refusing, so a caller whose own screen can show the
+  sentence can say it where it will be read.
+- **The key was never broken in the SONG**, which is why it took a report: pressed there, with a loop landed from the overlay, it drills and
+  always did. Only the one place that advertises it could not do it.
+
 ## Every Shortcut Is A Button, And Nothing Else Is
 
 *"Kann ich dafuer auch Tasten haben, die ich mit der Maus klicken kann in der Fussleiste? Du kannst auch die Word underlinen, dann sind es
