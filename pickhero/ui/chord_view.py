@@ -27,9 +27,12 @@ from pickhero.ui.colors import STRING_COLORS, get_theme
 
 # The grid. Six string lines across, five fret spaces down.
 STRINGS = 6
-# Room above the grid for the name, and below it for the fret numbers.
+# Room above the grid for the name, and below it for the fret number. Every
+# one of these is at the card's FULL size and is scaled with it -- see
+# `_chrome`. They were absolute, so making the card smaller took the whole
+# reduction out of the grid: at 15 % off the card the dots lost 24 %.
 NAME_H = 22
-FOOT_H = 12
+FOOT_H = 14
 PAD = 10
 # An open string is a ring above the nut, a silent one a cross -- the two
 # marks every diagram uses, and the only way to tell "play it open" from
@@ -38,6 +41,8 @@ MARK_R = 4
 # Room to the LEFT of the nut for those marks, now that the strings lie
 # across rather than down.
 MARK_ROOM = 18
+# What `card_size(1.0)` draws, which is what every length above is a part of.
+FULL_H = 178
 
 
 def card_size(scale: float = 1.0) -> tuple[int, int]:
@@ -51,19 +56,66 @@ def card_size(scale: float = 1.0) -> tuple[int, int]:
     return int(round(240 * scale)), int(round(178 * scale))
 
 
+def _chrome(rect: pygame.Rect) -> tuple[int, int, int, int]:
+    """(name, foot, pad, mark room) at the size this card is drawn.
+
+    Read off the card's own height, because `card_size` is the one place
+    that knows what a card is -- and a second copy of the scale is how the
+    drawing and the layout come to disagree about where the grid starts.
+    """
+    scale = max(0.4, rect.height / FULL_H)
+    return (max(14, int(round(NAME_H * scale))),
+            max(10, int(round(FOOT_H * scale))),
+            max(4, int(round(PAD * scale))),
+            max(10, int(round(MARK_ROOM * scale))))
+
+
+def header(rect: pygame.Rect, labelled: bool) -> tuple[int, int, int]:
+    """(y of the label, y of the name, y the grid starts at).
+
+    One implementation, because the drawing and `grid_rect` were two: the
+    header was `NAME_H + 12` and a 22 px name RENDERS about 27 px tall, so
+    the grid began inside the name and the top string's own cross was drawn
+    through it -- visible on the player's screenshot at full size, and worse
+    at any smaller one.
+    """
+    scale = max(0.4, rect.height / FULL_H)
+    label_h = int(round(14 * scale)) if labelled else 0
+    y = rect.top + int(round(4 * scale))
+    return y, y + label_h, y + label_h + int(round(NAME_H * 1.25 * scale))
+
+
 def grid_rect(rect: pygame.Rect, labelled: bool) -> pygame.Rect:
     """Where the fret grid sits inside a card.
 
     One implementation, so the drawing and anything asking where a string
     landed cannot disagree.
     """
-    top = rect.top + NAME_H + (12 if labelled else 0)
+    _, _, foot_h, pad, mark_room = (0, *_chrome(rect))
+    top = header(rect, labelled)[2]
     return pygame.Rect(
-        rect.left + PAD + MARK_ROOM,
+        rect.left + pad + mark_room,
         top,
-        max(1, rect.right - PAD - (rect.left + PAD + MARK_ROOM)),
-        max(1, rect.bottom - FOOT_H - 4 - top),
+        max(1, rect.right - pad - (rect.left + pad + mark_room)),
+        max(1, rect.bottom - foot_h - 4 - top),
     )
+
+
+def leftmost_finger(shape: ChordShape) -> tuple[int, int] | None:
+    """(column 1..FRETS_SHOWN, the fret it really is) of the first finger.
+
+    *"Fuege Bundnummer zum linkesten Finger hinzu."* The number used to sit
+    at the NUT and only appear when the shape was up the neck, which answers
+    "where does this diagram begin" -- and the question a player holding the
+    grip has is "which fret is that dot on". Those are the same number only
+    in the first column.
+    """
+    best = None
+    for _string, fret in shape.frets:
+        row = fret - shape.base_fret
+        if 1 <= row <= FRETS_SHOWN and (best is None or row < best[0]):
+            best = (row, fret)
+    return best
 
 
 def string_rows(grid: pygame.Rect) -> list[tuple[int, float]]:
@@ -100,32 +152,37 @@ def draw_diagram(surface: pygame.Surface, rect: pygame.Rect,
     pygame.draw.rect(surface, t.lane_line, rect, 1, border_radius=6)
 
     from pickhero.ui.scrolling import _get_font
-    name_font = _get_font("arial", 22)
-    small_font = _get_font("arial", 12)
+    name_h, foot_h, pad, mark_room = _chrome(rect)
+    name_font = _get_font("arial", max(14, name_h))
+    small_font = _get_font("arial", max(9, int(round(12 * rect.height
+                                                     / FULL_H))))
+    foot_font = _get_font("arial", max(11, foot_h), bold=True)
 
-    y = rect.top + 4
+    label_y, name_y, _ = header(rect, bool(label))
     if label:
-        tag = small_font.render(label, True, t.hud_text)
-        surface.blit(tag, (rect.left + PAD, y))
-        y += tag.get_height() - 2
+        surface.blit(small_font.render(label, True, t.hud_text),
+                     (rect.left + pad, label_y))
     name = name_font.render(shape.name, True,
                             t.hud_accent if not dim else t.hud_text)
-    surface.blit(name, (rect.left + PAD, y))
+    surface.blit(name, (rect.left + pad, name_y))
 
     grid = grid_rect(rect, bool(label))
     if grid.width < 20 or grid.height < 20:
         return
     step_x = grid.width / FRETS_SHOWN
 
-    # The nut, or the fret number where the shape sits up the neck. An
-    # open-position grid with a dot on the twelfth fret is not a diagram.
-    if shape.base_fret:
-        base = small_font.render(f"{shape.base_fret + 1}", True, t.hud_text)
-        surface.blit(base, (grid.left - base.get_width() // 2,
-                            grid.bottom + 2))
-    else:
+    # The nut, where the shape starts at it. A grid that opens up the neck
+    # draws no nut, because there is none there -- and either way the fret
+    # the first finger is on is written under that finger, below.
+    if not shape.base_fret:
         pygame.draw.line(surface, t.hud_text, (grid.left, grid.top),
                          (grid.left, grid.bottom), 3)
+    first = leftmost_finger(shape)
+    if first is not None:
+        row, fret = first
+        text = foot_font.render(str(fret), True, t.hud_text)
+        cx = int(grid.left + (row - 0.5) * step_x)
+        surface.blit(text, (cx - text.get_width() // 2, grid.bottom + 2))
 
     for i in range(FRETS_SHOWN + 1):
         x = int(grid.left + i * step_x)

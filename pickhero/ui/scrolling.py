@@ -533,8 +533,11 @@ LEAD_IN_DIM_START = 0.18
 TAB_GLIDE_S = 0.25
 TAB_GLIDE_SNAP_PX = 1200.0
 # Air between the last line of the HUD and the top of the music. The margin
-# itself is measured -- see _hud_top_used.
-TAB_TOP_GAP = 26
+# itself is measured -- see _hud_top_used. Fourteen px of it went back into
+# the music: *"Mach die vertikalen Abstaende enger, damit alles groesser
+# wird."* The HUD above it has a ground of its own nowhere, so the gap is
+# the only thing keeping the two apart and twelve is enough to do it.
+TAB_TOP_GAP = 12
 
 # The three ways this screen can draw one song. Not three screens: the clock,
 # the keys, the matcher and the offsets are the same in all of them, and this
@@ -596,10 +599,14 @@ NUT_RADIUS_FRACTION = 0.40
 SHEET_SNAP_ROWS = 3.0
 # How dark a string's core is against its highlight, on the sheet.
 SHEET_STRING_CORE = 0.62
-# The grip cards, a tenth smaller than they were drawn on the scrolling
-# board. They sit in the corner the music now reaches into, and a tenth is
-# what the player asked for after seeing them over the top string.
-CHORD_CARD_SCALE = 0.9
+# The grip cards. They sit in the corner the music now reaches into, and
+# what they cost there is MEASURED: on a 1920x1080 hybrid view the band they
+# take is 112 px of the 905 the music has, which with the chord names' own
+# taller strip made the head 21 % smaller and put half again as many notes
+# on screen the moment Shift+C was pressed -- *"gleich viele Noten Platz
+# finden und nicht mehr, weil alles kleiner wird"*. A tenth off was the
+# first answer and 15 % is the player's.
+CHORD_CARD_SCALE = 0.765
 # Clear space a chord name needs after it on the sheet before the next one
 # may be drawn. Below this the two read as one word.
 SHEET_NAME_GAP = 10
@@ -5267,7 +5274,7 @@ class PlayingScreen:
         # are not reading while you are lining a recording up.
         #
         # What IS counted is the one-line status note above it, and a gap.
-        bottom = footer_top - 18 - 12 - strip.STRIP_BAND
+        bottom = footer_top - 18 - 6 - strip.STRIP_BAND
         top = self._hud_top_used() + TAB_TOP_GAP
         return top, max(1, bottom - top)
 

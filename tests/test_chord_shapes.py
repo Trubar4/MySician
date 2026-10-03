@@ -418,9 +418,40 @@ class TestTheCardsAndTheTextShareTheCorner:
         screen, _ = self._screen(True)
         assert screen._hud_top_used() >= card_size(CHORD_CARD_SCALE)[1]
 
-    def test_and_they_are_a_tenth_smaller_than_the_boards_own(self):
+    def test_and_they_are_15_percent_smaller_than_they_were(self):
+        """*"Chord oben: 15% kleiner."* Measured on a 1920x1080 hybrid view,
+        the band they take is what the music pays: 112 px of its 905."""
         from pickhero.ui.scrolling import CHORD_CARD_SCALE
-        assert CHORD_CARD_SCALE == 0.9
+        assert CHORD_CARD_SCALE == pytest.approx(0.9 * 0.85, abs=0.005)
+
+    def test_a_smaller_card_loses_no_more_of_its_grid_than_of_itself(self):
+        """Every length inside the card was absolute -- the name band, the
+        padding, the room for the marks -- so taking 15 % off the card took
+        24 % off the dots. They scale with it now."""
+        import pygame
+
+        from pickhero.ui.chord_view import card_size, grid_rect
+
+        def share(scale):
+            card = pygame.Rect(0, 0, *card_size(scale))
+            return grid_rect(card, True).height / card.height
+
+        assert share(0.765) == pytest.approx(share(1.0), abs=0.03)
+
+    def test_the_grid_starts_below_the_name_rather_than_inside_it(self):
+        """The header was `NAME_H + 12` and a 22 px name RENDERS about 27 px
+        tall, so the top string's own cross was drawn through the name --
+        on the player's screenshot at full size, and worse at any smaller
+        one."""
+        import pygame
+
+        from pickhero.ui.chord_view import NAME_H, card_size, grid_rect
+
+        for scale in (1.0, 0.765, 0.5):
+            card = pygame.Rect(0, 0, *card_size(scale))
+            grid = grid_rect(card, True)
+            name_bottom = card.top + (4 + 14 + NAME_H * 1.2) * scale
+            assert grid.top >= name_bottom - 1, scale
 
     def test_and_stays_where_it_was_with_the_cards_off(self):
         """Nothing moves for a player who never turns this on."""
@@ -566,3 +597,60 @@ class TestTheDiagramLiesTheWayTheBoardDoes:
                          label="now")
             draw_diagram(surface, pygame.Rect(12, 6, width, height), shape,
                          label="next", dim=True)
+
+
+class TestTheFretNumberUnderTheLeftmostFinger:
+    """*"Fuege Bundnummer zum linkesten Finger hinzu."*
+
+    It sat at the NUT and only appeared when the shape was up the neck,
+    which answers "where does this diagram begin". The question a player
+    holding the grip has is "which fret is that dot on", and the two are the
+    same number only in the first column.
+    """
+
+    def test_it_is_the_real_fret_and_its_own_column(self):
+        from pickhero.ui.chord_view import leftmost_finger
+        shape = ChordShape(name="G5", frets=((6, 5), (5, 7), (4, 7)),
+                           base_fret=2)
+        assert leftmost_finger(shape) == (3, 5)
+
+    def test_an_open_position_grip_gets_one_too(self):
+        """It used to get none at all: `base_fret` was 0, so the nut was
+        drawn and no number with it."""
+        from pickhero.ui.chord_view import leftmost_finger
+        shape = ChordShape(name="Em", frets=((6, 0), (5, 2), (4, 2), (3, 0),
+                                             (2, 0), (1, 0)), base_fret=0)
+        assert leftmost_finger(shape) == (2, 2)
+
+    def test_a_grip_with_nothing_fretted_names_no_fret(self):
+        from pickhero.ui.chord_view import leftmost_finger
+        shape = ChordShape(name="Em7", frets=((6, 0), (5, 0)), base_fret=0)
+        assert leftmost_finger(shape) is None
+
+    def test_a_note_past_the_grid_is_not_the_leftmost_anything(self):
+        from pickhero.ui.chord_view import leftmost_finger
+        shape = ChordShape(name="?", frets=((6, 3), (5, 40)), base_fret=2)
+        assert leftmost_finger(shape) == (1, 3)
+
+
+class TestWhatTheChordViewCostsTheMusic:
+    """*"Mir waere es recht, wenn gleich viele Noten Platz finden und nicht
+    mehr, weil alles kleiner wird."*
+
+    The head is derived from the room, so everything the chord view puts on
+    the screen comes out of the notes. Both halves are bounded here.
+    """
+
+    def test_the_name_strip_still_holds_a_name(self):
+        """The name is sized `strip - 20`, the 20 being the bar number's own
+        line. Below a strip of 34 it would be sized under its own floor and
+        the two would be drawn through each other."""
+        from pickhero.ui import sheet
+        assert sheet.CHORD_STRIP - 20 >= 14
+
+    def test_and_the_rows_are_still_plainly_two(self):
+        """`ROW_GAP` went into the head. It is air, not structure -- the row
+        above ends in its own staff and the next begins with its bar
+        numbers -- but nothing is a row if it touches the one below it."""
+        from pickhero.ui import sheet
+        assert sheet.ROW_GAP >= 8

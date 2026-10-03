@@ -5934,6 +5934,44 @@ Song direkt oeffne?"* — `Shift+D` opens the stats on the STORED evenings, whic
 loop by hand with the arrows and `I`/`O` and press `Shift+P`. Both already worked. **A feature that only the person who built it can find is
 the same fault as one that does not work**, which is why the answer here was a sentence on screen rather than an explanation in chat.
 
+## What The Chord View Costs The Notes
+
+*"Chord oben: 15% kleiner. Fuege Bundnummer zum linkesten Finger hinzu. Die Tabview sollte moeglichst gleich gross sein, wie ohne Chords. Mach
+die vertikalen Abstaende enger, damit alles groesser wird. Mir waere es recht, wenn gleich viele Noten Platz finden und nicht mehr, weil alles
+kleiner wird."*
+
+**He is reading a real effect and it is bigger than it looks.** Measured on a 1920x1080 hybrid view of a song at 160 BPM, the moment `Shift+C`
+is pressed:
+
+| | HUD band | room for music | row strip | head | bars a row | notes on screen |
+|---|---|---|---|---|---|---|
+| chords off | 54 | 905 | 20 | **59.8** | 2 | 96 |
+| **chords on, before** | 166 | 793 | 54 | **47.1** | **3** | **144** |
+| chords off, now | 54 | 925 | 20 | 61.7 | 2 | 96 |
+| **chords on, now** | 142 | 837 | 42 | **52.3** | 3 | 144 |
+
+The head is derived from the room, so **everything the chord view puts on the screen comes out of the notes** — and it was 180 px of the 905:
+112 for the band the two cards take at the top, and 34 a row for the taller strip the names need. A 21 % smaller head means half again as many
+bars fit, which is the complaint exactly: more music, drawn smaller, for pressing a key about chords.
+
+- **The cards are 15 % smaller and their chrome scales with them.** Every length inside a card was absolute — the name band, the padding, the
+  room for the open/muted marks — so taking 15 % off the card took **24 %** off the grid. `_chrome` reads the scale off the card's own height,
+  which `card_size` is still the one definition of.
+- **The grid starts below the name rather than inside it.** The header was `NAME_H + 12` and a 22 px name RENDERS about 27 px tall, so the top
+  string's own cross was drawn through the name — visible on the player's screenshot at full size and worse at any smaller one. `header()` is
+  one implementation, used by the drawing and by `grid_rect`.
+- **The fret number is the leftmost FINGER's, under its own column.** It sat at the nut and appeared only when the shape was up the neck, which
+  answers *"where does this diagram begin"*. The question a player holding the grip has is *"which fret is that dot on"*, and the two are the
+  same number only in the first column. An open-position grip gets one now too, where it got none at all.
+- **The vertical gaps went into the head**: `TAB_TOP_GAP` 26 -> 12, `ROW_GAP` 18 -> 12, the bottom gap 12 -> 6, and `CHORD_STRIP` 54 -> 42 —
+  which was letting the chord name grow to 34 px, bigger than anything else on the screen and paid for twice over, once per row.
+
+**And the half that was asked for and is NOT delivered, with the number that says why.** Bars-per-row is a step function of the head, swept on
+the same song: 4 bars up to a head of 42, **3 from 43 to 57, 2 from 58 to 85**, 1 above. Chords on now reaches 52.3 and needs **58**. The gap is
+81 px of room — and the cards' own band is 88. **So the card is the whole of what stands between three bars and two, and a card short enough to
+close it would be 48 px tall**, which is a grid of five frets in 20 pixels. "Gleich viele Noten" is not reachable by shrinking the card; it is
+reachable by pressing `+` once, at the cost of the second row no longer fitting whole.
+
 ## The Key Its Own Line Was Advertising
 
 *"sh+P sollte den Drill starten (zB aus Stats mit 2er Vergleich). Das funktioniert nicht. Weder mit Mausklick noch mit Shortcut."*

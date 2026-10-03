@@ -69,10 +69,14 @@ LANE_HEADS = 1.18
 NUMBER_STRIP = 20
 # And the taller strip a row gets when the chord names are on: they are read
 # at a glance from a distance, the way the scrolling board draws them, so
-# they need the height a bar number does not.
-CHORD_STRIP = 54
-# Air between one row and the next, so the eye can tell them apart.
-ROW_GAP = 18
+# they need the height a bar number does not. It was 54, which let the name
+# grow to 34 px -- bigger than anything else on the screen, and paid for out
+# of the NOTES: 34 px of strip on each of two rows is 68 px of head.
+CHORD_STRIP = 42
+# Air between one row and the next, so the eye can tell them apart. Measured
+# rather than felt: at 12 the rows are still plainly two, and the six saved
+# go into the head, which is the thing being read.
+ROW_GAP = 12
 # How thick each string is drawn, relative to the thinnest, index 0 = high e.
 # Not invented: these are the gauges of a light set -- .010 .013 .017 .026
 # .036 .046 -- divided by the first. A guitarist reads the low E as a rope
