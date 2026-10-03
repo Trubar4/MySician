@@ -1524,6 +1524,10 @@ class PlayingScreen:
         # Help overlay
         self._show_help: bool = False
         self._help_page: int = 0
+        #: Where each tuning of the HUD strip landed, and what pressing it
+        #: would transpose to. Rebuilt by the drawing and read by the mouse,
+        #: so the two cannot disagree about which word is where.
+        self._tuning_hits: list[tuple[pygame.Rect, int]] = []
         #: What is typed into the help page's search, or None while the box
         #: is shut. Empty string is a box that is open and empty, which is a
         #: different state: the page then says what to type.
@@ -2291,6 +2295,11 @@ class PlayingScreen:
         # the play state is left exactly as it was, the same as a click on
         # the strip, because the two are the same gesture at two sizes.
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            # The tuning strip first: it is HUD text drawn OVER everything at
+            # the top, so whatever is underneath must not answer for it.
+            picked = self._tuning_click(event.pos)
+            if picked is not None:
+                return picked
             at = self._sheet_ms_at(event.pos)
             if at is not None:
                 self.seek(at)
@@ -2363,6 +2372,15 @@ class PlayingScreen:
         elif event.key == pygame.K_p:
             self._toggle_loop()
         elif event.key == pygame.K_r:
+            # The gate every other stepping key has had since the practice
+            # speed walked from 100 % to 50 % on one press. R is the most
+            # expensive step in the app -- it reloads the song and rebuilds
+            # the stretched recording -- so a 40 ms repeat drained out of a
+            # stalled frame walks the whole list and builds a copy for a
+            # tuning nobody asked for. *"Es springt mit Sh+R und R von ganz
+            # vorne nach ganz hinten, wenn ich so kurz tippe wie moeglich."*
+            if not self._step_key_ready(event.key):
+                return None
             return self._next_tuning(-1 if shift_held(event)
                                      else +1)
         elif (event.key == pygame.K_s and event.mod & pygame.KMOD_ALT
@@ -2531,6 +2549,10 @@ class PlayingScreen:
         # back by the drawing that owns it, so a word that stopped being
         # drawn stops being clickable in the same frame.
         self._links.clear()
+        # Cleared with the links and for the same reason: a frame that does
+        # not DRAW the tuning strip must not leave last frame's rects behind
+        # for the mouse to hit.
+        self._tuning_hits = []
         self._render_body(surface)
         self._stats.draw(surface)
 
@@ -2743,6 +2765,26 @@ class PlayingScreen:
         down = order[here - 1][0] if here > 0 else "—"
         return f"R \u2192 {up}    Shift+R \u2192 {down}"
 
+    def _choose_tuning(self, shift: int):
+        """Play the song at this transpose, named on screen. One answer for
+        the key and for the mouse, so a click and a press cannot come to mean
+        different things."""
+        order, _here = self._tuning_order()
+        name = next((n for n, s in order if s == shift), None)
+        if name is None or shift == self._transpose:
+            return None
+        self._say(f"Playing in {name}"
+                  + (f" — the recording moves {shift:+d} semitones with you"
+                     if shift else " — as written"))
+        return ("transpose", shift)
+
+    def _tuning_click(self, pos) -> tuple[str, int] | None:
+        """A click on the tuning strip, or None if it landed elsewhere."""
+        for rect, shift in self._tuning_hits:
+            if rect.collidepoint(pos):
+                return self._choose_tuning(shift)
+        return None
+
     def _next_tuning(self, step: int):
         """Play the same shapes on a differently tuned guitar (R).
 
@@ -2767,13 +2809,7 @@ class PlayingScreen:
             self._say(f"Already the {'highest' if step > 0 else 'lowest'} "
                       f"tuning this song can be played in ({order[here][0]})")
             return None
-        name, shift = order[wanted]
-        if shift == self._transpose:
-            return None
-        self._say(f"Playing in {name}"
-                  + (f" — the recording moves {shift:+d} semitones with you"
-                     if shift else " — as written"))
-        return ("transpose", shift)
+        return self._choose_tuning(order[wanted][1])
 
     def _tab_offset_for(self, page, row: int, page_h: float,
                         view_h: float) -> int:
@@ -2848,7 +2884,7 @@ class PlayingScreen:
         drawing places the names in it -- two readings of this would put the
         chord names half over the top string.
         """
-        return (sheet.CHORD_STRIP if self._chord_mode and self._chord_names
+        return (sheet.CHORD_STRIP if self._chord_names
                 else sheet.NUMBER_STRIP)
 
     def _sheet_head_px(self, room: int) -> float:
@@ -3033,8 +3069,7 @@ class PlayingScreen:
         pygame.draw.line(surface, t.lane_line, (x0 + content_w, int(lanes_top)),
                          (x0 + content_w, int(lanes_top + band_h)), 1)
 
-        if self._chord_mode:
-            self._draw_sheet_chords(surface, row, x0, y, lanes_top, lane_h)
+        self._draw_sheet_chords(surface, row, x0, y, lanes_top, lane_h)
 
         # Every head first, every number second -- the same two passes the
         # board needs, and for the same reason: a head drawn after its
@@ -3316,9 +3351,10 @@ class PlayingScreen:
     def _draw_sheet_chords(self, surface: pygame.Surface, row, x0: int,
                            y: float, lanes_top: float,
                            lane_h: float) -> None:
-        """The chord blocks and their names, on the sheet (Shift+C).
+        """The chord blocks and their names, on the sheet.
 
-        The grip CARDS need nothing from this view -- they are drawn by the
+        Always drawn, like the board's. The grip CARDS need nothing from this
+        view -- they are drawn by the
         board's own method, because "which grip is the hand on" never
         depended on the scrolling. Only the block and the name have to be
         told where the notes ended up.
@@ -3889,7 +3925,18 @@ class PlayingScreen:
 
     def _draw_chord_blocks(self, surface: pygame.Surface,
                            layout: _Layout) -> None:
-        """Draw each chord as ONE object with its name on it (Shift+C).
+        """Draw each chord as ONE object with its name on it.
+
+        **Always, not only with the grip cards up.** *"Kannst du es so bauen,
+        dass in der nicht Chord-Ansicht beim Tab alles wie in der
+        Chordansicht markiert wird, nur dass oben der Chord selbst
+        wegfaellt."* This file argued the other way -- "cards and blocks are
+        one idea, and two keys for two halves of an answer is how a panel
+        ends up with settings nobody can find" -- and the player, who is the
+        one reading it, says they are two things. The reasoning was not
+        measured and was not his; one sentence from the person looking at
+        the screen outranks it. `Shift+C` is the CARDS now, which is the
+        half that costs room at the top.
 
         Six fret numbers spread down six lanes are not a shape. A block that
         spans the strings says "this is one grip" before a single number has
@@ -3900,8 +3947,6 @@ class PlayingScreen:
         at the block's LEADING edge, because that is the moment the hand has
         to be ready -- the same reason a note's leading edge is its time.
         """
-        if not self._chord_mode:
-            return
         blocks = self._chord_blocks_in_view(layout)
         if not blocks:
             return
@@ -4903,8 +4948,13 @@ class PlayingScreen:
 
     # -- What the HUD says, as data, so it can be tested without a screen --
 
-    def tuning_segments(self) -> list[tuple[str, str]]:
-        """The tunings worth offering, as (notes, role) low to high.
+    def tuning_segments(self) -> list[tuple[str, str, int]]:
+        """The tunings worth offering, as (notes, role, shift) low to high.
+
+        The SHIFT is what makes the strip clickable: a choice you can press
+        has to carry what it chooses, and deriving it a second time from the
+        letters would be two readers of one list -- the fault this file has
+        paid for at the repeats, at the transpose and at the shifted keys.
 
         Role is "played", "written", "both" or "other", and the drawing turns
         that into a colour and a star. One line, six letters a tuning, so the
@@ -4956,7 +5006,7 @@ class PlayingScreen:
                 role = "written"
             else:
                 role = "other"
-            out.append(("".join(notes), role))
+            out.append(("".join(notes), role, shift))
         return out
 
     def _latency_line(self) -> tuple[str, str] | None:
@@ -5165,7 +5215,7 @@ class PlayingScreen:
             (f"G: {window} ms",
              on if window != int(config_module.Config().timing_window_ms)
              else off),
-            (f"Shift+C: Chords {'on' if self._chord_mode else 'off'}",
+            (f"Shift+C: Grips {'on' if self._chord_mode else 'off'}",
              on if self._chord_mode else off),
             (f"Shift+T: View {VIEW_SHORT[self._view]}", off),
             ("E: Skip", on if self._rest_hud_text() else off),
@@ -6134,12 +6184,19 @@ class PlayingScreen:
         label = font.render("Tuning:  ", True, t.hud_text)
         surface.blit(label, (x, y))
         x += label.get_width()
-        for notes, role in segments:
+        for notes, role, shift in segments:
             text = notes + ("*" if role in ("written", "both") else "")
             colour = (t.hud_accent if role in ("played", "both")
                       else t.hud_text)
             drawn = font.render(text + "   ", True, colour)
             surface.blit(drawn, (x, y))
+            # Where this choice landed, so the MOUSE can take it. *"Mach die
+            # Stimmung klickbar mit Maus bitte."* -- and the rects come off
+            # the same walk that drew the words, because a second answer to
+            # "where is this tuning" is a click landing on its neighbour.
+            self._tuning_hits.append(
+                (pygame.Rect(x, y, max(1, drawn.get_width() - 12),
+                             font.get_height()), shift))
             x += drawn.get_width()
         return y + 16
 
@@ -7014,7 +7071,7 @@ class PlayingScreen:
         """
         out = [f"Song: {self._song_key}"]
         try:
-            out += [t for t, _ in self.tuning_segments()]
+            out += [t for t, _role, _shift in self.tuning_segments()]
             out += [t for t, _ in self.sync_block_lines()]
             out += [t for t, _ in self._left_notes()]
             out += [t for t, _ in self.footer_segments()]
@@ -7612,8 +7669,9 @@ class PlayingScreen:
                 "CLICK the sheet to go there. It lands on the note you",
                 "  pointed at, and leaves the song playing or paused as",
                 "  it was.",
-                ("Shift+C: chord view — grips and a block per chord",
+                ("Shift+C: the grip cards, top left (the blocks and names",
                  "on" if self._chord_mode else "off"),
+                "  under the notes are always there)",
                 ("V: chord scoring", "one string is enough"
                  if self._chord_partial_credit else "every string"),
                 ("T: theme", self._config.theme),
@@ -7633,7 +7691,7 @@ class PlayingScreen:
                 ("J: per-string chord check",
                  "on" if getattr(self._config, "chord_verify", True) else "off"),
                 ("R / Shift+R: play the same shapes in another tuning",
-                 next((n for n, role in self.tuning_segments()
+                 next((n for n, role, _shift in self.tuning_segments()
                        if role in ("played", "both")), "—")),
                 ], "small"),
 

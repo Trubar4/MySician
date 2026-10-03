@@ -74,7 +74,10 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
     "laeufe": ("every run",),
     "statistik": ("every run",),
     "vergleich": ("Pick two",),
-    "ansicht": ("chord view", "hybrid sheet"),
+    # "chord view" was one of these and the suite caught it the hour the
+    # line was reworded -- which is the whole point of asserting that every
+    # target really appears on the page.
+    "ansicht": ("tab page", "hybrid sheet"),
     "pause": ("pause",),
     "warten": ("wait mode",),
     "hilfe": ("help",),

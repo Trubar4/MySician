@@ -34,15 +34,50 @@ SIZE = -16
 CHANNELS = 2
 BUFFER = 2048
 
+#: The rate is a REQUEST, not a demand. *"Warum ist die Playback-Qualitaet
+#: des MP3s in der App wesentlich schlechter als mit einem Player?"* -- and
+#: the one thing in this path that the app chooses and a standalone player
+#: does not is a second rate conversion. Windows runs its shared mixer at
+#: the device's own rate, almost always 48000; asking for 44100 makes the
+#: OS convert everything the app plays, on top of whatever SDL_mixer already
+#: did to the file. Three of the player's seven recordings are 48 kHz, so
+#: those went 48000 -> (SDL) 44100 -> (Windows) 48000 for no reason at all.
+#:
+#: `AUDIO_ALLOW_FREQUENCY_CHANGE` lets SDL open the device at ITS rate and
+#: report back what it got, which leaves exactly one conversion -- the same
+#: one any player does. The format and the channel count are NOT negotiable:
+#: `pygame.sndarray` reads what `_decode` hands the time-stretch, and a
+#: device that came back 8-bit or mono would change what that means.
+#:
+#: **This is the best-founded suspect and not a diagnosis.** It has never
+#: been reproduced here; what makes it worth doing anyway is that it costs
+#: nothing and that `describe()` then prints the device's real rate, so the
+#: next run log answers the question instead of another round of guessing.
+ALLOW_RATE_CHANGE = True
+
 
 def ensure_mixer() -> bool:
     """Open the mixer if it is not open. True when it is usable."""
     import pygame
     if pygame.mixer.get_init():
         return True
+    allowed = (pygame.AUDIO_ALLOW_FREQUENCY_CHANGE
+               if ALLOW_RATE_CHANGE and hasattr(
+                   pygame, "AUDIO_ALLOW_FREQUENCY_CHANGE") else 0)
     try:
-        pygame.mixer.pre_init(RATE, SIZE, CHANNELS, BUFFER)
-        pygame.mixer.init(RATE, SIZE, CHANNELS, BUFFER)
+        pygame.mixer.pre_init(RATE, SIZE, CHANNELS, BUFFER,
+                              allowedchanges=allowed)
+        pygame.mixer.init(RATE, SIZE, CHANNELS, BUFFER,
+                          allowedchanges=allowed)
+    except TypeError:
+        # An older pygame without `allowedchanges`. The rate is then what it
+        # always was, which is the behaviour this replaces rather than a
+        # failure -- so it opens rather than reporting no output at all.
+        try:
+            pygame.mixer.pre_init(RATE, SIZE, CHANNELS, BUFFER)
+            pygame.mixer.init(RATE, SIZE, CHANNELS, BUFFER)
+        except Exception:
+            return False
     except Exception:
         # A machine with no output device at all still has to run: the
         # scoring, the picture and the input are all independent of this.
@@ -77,5 +112,9 @@ def describe() -> str:
     if not got:
         return "(not open)"
     rate, fmt, channels = got[0], got[1], got[2]
-    return (f"{rate} Hz, {abs(fmt)}-bit, {channels} ch, "
+    # What was ASKED FOR beside what was got, where they differ. The rate is
+    # a request now, so a log that prints only the answer cannot say whether
+    # the device chose it or the app did -- and that is the whole question.
+    asked = "" if rate == RATE else f" (asked {RATE})"
+    return (f"{rate} Hz{asked}, {abs(fmt)}-bit, {channels} ch, "
             f"{BUFFER} frame buffer ({1000 * BUFFER / rate:.0f} ms)")

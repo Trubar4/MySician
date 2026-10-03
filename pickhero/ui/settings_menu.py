@@ -221,12 +221,12 @@ class SettingsMenuScreen:
             # A key of its own: "chords" was already taken by the chord
             # SCORING row further down, and two rows sharing one key is a
             # lookup that silently returns the wrong setting.
-            Setting("chord_view", "Chord view (Shift+C)",
+            Setting("chord_view", "Grip cards (Shift+C)",
                     lambda: "on" if c.chord_view else "off",
                     lambda step: toggle_chord_view(),
-                    note="Draws each chord as one block with its name, and "
-                         "the grip you are on beside the one coming next. "
-                         "Shift+C in the song.",
+                    note="The grip you are on beside the one coming next, "
+                         "top left. Each chord is drawn as one block with "
+                         "its name either way. Shift+C in the song.",
                     is_default=lambda: c.chord_view == default.chord_view),
             Setting("view", "View (Shift+T)",
                     lambda: VIEW_NAMES.get(c.default_view, c.default_view),

@@ -3973,7 +3973,8 @@ colours on top of it. Strictly more than six separate heads, never less.
   six answers; the detail is on the heads.
 - **Its name sits at the LEADING edge**, because that is the moment the hand has to be ready — the same reason a note's leading edge is its time.
 - **One switch for both halves.** Cards and blocks are one idea, and two keys for two halves of an answer is how a panel ends up with settings
-  nobody can find. **Off by default**: it is an extension to the normal view, not the view.
+  nobody can find. **Off by default**: it is an extension to the normal view, not the view. — **Overturned by the player; see "The Marking Is
+  Not The Cards".** The blocks and the names are always drawn now and `Shift+C` is the cards alone.
 - **The blocks are cached surfaces**, for the same reason the note heads are: an SRCALPHA surface per block per frame cost **2.0 ms of a 16.7 ms
   budget** on a real song. Cached it is **0.94 ms** and the cache holds six entries, because a song chooses one head size and the blocks come in
   very few sizes with it.
@@ -6138,6 +6139,100 @@ anything without one is simply not clickable.
 
 Measured on a dense song at 1920x1200: **3.8 ms a frame**, which is where this screen already was. The footer renders three pieces per entry
 instead of one and they are all cache hits after the first frame.
+
+## The Marking Is Not The Cards, And He Is The One Reading It
+
+*"Kannst du es so bauen, dass in der nicht Chord-Ansicht beim Tab alles wie in der Chordansicht markiert wird, nur dass oben der Chord selbst
+wegfaellt. Mir gefaellt die Darstellung naemlich besser."*
+
+**This file argued the other way, in as many words**: *"One switch for both halves. Cards and blocks are one idea, and two keys for two halves
+of an answer is how a panel ends up with settings nobody can find."* That reasoning was never measured and was never his, and the person
+looking at the screen says they are two things. One sentence from him outranks it -- the same way round as the breath at the top of a loop,
+which was scoped on reasoning and widened on a report.
+
+So the **marking is always on** and `Shift+C` is the **cards**:
+
+| | drawn when |
+|---|---|
+| the block under the notes, and its name at the leading edge | always, on the board and on the sheet |
+| the chord name over the sheet's row | always |
+| the two grip cards, top left | `Shift+C` |
+
+- **The cards were always the half that costs room**, which is why this split is free: the sheet's own measurement says `_hud_top_used` drops
+  from 142 px to 70 when they go, and the chapter above measured what that is worth -- a 52.3 px head becomes 57.4. The blocks and the names
+  cost nothing at the top at all.
+- **The row strip follows the SONG, not the key.** `_sheet_strip` asked `_chord_mode and self._chord_names`; it asks the names alone now, so a
+  song with chords in it always gets the taller strip and a song without one never does. A song with no chords is bit-for-bit what it was.
+- **Measured on the board, where the cards take no room from the music**: with the cards and without, every pixel of the lane band is
+  identical. That is the test, because the obvious one -- compare the whole screen on the SHEET -- fails for the right reason: without the
+  cards the head is bigger and the music is laid out differently, which is the prize rather than a fault.
+- **The frame is unchanged**: 2.5-2.7 ms on the board and 3.5-3.8 on the sheet at 1920x1080, either way. The blocks were already cached
+  surfaces, and six cache entries is what a song's head sizes come to.
+- `Shift+C` says **Grips** now, in the footer, the help and the settings screen. "Chords on/off" was true of a key that switched both halves
+  and is a lie about one that switches the cards.
+
+## The Most Expensive Key In The App Had No Repeat Gate
+
+*"Stimmung aendern -> Tastatur haengt wieder und es springt mit Sh+R und R von ganz vorne nach ganz hinten, wenn ich so kurz tippe wie
+moeglich."*
+
+Both halves are one fault and this file has a chapter on it already. `set_repeat(300, 40)` is **25 presses a second**, a stalled frame drains
+the whole burst in one go, and `_step_key_ready` was given to `PgUp/PgDn` and `+/-` and **not to `R`** -- which is the one key where a step
+reloads the song and rebuilds the stretched recording. So the burst walked the whole list and built a copy for every tuning on the way past,
+which is the hang as well as the jump.
+
+- **One press is one step now**, gated by the same helper, and the test presses R twelve times inside one frame and requires exactly one
+  answer. It fails on the unfixed code.
+- **This is the fourth key** to need it, after the practice speed, the scroll factor and the note size. The rule is not "remember the gate on
+  expensive keys": it is that a stepping key through a list needs it, and `R` is the only one that was missed.
+
+### And the strip is clickable, because the eye has already read it
+
+*"Mach die Stimmung klickbar mit Maus bitte."* The strip has said what the choices are since it was built -- the tuning being played in blue,
+the one it was written in starred, the reachable ones beside them. Pressing `R` to ACT on an answer the eye already has is the key walking a
+list for no reason.
+
+- **`tuning_segments()` carries the shift it would move to.** A choice you can click has to know what it chooses, and deriving it a second
+  time from the letters would be two readers of one list.
+- **The rects come off the same walk that draws the words**, so a click cannot land on the neighbour of the word under the pointer -- the seam
+  `strip.py`, `chips.py` and `clickable.py` all use.
+- **`_choose_tuning` answers the key and the mouse**, so a press and a click cannot come to mean different things. That is the property `K`
+  and its HUD line have been held to since the timing report, and the test asserts it rather than the wording.
+- **They are cleared with the links, every frame.** A frame that does not draw the strip must not leave last frame's rects for the mouse to
+  hit, and this key is far too expensive to fire by accident.
+- **The strip is tested BEFORE the sheet**, because it is HUD text drawn over everything at the top and whatever is underneath must not answer
+  for it.
+
+## Why The Recording Sounds Worse In The App Than In A Player
+
+*"Warum ist die Playback-Qualitaet des MP3s in der App wesentlich schlechter als wenn ich das MP3 direkt ausserhalb mit einem Player
+abspiele?"* Three suspects, measured on his own files before anything was built, and **two of the three are innocent**:
+
+| | measured |
+|---|---|
+| WSOLA pushes a mastered mix past full scale and `_write_wav` clips it | **no** -- 0.000 % of samples over full scale on four songs at 80 %, 70 % and +2 semitones. The Hann overlap-add sums to one at this hop |
+| 48 kHz through the 44.1 kHz mixer (three of his seven recordings are 48 k) | **clean** -- flat to 0.7 dB up to 20 kHz against the file decoded at its own rate |
+| **the pitch shift's resampler** | **guilty: 21 dB SNR** |
+
+**`_resample` is linear interpolation.** Against an ideal (FFT) resample of the same audio, on his own Bon Jovi mix: **21.0 dB SNR at +2
+semitones and 24.9 dB at −2**, where a real resampler is 90 to 140. The bands say what that sounds like: −1.1 dB at 8-12 kHz, −2.1 at 12-16,
+and at −2 semitones **+14.7 dB at 16-20 kHz**, which is aliasing folded back rather than anything in the music.
+
+**But that fires only on a transposed recording, and he hears it at 100 % speed and the written tuning too** -- where `_ensure_mp3_source`
+loads the file itself and builds nothing. So the resampler is a real fault and is **not** the one he is reporting.
+
+- **What the app chooses and a standalone player does not is a second rate conversion.** Windows runs its shared mixer at the device's own
+  rate, almost always 48000; `pre_init(44100)` makes the OS convert everything the app plays, on top of whatever SDL_mixer already did to the
+  file -- so a 48 kHz recording went 48000 → (SDL) 44100 → (Windows) 48000 for nothing. `AUDIO_ALLOW_FREQUENCY_CHANGE` lets SDL open the
+  device at ITS rate and report back what it got, which leaves one conversion, the same one any player does.
+- **The format and the channel count stay fixed.** `pygame.sndarray` is what `timestretch._decode` reads, and a device that came back 8-bit or
+  mono would change what that means.
+- **`describe()` prints what was asked for beside what was got**, where they differ. The rate is a request now, so a log that printed only the
+  answer could not say whether the device chose it or the app did -- and that is the whole question.
+- **This is the best-founded suspect and it is NOT a diagnosis.** It has never been reproduced here -- there is no audio device on this
+  machine -- and one clean resample is not obviously "wesentlich schlechter". What makes it worth doing anyway is that it costs nothing, that
+  it is right on its own terms, and that the next run log then names the device's real rate instead of the app's wish.
+- **Two of his seven recordings are 64 kbps** (Godsmack, Kid Rock). That sounds poor in every player and explains no difference between them.
 
 ## What NOT To Do
 

@@ -464,9 +464,23 @@ class TestSteppingThroughPlayableTunings:
         up = screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_r, mod=0))
         assert up == ("transpose", 1)
+        # Coming off the key is what makes the next press count, the same as
+        # every other stepping key: a second KEYDOWN inside one frame is a
+        # repeat, and R is the most expensive step in the app.
+        screen.handle_event(pygame.event.Event(pygame.KEYUP, key=pygame.K_r))
         down = screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_r, mod=pygame.KMOD_SHIFT))
         assert down == ("transpose", -1)
+
+    def test_a_held_r_steps_once_and_not_through_the_whole_list(self):
+        """*"Es springt mit Sh+R und R von ganz vorne nach ganz hinten, wenn
+        ich so kurz tippe wie moeglich."* Key repeat is 40 ms and a stalled
+        frame drains the whole burst in one go -- which on this key reloads
+        the song and rebuilds the stretched recording for every step."""
+        screen = self._screen("Drop C")
+        answers = [screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_r, mod=0)) for _ in range(12)]
+        assert [a for a in answers if a is not None] == [("transpose", 1)]
 
     def test_the_hud_names_both_tunings(self):
         """The fret numbers on screen belong to the WRITTEN song; without
@@ -1406,7 +1420,7 @@ class TestTheFooterIsTheTwelveWorthWatching:
         joined = "  ".join(self._texts(screen))
         for wanted in ("SPACE", "PgDn/PgUp: Tempo", "A: Audio", "B: Backing",
                        "Shift+B: My Backing", "+/- Size", "G: ",
-                       "Shift+C: Chords", "Shift+T: View", "E: Skip",
+                       "Shift+C: Grips", "Shift+T: View", "E: Skip",
                        "H: help"):
             assert wanted in joined, f"{wanted} is not in the footer"
 
@@ -5738,3 +5752,81 @@ class TestTheSoundCardsClockIsTrackedNotTrusted:
         screen.update()
         assert screen._matcher.audio_offset_ms != before
         assert screen._audio_clock_pulled_ms > 0.0
+
+
+class TestTheTuningStripIsClickable:
+    """*"Mach die Stimmung klickbar mit Maus bitte."*
+
+    The strip already answers "what is my guitar in, what was this written
+    in, and what else could I play it as" by looking. Pressing R to ACT on
+    that answer is the key walking a list the eye has already read -- and it
+    is the most expensive key in the app, because every step reloads the song
+    and rebuilds the stretched recording.
+    """
+
+    def _screen(self, tuning_name="Drop C", transpose=0):
+        from pickhero.audio.note_utils import NAMED_TUNINGS
+        shape = dict(NAMED_TUNINGS)[tuning_name]
+        played = {s: v + transpose for s, v in shape.items()}
+        song = Timeline(
+            [NoteEvent(timestamp_ms=0.0, duration_ms=500.0,
+                       midi_note=36 + transpose, string=6, fret=0)],
+            SongMetadata(title="t", tempo=120, tuning=played),
+            measures=[MeasureInfo(index=0, start_ms=0.0, end_ms=2000.0)])
+        screen = PlayingScreen(song, config=Config(), song_key="s",
+                               transpose=transpose)
+        pygame.init()
+        screen.render(pygame.display.set_mode((1280, 720)))
+        return screen
+
+    def _click(self, screen, pos):
+        return screen.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, button=1, pos=pos))
+
+    def test_the_strip_knows_where_every_tuning_landed(self):
+        screen = self._screen()
+        assert len(screen._tuning_hits) == len(screen.tuning_segments())
+
+    def test_clicking_one_transposes_to_it(self):
+        screen = self._screen()
+        wanted = next(shift for _rect, shift in screen._tuning_hits
+                      if shift != screen._transpose)
+        rect = next(r for r, s in screen._tuning_hits if s == wanted)
+        assert self._click(screen, rect.center) == ("transpose", wanted)
+
+    def test_the_click_and_the_key_agree(self):
+        """One helper answers both, so a click and a press cannot come to
+        mean different things -- the property R's own HUD line is held to."""
+        screen = self._screen()
+        order, here = screen._tuning_order()
+        by_key = screen._next_tuning(+1)
+        rect = next(r for r, s in screen._tuning_hits
+                    if s == order[here + 1][1])
+        again = self._screen()
+        assert self._click(again, rect.center) == by_key
+
+    def test_clicking_the_one_being_played_changes_nothing(self):
+        screen = self._screen()
+        rect = next(r for r, s in screen._tuning_hits
+                    if s == screen._transpose)
+        assert self._click(screen, rect.center) is None
+
+    def test_a_click_somewhere_else_is_not_a_tuning(self):
+        screen = self._screen()
+        assert self._click(screen, (640, 700)) != ("transpose", 0)
+
+    def test_a_song_with_nothing_to_step_to_offers_only_itself(self):
+        """DADGAD is nobody's transposition, so the strip is one word and
+        clicking it moves nothing -- which is the same answer R gives."""
+        screen = self._screen("DADGAD")
+        assert [s for _r, s in screen._tuning_hits] == [0]
+        assert self._click(screen, screen._tuning_hits[0][0].center) is None
+
+    def test_a_frame_that_draws_no_strip_leaves_no_targets(self):
+        """Otherwise last frame's rects answer a click on this frame's
+        screen -- and this one reloads the song."""
+        screen = self._screen()
+        assert screen._tuning_hits
+        screen._tuning_hits = [(pygame.Rect(0, 0, 10, 10), 99)]
+        screen.render(pygame.display.set_mode((1280, 720)))
+        assert 99 not in [s for _r, s in screen._tuning_hits]

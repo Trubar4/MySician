@@ -59,11 +59,11 @@ class TestTheTuningsAreOneLine:
     """
 
     def _played(self, screen):
-        return [n for n, role in screen.tuning_segments()
+        return [n for n, role, _shift in screen.tuning_segments()
                 if role in ("played", "both")]
 
     def _written(self, screen):
-        return [n for n, role in screen.tuning_segments()
+        return [n for n, role, _shift in screen.tuning_segments()
                 if role in ("written", "both")]
 
     def test_never_more_than_five(self):
@@ -88,7 +88,7 @@ class TestTheTuningsAreOneLine:
         choice anybody would make."""
         screen = _screen(_named("C Standard"), -4)
         order, here = screen._tuning_order()
-        shown = [n for n, _ in screen.tuning_segments()]
+        shown = [n for n, _role, _shift in screen.tuning_segments()]
         written_at = next(i for i, (_, k) in enumerate(order) if k == 0)
         below = min(here, written_at) - (len(order) - len(shown))
         assert below <= scrolling.TUNINGS_BELOW + 1
@@ -99,11 +99,12 @@ class TestTheTuningsAreOneLine:
 
     def test_the_notes_are_the_notes_of_that_tuning(self):
         screen = _screen(_named("C Standard"), -4)
-        assert ("CFA#D#GC", "played") in screen.tuning_segments()
+        assert ("CFA#D#GC", "played") in [
+            (n, role) for n, role, _shift in screen.tuning_segments()]
 
     def test_a_song_at_its_written_tuning_marks_one_entry_twice(self):
         screen = _screen(_named("Standard"), 0)
-        roles = dict(screen.tuning_segments())
+        roles = {n: role for n, role, _shift in screen.tuning_segments()}
         assert roles["EADGBE"] == "both"
 
     def test_a_song_with_nothing_to_step_to_says_nothing(self):
@@ -402,11 +403,22 @@ class TestTheChordsOnTheSheet:
 
     def test_the_row_makes_room_for_the_names(self):
         """A name sized to be read at a glance does not fit in the strip a
-        bar number needs, and drawn there anyway it sat on the top string."""
+        bar number needs, and drawn there anyway it sat on the top string.
+
+        **The names do not wait for the cards.** *"Alles wie in der
+        Chordansicht markiert, nur dass oben der Chord selbst wegfaellt."*
+        So the strip follows the SONG -- whether this one has chords in it
+        at all -- and `Shift+C` only decides the grip cards."""
         screen = self._chord_screen()
         screen.render(pygame.Surface((1280, 800)))
         assert screen._sheet_strip() == sheet.CHORD_STRIP
         screen._chord_mode = False
+        assert screen._sheet_strip() == sheet.CHORD_STRIP, \
+            "the marking stays when the cards go"
+
+    def test_a_song_with_no_chords_keeps_the_bar_number_strip(self):
+        screen = PlayingScreen(_song(), config=Config())
+        screen.render(pygame.Surface((1280, 800)))
         assert screen._sheet_strip() == sheet.NUMBER_STRIP
 
     def test_and_the_head_is_sized_for_that_strip(self):
@@ -414,8 +426,9 @@ class TestTheChordsOnTheSheet:
         screen = self._chord_screen()
         screen.render(pygame.Surface((1280, 800)))   # builds the name list
         with_names = screen._sheet_head_px(700)
-        screen._chord_mode = False
-        assert screen._sheet_head_px(700) > with_names
+        plain = PlayingScreen(_song(), config=Config())
+        plain.render(pygame.Surface((1280, 800)))
+        assert plain._sheet_head_px(700) > with_names
 
     def test_two_rows_still_fit_with_the_names_on(self):
         screen = self._chord_screen()
@@ -569,3 +582,81 @@ class TestThePanelSaysWhereTheRecordingStands:
         said = self._panel(screen)
         assert "SYNC   0:10 -257 ms" in said
         assert "NOT lined up yet" not in said
+
+
+class TestTheMarkingDoesNotWaitForTheCards:
+    """*"Kannst du es so bauen, dass in der nicht Chord-Ansicht beim Tab
+    alles wie in der Chordansicht markiert wird, nur dass oben der Chord
+    selbst wegfaellt. Mir gefaellt die Darstellung naemlich besser."*
+
+    This file argued that cards and blocks are one idea and must share one
+    key. The player, who is the one reading the screen, says they are two
+    things -- and the reasoning was neither measured nor his.
+    """
+
+    EM = TestTheChordsOnTheSheet.EM
+    AM = TestTheChordsOnTheSheet.AM
+    _chord_screen = TestTheChordsOnTheSheet._chord_screen
+
+    def _screen(self):
+        screen = self._chord_screen()
+        screen.render(pygame.Surface((1280, 800)))
+        return screen
+
+    def _ink(self, screen, chord_mode):
+        screen._chord_mode = chord_mode
+        surface = pygame.Surface((1280, 800))
+        screen.render(surface)
+        return surface
+
+    def test_the_blocks_are_drawn_with_the_cards_off(self):
+        """On the BOARD, where the cards take no room from the music, the two
+        pictures differ only in the corner the cards sit in -- so the music
+        itself must come out pixel for pixel the same."""
+        screen = self._chord_screen()
+        screen._view = "standard"
+        shots = []
+        for mode in (True, False):
+            screen._chord_mode = mode
+            surface = pygame.Surface((1280, 800))
+            screen.render(surface)
+            shots.append(surface)
+        band = pygame.Rect(0, 300, 1280, 300)     # below the cards
+        same = sum(1 for x in range(0, band.width, 5)
+                   for y in range(band.top, band.bottom, 5)
+                   if shots[0].get_at((x, y)) == shots[1].get_at((x, y)))
+        total = len(range(0, band.width, 5)) * len(
+            range(band.top, band.bottom, 5))
+        assert same == total, "the music is marked the same either way"
+
+    def test_and_a_song_with_chords_really_marks_something(self):
+        """Without this the class above passes on a board that draws no
+        blocks at all -- two identical empty pictures."""
+        screen = self._chord_screen()
+        screen._view = "standard"
+        screen._chord_mode = False
+        marked = pygame.Surface((1280, 800))
+        screen.render(marked)
+        plain = PlayingScreen(_song(), config=Config())
+        plain._view = "standard"
+        bare = pygame.Surface((1280, 800))
+        plain.render(bare)
+        assert screen._chord_blocks_in_view(screen._last_layout), \
+            "this song has no blocks to draw"
+
+    def test_and_the_cards_really_do_go(self):
+        screen = self._screen()
+        self._ink(screen, True)
+        with_cards = screen._hud_top_used()
+        self._ink(screen, False)
+        assert screen._hud_top_used() < with_cards
+
+    def test_the_music_gets_the_card_band_back(self):
+        """Which is the whole prize: the sheet's room grows by the card band
+        while every block and every name stays where it was."""
+        screen = self._screen()
+        self._ink(screen, True)
+        _top, with_cards = screen._tab_room(screen._last_layout)
+        self._ink(screen, False)
+        _top, without = screen._tab_room(screen._last_layout)
+        assert without > with_cards
