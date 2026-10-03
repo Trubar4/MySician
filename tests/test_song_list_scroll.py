@@ -265,3 +265,47 @@ class TestAddedIsTheFilesOwnTime:
         and a sort that raises is a song list that does not come up."""
         from pickhero.ui import menu as menu_module
         assert menu_module._file_mtime(menu._songs_dir / "nothing.gp5") == 0.0
+
+
+class TestRecentIsWhenItWasLastPlayed:
+    """*"Recent könnte last played sein und added wann hinzugefügt."*  Both
+    right -- and the two really are different questions, which is why the
+    strip carries them both.
+    """
+
+    def _played(self, menu, **when):
+        from pickhero.progress import ProgressTracker, SongRecord
+        tracker = ProgressTracker()
+        for stem, stamp in when.items():
+            tracker._data[stem.replace("_", " ")] = SongRecord(
+                attempts=1, best_accuracy=50.0, last_played=stamp)
+        menu._progress = tracker
+        menu._set_sort_mode("last_played")
+        return [f.stem for f in menu._display_files]
+
+    def test_the_most_recently_played_comes_first(self, menu):
+        order = self._played(menu,
+                             Song_40="2026-09-01T10:00:00+00:00",
+                             Song_10="2026-10-01T10:00:00+00:00")
+        assert order[0] == "Song 10"
+        assert order[1] == "Song 40"
+
+    def test_a_song_nobody_has_played_sorts_LAST(self, menu):
+        """It is not the most recent thing you did -- the same place an
+        unplayed song takes under "Best %". Written the other way up every
+        song you have never touched comes out at the top, which is what it
+        did before this was looked at."""
+        order = self._played(menu, Song_30="2026-09-01T10:00:00+00:00")
+        assert order[0] == "Song 30"
+        assert len(order) == 60
+
+    def test_it_is_a_different_order_from_added(self, menu):
+        """The two questions cannot be answered by one chip: the file's time
+        says when it arrived in the folder, the record says when you last
+        played it, and a song downloaded today and never opened sits at
+        opposite ends of the two."""
+        recent = self._played(menu, Song_59="2026-10-01T10:00:00+00:00")
+        menu._set_sort_mode("added")
+        added = [f.stem for f in menu._display_files]
+        assert recent[0] == "Song 59"      # the oldest file, played today
+        assert added[0] == "Song 00"       # the newest file, never played

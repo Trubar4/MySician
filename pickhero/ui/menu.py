@@ -298,11 +298,17 @@ class MenuScreen:
             self._filtered_files.sort(
                 key=lambda p: -_file_mtime(p))
         elif mode == "last_played":
+            # A song nobody has played sorts LAST, the way an unplayed song
+            # does under "Best %" -- it is not the most recent thing you did.
+            # The flag is 1 for played and 0 for not, because `reverse` turns
+            # the whole tuple round: written the other way up (0 for played,
+            # the way the accuracy key does it) every song you have never
+            # touched comes out at the TOP, which is what this did.
             def played_key(p: Path) -> tuple[int, str]:
                 rec = self._progress.get_best(p.stem) if self._progress else None
                 if rec and rec.last_played:
-                    return (0, rec.last_played)
-                return (1, "")
+                    return (1, rec.last_played)
+                return (0, "")
             # Most recent first: reverse so latest ISO date comes first
             self._filtered_files.sort(key=played_key, reverse=True)
 

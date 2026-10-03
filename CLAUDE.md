@@ -5679,6 +5679,15 @@ Anklicken."* Both, on a second labelled strip under the first.
   wording.
 - **Both strips are labelled.** Either would be self-evident alone; two unlabelled rows of pills under each other read as
   one strip, and "Added" beside "Drop D 20" says nothing about which question either answers.
+- **"Recent" is when you last PLAYED it, "Added" is when the file arrived**, which is what the player asked and is why both
+  chips exist: a song downloaded today and never opened sits at opposite ends of the two. The labels say it in one word each;
+  the chip strip is where a reader finds out, because a sort nobody can name is the "key that walks a list nobody can see" one
+  screen up.
+- **And "Recent" put every song you have NEVER played at the top.** The key returned `(0, stamp)` for a played song and
+  `(1, "")` for the rest -- which is how the accuracy key is written, and correct there because it sorts FORWARD. `reverse=True`
+  turns the whole tuple round, so the flag inverts with it and sixty untouched songs came first. The flag is `1` for played now.
+  **A key copied from a sort that reads the other way is a sort that reads backwards**, and the tell is a list whose top row is
+  the one thing it is not about.
 - **One `_draw_chips` for both**, because two copies of it is two ideas of what a chip looks like — the "four readers of
   one plan" fault at the size of a pill.
 
