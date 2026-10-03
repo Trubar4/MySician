@@ -20,6 +20,7 @@ from pickhero.progress import ProgressTracker
 from pickhero.tabs.loader import GP_EXTENSIONS
 from pickhero.tabs.song_index import SongIndex
 from pickhero.ui import chips
+from pickhero.ui import clickable
 from pickhero.ui.colors import cycle_theme, get_theme
 from pickhero.ui.footer import wrap_on_bars
 from pickhero.ui.keys import shift_held
@@ -145,6 +146,10 @@ class MenuScreen:
         #: Where the search box was last drawn, so a click can be told to be
         #: inside or outside it. Set by render, the way the list rows are.
         self._search_box = None
+        #: Where the footer's underlined keys landed. Rebuilt by the drawing
+        #: and read by the mouse, so the two cannot disagree about which word
+        #: a click was aimed at.
+        self._links = clickable.Links()
         #: The tuning chips, as the last frame placed them. What a
         #: click is tested against -- the drawing and the mouse read
         #: the same list, so they cannot disagree about where one is.
@@ -247,6 +252,28 @@ class MenuScreen:
         come back here.
         """
         return self._search_active or self.is_renaming
+
+    @property
+    def links(self) -> clickable.Links:
+        """Where the footer's underlined keys landed, for the App to ask."""
+        return self._links
+
+    def stop_typing(self) -> bool:
+        """Let go of the search box, and say whether a shortcut may now land.
+
+        A click on a link never reaches this screen, so it cannot let go of
+        the box the way any other click outside it does -- and a letter
+        landing in the filter instead of on the key is the fault `is_typing`
+        exists for.
+
+        The rename editor is the one that refuses. It owns every key while it
+        is open, deliberately, and a stray click reaching past it would be a
+        half-typed name lost to the song list's own shortcuts.
+        """
+        if self.is_renaming:
+            return False
+        self._search_active = False
+        return True
 
     def _apply_filter(self) -> None:
         """Filter _files by search text and tuning, sort, reset selection."""
@@ -1658,10 +1685,16 @@ class MenuScreen:
         lines = wrap_on_bars(hint, hint_font, w - 24)
         line_h = hint_font.get_height() + 2
         footer_top = h - 36 - (len(lines) - 1) * line_h
+        # Every key word underlined and clickable, split at the bars the
+        # entries already carry: the key leads its own entry here, so an
+        # entry that reads "<key> or a click: ..." is a button without the
+        # text having to be written down a second time.
+        self._links.clear()
         for n, one in enumerate(lines):
-            surf = hint_font.render(one, True, t.hud_text)
-            surface.blit(surf, (w // 2 - surf.get_width() // 2,
-                                footer_top + n * line_h))
+            width = hint_font.size(one)[0]
+            clickable.blit(surface, hint_font, one, w // 2 - width // 2,
+                           footer_top + n * line_h, t.hud_text, self._links,
+                           sep="|")
 
         # And the two lines above it stack on MEASURED heights, upward from
         # the footer's own top. They used to sit at -20 and -36, a 16 px

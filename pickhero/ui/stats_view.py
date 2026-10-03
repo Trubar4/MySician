@@ -26,6 +26,7 @@ import pygame
 
 from pickhero import drill as drill_mod
 from pickhero import runs as runs_mod
+from pickhero.ui import clickable
 from pickhero.ui import strip
 from pickhero.ui.keys import shift_held
 from pickhero.ui.colors import STRING_COLORS, get_theme, get_theme_name, unsure
@@ -369,6 +370,10 @@ class StatsOverlay:
         self._nest_of = ""
         self._nest_at = -1
         self._nest_note = ""
+        #: Where this overlay's own underlined keys landed. Its footer is the
+        #: only place its keys are written down, so it is the only place they
+        #: can be clicked.
+        self._links = clickable.Links()
         self._note_bars: tuple[list[int], list] | None = None
         # The trend: one grid surface, built when the runs or the room change
         # and blitted after that. Rows times bars is a couple of thousand
@@ -532,6 +537,12 @@ class StatsOverlay:
             self._handle_mouse(event)
             return True
         return False
+
+    @property
+    def links(self) -> clickable.Links:
+        """Where this overlay's underlined keys landed. Asked by the App,
+        through the screen, because the mouse comes in at one door."""
+        return self._links
 
     def _handle_key(self, event) -> bool:
         key = event.key
@@ -1296,6 +1307,7 @@ class StatsOverlay:
         panel = pygame.Rect(PANEL_PAD, PANEL_PAD,
                             w - 2 * PANEL_PAD, h - 2 * PANEL_PAD)
         self._bar_area = None
+        self._links.clear()
         if self.mode == "compare":
             self._draw_compare(surface, panel)
         elif self.mode == "trend":
@@ -1699,8 +1711,11 @@ class StatsOverlay:
         """
         tiny = self._font("arial", 12)
         line = panel.bottom - tiny.get_height() - 8
-        surface.blit(tiny.render(self.fit(tiny, foot, width), True,
-                                 get_theme().hud_accent), (x, line))
+        # Each key word underlined and clickable. The dot is what separates
+        # one entry from the next here, the way the bar does on the playing
+        # screen -- so "S sorts" is a button by leading its own entry.
+        clickable.blit(surface, tiny, self.fit(tiny, foot, width), x, line,
+                       get_theme().hud_accent, self._links, sep="·")
         if self._nest_note:
             surface.blit(
                 tiny.render(self.fit(tiny, self._nest_note, width), True,

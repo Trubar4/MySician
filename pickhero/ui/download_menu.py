@@ -36,6 +36,7 @@ from pickhero.tabs.downloader import (
     grab_song,
     sanitize_filename,
 )
+from pickhero.ui import clickable
 from pickhero.ui.colors import get_theme
 
 VISIBLE_ITEMS = 14
@@ -53,6 +54,10 @@ class DownloadMenuScreen:
     """Songsterr search/download screen — 3 states: input, results, status."""
 
     def __init__(self, songs_dir: Path, config=None):
+        #: Where the hint line's underlined keys landed. Rebuilt by the
+        #: drawing and read by the App, so a click cannot land on the
+        #: neighbour of the word under the pointer.
+        self._links = clickable.Links()
         self._songs_dir = songs_dir
         # Optional so the screen can still be built and drawn without one.
         # What it costs when absent is the remembering, not the download.
@@ -331,7 +336,13 @@ class DownloadMenuScreen:
         except (OSError, AttributeError, ValueError) as exc:
             self._notes.append(f"Settings not saved: {exc}")
 
+    @property
+    def links(self) -> clickable.Links:
+        """Where the hint line's underlined keys landed, for the App to ask."""
+        return self._links
+
     def render(self, surface: pygame.Surface) -> None:
+        self._links.clear()
         t = get_theme()
         surface.fill(t.menu_bg)
         w, h = surface.get_size()
@@ -385,8 +396,8 @@ class DownloadMenuScreen:
 
         hint = ("ENTER: search  |  Ctrl+V: paste a link  |  "
                 "Ctrl+C: copy this screen  |  ESC: back")
-        hint_surf = hint_font.render(hint, True, t.hud_text)
-        surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
+        clickable.blit_centred(surface, hint_font, hint, h - 36, w,
+                               t.hud_text, self._links)
 
     def _render_results(self, surface, w, h, item_font, hint_font, t) -> None:
         marked = any(r.by_id for r in self._results)
@@ -438,8 +449,8 @@ class DownloadMenuScreen:
 
         hint = ("UP/DOWN: navigate  |  ENTER: tab + sync + audio  |  "
                 "ESC: back to search")
-        hint_surf = hint_font.render(hint, True, t.hud_text)
-        surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
+        clickable.blit_centred(surface, hint_font, hint, h - 36, w,
+                               t.hud_text, self._links)
 
     def _render_status(self, surface, w, h, item_font, hint_font, t) -> None:
         msg_surf = item_font.render(self._status_msg, True, t.hud_text)
@@ -482,8 +493,8 @@ class DownloadMenuScreen:
             surface.blit(line, (w // 2 - line.get_width() // 2, top + i * 26))
 
         hint = "Ctrl+C: copy this screen  |  any key: back to the songs"
-        hint_surf = hint_font.render(hint, True, t.hud_text)
-        surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
+        clickable.blit_centred(surface, hint_font, hint, h - 36, w,
+                               t.hud_text, self._links)
 
     def _ensure_visible(self) -> None:
         if self._selected < self._scroll_offset:

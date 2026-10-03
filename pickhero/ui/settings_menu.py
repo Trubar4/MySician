@@ -32,6 +32,7 @@ from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
                              MIN_GATE_DB, Config)
 from pickhero.ui.scrolling import (MAX_BACKING_OFFSET_MS, SYNC_SOURCE_WORDS,
                                    VIEWS, VIEW_NAMES)
+from pickhero.ui import clickable
 from pickhero.ui.colors import cycle_theme, get_theme
 
 VISIBLE_ROWS = 14
@@ -74,6 +75,10 @@ class SettingsMenuScreen:
     """The settings list. Owns no state of its own beyond the cursor."""
 
     def __init__(self, config: Config, song_key: str = ""):
+        #: Where the hint line's underlined keys landed. Rebuilt by the
+        #: drawing and read by the App, so a click cannot land on the
+        #: neighbour of the word under the pointer.
+        self._links = clickable.Links()
         self._config = config
         # Which song is open, if one is. Two of these rows belong to a SONG
         # rather than to the app -- the sync source is the whole point of the
@@ -444,7 +449,13 @@ class SettingsMenuScreen:
 
     # -- drawing --
 
+    @property
+    def links(self) -> clickable.Links:
+        """Where the hint line's underlined keys landed, for the App to ask."""
+        return self._links
+
     def render(self, surface: pygame.Surface) -> None:
+        self._links.clear()
         t = get_theme()
         surface.fill(t.menu_bg)
         width, height = surface.get_size()
@@ -503,6 +514,5 @@ class SettingsMenuScreen:
 
         hint = ("UP/DOWN: choose  |  LEFT/RIGHT: change  |  ENTER: open  |  "
                 "R: back to standard  |  ESC: done (saved as you go)")
-        hint_surf = hint_font.render(hint, True, t.hud_text)
-        surface.blit(hint_surf,
-                     (width // 2 - hint_surf.get_width() // 2, height - 34))
+        clickable.blit_centred(surface, hint_font, hint, height - 34,
+                               width, t.hud_text, self._links)

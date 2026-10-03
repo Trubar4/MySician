@@ -51,6 +51,7 @@ from pickhero.ui.colors import (
     unsure,
 )
 from pickhero.ui.feedback import FeedbackRenderer
+from pickhero.ui import clickable
 from pickhero.ui import sheet
 from pickhero.ui import strip
 from pickhero.ui.stats_view import StatsOverlay
@@ -1439,6 +1440,10 @@ class PlayingScreen:
         # clock whose width changes with the song -- and because it cannot be
         # clicked before it has been on screen.
         self._stats_button: pygame.Rect | None = None
+        #: Where every underlined key word landed this frame. Rebuilt by the
+        #: drawing, read by the mouse -- one answer, so a click cannot land on
+        #: the neighbour of the word under the pointer.
+        self._links = clickable.Links()
         # Whether the sync panel is open. Everything about lining sound up
         # against the notes lives in it, and none of it is needed while
         # playing -- which is what the screen is for.
@@ -2494,6 +2499,10 @@ class PlayingScreen:
         of one call is how a view quietly ends up without it -- the fault
         this file has already paid for at the strip, the footer and the help.
         """
+        # Cleared here and nowhere else: every link on this screen is put
+        # back by the drawing that owns it, so a word that stopped being
+        # drawn stops being clickable in the same frame.
+        self._links.clear()
         self._render_body(surface)
         self._stats.draw(surface)
 
@@ -5200,6 +5209,17 @@ class PlayingScreen:
         line_h = font.get_height() + 2
         return font, rows, line_h, h - 4 - line_h * len(rows)
 
+    @property
+    def links(self) -> clickable.Links:
+        """The underlined keys a click may land on, for the App to ask.
+
+        The run comparison owns the whole screen while it is up, so its
+        footer's keys are the ones on offer -- the same rule its keyboard and
+        mouse already follow, and the reason this is a property rather than
+        the attribute.
+        """
+        return self._stats.links if self._stats.open else self._links
+
     def _blit_footer_lines(self, surface: pygame.Surface,
                            layout: _Layout) -> int:
         """Centre the footer, shrinking and WRAPPING until it fits.
@@ -5211,6 +5231,11 @@ class PlayingScreen:
 
         Returns the y the block STARTS at, because whatever stacks above it
         has to know where it ends.
+
+        Every key word in it is underlined and clickable. The entry is parsed
+        with its key LEADING, which is the convention this line has always
+        followed -- so "E: Skip" is a button without anything being declared
+        twice, and a thirteenth entry added later is one too.
         """
         t = get_theme()
         font, rows, line_h, top = self._footer_block(layout)
@@ -5219,9 +5244,8 @@ class PlayingScreen:
             width = _segments_width(font, row)
             x = layout.screen_w // 2 - width // 2
             for text, colour in row:
-                drawn = font.render(text, True, getattr(t, colour))
-                surface.blit(drawn, (x, y))
-                x += drawn.get_width()
+                x += clickable.blit(surface, font, text, x, y,
+                                    getattr(t, colour), self._links, lead=True)
             y += line_h
         return top
 
@@ -6037,8 +6061,12 @@ class PlayingScreen:
 
         note = self._status_note_text()
         if note:
-            drawn = hint_font.render(note, True, t.hud_accent)
-            surface.blit(drawn, (w // 2 - drawn.get_width() // 2, note_y))
+            # The keys it names are clickable too. This is the line that
+            # prompted the whole idea: *"Loop set over bars 12-14 - SPACE
+            # plays it - Shift+P drills it"* is three buttons written down.
+            width = hint_font.size(note)[0]
+            clickable.blit(surface, hint_font, note, w // 2 - width // 2,
+                           note_y, t.hud_accent, self._links)
         if self._mp3_dialog_due:
             # Drawn this frame, so the next update may block on the chooser.
             self._mp3_dialog_armed = True
@@ -7700,17 +7728,24 @@ class PlayingScreen:
                                  (x + 20, y))
                 elif isinstance(item, tuple):
                     label, value = item
-                    surface.blit(font.render(label, True, t.hud_text), (x, y))
+                    clickable.blit(surface, font, label, x, y, t.hud_text,
+                                   self._links)
                     surface.blit(font.render(value, True, t.hud_accent),
                                  (x + value_x, y))
                 else:
-                    surface.blit(font.render(item, True, t.hud_text), (x, y))
+                    clickable.blit(surface, font, item, x, y, t.hud_text,
+                                   self._links)
                 y += step
 
-        hint = ("Press H to close" if page + 1 >= len(pages)
-                else f"Press H for page {page + 2} of {len(pages)}")
-        close_surf = hint_font.render(hint, True, t.hud_accent)
-        surface.blit(close_surf, (cx - close_surf.get_width() // 2, h - 20))
+        # Not `lead`: this page is prose as well as keys, and its badge
+        # letters start lines -- `X` is the dead note, `H` the hammer-on,
+        # `P` the pull-off. A lone letter counts here only where the text
+        # around it says it is a key.
+        hint = ("H to close this help" if page + 1 >= len(pages)
+                else f"H for page {page + 2} of {len(pages)}")
+        width = hint_font.size(hint)[0]
+        clickable.blit(surface, hint_font, hint, cx - width // 2, h - 20,
+                       t.hud_accent, self._links, lead=True)
 
     # -- Difficulty filter --
 

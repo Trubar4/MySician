@@ -5934,6 +5934,51 @@ Song direkt oeffne?"* — `Shift+D` opens the stats on the STORED evenings, whic
 loop by hand with the arrows and `I`/`O` and press `Shift+P`. Both already worked. **A feature that only the person who built it can find is
 the same fault as one that does not work**, which is why the answer here was a sentence on screen rather than an explanation in chat.
 
+## Every Shortcut Is A Button, And Nothing Else Is
+
+*"Kann ich dafuer auch Tasten haben, die ich mit der Maus klicken kann in der Fussleiste? Du kannst auch die Word underlinen, dann sind es
+"Links" bzw. klickbare Buttons. Das koennten wir generell bei jedem Tastenkuerzel ueberall machen."*
+
+**Nothing new had to be declared, which is the whole shape of it.** The footers, the status note and the help page are already the one place
+every bound key is written down -- that rule has its own test (`TestEveryKeyIsWrittenDownSomewhere`) and has been enforced for months. So the
+key NAME in that text is the only thing a button needs: `ui/clickable.py` reads the lines the screens already draw, underlines the key words
+in them, and hands a click back as a synthetic key press. A shortcut added later is clickable because it was written down.
+
+- **The grammar is narrow rather than clever, and that is the entire safety argument.** The help page is full of capital letters that are not
+  keys: `X` is the dead-note badge, `H` and `P` are the hammer-on and pull-off marks, `E` names a string, `M` leads "MIDI". So a lone letter
+  counts only where the surrounding text says it is a key -- followed by a colon, carrying a modifier, slash-joined to another letter, or
+  LEADING a footer entry. Named keys (`SPACE`, `PgDn`, `ESC`) count anywhere, because a word is unambiguous.
+- **`lead` is for footer entries only**, where the convention has always been that the key comes first. Turned on for the help page it would
+  make the dead-note badge press a key.
+- **A hyphen either side disqualifies it.** `RIGHT-drag the strip` is the mouse button and not the key that seeks forward a beat; `F1-F6` is
+  a range, not two buttons with four missing keys between them. Both were found by LOOKING at a rendered page, not by reasoning.
+- **A modifier written once in front of a slashed pair belongs to both.** `Ctrl+PgUp/PgDn` is two Ctrl presses -- reading the second as a plain
+  PgDn would END the drill the first one steps.
+- **The property asserted is that it never invents a key.** The wording of these lines is nobody's contract, so the test walks every footer
+  entry, every help line, the three stats footers and the three list screens, and requires every token it recognises to be a key that screen
+  really answers. If the grammar starts offering an unbound one, the suite says so.
+
+**The click comes in at the App, and it has to.** Five of the song list's own keys -- `O`, `S`, `D`, `G`, `U` -- are answered by
+`_handle_menu_event` and `Ctrl+C` by `_dispatch`, so a screen dispatching its own clicks would have six shortcuts that work typed and not
+clicked. `App._process_events` is the one door every screen's events come through, which is already where the key-repeat guard and `Ctrl+C`
+live, and `_dispatch` was pulled out of the loop so a clicked key takes exactly the path a typed one does. A screen offers a `links` property;
+anything without one is simply not clickable.
+
+- **The key-up is sent too.** `Shift+S` and `DEL` both wait for a finger to come off before a second press may mean something else -- one held
+  DEL has already taken a folder of songs -- and a click that never let go would arm them for ever.
+- **A text box still owns its letters.** The screen never sees the click, so it cannot let go of its own box the way it does for any other
+  click outside it: `stop_typing()` does that, and REFUSES while a song is being renamed, because a click reaching past that editor would lose
+  a half-typed name.
+- **The run comparison owns the screen while it is up**, so `PlayingScreen.links` is its overlay's -- the same rule its keyboard and its mouse
+  already follow.
+- **Rects and underlines come from one walk of the text**, so the drawing and the MOUSE cannot disagree about where a word landed. Same seam as
+  `strip.py` and `chips.py`, and for the same reason.
+- **The underline is drawn as a cached 1-px surface rather than with `pygame.draw.line`**, because the footer's own tests hand the drawing a
+  recorder that is not a real Surface -- blitting is the one thing every caller here can do.
+
+Measured on a dense song at 1920x1200: **3.8 ms a frame**, which is where this screen already was. The footer renders three pieces per entry
+instead of one and they are all cache hits after the first frame.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

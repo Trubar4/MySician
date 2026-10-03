@@ -15,6 +15,7 @@ from pickhero.audio.input import validate_device_index
 from pickhero.config import Config
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.loader import extract_backing_track, load_gp_file
+from pickhero.ui import clickable
 from pickhero.ui.colors import set_theme
 from pickhero.ui.calibration_menu import CalibrationMenuScreen
 from pickhero.ui.scrolling import shift_held
@@ -341,39 +342,81 @@ class App:
                 # caller went on drawing to the one it already had.
                 self._apply_display_mode((event.w, event.h))
 
-            # Ctrl+C, on every screen, before anything else can claim it.
-            # *"Kannst du etwas bauen, damit ich Text am Screen markieren
-            # und kopieren kann, oder wenigstens ein generelles Ctrl+C?"* --
-            # asked after typing a 200-character error message back to be
-            # diagnosed, read off a photograph of a monitor.
-            #
-            # Here rather than on each screen, for the same reason the key
-            # repeat guard is here: this is the one door every screen's
-            # events come through, and a screen added later would otherwise
-            # have to remember.
-            # No text-box exception: Ctrl+C is a MODIFIED key and no box on
-            # any screen wants it. Guarding it behind "is anything being
-            # typed" would have switched it off on the search screen, which
-            # is the exact screen it was asked for.
-            if (event.type == pygame.KEYDOWN and event.key == pygame.K_c
-                    and event.mod & pygame.KMOD_CTRL):
-                self._copy_screen()
-                continue
+            # An underlined key word is a button. Here rather than on each
+            # screen, for the reason the key repeat guard and Ctrl+C are
+            # here: this is the one door every screen's events come through
+            # -- and the song list's own O, S, D, G and U are answered
+            # BELOW, by this method, so a screen that dispatched its own
+            # clicks would have five keys that work typed and not clicked.
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                hit = self._link_at(event.pos)
+                if hit is not None:
+                    self._press_link(*hit)
+                    continue
 
-            if self._state == "menu":
-                self._handle_menu_event(event)
-            elif self._state == "playing":
-                self._handle_playing_event(event)
-            elif self._state == "device":
-                self._handle_device_event(event)
-            elif self._state == "download":
-                self._handle_download_event(event)
-            elif self._state == "calibration":
-                self._handle_calibration_event(event)
-            elif self._state == "tuner":
-                self._handle_tuner_event(event)
-            elif self._state == "settings":
-                self._handle_settings_event(event)
+            self._dispatch(event)
+
+    def _dispatch(self, event: pygame.event.Event) -> None:
+        """One event to whatever is on screen, real or from a click."""
+        # Ctrl+C, on every screen, before anything else can claim it.
+        # *"Kannst du etwas bauen, damit ich Text am Screen markieren
+        # und kopieren kann, oder wenigstens ein generelles Ctrl+C?"* --
+        # asked after typing a 200-character error message back to be
+        # diagnosed, read off a photograph of a monitor.
+        #
+        # Here rather than on each screen, for the same reason the key
+        # repeat guard is here: this is the one door every screen's
+        # events come through, and a screen added later would otherwise
+        # have to remember.
+        # No text-box exception: Ctrl+C is a MODIFIED key and no box on
+        # any screen wants it. Guarding it behind "is anything being
+        # typed" would have switched it off on the search screen, which
+        # is the exact screen it was asked for.
+        if (event.type == pygame.KEYDOWN and event.key == pygame.K_c
+                and event.mod & pygame.KMOD_CTRL):
+            self._copy_screen()
+            return
+
+        if self._state == "menu":
+            self._handle_menu_event(event)
+        elif self._state == "playing":
+            self._handle_playing_event(event)
+        elif self._state == "device":
+            self._handle_device_event(event)
+        elif self._state == "download":
+            self._handle_download_event(event)
+        elif self._state == "calibration":
+            self._handle_calibration_event(event)
+        elif self._state == "tuner":
+            self._handle_tuner_event(event)
+        elif self._state == "settings":
+            self._handle_settings_event(event)
+
+    def _link_at(self, pos):
+        """The underlined key word under `pos` on whatever is on screen."""
+        links = getattr(self._current_screen(), "links", None)
+        return links.at(pos) if links is not None else None
+
+    def _press_link(self, key: int, mod: int) -> None:
+        """A clicked key word: pressed, and then let go.
+
+        The key-up matters as much as the key-down. `Shift+S` and `DEL` both
+        wait for a finger to come off before a second press may mean
+        something else -- one held DEL has already taken a folder of songs --
+        and a click that never let go would arm them for ever.
+        """
+        screen = self._current_screen()
+        # The screen never sees this click, so it cannot let go of its own
+        # text box the way it does for any other click outside it -- and a
+        # letter landing in the search box instead of on the key is exactly
+        # the fault `is_typing` was written for.
+        stop = getattr(screen, "stop_typing", None)
+        if callable(stop) and not stop():
+            # A text editor still owns the keys -- the rename box does, and
+            # a click reaching past it would lose a half-typed name.
+            return
+        self._dispatch(clickable.press(key, mod))
+        self._dispatch(clickable.release(key))
 
     def _current_screen(self):
         """Whatever is being drawn right now, or None."""

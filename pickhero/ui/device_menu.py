@@ -10,6 +10,7 @@ import pygame
 
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import Config
+from pickhero.ui import clickable
 from pickhero.ui.colors import get_theme
 
 # Max items visible before scrolling
@@ -28,6 +29,10 @@ class DeviceMenuScreen:
     """Device selector screen — mirrors MenuScreen list-selection pattern."""
 
     def __init__(self, config: Config):
+        #: Where the hint line's underlined keys landed. Rebuilt by the
+        #: drawing and read by the App, so a click cannot land on the
+        #: neighbour of the word under the pointer.
+        self._links = clickable.Links()
         self._config = config
         self._devices: list[dict] = []
         self._selected = 0
@@ -95,8 +100,14 @@ class DeviceMenuScreen:
             self._config.audio.device_index = dev["index"]
         self._config.save()
 
+    @property
+    def links(self) -> clickable.Links:
+        """Where the hint line's underlined keys landed, for the App to ask."""
+        return self._links
+
     def render(self, surface: pygame.Surface) -> None:
         """Draw the device selector screen."""
+        self._links.clear()
         t = get_theme()
         surface.fill(t.menu_bg)
         w, h = surface.get_size()
@@ -171,8 +182,8 @@ class DeviceMenuScreen:
 
         # Hints
         hint = "UP/DOWN: navigate  |  ENTER: select  |  R: refresh  |  ESC: back"
-        hint_surf = hint_font.render(hint, True, t.hud_text)
-        surface.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 36))
+        clickable.blit_centred(surface, hint_font, hint, h - 36, w,
+                               t.hud_text, self._links)
 
     def _ensure_visible(self) -> None:
         if self._selected < self._scroll_offset:
