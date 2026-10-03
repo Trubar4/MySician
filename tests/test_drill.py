@@ -22,7 +22,7 @@ from pickhero.config import Config
 from pickhero.drill import CLEAN, CLEAN_PASSES, LADDER, NOTHING, WRONG, Drill
 from pickhero.matcher import MatchType, NoteMatcher
 from pickhero.tabs.timeline import MeasureInfo, NoteEvent, SongMetadata, Timeline
-from pickhero.ui.scrolling import PlayingScreen
+from pickhero.ui.scrolling import LOOP_BREATH_S, PlayingScreen
 
 
 def _drill():
@@ -358,7 +358,7 @@ class TestTheBreathAtTheLoopTurn:
 
     def test_the_turn_holds_the_song(self):
         screen = self._held()
-        assert screen._breath_s == pytest.approx(drill_mod.BREATH_S)
+        assert screen._breath_s == pytest.approx(LOOP_BREATH_S)
 
     def test_the_picture_does_not_move_while_it_is_held(self):
         screen = self._held()
@@ -390,15 +390,19 @@ class TestTheBreathAtTheLoopTurn:
                    for n in screen._timeline.notes
                    if n.timestamp_ms < 4000.0)
 
-    def test_an_ordinary_loop_gets_no_breath(self):
-        """The comment at the loop turn says "no count-in on loop" and means
-        it: a bar repeating every few seconds must not stop every time."""
+    def test_an_ordinary_loop_gets_ONE_TOO(self):
+        """*"Auch beim Loopen brauche ich 1,5 Sekunden Pause."* It was scoped
+        to the drill on the argument that a bar repeating every few seconds
+        must not stop every time -- and the player, who is the one repeating
+        the bar, asked for the opposite. The hand has to come back to the
+        first fret either way."""
         screen = _screen()
         screen._set_loop_start(0.0)
         screen._set_loop_end(4000.0)
         screen._loop_enabled = True
         _turn_only(screen)
-        assert screen._breath_s == 0.0
+        assert screen._breath_s == pytest.approx(LOOP_BREATH_S)
+        assert screen._drill is None, "and no drill was started by it"
 
     def test_leaving_the_drill_lets_the_song_go(self):
         screen = self._held()
@@ -512,3 +516,31 @@ class TestDrillingTheLoopYouSet:
         _press(screen, pygame.K_p)
         assert screen._loop_enabled != was
         assert screen._drill is None
+
+
+class TestTheWayOnAndTheWayBack:
+    """*"Aus den Stats komme ich nur mit rechter Maus in den Loop-Modus.
+    Zurueck geht es nicht -> ESC beendet den Song."*
+
+    Landing a passage closes the overlay -- rightly, because marking one is
+    how you get to play it -- and then the only thing on screen was "SPACE
+    plays it", so the two keys that carry on were reachable and unnamed while
+    the key under his finger was the one that leaves the song.
+    """
+
+    def test_marking_a_passage_names_both_keys(self):
+        screen = _screen()
+        screen.take_passage(2000.0, 6000.0)
+        note = screen._status_note or ""
+        assert "SPACE" in note
+        assert "Shift+P" in note, "the way on"
+        assert "Shift+D" in note, "the way back"
+
+    def test_shift_p_really_is_what_that_sentence_names(self):
+        """The property, not the wording: the key the line offers is the key
+        that drills what was just marked."""
+        screen = _screen()
+        screen.take_passage(2000.0, 6000.0)
+        _press(screen, pygame.K_p, pygame.KMOD_LSHIFT, "P")
+        assert screen._drill is not None
+        assert (screen._drill.start_ms, screen._drill.end_ms) == (2000.0, 6000.0)

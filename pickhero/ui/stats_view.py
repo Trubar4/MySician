@@ -935,7 +935,7 @@ class StatsOverlay:
         start, end, where = self._nest_span(first, last)
         self.close()
         self._screen.take_passage(start, end)
-        self._screen.say(f"Loop set over {where} - SPACE plays it")
+        self._screen.say(self._screen.passage_keys(f"Loop set over {where}"))
 
     # -- walking the places it went wrong -----------------------------------
 
@@ -1077,7 +1077,7 @@ class StatsOverlay:
             self._screen.take_passage(start, end)
             self._nest_note = (f"{self._nest_at + 1} of {len(self._nests)}: "
                                f"{where}, {wrong} note{'' if wrong == 1 else 's'} "
-                               f"wrong{seen} - SPACE plays the loop")
+                               f"wrong{seen} - Shift+N drills it")
         self._screen.say(self._nest_note)
 
     # -- the bars -----------------------------------------------------------

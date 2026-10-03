@@ -5846,9 +5846,12 @@ comes back immediately is the other direction, which is the one that matters: th
 
 *"Beim Üben mit Drill brauche ich 1,5 Sekunden Pause, wenn der Loop wieder auf Anfang springt."*
 
-The loop turn has a comment saying `(no count-in on loop)` and it is right — a bar repeating every few seconds must not spend a bar of clicks on
-every turn. It is right for a loop somebody is playing THROUGH and wrong for a drill, where the hand has to come off the last note of the
-passage and back to the first fret of it. So a drilled passage stands still at the top for `drill.BREATH_S`, and an ordinary loop is untouched.
+The loop turn has a comment saying `(no count-in on loop)` and it is right about CLICKS — a bar repeating every few seconds must not spend a bar
+of them on every turn. It was read as an argument against a PAUSE too, and scoped to the drill on the grounds that an ordinary loop is one
+somebody plays through. **The player, who is the one repeating the bar, came back the same day: *"Auch beim Loopen brauche ich 1,5 Sekunden
+Pause."*** The hand has to come off the last note of the passage and back to the first fret of it whichever key set the loop, so every loop
+turn stands still for `LOOP_BREATH_S` — and the constant moved out of `drill.py` into `scrolling.py` with it, because a pause that belongs to
+the loop has no business living in the ladder's arithmetic.
 
 - **Real seconds, not beats.** What it is for is a hand moving, and a hand does not get slower because the practice speed did.
 - **Three things, all of which wait mode already does**: the picture holds, the backing is held, nothing is matched. Driven by a clock instead
@@ -5868,6 +5871,8 @@ passage and back to the first fret of it. So a drilled passage stands still at t
   purpose every few seconds.
 - **Anything that leaves ends it**: the drill finishing, the loop being switched off, an arrow key. A breath held through a seek would stand the
   song still wherever the key landed, which is a key that looks dead.
+- **It was scoped on reasoning and widened on a report, which is the right way round and worth saying.** The reasoning was not measured and
+  not the player's; one sentence from the person doing the looping outranks it.
 
 ## The Ladder Had No Way In And No Way To Say "Enough"
 
@@ -5907,6 +5912,27 @@ plays it, which is where every other passage in this app lands.
 **And the help page overflowed again** — four added lines put a block onto a second page at 1080, which is the player's own screen, so the
 pagination would have cost him a second `H` on every look. Folded into one entry and one line instead. **A page that paginates is not a page
 that may be filled without measuring**, for the second time in a week.
+
+## The Way On Was Reachable And Unnamed
+
+*"Aus den Stats komme ich nur mit rechter Maus in den Loop-Modus. Zurueck geht es nicht -> ESC beendet den Song."*
+
+Landing a passage CLOSES the stats overlay, and that is right: marking one is how you get to play it, and the landing is deliberate — loop set,
+jump, hands free. What was on screen afterwards was `Loop set over bars 12-14 - SPACE plays it`, and nothing else. So **the two keys that carry
+on from there were both reachable and both unnamed** — `Shift+P` to drill the passage, `Shift+D` to go back to the stats — while the key under
+his finger was `ESC`, which leaves the song.
+
+- **One sentence, from one place.** `passage_keys()` is on the screen, so the right-drag on the strip, the right-drag in the overlay, `I`/`O`
+  and `N` all say the same thing. Two sentences for one landing is how one of them comes to name a key the other does not.
+- **The property is asserted, not the wording**: the key the line offers really drills what was just marked, which is the rule `K` and its HUD
+  line have been held to since the timing report.
+- **And the plain `N` now names `Shift+N`** rather than repeating "SPACE plays the loop", which the line above it already said. A line earns its
+  place by saying something nothing else on screen says — his own rule, applied to a status note.
+
+**Two of the four questions needed no code at all, and that is the other half of the report.** *"Wie komme ich in den Drill-Modus wenn ich den
+Song direkt oeffne?"* — `Shift+D` opens the stats on the STORED evenings, which do not need today's run, and `N`/`Shift+N` walk them; or set a
+loop by hand with the arrows and `I`/`O` and press `Shift+P`. Both already worked. **A feature that only the person who built it can find is
+the same fault as one that does not work**, which is why the answer here was a sentence on screen rather than an explanation in chat.
 
 ## What NOT To Do
 

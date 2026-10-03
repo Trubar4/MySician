@@ -399,6 +399,17 @@ FRAME_EVEN_FRACTION = 0.2
 # only teleports the picture.
 MAX_FRAME_STALL_S = 0.25
 
+#: How long the song stands still at a loop turn, in REAL seconds.
+#: *"Beim Üben mit Drill brauche ich 1,5 Sekunden Pause, wenn der Loop wieder
+#: auf Anfang springt."* -- and then, once it was in: *"Auch beim Loopen
+#: brauche ich 1,5 Sekunden Pause."* So it belongs to the LOOP and not to the
+#: drill, which is why it lives here rather than in `drill.py`: the hand has
+#: to come off the last note of the passage and back to the first fret of it,
+#: and that is true of any loop a passage is practised in. Real seconds,
+#: because what it is for is a hand moving, and a hand does not get slower
+#: because the practice speed did.
+LOOP_BREATH_S = 1.5
+
 #: The track picker's geometry. See track_menu_box.
 TRACK_MENU_ROW_H = 28
 TRACK_MENU_MIN_WIDTH = 300
@@ -2175,11 +2186,10 @@ class PlayingScreen:
                 self._mp3_player.seek(self._mp3_ms(self._loop_start_ms))
             if self._audio_enabled and self._playing:
                 self._reanchor_audio_clock()
-            # A drilled passage gets a moment to get the hand back. Last,
+            # A moment to get the hand back to the top of the passage. Last,
             # after the backing has been seeked, so holding it holds it where
             # the loop landed.
-            if self._drill is not None and not self._drill.finished:
-                self._hold_breath()
+            self._hold_breath()
             return
 
         if self._playback_ms >= self._timeline.duration_ms:
@@ -5279,7 +5289,19 @@ class PlayingScreen:
         if self._playing:
             self.toggle_play()          # land with the hands free
         self.seek(self._loop_start_ms)
-        self._say("Loop set — SPACE to play it")
+        self._say(self.passage_keys("Loop set"))
+
+    def passage_keys(self, lead: str) -> str:
+        """What to press once a passage has been marked.
+
+        *"Zurueck geht es nicht -> ESC beendet den Song."* Landing a passage
+        CLOSES the stats overlay -- rightly, because marking one is how you
+        get to play it -- and the only thing on screen then was "SPACE plays
+        it". So the two keys that carry on from there were reachable and
+        unnamed, and the key under his finger was the one that leaves the
+        song. One sentence, said by every path that marks a passage.
+        """
+        return f"{lead} — SPACE plays it · Shift+P drills it · Shift+D Stats"
 
     # -- the drill --------------------------------------------------------
 
@@ -5368,7 +5390,7 @@ class PlayingScreen:
             self._say(note)
 
     def _hold_breath(self) -> None:
-        """Stand still at the top of the passage for `drill.BREATH_S`.
+        """Stand still at the top of the passage for `LOOP_BREATH_S`.
 
         The recording is SUSPENDED rather than stopped: `pause` means the
         next start is a `play(start=)`, which decodes the file up to that
@@ -5380,7 +5402,7 @@ class PlayingScreen:
         The MIDI backing needs nothing: it only sounds where `update()` plays
         its events, and the breath returns before that.
         """
-        self._breath_s = drill_mod.BREATH_S
+        self._breath_s = LOOP_BREATH_S
         for player in self._midi_all():
             player.pause()
         if self._mp3_player is not None:
