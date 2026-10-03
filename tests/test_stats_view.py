@@ -1566,3 +1566,136 @@ class TestPractisingFromTheTrend:
         assert screen._loop_enabled
         assert screen._loop_start_ms == pytest.approx(BAR_MS)
         assert overlay.mode == "trend"
+
+
+class TestTheEasierReadingSharesTheHistory:
+    """*"Stats funktioniert nicht mehr ... bei manchen Songs gehts noch."*
+
+    Q leaves the octave doublings out, so `len(timeline.notes)` drops -- and
+    `Run.fits` compares exactly that. Every evening ever recorded of such a
+    song therefore stopped fitting at once: both pretend runs vanished,
+    nothing could be picked, and each row was labelled "another track", which
+    it was not. A song-dependent fault, which is why some songs still worked.
+
+    A run is one character per WRITTEN note now, whichever reading was
+    played, with the character for "never judged" where the easier reading
+    dropped the note -- which is what it was: never in front of the player.
+    """
+
+    def _both(self, tmp_path):
+        from pickhero.tabs.simplify import how_much, simplified
+        written = _song()
+        # Two notes of the same pitch class at one moment, the lower first:
+        # that is what an octave doubling is, and what Q leaves out.
+        extra = [NoteEvent(timestamp_ms=n.timestamp_ms, duration_ms=n.duration_ms,
+                           midi_note=n.midi_note + 12, string=1, fret=12,
+                           measure=n.measure)
+                 for n in written.notes]
+        written = Timeline(sorted(written.notes + extra,
+                                  key=lambda n: (n.timestamp_ms, n.midi_note)),
+                           written.metadata, list(written.measures))
+        easier = simplified(written)
+        assert len(easier.notes) < len(written.notes), "nothing to drop"
+        tab = tmp_path / "song.gp5"
+        tab.write_text("x")
+        screen = PlayingScreen(easier, config=Config(), song_key="song",
+                               song_path=str(tab))
+        screen._matcher = NoteMatcher(easier)
+        screen._audio_enabled = True
+        screen.set_track_options([(0, "Guitar")], 0)
+        screen.set_simplify(True, how_much(written), written=written)
+        return screen, written, easier
+
+    def test_a_run_of_it_is_one_character_per_written_note(self, display,
+                                                           tmp_path):
+        screen, written, easier = self._both(tmp_path)
+        for note in easier.notes:
+            screen._matcher._set_state(note, MatchType.HIT)
+        run = screen.current_run()
+        assert len(run.notes) == len(written.notes)
+        assert run.notes.count(runs.NOTHING) == (len(written.notes)
+                                                 - len(easier.notes))
+        assert run.fits(len(written.notes), 0)
+
+    def test_and_the_notes_it_dropped_are_the_ones_never_judged(self, display,
+                                                                tmp_path):
+        screen, written, easier = self._both(tmp_path)
+        for note in easier.notes:
+            screen._matcher._set_state(note, MatchType.HIT)
+        marks = screen.current_run().notes
+        shown = {id(n) for n in easier.notes}
+        for char, note in zip(marks, written.notes):
+            assert (char == runs.NOTHING) is (id(note) not in shown)
+
+    def test_the_songs_own_evenings_are_still_there(self, display, tmp_path):
+        """The whole complaint, in one assertion: it fails on the old code."""
+        screen, written, _ = self._both(tmp_path)
+        for day in range(3):
+            runs.append(screen._song_path,
+                        _run("h" * len(written.notes),
+                             f"2026-09-0{day + 1}T10:00:00+00:00"))
+        screen._stats.show()
+        entries = screen._stats._entries
+        assert any(e.run.kind == "best" for e in entries), "Best ever is gone"
+        assert all(e.comparable for e in entries), "nothing can be picked"
+
+
+class TestWhyARunDoesNotFit:
+    """The row and the key that refuses it read ONE answer.
+
+    "another track, or the tab has changed since" was both sentences at once
+    and named the wrong one far more often than the right one.
+    """
+
+    def _row(self, screen, run):
+        runs.append(screen._song_path, run)
+        screen._stats.show()
+        return next(e for e in screen._stats._entries if e.run.kind == "run")
+
+    def test_another_track_says_so(self, display, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        row = self._row(screen, runs.make("h" * len(song.notes), 60.0, 100, 3,
+                                          started="2026-09-01T10:00:00+00:00"))
+        assert "another track" in row.why
+
+    def test_a_different_note_count_names_both(self, display, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        row = self._row(screen, runs.make("h" * 7, 60.0, 100, 0,
+                                          started="2026-09-01T10:00:00+00:00"))
+        assert "7 notes then" in row.why
+        assert f"{len(song.notes)} now" in row.why
+
+    def test_the_key_says_the_same_thing(self, display, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        said = []
+        screen.say = lambda text: said.append(text)
+        row = self._row(screen, runs.make("h" * 7, 60.0, 100, 0,
+                                          started="2026-09-01T10:00:00+00:00"))
+        overlay = screen._stats
+        overlay.cursor = overlay._entries.index(row)
+        overlay.handle_event(_key(pygame.K_SPACE))
+        assert said and row.why in said[-1]
+        assert not overlay.selected
+
+
+class TestTheMergedPartIsItsOwnHistory:
+    """`run_track_id` is what a run is RECORDED under; the list asked
+    `_track_index`, which is the primary of a merge. Two readers of one
+    question, and the one that decided was not the one that writes."""
+
+    def test_a_run_of_the_merge_fits_the_merge(self, display, tmp_path):
+        song = _song()
+        screen = _screen(song, tmp_path)
+        screen.set_track_options([(0, "Lead"), (1, "Rhythm")], 0, merge=[0, 1])
+        for day in range(2):      # "best ever" is not built from one run
+            runs.append(screen._song_path,
+                        runs.make("h" * len(song.notes), 60.0, 100,
+                                  screen.run_track_id(),
+                                  started=f"2026-09-0{day + 1}T10:00:00+00:00"))
+        screen._stats.show()
+        entries = screen._stats._entries
+        assert any(e.run.kind == "best" for e in entries)
+        assert all(e.comparable for e in entries)

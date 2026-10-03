@@ -5805,6 +5805,70 @@ plain `N` both say it: *"drilling bars 12-14 (clean in 1 of 3 runs) - SPACE play
   whether to work on that passage. The drill's HUD line already carries `1 of 2 clean`; a second count of the same shape beside it would be
   two numbers that look alike and mean different things.
 
+## The Easier Reading Voided The Song's Whole History
+
+*"Stats funktioniert nicht mehr. Kann keine Runs mehr auswählen und vergleichen. Best ever als Kombi und häufige Fehler sind jetzt auch
+unsichtbar."* And then the sentence that found it: *"Bei manchen Songs gehts noch."*
+
+**Song-dependent, which narrows it to one line.** Nothing in the day's commits touches `build`, `_pick`, `comparable` or `fits` — and all three
+symptoms are one condition: `build` makes both pretend runs out of `[r for r in history if r.fits(note_count, track)]`, and `_pick` refuses
+every row that does not fit. So a song where all three fail is a song where NOTHING fits, and `fits` compares two numbers: the note count and
+the track.
+
+**`Q` moves the note count.** The easier reading leaves the octave doublings out — 34 % of the notes on the metal song this was measured
+against — so `len(timeline.notes)` drops the moment it is switched on, and every evening ever recorded of that song stops fitting at once.
+Reproduced through the real screen: synthetics `[]`, nothing pickable, and each row labelled **"another track, or the tab has changed since"**,
+which it was not. CLAUDE.md had written *"a run of the easier reading is not a run of the full song, and that needed no new code"* — true of the
+drawing and false of the consequence.
+
+- **A run is one character per WRITTEN note now, whichever reading was played**, with `.` where the easier reading dropped the note. Which is
+  what it was: never in front of the player, and `.` is the character that already means exactly that. So the two readings share one history
+  instead of being two histories of one song — and a run of the easier reading claims nothing about the notes it did not show, which is what
+  makes "best ever" across them honest.
+- **It costs no bookkeeping, because `simplified()` keeps the SAME NoteEvent objects.** `current_run` walks the written list and asks the
+  matcher only about the notes the screen is showing; identity is the whole mapping. Measured: 48 written, 24 shown, 24 hits and 24 dots, in
+  the right places.
+- **One reader of "which song are these verdicts about."** `stats_view._song()` is the written timeline, used by all thirteen places that
+  wanted it — the note count, the bars, the dots, the duration. The drawing and the mouse reading different ones would put a dot a bar away
+  from where it was clicked.
+- **And the track had two readers.** `run_track_id()` is what a run is RECORDED under — a merged part is not its lead track's notes, so it
+  carries its own negative id — while `_rebuild` asked `_track_index`, which is the merge's PRIMARY. Two answers to one question, and the one
+  that decided was not the one that writes. The same shape as the capability check that disagreed with the permission check on Born To Be My
+  Baby, and it is fixed the same way: ask the writer.
+- **The row says WHICH of the two it is, and the key that refuses it says the same sentence.** "played on another track" against "17 notes
+  then, 1314 now — the tab has changed since". One `Entry.why`, read by both: two sentences for one reason is how one of them comes to blame
+  the wrong thing, which is precisely what "another track" did to every song whose note count had moved.
+
+**What it does not do is rescue a run recorded at the simplified length.** Those were stored before this and still carry the short count. What
+comes back immediately is the other direction, which is the one that matters: the song's existing evenings fit again the moment Q is on.
+
+## A Breath At The Top Of The Passage
+
+*"Beim Üben mit Drill brauche ich 1,5 Sekunden Pause, wenn der Loop wieder auf Anfang springt."*
+
+The loop turn has a comment saying `(no count-in on loop)` and it is right — a bar repeating every few seconds must not spend a bar of clicks on
+every turn. It is right for a loop somebody is playing THROUGH and wrong for a drill, where the hand has to come off the last note of the
+passage and back to the first fret of it. So a drilled passage stands still at the top for `drill.BREATH_S`, and an ordinary loop is untouched.
+
+- **Real seconds, not beats.** What it is for is a hand moving, and a hand does not get slower because the practice speed did.
+- **Three things, all of which wait mode already does**: the picture holds, the backing is held, nothing is matched. Driven by a clock instead
+  of by a pending note.
+- **The recording is SUSPENDED, never stopped.** `pause` means the next start is a `play(start=)`, which decodes the file up to that point —
+  seconds of frozen picture four minutes into a song, at every turn of a loop a few seconds long. `set_suspended` costs nothing and its position
+  stands still while it is held, so nothing has to be seeked again afterwards.
+- **Before the clock is advanced, not after.** A deliberate hold must never reach `clock_lost_ms` and `clock_ratio` — those two exist to answer
+  *"did the picture keep real time"*, and a ladder would otherwise report the app losing twelve seconds. The real seconds still count as
+  practice: the player is sitting in front of the passage with a guitar on.
+- **Strikes are DROPPED rather than pinned** the way wait mode pins them. The song is standing still while the hand moves, so what the
+  microphone hears there is the hand and not the passage; pinning it would let the first note be credited a second and a half early, which is a
+  hit window nobody chose. Both queues are drained for the reason the paused branch drains them — a strike window holds 341 ms of audio.
+- **The clocks are re-paired on the way out**, by arming the anchor and letting the next frame take it. Without that every strike of the pass is
+  out by the whole breath.
+- **It is counted down on screen** (`ready in 1.2 s`). A picture that stands still is what a frozen app looks like, and this one stands still on
+  purpose every few seconds.
+- **Anything that leaves ends it**: the drill finishing, the loop being switched off, an arrow key. A breath held through a seek would stand the
+  song still wherever the key landed, which is a key that looks dead.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

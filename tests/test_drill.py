@@ -11,6 +11,8 @@ that the loop turn really drives it, so the last class runs the real
 `update()`.
 """
 
+import time
+
 import pygame
 import pytest
 
@@ -169,11 +171,31 @@ def _judge(screen, kind, first=0, last=None):
             screen._matcher._set_state(note, kind)
 
 
-def _turn(screen):
+def _turn_only(screen):
     """Drive the real loop turn: put the clock past the end and update."""
     screen._playing = True
     screen._playback_ms = screen._loop_end_ms + 1.0
     screen.update()
+
+
+def _breathe_out(screen, frames=60):
+    """Wait out the drill's breath the way real time does.
+
+    It HOLDS the song at the top of the passage, so without this the next
+    pass never starts -- and one frame is not enough, because the frame clock
+    caps what a single frame may spend. Exactly what the app does.
+    """
+    for _ in range(frames):
+        if screen._breath_s <= 0.0:
+            return
+        screen._last_tick = time.perf_counter() - 0.1
+        screen.update()
+
+
+def _turn(screen):
+    """One whole turn of the loop, breath included."""
+    _turn_only(screen)
+    _breathe_out(screen)
 
 
 class TestTheLoopTurnDrivesIt:
@@ -315,3 +337,75 @@ class TestHowOftenThisPassageHasGoneClean:
             clean, reached = drill_mod.clean_runs([marks])
             assert reached == (1 if judged else 0)
             assert clean == (1 if judged and not wrong else 0)
+
+
+class TestTheBreathAtTheLoopTurn:
+    """*"Beim Üben mit Drill brauche ich 1,5 Sekunden Pause, wenn der Loop
+    wieder auf Anfang springt."*
+
+    The loop deliberately has no count-in, which is right for a loop being
+    played through and wrong for a drill: the hand has to come off the last
+    note of the passage and back to the first fret of it. So the picture
+    stands still at the top for a moment, and nothing is scored there.
+    """
+
+    def _held(self):
+        screen = _screen()
+        screen.start_drill(0.0, 4000.0)
+        _judge(screen, MatchType.HIT, 0, 4000.0)
+        _turn_only(screen)
+        return screen
+
+    def test_the_turn_holds_the_song(self):
+        screen = self._held()
+        assert screen._breath_s == pytest.approx(drill_mod.BREATH_S)
+
+    def test_the_picture_does_not_move_while_it_is_held(self):
+        screen = self._held()
+        screen._last_tick = time.perf_counter() - 0.1
+        screen._playback_ms = 0.0
+        screen.update()
+        assert screen._playback_ms == 0.0
+        assert screen._breath_s > 0.0
+
+    def test_and_then_it_runs_again(self):
+        screen = self._held()
+        # Real seconds, and the frame clock caps what one frame may spend --
+        # so it takes several, exactly as it does in the app.
+        _breathe_out(screen)
+        assert screen._breath_s == 0.0
+        before = screen._playback_ms
+        screen._last_tick = time.perf_counter() - 0.1
+        screen.update()
+        assert screen._playback_ms > before
+
+    def test_nothing_is_scored_while_it_is_held(self):
+        """A strike arriving during the breath is the hand moving, not the
+        passage being played."""
+        screen = self._held()
+        screen._matcher.forget_from(0.0)
+        screen._last_tick = time.perf_counter() - 0.1
+        screen.update()
+        assert all(screen._matcher.get_note_state(n) == MatchType.PENDING
+                   for n in screen._timeline.notes
+                   if n.timestamp_ms < 4000.0)
+
+    def test_an_ordinary_loop_gets_no_breath(self):
+        """The comment at the loop turn says "no count-in on loop" and means
+        it: a bar repeating every few seconds must not stop every time."""
+        screen = _screen()
+        screen._set_loop_start(0.0)
+        screen._set_loop_end(4000.0)
+        screen._loop_enabled = True
+        _turn_only(screen)
+        assert screen._breath_s == 0.0
+
+    def test_leaving_the_drill_lets_the_song_go(self):
+        screen = self._held()
+        screen._end_drill()
+        assert screen._breath_s == 0.0
+
+    def test_so_does_going_somewhere_else(self):
+        screen = self._held()
+        screen.seek(8000.0)
+        assert screen._breath_s == 0.0

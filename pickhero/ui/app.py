@@ -854,6 +854,7 @@ class App:
         getter = getattr(self._config, "simplify_for", None)
         if getter is not None:
             simple = getter(path.stem)
+        written = timeline
         if simple:
             timeline = simplified(timeline)
 
@@ -905,7 +906,8 @@ class App:
         self._playing_screen.set_track_options(
             self._track_options(path), timeline.metadata.track_index, merge
         )
-        self._playing_screen.set_simplify(simple, self._simplify_drops)
+        self._playing_screen.set_simplify(simple, self._simplify_drops,
+                                          written=written)
         if self._merge_note:
             self._playing_screen.say(self._merge_note)
 

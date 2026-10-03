@@ -1110,6 +1110,13 @@ class PlayingScreen:
                  song_key: str = "", song_path: str = "",
                  transpose: int = 0):
         self._timeline = timeline
+        #: The song as it was WRITTEN. The same object unless this is the
+        #: easier reading (Q), where `_timeline` holds a subset of these
+        #: notes and this holds all of them. Every run of this song is
+        #: recorded against THIS list, whichever reading was played: a
+        #: verdict string is one character per note, and two readings
+        #: counted separately would be two histories of one song.
+        self._written_timeline = timeline
         self._visible_beats = visible_beats
         self._hit_zone_fraction = hit_zone_fraction
         self._config = config or Config()
@@ -1176,6 +1183,9 @@ class PlayingScreen:
         self._audio_capture = None  # AudioCapture, created on demand
         #: The passage being walked up the drill's ladder, or None.
         self._drill: drill_mod.Drill | None = None
+        #: Real seconds left of the drill's breath at the top of a passage.
+        #: Zero when nothing is being held.
+        self._breath_s: float = 0.0
         self._matcher: NoteMatcher | None = None
         self._feedback = FeedbackRenderer()
         self._audio_enabled = True
@@ -1670,6 +1680,10 @@ class PlayingScreen:
         # stutter follows -- and a run log that cannot say how much spooling
         # a run contained cannot correlate anything with it.
         self._seeks += 1
+        # Going somewhere else ends the breath. Held, it would stand the song
+        # still at wherever the arrow key landed -- a key that looks dead.
+        if self._breath_s > 0.0:
+            self._release_breath()
         was = self._playback_ms
         self._playback_ms = max(0.0, min(ms, self._timeline.duration_ms))
         # Spooling FORWARD is not playing badly. The notes it jumps over were
@@ -1984,6 +1998,41 @@ class PlayingScreen:
             return
 
         now = time.perf_counter()
+        # The drill's breath at the top of a passage. *"Beim Ueben mit Drill
+        # brauche ich 1,5 Sekunden Pause, wenn der Loop wieder auf Anfang
+        # springt."* The picture stands still where the loop landed, the
+        # backing is held rather than stopped, and nothing is matched -- the
+        # same three things wait mode already does, driven by a clock instead
+        # of by a pending note.
+        #
+        # BEFORE the clock is advanced rather than after, so a deliberate
+        # hold never reaches `clock_lost_ms` and `clock_ratio`. Those two
+        # exist to answer "did the picture keep real time", and a drill would
+        # otherwise report the app losing twelve seconds a ladder. The real
+        # seconds still count as practice: the player is sitting in front of
+        # the passage with a guitar on.
+        #
+        # Strikes are DROPPED rather than pinned to the first note the way
+        # wait mode pins them. The song stands still at the top of the
+        # passage while the player moves their hand, so what the microphone
+        # hears there is the hand and not the passage; pinning it would let
+        # the first note be credited a second and a half early, which is a
+        # hit window nobody chose. Both queues are drained for the reason the
+        # paused branch drains them: a strike window holds 341 ms of audio.
+        if self._breath_s > 0.0:
+            if self._last_tick is not None:
+                spent = min(now - self._last_tick, MAX_FRAME_STALL_S)
+                self._breath_s = max(0.0, self._breath_s - spent)
+                self._session_seconds += spent
+            self._last_tick = now
+            if self._audio_capture is not None:
+                self._audio_capture.get_notes()
+                self._audio_capture.get_strike_windows()
+            if self._breath_s <= 0.0:
+                self._release_breath()
+            self._update_mp3()
+            return
+
         prev_ms = self._playback_ms
         # The first frame of a screen has no previous tick, so nothing has
         # elapsed yet -- and every reader of this below has to be able to say
@@ -2126,6 +2175,11 @@ class PlayingScreen:
                 self._mp3_player.seek(self._mp3_ms(self._loop_start_ms))
             if self._audio_enabled and self._playing:
                 self._reanchor_audio_clock()
+            # A drilled passage gets a moment to get the hand back. Last,
+            # after the backing has been seeked, so holding it holds it where
+            # the loop landed.
+            if self._drill is not None and not self._drill.finished:
+                self._hold_breath()
             return
 
         if self._playback_ms >= self._timeline.duration_ms:
@@ -3947,7 +4001,8 @@ class PlayingScreen:
         for player in self._midi_all():
             player.seek(self._backing_ms(self._playback_ms))
 
-    def set_simplify(self, simple: bool, drops: tuple[int, int]) -> None:
+    def set_simplify(self, simple: bool, drops: tuple[int, int],
+                     written=None) -> None:
         """Say whether this song is the easier reading, and what it drops.
 
         `drops` is (notes an easier reading leaves out, notes written) of the
@@ -3957,6 +4012,11 @@ class PlayingScreen:
         """
         self._simplified = bool(simple)
         self._simplify_drops = drops
+        # `written` is the song before the doublings were left out -- the same
+        # NoteEvent objects, which is what lets `current_run` tell a note the
+        # easier reading dropped from one the player simply missed.
+        if written is not None:
+            self._written_timeline = written
 
     def set_track_options(self, options: list[tuple[int, str]],
                           current: int | None,
@@ -5242,10 +5302,47 @@ class PlayingScreen:
             return
         back = self._drill.restore_tempo
         self._drill = None
+        # A breath left standing would hold a song with no drill in it.
+        if self._breath_s > 0.0:
+            self._release_breath()
         if restore and abs(back - self._tempo_factor) > 1e-6:
             self.set_tempo_factor(back, by_hand=False)
         if note:
             self._say(note)
+
+    def _hold_breath(self) -> None:
+        """Stand still at the top of the passage for `drill.BREATH_S`.
+
+        The recording is SUSPENDED rather than stopped: `pause` means the
+        next start is a `play(start=)`, which decodes the file up to that
+        point -- seconds of frozen picture four minutes into a song, and this
+        happens at every turn of a loop a few seconds long. `set_suspended`
+        costs nothing and its position stands still while it is held, so
+        nothing has to be seeked again when the breath is over.
+
+        The MIDI backing needs nothing: it only sounds where `update()` plays
+        its events, and the breath returns before that.
+        """
+        self._breath_s = drill_mod.BREATH_S
+        for player in self._midi_all():
+            player.pause()
+        if self._mp3_player is not None:
+            self._mp3_player.set_suspended(True)
+
+    def _release_breath(self) -> None:
+        """Start the passage again: the backing, then the clocks.
+
+        The anchor is ARMED here and taken on the next frame, which is the
+        one instant where song time and audio time both describe the present.
+        Without it every strike of the pass would be out by the whole breath.
+        """
+        self._breath_s = 0.0
+        for player in self._midi_all():
+            player.seek(self._backing_ms(self._playback_ms))
+        if self._mp3_player is not None and self._mp3_plays():
+            self._mp3_player.set_suspended(False)
+        if self._audio_enabled and self._playing:
+            self._reanchor_audio_clock()
 
     def _drill_marks(self) -> str:
         """The verdicts of the drilled passage, as run characters.
@@ -5787,9 +5884,15 @@ class PlayingScreen:
         # loop too, and it says which bars, which speed and how far along --
         # everything the loop line says and more. Two lines for one state is
         # the wallpaper this HUD was cut down to remove.
-        loop_info = (self._drill.line()
-                     if self._drill is not None and not self._drill.finished
-                     else self._loop_hud_text())
+        if self._drill is not None and not self._drill.finished:
+            loop_info = self._drill.line()
+            if self._breath_s > 0.0:
+                # Counted down rather than merely implied. A picture that
+                # stands still is what a frozen app looks like, and this one
+                # stands still on purpose every few seconds.
+                loop_info += f" — ready in {self._breath_s:.1f} s"
+        else:
+            loop_info = self._loop_hud_text()
         if loop_info and self._loop_enabled:
             loop_surf = hint_font.render(loop_info, True, t.hud_accent)
             surface.blit(loop_surf, (w // 2 - loop_surf.get_width() // 2, 12))
@@ -8063,11 +8166,18 @@ class PlayingScreen:
         would be a second answer to "how did that note go". `timeline.notes`
         copies the list, so this is asked once and never in a frame.
         """
+        shown = {id(n) for n in self._timeline.notes}
         marks = []
-        for note in self._timeline.notes:
+        for note in self._written_timeline.notes:
             kind = None
             checked = False
-            if self._matcher is not None:
+            # A note the easier reading left out was never in front of the
+            # player, so it gets the character for "never judged" -- which is
+            # exactly what it was. That is what makes a run of the easier
+            # reading comparable with a run of the whole song instead of
+            # voiding the song's entire history: `fits` compares the note
+            # count, and Q used to change it.
+            if self._matcher is not None and id(note) in shown:
                 kind = _RUN_VERDICT.get(self._matcher.get_note_state(note))
                 checked = kind is not None and not self._matcher.unreliable(note)
             marks.append((kind, checked))

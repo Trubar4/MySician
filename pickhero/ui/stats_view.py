@@ -120,6 +120,11 @@ class Entry:
     #: HAPPENED and is still listed -- but drawing it against these notes
     #: would put every dot in the wrong place.
     fits: bool = True
+    #: Why not, in words, when it does not fit. Said on the row AND by the
+    #: key that refuses to pick it: two sentences for one reason is how one
+    #: of them comes to blame the wrong thing, which is what "another track"
+    #: did to every song whose note count had moved.
+    why: str = ""
 
     @property
     def comparable(self) -> bool:
@@ -187,10 +192,21 @@ def build(history: list[runs_mod.Run], note_count: int, track: int,
             # every other would have the player wondering why there are two
             # of tonight.
             detail += f"   — {run.label}"
-        if not fits:
-            detail += "   — another track, or the tab has changed since"
+        why = ""
+        if run.track != track:
+            why = "played on another track"
+        elif run.note_count != note_count:
+            # The COUNTS, not a guess at the cause. This song had its tab
+            # re-downloaded, or was played as a merge, or -- the commonest
+            # and the one that used to read as "another track" -- it was
+            # played as the other reading of Q. A row that names the wrong
+            # cause sends the player to the wrong key.
+            why = (f"{run.note_count} notes then, {note_count} now — "
+                   "the tab has changed since")
+        if why:
+            detail += f"   — {why}"
         rows.append(Entry(run=run, title=_when(run) or "a run",
-                          detail=detail, fits=fits))
+                          detail=detail, fits=fits, why=why))
     return rows
 
 
@@ -412,6 +428,19 @@ class StatsOverlay:
         self.open = False
         self._drag_from = self._drag_to = None
 
+    def _song(self):
+        """The song these verdicts are about: the one as WRITTEN.
+
+        Not `_timeline`, which on the easier reading (Q) holds a subset of
+        it. A run is one character per written note whichever reading was
+        played, so every geometry here -- the note count, the bars, the dots
+        -- has to be the written song or a run of the other reading would be
+        drawn against the wrong notes. One reader, because the drawing and
+        the mouse must not disagree about where a note is.
+        """
+        return getattr(self._screen, "_written_timeline", None) or \
+            self._song()
+
     def _this_run(self):
         """The run in progress, or None when the history already holds it.
 
@@ -437,7 +466,7 @@ class StatsOverlay:
         a bar showing empty space beyond the last note would read as a stretch
         that was never played.
         """
-        duration = max(1.0, self._screen._timeline.duration_ms)
+        duration = max(1.0, self._song().duration_ms)
         span = duration / (2 ** max(0, self.zoom))
         start = max(0.0, min(self.view_from_ms, duration - span))
         return start, start + span
@@ -455,7 +484,7 @@ class StatsOverlay:
         start, end = self.window()
         middle = (start + end) / 2.0
         self.zoom = step
-        duration = max(1.0, self._screen._timeline.duration_ms)
+        duration = max(1.0, self._song().duration_ms)
         span = duration / (2 ** self.zoom)
         self.view_from_ms = middle - span / 2.0
         self.view_from_ms = max(0.0, min(self.view_from_ms, duration - span))
@@ -466,9 +495,16 @@ class StatsOverlay:
         self.view_from_ms = start + direction * (end - start) * SCROLL_FRACTION
 
     def _rebuild(self) -> None:
-        self._entries = build(self._history, len(self._screen._timeline.notes),
-                              int(getattr(self._screen, "_track_index", 0) or 0),
-                              self.sort)
+        # The track the SCREEN would record a run under, asked of the screen
+        # -- `_track_index` is the primary of a merge and a merged part is
+        # not that track's notes, so reading it here was a second answer to
+        # the question `run_track_id` exists to answer. Two readers of one
+        # question, and the one that decided was not the one that writes.
+        track = getattr(self._screen, "run_track_id", None)
+        track = int(track() if callable(track)
+                    else getattr(self._screen, "_track_index", 0) or 0)
+        self._entries = build(self._history, len(self._song().notes),
+                              track, self.sort)
         self.cursor = max(0, min(self.cursor, len(self._entries) - 1))
 
     # -- keys and mouse -----------------------------------------------------
@@ -575,9 +611,11 @@ class StatsOverlay:
         """Mark a run for comparison. Two at a time, oldest choice drops out."""
         if not (0 <= index < len(self._entries)):
             return
-        if not self._entries[index].comparable:
-            self._screen.say("That run was played on another track — "
-                             "its notes are not these notes")
+        entry = self._entries[index]
+        if not entry.comparable:
+            why = entry.why or "there is nothing in it"
+            self._screen.say(f"That run cannot be drawn against this song: "
+                             f"{why}")
             return
         if index in self.selected:
             self.selected.remove(index)
@@ -812,8 +850,8 @@ class StatsOverlay:
         does nothing.
         """
         if self._note_bars is None:
-            notes = self._screen._timeline.notes
-            measures = list(getattr(self._screen._timeline, "measures", [])
+            notes = self._song().notes
+            measures = list(getattr(self._song(), "measures", [])
                             or [])
             if measures:
                 bars: list[int] = []
@@ -836,7 +874,7 @@ class StatsOverlay:
             low, high = measures[first].index + 1, measures[last].index + 1
             where = f"bar {low}" if low == high else f"bars {low}-{high}"
             return start, end, where
-        notes = self._screen._timeline.notes
+        notes = self._song().notes
         start = notes[first].timestamp_ms
         end = notes[last].timestamp_ms + notes[last].duration_ms
         return start, end, f"{format_ms(start)}-{format_ms(end)}"
@@ -935,7 +973,7 @@ class StatsOverlay:
         key = (w, h, round(start), round(end))
         found = self._positions.get(key)
         if found is None:
-            timeline = self._screen._timeline
+            timeline = self._song()
             span = max(1.0, end - start)
             spread = strip.row_spread_for(h)
             found = []
@@ -967,7 +1005,7 @@ class StatsOverlay:
         """
         gaps: list[int] = []
         last: dict[int, int] = {}
-        for note, spot in zip(self._screen._timeline.notes, spots):
+        for note, spot in zip(self._song().notes, spots):
             if spot is None:
                 continue
             was = last.get(note.string)
@@ -1021,7 +1059,7 @@ class StatsOverlay:
         # back for a different run the moment CPython reused one -- and two
         # runs with the same verdicts draw the same bar anyway.
         if window is None:
-            window = (0.0, max(1.0, self._screen._timeline.duration_ms))
+            window = (0.0, max(1.0, self._song().duration_ms))
         start, end = window
         key = (run.notes, w, h, round(start), round(end), get_theme_name())
         found = self._bars.get(key)
@@ -1030,7 +1068,7 @@ class StatsOverlay:
         theme = get_theme()
         surface = _display_surface(w, h)
         surface.fill(theme.lane_bg_even)
-        notes = self._screen._timeline.notes
+        notes = self._song().notes
         spots = self._note_positions(w, h, start, end)
         spread = strip.row_spread_for(h)
         if h >= 2 * strip.STRIP_HEIGHT:
@@ -1108,7 +1146,7 @@ class StatsOverlay:
         cut = gap * LABEL_SHARE
         made: dict[tuple[int, tuple], pygame.Surface | None] = {}
         done: set[tuple[int, int]] = set()
-        for note, spot in zip(self._screen._timeline.notes, spots):
+        for note, spot in zip(self._song().notes, spots):
             if spot is None or spot in done:
                 continue
             done.add(spot)
@@ -1200,7 +1238,7 @@ class StatsOverlay:
         pygame.draw.rect(surface, theme.lane_line, panel, 1)
         x = panel.x + 12
         y = panel.y + 10
-        meta = self._screen._timeline.metadata
+        meta = self._song().metadata
         name = meta.title or "this song"
         if meta.artist:
             name = f"{meta.artist} — {name}"
@@ -1295,7 +1333,7 @@ class StatsOverlay:
         x = panel.x + 12
         width = panel.width - 24
         y = panel.y + 10
-        meta = self._screen._timeline.metadata
+        meta = self._song().metadata
         head = f"Trend — {meta.title or 'this song'}"
         surface.blit(title.render(head, True, theme.hud_text), (x, y))
         y += title.get_height() + 4
@@ -1540,7 +1578,7 @@ class StatsOverlay:
         fence behind the notes, which is what the board's own bar lines had to
         be thinned for.
         """
-        measures = getattr(self._screen._timeline, "measures", None)
+        measures = getattr(self._song(), "measures", None)
         if not measures:
             return
         theme = get_theme()

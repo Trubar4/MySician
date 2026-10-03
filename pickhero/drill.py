@@ -48,6 +48,16 @@ LADDER: tuple[float, ...] = (0.70, 0.80, 0.90, 1.00)
 #: because fifteen passes is a sitting and not an exercise.
 CLEAN_PASSES = 2
 
+#: How long the passage stands still at the loop turn, in REAL seconds.
+#: *"Beim Üben mit Drill brauche ich 1,5 Sekunden Pause, wenn der Loop wieder
+#: auf Anfang springt."* The loop deliberately has no count-in -- a bar
+#: repeated every few seconds must not spend a bar of clicks on every turn --
+#: and that is right for a loop somebody is playing through and wrong for a
+#: drill, where the hand has to come off the last note of the passage and back
+#: to the first fret of it. Real seconds rather than beats, because what it is
+#: for is a hand moving, which does not slow down with the practice speed.
+BREATH_S = 1.5
+
 #: What a pass was.
 CLEAN, WRONG, NOTHING = "clean", "wrong", "nothing"
 
