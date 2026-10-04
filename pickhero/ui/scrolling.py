@@ -303,7 +303,8 @@ MP3_STUCK_FOR_MS = 3000.0
 # completion screen must not grade the same run differently.
 from pickhero.level import (  # noqa: E402
     CLIPPING_DB, LEVEL_DECAY_DB, NOISE_MARGIN_DB, PLAYING_WINDOW_DB,
-    QUIET_MARGIN_DB, QUIET_PEAK_DB, ROOM_SAMPLES, ROOM_WINDOW,
+    QUIET_MARGIN_DB, QUIET_PEAK_DB, ROOM_SAMPLES, ROOM_STEP, ROOM_WINDOW,
+    quietest_stretch,
     SIGNAL_UNKNOWN_DB, gate_band, suggested_gate_db)
 
 # Auto-sync confidence. Scatter does not invalidate the median — a player is
@@ -415,6 +416,15 @@ AUDIO_CLOCK_SLACK_MS = 25.0
 # there the pull moves the PICTURE and has to stay invisible, here it moves
 # only the arithmetic that places a strike.
 AUDIO_CLOCK_PULL_FRACTION = 0.10
+#: A frame whose two clocks disagree by more than this about how long the
+#: frame was did not measure a frame -- it measured a GAP. The sample counter
+#: advances one callback block at a time (11.6 ms at 44.1 kHz and a 512 hop)
+#: while the song clock moves smoothly, so a real reading is out by about one
+#: block; a device drifting even 10 % is out by 1.7 ms on a 17 ms frame.
+#: Anything past this spans something the loop never saw, and counting it is
+#: how `audio_clock_ratio` came to report a 7.6 %/s drifting device on a run
+#: whose own control says the clocks agreed throughout.
+AUDIO_CLOCK_GAP_SLACK_MS = 50.0
 
 # How far apart the two sync points must be. The offset is dialled in 10 ms
 # steps, so one keypress over a short span is a large speed error: over 30 s
@@ -1135,6 +1145,9 @@ class PlayingScreen:
         self._audio_clock_pulled_ms: float = 0.0
         self._audio_clock_worst_ms: float = 0.0
         self._audio_clock_last_heard: float | None = None
+        #: Frames thrown out by AUDIO_CLOCK_GAP_SLACK_MS. A ratio built from
+        #: nothing is not a reading, so the log prints this beside it.
+        self._audio_clock_gaps: int = 0
         # An anchor asked for, not yet taken. It is taken on the next frame,
         # where the two clocks really do describe the same instant -- see
         # _apply_audio_anchor.
@@ -1477,6 +1490,15 @@ class PlayingScreen:
         # The peak above decays on purpose; this one does not, because a gate
         # is judged against the whole run rather than the last two seconds.
         self._room_samples: deque[float] = deque(maxlen=ROOM_WINDOW)
+        # The quietest stretch found so far, and how many frames of
+        # not-playing audio it was chosen from. It only ever goes DOWN within
+        # a run, for the reason the automatic gate only ever comes down: a
+        # room that rose would raise the gate with it, and a gate that
+        # deletes a strike costs a note nothing downstream can recover, while
+        # one that sits under the room costs spurious onsets the confidence
+        # filter already throws away.
+        self._room_quiet_db: float | None = None
+        self._room_seen: int = 0
         self._loudest_db: float = SIGNAL_UNKNOWN_DB
         self._auto_gate: bool = bool(getattr(self._config.audio, "auto_gate", True))
         # Every level seen while the song ran, for the run log.
@@ -1838,6 +1860,16 @@ class PlayingScreen:
                                    self._matcher.audio_offset_ms,
                                    self._matcher.audio_offset_ms - was))
 
+    def _pause_audio_clock(self) -> None:
+        """Forget where the device counter was, because the song clock stopped.
+
+        The device stays open through a pause, a count-in, a drill's breath
+        and a page being engraved, so its counter runs on while the song's
+        does not. The gap is not time the song spent, and the next frame must
+        not be handed it.
+        """
+        self._audio_clock_last_heard = None
+
     def _track_audio_clock(self, real_elapsed_s: float) -> None:
         """Keep the strike stamps on the song clock, sound card and all.
 
@@ -1892,15 +1924,31 @@ class PlayingScreen:
             # over budget). A diagnostic measuring its own pauses is the
             # sixth instance of a tool measuring itself in this project, and
             # the tell was the same every time: a control that disagrees.
-            self._audio_clock_last_heard = None
+            self._pause_audio_clock()
             return
         heard = self._audio_capture.elapsed_ms()
         # A restarted capture is a NEW ring with the counter back at zero, so
         # the difference is not time that passed -- it is a different clock.
         if (self._audio_clock_last_heard is not None
                 and heard >= self._audio_clock_last_heard):
-            self._audio_clock_heard_ms += heard - self._audio_clock_last_heard
-            self._audio_clock_song_ms += real_elapsed_s * 1000.0
+            heard_gap = heard - self._audio_clock_last_heard
+            song_gap = real_elapsed_s * 1000.0
+            # ...and neither is a gap the loop was not awake for. Clearing
+            # the baseline at every early return was the first fix and it
+            # guarded the wrong door: `update()` returns above this call
+            # while the song is PAUSED and during the drill's breath, so the
+            # clear was never reached on the commonest case of all and the
+            # next playing frame charged the whole pause to the audio side
+            # and one frame to the song side. This closes the CLASS instead
+            # of the two instances: any future early return, any stalled
+            # frame the cap truncated, any device hiccup fails the same
+            # comparison, because a frame in which the two clocks disagree
+            # about the LENGTH OF THE FRAME is not a reading of either.
+            if abs(heard_gap - song_gap) <= AUDIO_CLOCK_GAP_SLACK_MS:
+                self._audio_clock_heard_ms += heard_gap
+                self._audio_clock_song_ms += song_gap
+            else:
+                self._audio_clock_gaps += 1
         self._audio_clock_last_heard = heard
         wanted = (self._playback_ms - heard * self._tempo_factor
                   + self._sync_offset_song_ms())
@@ -2010,6 +2058,11 @@ class PlayingScreen:
             if self._audio_capture is not None:
                 self._audio_capture.get_notes()
                 self._audio_capture.get_strike_windows()
+            # The device counter runs through a pause and the song clock does
+            # not, so this frame is not a measurement of either -- and this
+            # return is ABOVE _track_audio_clock, which is why clearing the
+            # baseline inside it was not enough.
+            self._pause_audio_clock()
             # Still worth a look: a stretched copy that lands while the song
             # is paused has to be swapped in, and the line that says how far
             # along it is has to keep moving. Pausing does not stop the work,
@@ -2048,6 +2101,7 @@ class PlayingScreen:
             if self._audio_capture is not None:
                 self._audio_capture.get_notes()
                 self._audio_capture.get_strike_windows()
+            self._pause_audio_clock()
             if self._breath_s <= 0.0:
                 self._release_breath()
             self._update_mp3()
@@ -6444,6 +6498,15 @@ class PlayingScreen:
             # player is not meant to be playing yet, which makes it the
             # longest clean window a run ever offers.
             self._room_samples.append(db)
+            self._room_seen += 1
+            # Re-searched every half stretch rather than every frame: the
+            # answer cannot change by more than half a stretch of new audio,
+            # and `room_db` is asked once a frame by the advice.
+            if self._room_seen % ROOM_STEP == 0:
+                found = quietest_stretch(self._room_samples)
+                if found is not None and (self._room_quiet_db is None
+                                          or found < self._room_quiet_db):
+                    self._room_quiet_db = found
             return
         self._signal_peak_db = max(db, self._signal_peak_db - LEVEL_DECAY_DB)
         self._signal_floor_db = min(db, self._signal_floor_db + LEVEL_DECAY_DB)
@@ -6456,10 +6519,23 @@ class PlayingScreen:
             self._level_samples.append(db)
 
     def room_db(self) -> float | None:
-        """What the room measures, or None while too little has been heard."""
-        if len(self._room_samples) < ROOM_SAMPLES:
-            return None
-        return statistics.median(self._room_samples)
+        """What the room measures, or None while too little has been heard.
+
+        The quietest stretch of the not-playing audio, never the average of
+        all of it -- see `level.quietest_stretch` for the run that taught the
+        difference.
+
+        The stretches already found are folded into `_room_quiet_db` as they
+        pass, so the answer only ever comes down; the window itself is
+        searched as well, because the newest audio may be quieter than
+        anything a completed step has seen yet.
+        """
+        found = quietest_stretch(self._room_samples)
+        if self._room_quiet_db is None:
+            return found
+        if found is None:
+            return self._room_quiet_db
+        return min(found, self._room_quiet_db)
 
     def _take_gate_by_hand(self) -> None:
         """Touching X or C switches the automatic off FOR THIS SONG.
@@ -7428,8 +7504,15 @@ class PlayingScreen:
         # not work.
         if self._audio_clock_heard_ms > 1000.0:
             ratio = self._audio_clock_song_ms / self._audio_clock_heard_ms
+            # Beside how much of the run it was measured over, and how many
+            # frames were thrown out for spanning a gap. A ratio built from
+            # four frames is not a reading, and a run with thousands of gaps
+            # is a run where something kept stopping the song clock.
             fh.write(f"audio_clock_ratio\t{ratio:.4f}\t"
-                     f"({(ratio - 1.0) * 1000:+.1f} ms per second of playing)\n")
+                     f"({(ratio - 1.0) * 1000:+.1f} ms per second"
+                     f" over {self._audio_clock_song_ms / 1000:.0f} s"
+                     f" measured, {self._audio_clock_gaps} frame(s) skipped"
+                     f" as gaps)\n")
         fh.write(f"audio_clock_pulled_ms\t{self._audio_clock_pulled_ms:.0f}\t"
                  f"worst error {self._audio_clock_worst_ms:.0f} ms"
                  f" (slack {AUDIO_CLOCK_SLACK_MS:.0f})\n")
@@ -7490,7 +7573,14 @@ class PlayingScreen:
                 fh.write("level_room_db\t(nicht gemessen)\n")
             else:
                 low, high = report.band
-                fh.write(f"level_room_db\t{report.room:.1f}\n")
+                # Beside what it is a number of: the quietest stretch of
+                # the not-playing audio, and how much of that there was to
+                # choose from. A room measured over one count-in and a room
+                # measured over a pause as well are different measurements,
+                # and the value alone cannot say which this was.
+                fh.write(f"level_room_db\t{report.room:.1f}"
+                         f"\t(quietest {ROOM_SAMPLES} frames of"
+                         f" {self._room_seen} not playing)\n")
                 # A percentage of discarded audio is only readable next to
                 # the value that would not have discarded it -- the same rule
                 # as "up to 40 s" beside a half-finished run.

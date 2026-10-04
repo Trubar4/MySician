@@ -4105,6 +4105,7 @@ pickhero/
 - `tests/test_detector.py` — feed known sine waves to aubio, verify correct note detection
 - `tests/test_tempo_sections.py` — the run split by the speed each stretch was played at, the strip tick, and that the completion screen says it
 - `tests/test_level_report.py` — the verdict on a run's input level, the automatic gate surviving a keypress, and the clock ratio not counting pauses; four of its tests fail on the unfixed code
+- `tests/test_room_and_clock.py` — the room as the quietest stretch rather than the average of the count-in, and the clock ratio driven through the real `update()` (which is where the first fix missed it); nine of its ten fail on the unfixed code, and the tenth is the control
 - `tests/test_chord_shape_cost.py` — that no frame derives a chord shape, that the map really holds them, and that the log names what it was drawing; seven of its eight fail on the unfixed code
 - `tests/test_resampler.py` — what survives a resample and what arrives that was never played; seven of its tests fail on linear interpolation
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
@@ -6419,6 +6420,60 @@ The baseline is dropped with the early return now, so a gap is not time that pas
 itself**, after `analyze_ringing.py`, `check_ringing_rescue.py`, the four drift diagnostics, the `MIN_WINDOW_MS` sweep and the batched check
 harness -- and the tell was the same every time: a control that disagrees. The test asserts both halves, because a fix that makes the
 measurement blind is not a fix: a counter that really runs 5 % slow is still reported at 5 %.
+
+## The Fix Guarded The Wrong Door
+
+The next run read **`audio_clock_ratio 0.9238`** -- a device supposedly losing 76 ms a second -- on the build that carried the fix above. The
+control in the same log disagrees exactly as it did before: `audio_clock_pulled_ms 21` over the whole run, worst error 29 ms against a 25 ms
+slack, `strike_delay_median 410 / worst tenth 433` against a 580 ms budget, **0 % of strikes over budget**. A device losing 76 ms a second
+would have the pull firing on every frame and `pulled_ms` in the tens of thousands.
+
+**The clear was put inside `_track_audio_clock`, and `update()` returns above that call.** Two of them, in fact -- `if not self._playing`
+(a pause, which is the commonest case there is) and the drill's breath -- so the baseline the fix exists to drop was never reached on either.
+The chapter above says the fault was fixed and it was fixed in one of the three places it lives, which is the same shape as `shift_held`
+reaching ten shortcuts and not the song list, and as the capability check that disagreed with the permission check on Born To Be My Baby.
+
+**And the test went green on the broken code**, which is the part worth keeping. `TestTheClockRatioDoesNotMeasureItsOwnPauses` calls
+`_track_audio_clock` by hand, so it exercised the guard and never the route the app takes to it. A test that drives the helper cannot see a
+caller that does not call the helper -- the new ones drive the real `update()`.
+
+- **The class is closed rather than the two instances.** `AUDIO_CLOCK_GAP_SLACK_MS` (50 ms): a frame in which the two clocks disagree about
+  **the length of the frame** is not a reading of either, so it is counted as a gap and thrown away. The counter advances one callback block
+  at a time (11.6 ms) while the song clock moves smoothly, and a device drifting 10 % is out by 1.7 ms on a 17 ms frame -- so nothing real is
+  ever rejected, and any future early return, any frame the stall cap truncated, any stream restart fails the same comparison.
+- **The two explicit clears stay as well**, because one is the correct fix and the other holds when something else gets it wrong. They go
+  through `_pause_audio_clock`, so a fourth early return added later has one door to use.
+- **The log says what the ratio is a ratio OF** -- how many seconds it was measured over and how many frames were skipped as gaps. A ratio
+  built from four frames is not a reading, and thousands of gaps say something kept stopping the song clock.
+
+## The Room Was Always The Last Five Seconds Before The Song, Which Is The Count-In
+
+Two readings of one run, from the same function, a few seconds apart:
+
+| | |
+|---|---|
+| the run log, written at the last bar | `level_room_db -27.4`, `input_hears_the_room yes`, `level_verdict room` |
+| the completion screen, read afterwards | *"Input level was fine -- room -63 dB"* |
+
+**Thirty-six decibels and an opposite verdict.** `_room_samples` was a rolling deque of 300 frames -- five seconds -- and the room was its
+MEDIAN, so "the room" was whatever the last five seconds of not-playing audio happened to be. The stream opens when the count-in begins, so
+on every run that is the end of the count-in: exactly the moment a player brushes a string, checks their sound, or lets the last attempt ring
+out. Then the completion screen sat there collecting genuine silence and the same function answered -63.
+
+- **The room is the QUIETEST contiguous stretch of the not-playing audio**, not the average of a stretch the player was not quiet for
+  (`level.quietest_stretch`). A median WITHIN the stretch, so one frame of silence cannot define a room; chosen by that median rather than by
+  a minimum, so a quiet frame inside a noisy stretch cannot win; searched every half stretch, so a quiet moment cannot fall between two
+  windows and be missed.
+- **The window is 15 s rather than 5**, so a count-in and a pause both have something to choose from.
+- **It only ever comes DOWN within a run**, which is the rule the automatic gate already follows and now gets for free: a room that rose
+  would raise the gate with it, and a gate that deletes a strike costs a note nothing downstream can recover, while one sitting under the
+  room costs spurious onsets the confidence filter already throws away.
+- **The log says what the number is a number of** -- the quietest 90 frames of however many were heard. A room measured over one count-in and
+  a room measured over a pause as well are different measurements, and the value alone cannot say which.
+- **It cost nothing on this run and that is luck, not design.** The suggested gate was `min(room + 6, MAX_GATE_DB)` and the ceiling won
+  either way, so the gate landed on -50 with a false room and a true one. What it did produce is a verdict telling the player to check their
+  interface on a run whose input was healthy (-8.4 dB loudest, -24.9 dB median, 45 dB clear of its real room) -- and the rule it fired is the
+  one that exists to catch a laptop microphone, which is the most expensive wrong answer this screen can give.
 
 ## Every Frame Figure In This File Was Measured On The Sparsest Song In The Folder
 

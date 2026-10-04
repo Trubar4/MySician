@@ -67,11 +67,26 @@ LEVEL_DECAY_DB = 0.05
 # on a sparse one, against a recorded room of -73 -- so a percentile says how
 # busy the playing was, not how quiet the room is.
 #
-# A median over the most recent readings, so a session that changes (a fan, a
-# different guitar) is followed and one frame of the guitar being put down is
-# not. At 60 frames a second the minimum is about a second and a half.
-ROOM_WINDOW = 300
+# The QUIETEST contiguous stretch of it, not the median of the whole window,
+# and that correction cost a false alarm on the player's own run. The window
+# was a rolling 300 frames, so "the room" was always the last five seconds in
+# which the song was not running -- which is the end of the count-in, exactly
+# when a player brushes a string or checks their sound. Measured on
+# `run_Shinedown___Monsters_20261004_162405.txt`: the log recorded
+# `level_room_db -27.4` and raised `input_hears_the_room yes`, while the
+# completion screen a few seconds later read -63 dB from the same function.
+# Thirty-six decibels, one run, one measurement -- and the verdict flipped
+# with it.
+#
+# So the room is the quietest run of ROOM_SAMPLES frames anywhere in the
+# not-playing audio: a stretch the player really was quiet for, rather than
+# an average over one they were not. A median WITHIN that stretch, so one
+# frame of silence cannot define a room.
+ROOM_WINDOW = 900
 ROOM_SAMPLES = 90
+#: How far the search slides between stretches. Half a stretch, so a quiet
+#: moment cannot fall between two of them and be missed entirely.
+ROOM_STEP = ROOM_SAMPLES // 2
 
 #: Within this far of the loudest hop is the PLAYING; everything below it is
 #: the gaps between notes. The same window the run log has always used.
@@ -79,6 +94,33 @@ PLAYING_WINDOW_DB = 30.0
 #: The step the X and C keys move the gate in. A gate within one press of
 #: where the measurement puts it is not worth a sentence.
 GATE_STEP_DB = 5.0
+
+
+def quietest_stretch(samples: Sequence[float]) -> float | None:
+    """The room: the median of the quietest contiguous run of samples.
+
+    `None` while fewer than ROOM_SAMPLES have been heard -- a room measured
+    over half a second is not a room, and answering anyway is how a gate
+    comes to be derived from one brushed string.
+
+    Chosen by the stretch's own median rather than by its minimum, so a
+    single quiet frame inside a noisy stretch cannot win, and read back as
+    that same median, so the answer is a figure the stretch really produced.
+    """
+    n = len(samples)
+    if n < ROOM_SAMPLES:
+        return None
+    seq = list(samples)
+    best: float | None = None
+    for start in range(0, n - ROOM_SAMPLES + 1, ROOM_STEP):
+        here = statistics.median(seq[start:start + ROOM_SAMPLES])
+        if best is None or here < best:
+            best = here
+    # The last stretch is measured even when the step does not land on it:
+    # on a run that stopped mid-step it is the only one with the newest
+    # audio in it.
+    tail = statistics.median(seq[n - ROOM_SAMPLES:])
+    return tail if best is None or tail < best else best
 
 
 def gate_band(peak: float, floor: float) -> tuple[float, float]:

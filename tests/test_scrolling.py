@@ -2905,6 +2905,7 @@ class TestTheAdviceCannotContradictItself:
         # No room measured: this class is about the gate keys, and a room
         # the input cannot hear past is a different rule.
         screen._room_samples = []
+        screen._room_quiet_db = None
         screen._level_samples = []
         return screen._level_advice()
 
