@@ -4105,6 +4105,7 @@ pickhero/
 - `tests/test_detector.py` — feed known sine waves to aubio, verify correct note detection
 - `tests/test_tempo_sections.py` — the run split by the speed each stretch was played at, the strip tick, and that the completion screen says it
 - `tests/test_level_report.py` — the verdict on a run's input level, the automatic gate surviving a keypress, and the clock ratio not counting pauses; four of its tests fail on the unfixed code
+- `tests/test_chord_shape_cost.py` — that no frame derives a chord shape, that the map really holds them, and that the log names what it was drawing; seven of its eight fail on the unfixed code
 - `tests/test_resampler.py` — what survives a resample and what arrives that was never played; seven of its tests fail on linear interpolation
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
@@ -6418,6 +6419,65 @@ The baseline is dropped with the early return now, so a gap is not time that pas
 itself**, after `analyze_ringing.py`, `check_ringing_rescue.py`, the four drift diagnostics, the `MIN_WINDOW_MS` sweep and the batched check
 harness -- and the tell was the same every time: a control that disagrees. The test asserts both halves, because a fix that makes the
 measurement blind is not a fix: a counter that really runs 5 % slow is still reported at 5 %.
+
+## Every Frame Figure In This File Was Measured On The Sparsest Song In The Folder
+
+*"Ja bitte, schau dir die Frames an."* His log: **`frame_ms_median 15.6`, `frames_over_budget_percent 34`**, `frame_interval_median 17.04`,
+`frames_per_second_shown 58.7` -- against the **3.7 ms board and 4.5 ms sheet** written down two chapters up. A third of his frames miss their
+refresh, and with vsync on a late frame is held for two.
+
+Measured here, at 1920x1080, five repeats a condition because the spread on this box is over a millisecond:
+
+| song | notes | board, chords off | board, blocks | sheet, chords off | sheet, blocks |
+|---|---|---|---|---|---|
+| Californication | 2714 | 6.3 | **9.0** | 12.5 | **15.2** |
+| Godsmack, "Awake" | 2561 | 4.3 | 5.4 | 6.7 | 8.4 |
+| Bon Jovi | 746 | 3.4 | 4.8 | 5.9 | 6.6 |
+| **Thunder, lead** | **167** | **2.3** | **2.6** | **3.3** | **3.4** |
+
+**The sheet costs about twice the board on a dense song, and his 15.6 is where a sheet with the blocks on sits.** Every figure this file
+records for either view -- the 3.7 and 4.5 of the HUD cleanup, the 2.5-2.7 and 3.5-3.8 of the chord split -- came off **Thunder's lead, 167
+notes**: the sparsest track in the folder, and the bottom row above says it is the one song where none of this is visible.
+
+**So the claim that making the marking always-on cost nothing is false.** *"The frame is unchanged: 2.5-2.7 ms on the board and 3.5-3.8 on the
+sheet at 1920x1080, either way"* -- true of Thunder, and **+0.8 to +2.7 ms** on every song that strums. The control could not show the effect,
+which is this project's recurring fault in the one place it had just promised a measurement.
+
+### What was actually wrong, and what is merely expensive
+
+- **`shape_of` ran 22 to 64 times a FRAME**, in both block paths, against a promise in `shapes_in`'s own docstring: *"built once per song...
+  this walks every note in the piece, which is exactly the kind of loop this project has already had to move out of a frame three times."*
+  Harmless while the blocks were off by default; a permanent per-frame cost from the moment the marking became always-on. `_chord_shape_at`
+  is that answer, built where `_chord_shapes` and `_chord_names` already are. **Exactly 64.0 -> 0.0 calls a frame on the sheet, worth 0.78 ms**
+  -- and the frame's own run-to-run spread here is larger than that, so it is asserted as a COUNT and **not** claimed as a frame-time win.
+- **It also made three readers agree, which is the better reason to keep it.** The grip cards come off `_chord_shapes`, built from the written
+  timeline; the blocks re-derived from the FILTERED notes on screen. So a muted string could put a different name on the block from the one on
+  the card beside it. One map now answers all three.
+- **Two suspects were measured and are innocent**, which is half of what profiling is for. The block surface cache runs at **100 % hits**
+  (0.01-0.03 ms a frame, 3-9 distinct widths against a 64-entry cache) -- so the `_BLOCK_CACHE_MAX` wholesale clear I went looking for does
+  not happen. And the chord names cost 41 blits a frame on the sheet, which is nothing.
+- **What is left is the blits, and that is the feature rather than a fault.** The sheet issues **1900-2000 blits a frame** on a dense song
+  against the board's 640-710, and an SRCALPHA block spanning the strings is a large alpha-blended area. The sheet draws only 35 % more notes
+  than the board (111 against 82) and costs twice as much, so the cost is the ROWS -- a full-width board, twelve string lines and the bar lines,
+  per visible row.
+
+### And the hypothesis this file left open is dead
+
+*"One run settles it and it has not been done: NB1, this build, the interface plugged in, the guitar heard, D."* **This is that run**, and the
+answer is no. Rendered with every note behind the playhead judged and with none:
+
+| | verdicts off | verdicts on |
+|---|---|---|
+| board | 10.68 ms | 9.95 |
+| sheet | 15.57 | 15.87 |
+
+Inside the noise, both views. So *"those two are the only runs where the guitar was audible"* joins the build and the laptop as an explanation
+that did not survive being measured -- the third one for this number. What separates his 15.6 from this file's 4.5 is **which view, on which
+song, with which rung of `Shift+C`** -- and the log could not say any of the three.
+
+**So the log says what it was drawing** (`frames_drawing`: the view, the chord rung, the window size). These times are mostly fill and blit, so
+they scale with the pixels, and `frame_ms_median 15.6` is a sheet working exactly as designed OR a board in trouble. Same rule as the practice
+speed beside a take and the suggested gate beside the percentage of audio it discarded: a number is only readable next to what it is a number of.
 
 ## What NOT To Do
 

@@ -1337,7 +1337,12 @@ class PlayingScreen:
         # `_tab_mode` is a property over `_view` and not a flag of its own.
         self._chord_level: int = chord_level(getattr(config, "chord_view",
                                                      CHORD_BLOCKS))
+        #: The window the frames were drawn at, for the run log.
+        self._frame_size: tuple[int, int] = (0, 0)
         self._chord_shapes: list = []
+        #: Which grip sits at each moment, keyed by the rounded
+        #: timestamp both block paths group on. Built with the rest.
+        self._chord_shape_at: dict = {}
         # (rest starts, next note) for every stretch of the song with
         # nothing to play on THIS track. Built once per song, because it
         # is a walk over every note and this display has been bitten
@@ -3340,7 +3345,6 @@ class PlayingScreen:
         depended on the scrolling. Only the block and the name have to be
         told where the notes ended up.
         """
-        from pickhero.tabs.chord_shapes import shape_of
         t = get_theme()
         strip = lanes_top - y
         # As big as the staff allows, but never taller than the strip it is
@@ -3357,7 +3361,7 @@ class PlayingScreen:
             group = groups[when]
             if len(group) < 2:
                 continue
-            if shape_of([p.note for p in group]) is None:
+            if self._chord_shape_at.get(when) is None:
                 continue
             strings = [p.note.string for p in group]
             left = min(p.x for p in group)
@@ -3477,6 +3481,10 @@ class PlayingScreen:
     def _layout(self, surface: pygame.Surface) -> _Layout:
         """Compute layout from current surface dimensions."""
         w, h = surface.get_size()
+        # Kept for the run log: these frame times are mostly fill and blit,
+        # so they scale with the pixels, and a frame figure without the size
+        # it was measured at cannot be compared with another machine's.
+        self._frame_size = (w, h)
         # The strip along the bottom takes its band out of the music, and it
         # takes a CONSTANT one. Measuring it off the footer would put the
         # board's note height downstream of the footer's height -- and the
@@ -3693,8 +3701,25 @@ class PlayingScreen:
         # look-ahead is bought and sold in width.
         self._head_h_px = max(head, layout.note_h)
         self._chord_names = self._build_chord_names()
-        from pickhero.tabs.chord_shapes import changes_in
+        from pickhero.tabs.chord_shapes import changes_in, shapes_in
         self._chord_shapes = changes_in(self._timeline)
+        # Which grip sits at each moment, answered ONCE for the whole song.
+        # `shapes_in`'s own docstring says why -- "built once per song... this
+        # walks every note in the piece, which is exactly the kind of loop
+        # this project has already had to move out of a frame three times" --
+        # and both block paths were calling `shape_of` per group per FRAME
+        # anyway. Harmless while the blocks were off by default; a permanent
+        # per-frame cost from the moment the marking became always-on, and
+        # the measurement that shipped with that change was taken on a
+        # 167-note lead where there is almost no chord to find.
+        #
+        # It also makes the cards, the board's blocks and the sheet's blocks
+        # read ONE answer. They did not: the cards come off `_chord_shapes`,
+        # which is built from the written timeline, while the blocks re-derived
+        # from the FILTERED notes on screen -- so a muted string could put a
+        # different name on the block from the one on the card beside it.
+        self._chord_shape_at = {int(round(when)): shape
+                                for when, shape in shapes_in(self._timeline)}
         self._rests = self._build_rests()
         self._scroll_speed_signature = self._filter_signature()
 
@@ -3858,14 +3883,12 @@ class PlayingScreen:
         for note in notes:
             at.setdefault(int(round(note.timestamp_ms)), []).append(note)
 
-        from pickhero.tabs.chord_shapes import shape_of
-
         out = []
         for when in sorted(at):
             group = at[when]
             if len(group) < 2:
                 continue
-            shape = shape_of(group)
+            shape = self._chord_shape_at.get(when)
             if shape is None:
                 continue
             x = self.note_x(float(when), self._playback_ms,
@@ -7148,6 +7171,16 @@ class PlayingScreen:
         60 FPS is a 16.7 ms budget. A median well under it with a fat tail is
         something arriving in bursts; a median over it is the drawing itself,
         and those are fixed in different places.
+
+        **And what was being DRAWN, because the three views are not the same
+        price.** Measured on a dense song at 1920x1080: the board is 6-9 ms
+        and the sheet 12-15, so a bare `frame_ms_median 15.6` can be a sheet
+        working exactly as designed or a board in trouble, and nothing in the
+        log could say which. The window size for the same reason -- these
+        figures are mostly fill and blit, which scale with the pixels. Same
+        rule as the practice speed beside a take and the gate beside the
+        percentage of audio it discarded: a number is only readable next to
+        what it is a number of.
         """
         frames = sorted(self._frame_ms)
         if not frames:
@@ -7159,6 +7192,10 @@ class PlayingScreen:
         fh.write(f"frame_ms_worst\t{frames[-1]:.1f}\n")
         fh.write(f"frames_over_budget_percent\t{100 * late / len(frames):.0f}\n")
         fh.write(f"frames_measured\t{len(frames)}\n")
+        size = self._frame_size
+        fh.write(f"frames_drawing\t{self._view} view, chords "
+                 f"{CHORD_LEVEL_NAMES[self._chord_level]}, "
+                 f"{size[0]}x{size[1]}\n")
 
     def _step_key_ready(self, key: int) -> bool:
         """Whether a stepping key may act now, or is a repeat arriving too fast.
