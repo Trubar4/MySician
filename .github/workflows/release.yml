@@ -36,6 +36,23 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Stamp the build
+        # Without this the EXE reports "unknown build", and "is it fixed" and
+        # "did it reach the machine" become the same question. Every EXE this
+        # workflow produced before this step said exactly that, and a player
+        # was asked to verify a commit his log could not name.
+        run: python tools/stamp_build.py
+
+      - name: Fetch ffmpeg for the bundle
+        # yt-dlp downloads what YouTube serves -- m4a or webm -- and SDL_mixer
+        # decodes neither, so without this the downloaded audio lands on disk
+        # and silently will not play. build.bat has done this all along; this
+        # workflow did not, so the EXE the player actually runs had no ffmpeg
+        # in it. Not fatal on its own: the download screen says in words which
+        # half is missing, which is why the build carries on either way.
+        run: python tools/fetch_ffmpeg.py
+        continue-on-error: true
+
       - name: Build exe
         run: pyinstaller pickhero.spec --noconfirm
 

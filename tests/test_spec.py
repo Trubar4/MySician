@@ -126,3 +126,83 @@ class TestEveryLazyImportIsNamed:
         assert not missing, (
             "imported only inside a function and not in pickhero.spec: "
             + ", ".join(missing))
+
+
+# ── The release workflow ────────────────────────────────────────────────────
+# Same class of file as the spec above: YAML that only ever runs on GitHub's
+# Windows runner, so nothing in this tree ever read it -- and it was missing
+# two steps `build.bat` has had for months. Every EXE it built reported
+# `unknown build`, which is the one question the stamp exists to answer, and
+# carried no ffmpeg, so downloaded audio silently would not play.
+#
+# The suite cannot run the workflow, so it asserts the ORDER its steps have
+# to be in. No YAML parser: pyyaml is not in requirements.txt, and a test that
+# skips itself catches nothing on the machine that matters.
+
+WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+
+
+def _run_steps() -> list[str]:
+    """The shell commands the workflow runs, in order.
+
+    Both forms: `run: cmd` on one line, and the `run: |` block, whose body is
+    every more-indented line after it.
+    """
+    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("run:"):
+            rest = stripped[4:].strip()
+            indent = len(line) - len(line.lstrip())
+            i += 1
+            if rest in ("|", ">", "|-", ">-"):
+                while i < len(lines):
+                    body = lines[i]
+                    if body.strip() and (len(body) - len(body.lstrip())) <= indent:
+                        break
+                    if body.strip():
+                        out.append(body.strip())
+                    i += 1
+            elif rest:
+                out.append(rest)
+            continue
+        i += 1
+    return out
+
+
+class TestTheWorkflowBuildsWhatBuildBatBuilds:
+    def test_the_build_is_stamped_before_pyinstaller_runs(self):
+        steps = _run_steps()
+        stamp = [i for i, s in enumerate(steps) if "stamp_build.py" in s]
+        build = [i for i, s in enumerate(steps) if "pyinstaller" in s and "pip" not in s]
+        assert stamp, (
+            "the workflow never writes a build stamp, so every EXE it "
+            f"produces reports 'unknown build'. Its steps: {steps}")
+        assert build, f"the workflow never runs PyInstaller? {steps}"
+        assert min(stamp) < min(build), (
+            "the stamp is written AFTER the build, so the bundle cannot "
+            "carry it")
+
+    def test_ffmpeg_is_fetched_before_pyinstaller_runs(self):
+        steps = _run_steps()
+        fetch = [i for i, s in enumerate(steps) if "fetch_ffmpeg.py" in s]
+        build = [i for i, s in enumerate(steps) if "pyinstaller" in s and "pip" not in s]
+        assert fetch, (
+            "the workflow never fetches ffmpeg, so the EXE cannot play the "
+            f"audio it downloads. Its steps: {steps}")
+        assert min(fetch) < min(build), "ffmpeg is fetched after the bundle is made"
+
+    def test_build_bat_uses_the_same_stamp_writer(self):
+        """One writer of the stamp format, not three.
+
+        `build.bat` wrote it with an inline `python -c` while
+        `build_info.write_stamp` sat in the package called by nothing -- the
+        tested-and-unused fault this project has written up twice.
+        """
+        bat = (ROOT / "build.bat").read_text(encoding="utf-8", errors="replace")
+        assert "stamp_build.py" in bat
+        assert "_build_stamp.txt" not in bat.split("stamp_build.py")[0], (
+            "build.bat still writes the stamp itself before calling the script")

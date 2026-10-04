@@ -4697,6 +4697,42 @@ binaries = []                            # line 54
 
 **And the list of lazy imports in it was a hand-kept list, which is only ever as fresh as somebody's memory.** Six pickhero modules that are reached only from inside a function were missing from it — `autosync`, `build_info`, `recommendations`, `merge`, `youtube` and `chord_view` — one of them added by me a day earlier, in the same session that quoted the verovio lesson. So the rule is read off the TREE now: `tests/test_spec.py` walks every module, separates the imports that sit at module level from the ones that only ever run inside a function, and fails when one of the second kind is not named in the spec. Same shape as every other rule here that survived — the property, not the instance.
 
+### The Workflow That Built The EXE Was Not The Build Script
+
+*"Das habe ich nicht bestellt. Mit Github Action wird eine neue Exe generiert. Normalerweise muesste dort die neue Aufnahmefunktion
+Sh+W mit dabei sein. Ich sehe keinen Grund warum ich heute noch NB1 brauche."*
+
+He was right and I was wrong: `release.yml` builds on every push to `claude/**`, the run for the `Shift+W` commit finished green, and
+the EXE was waiting as an artifact. **Sending him to a checkout was a worse answer than the one the repository already gives.**
+
+**And checking that turned up two steps the workflow never had.** It runs `pyinstaller pickhero.spec` directly; `build.bat` does three
+things first, and two of them matter:
+
+| | build.bat | release.yml |
+|---|---|---|
+| write the build stamp | yes | **no** |
+| fetch ffmpeg into `tools/` for the bundle | yes | **no** |
+| `pip install --upgrade yt-dlp` | yes | covered by `requirements.txt` |
+
+- **So every EXE GitHub Actions has ever produced reported `unknown build`** -- which is exactly the `build unknown build` in his run
+  logs, and exactly the question the stamp exists to answer. The chapter that built it says *"is it fixed" and "did it reach the machine"
+  are the same question without it*; the workflow then made them the same question again for the only builds he actually runs. In the
+  same breath I asked him to verify that his log named commit `d62e49a`, which his log could not possibly do.
+- **And the downloaded audio could never play.** The spec bundles `tools/ffmpeg*` and nothing in the workflow put one there, so
+  `missing()` was telling the truth every time. It is `continue-on-error` because a build without ffmpeg is still a build, and the
+  download screen already says in words which half is absent.
+- **One writer of the stamp format now, not three.** `build.bat` wrote it with an inline `python -c` while `build_info.write_stamp` sat
+  in the package tested and called by nothing -- the tested-and-unused fault this file has already written up for `system_pitch` and
+  `PAPER`. `tools/stamp_build.py` is the one caller, used by the batch file and by the workflow.
+- **The property is asserted, in the file that exists for this.** `tests/test_spec.py` was written because *"a file that only runs on
+  the build machine is a file that is only tested there"* -- and then read the spec only. It reads the workflow too: the stamp and the
+  ffmpeg fetch must both come BEFORE PyInstaller, and `build.bat` must not write the stamp itself. All three fail on the unfixed files.
+  No YAML parser: pyyaml is not in `requirements.txt`, and a test that skips itself catches nothing on the machine that matters.
+
+**The lesson is the one the chapter above already states and I applied to one of the two files in the pair.** `pickhero.spec` and
+`release.yml` are both build-machine-only code; reading one and not the other left the other free to drift, and it had drifted by two
+steps. **Where a build exists in two places, a step added to one of them is a step missing from the other.**
+
 ### A Folder Of Histories Looked Like An Empty Folder
 
 *"Wenn ich im Sync\\songs nur die .mysician.json und die .runs.json ablege, geht es nicht. Da gp, mp3 und songsterr schon auf NB2 sind, sehe
