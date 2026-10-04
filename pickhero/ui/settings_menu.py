@@ -141,12 +141,18 @@ class SettingsMenuScreen:
 
         def toggle_auto_gate() -> None:
             c.audio.auto_gate = not c.audio.auto_gate
+            # This row is the DURABLE switch -- X and C in the song only
+            # stand the automatic down for that song. So an off set here is
+            # a decision, and must survive the repair in Config.load that
+            # undoes the one a keypress used to write.
+            c.audio.auto_gate_repaired = True
 
         def adjust_gate(step: int) -> None:
-            # Setting it by hand is a decision, the same as pressing X in the
-            # song: an automatic that silently undoes it the next time a song
-            # starts is worse than one that was never offered.
+            # Setting it by hand is a decision, and unlike X in the song it
+            # is a durable one: this is the screen whose whole job is saying
+            # what things are set to, so a value chosen here stays chosen.
             c.audio.auto_gate = False
+            c.audio.auto_gate_repaired = True
             c.audio.noise_gate_db = max(MIN_GATE_DB, min(
                 MAX_GATE_DB, c.audio.noise_gate_db + step))
 

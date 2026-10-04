@@ -81,6 +81,10 @@ class AudioConfig:
     # in its safe range, so there is no optimum to hunt for -- only a
     # ceiling to stay under, and that ceiling moves with the interface.
     auto_gate: bool = True
+    #: Set only by the settings screen. X and C used to write `auto_gate`
+    #: straight into the file, so a stored False cannot say whether anybody
+    #: chose it -- see the repair in `Config.load` and `_take_gate_by_hand`.
+    auto_gate_repaired: bool = False
     yin_tolerance: float = 0.15  # YIN dip threshold, NOT the confidence filter
 
 
@@ -699,6 +703,20 @@ class Config:
             if gate is not None:
                 audio_data["noise_gate_db"] = max(MIN_GATE_DB,
                                                   min(MAX_GATE_DB, gate))
+            # Repair, once: X and C used to write `auto_gate = False` into
+            # this file, so one press turned the automatic off across every
+            # song from then on with nothing but "(X/C)" in the HUD to say
+            # so. The player's own file had it off for weeks and his gate
+            # ended up 15 dB above where the room puts it, discarding 24 % of
+            # the audio. A stored False can therefore not say whether anybody
+            # chose it -- the same argument as the stored gate above the
+            # ceiling, which was also only reachable through a bug. The flag
+            # makes it happen exactly once, so a deliberate off from the
+            # settings screen stays off.
+            if (audio_data.get("auto_gate") is False
+                    and not audio_data.get("auto_gate_repaired")):
+                audio_data["auto_gate"] = True
+            audio_data["auto_gate_repaired"] = True
             # The fret filter never survives a restart. It removes notes from
             # the song silently -- not drawn, not scored, not even counted as
             # missed -- so a limit left on from a previous session shows a

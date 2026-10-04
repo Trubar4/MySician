@@ -4066,6 +4066,7 @@ pickhero/
 ├── main.py
 ├── config.py
 ├── dashboard.py         # the practice dashboard, written when the app closes
+├── level.py             # what the input level did over a run, and the verdict
 ├── matcher.py           # note matching engine (hit/close/miss)
 ├── practice_log.py      # one line per session: minutes and notes struck
 ├── progress.py          # per-song progress tracking
@@ -4103,6 +4104,7 @@ pickhero/
 
 - `tests/test_detector.py` — feed known sine waves to aubio, verify correct note detection
 - `tests/test_tempo_sections.py` — the run split by the speed each stretch was played at, the strip tick, and that the completion screen says it
+- `tests/test_level_report.py` — the verdict on a run's input level, the automatic gate surviving a keypress, and the clock ratio not counting pauses; four of its tests fail on the unfixed code
 - `tests/test_resampler.py` — what survives a resample and what arrives that was never played; seven of its tests fail on linear interpolation
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
@@ -6364,6 +6366,58 @@ a flag of its own. `_chord_mode` and `_chord_marks` are properties over the rung
   job is saying what is set is the thing that lies.
 - The test that matters is the third rung: with the chords off the board must come out **different from** the board with the blocks on, because
   "fewer pixels" is also what a block drawn in the wrong colour gives.
+
+## One Keypress Switched The Gate's Automatic Off For Every Song, For Ever
+
+*"Muesste sich das Gate nicht automatisch anpassen? Das haben wir doch umgebaut. Es stand nicht da, dass ich die Gitarre lauter machen
+soll. Bedienerfehler?"*
+
+Three faults and no operator error, and the run log settles all three.
+
+- **The automatic was off, and a keypress had turned it off permanently.** His HUD read `Gate: -50 dB (X/C)`; `(X/C)` is the marker for
+  "not automatic". `_take_gate_by_hand` ran on **every** press of X or C and wrote `auto_gate = False` into `settings.json` -- so one
+  press, on the advice the app itself kept repeating before `gate_band` was fixed, switched the feature off across every song from then on.
+  Four characters in brackets in the corner were the only tell. The cost on this run: `noise_gate_db -50 von Hand` against
+  `gate_suggested_db -65`, and **`level_under_gate_percent 24`** -- a quarter of his audio discarded by a gate 15 dB above where the room
+  puts it. X and C now stand the automatic down **for this song only**; the durable off switch is the settings screen, which is a row that
+  SAYS what it is set to, and that is the whole reason that screen exists. A stored `False` is repaired once on load, under the same
+  argument as the stored gate above the ceiling: a value only reachable through a bug cannot say that anybody chose it. The flag that makes
+  it once is set by the settings row too, or a first-ever run that switches it off there would be undone on the next load.
+- **"Turn the interface up" exists and the completion screen could not say it.** `_level_advice`'s first line is `if not self._playing:
+  return ""` -- deliberately, because the tracked peak decays after the last note and it once reported a level fault that was not there. So
+  the one screen where *"why was it 21 %"* gets asked was the one screen with no answer on it, while the run log beside it carried the four
+  numbers that answer it. `pickhero/level.py` is that arithmetic, read by the log AND by the completion screen, so the two cannot grade one
+  run differently -- with no new threshold: every bound is one the live advice already used. The numbers are printed whatever the verdict,
+  **"fine" included**: ruling the input out is worth a line, and a verdict without its measurement is not checkable.
+- **And the meter said "Signal" while showing the ROOM.** It reads `_signal_db_smooth`, which keeps moving after the song ends, so
+  `Signal: -61 dB` on his completion screen was the room with nobody playing. **He read it as his playing level and so did I**, and told
+  him his guitar was too quiet. The log says `level_loudest_db -15.9`, `level_median_playing_db -28.4`, `level_room_db -73.9` -- a healthy
+  signal, 45 dB clear of its room. It says `Room:` now when the song is not running.
+
+**The score itself was neither the level nor the gate.** Of 1363 written notes, **985 crossed the playhead before song 180 s with five
+strikes heard in the whole stretch and nothing credited**; from 180 s on, 308 of 378 landed -- **81 %**. The 21.1 % is 81 % averaged with
+three minutes of silence. The app's own `Played part` line says so (65.2 % over bars 41-153, the other 921 notes untouched) and is dragged
+below the real figure by four stray strikes putting four unplayed bars in, which is the documented price of that rule.
+
+**And `chord_of_2 0/192` is innocent**, which is worth writing down because it looks exactly like a rule that never fires: **176 of those
+192 notes sit in bars he never played in.** A rate of zero over material nobody attempted is not a detection rate.
+
+## A Diagnostic That Measured Its Own Pauses
+
+The same log reads **`audio_clock_ratio 0.9325` -- a device losing 67.5 ms per second**, which would be ten times the worst drift this
+project has ever measured. It is not real, and the control in the same log says so: `audio_clock_pulled_ms 73` with a worst error of
+**39 ms**, `strike_delay_over_budget_percent 0`, `clock_ratio 1.0000`.
+
+`_track_audio_clock` returns early while the song is paused, during the count-in, and on any frame an event owns the clocks -- and left
+`_audio_clock_last_heard` standing over that return. The input device stays open the whole time, so the sample counter runs on while the
+song clock does not, and **the first frame back charged the whole gap to the audio side and one frame to the song side.** Simulated: ten
+seconds of pause inside two seconds of playing reports a ratio of **0.166**. His 0.9325 is about seven seconds of pauses and count-in over
+a hundred seconds of playing, which is an ordinary run.
+
+The baseline is dropped with the early return now, so a gap is not time that passed. **Sixth instance in this project of a tool measuring
+itself**, after `analyze_ringing.py`, `check_ringing_rescue.py`, the four drift diagnostics, the `MIN_WINDOW_MS` sweep and the batched check
+harness -- and the tell was the same every time: a control that disagrees. The test asserts both halves, because a fix that makes the
+measurement blind is not a fix: a counter that really runs 5 % slow is still reported at 5 %.
 
 ## What NOT To Do
 

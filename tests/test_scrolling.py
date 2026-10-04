@@ -3088,7 +3088,22 @@ class TestTheAutomaticGate:
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, key=pygame.K_x, mod=0))
         assert not screen._auto_gate
-        assert not screen._config.audio.auto_gate
+
+    def test_pressing_a_key_does_not_switch_it_off_for_every_other_song(self):
+        """Inverted deliberately: this asserted the fault.
+
+        X and C used to write `auto_gate = False` into the settings file, so
+        one press -- on advice the app itself kept repeating, before
+        `gate_band` was fixed -- turned the feature off across every song
+        from then on, with four characters in brackets in the HUD as the only
+        tell. The player's gate then sat 15 dB above where the room puts it
+        and threw away 24 % of his audio. The durable off switch is the
+        settings screen, because that is a row which SAYS what it is set to.
+        """
+        screen = self._screen()
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, key=pygame.K_x, mod=0))
+        assert screen._config.audio.auto_gate
 
     def test_the_room_is_heard_before_the_first_note(self):
         """The input used to be opened when the count-in ENDED, so there was

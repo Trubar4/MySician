@@ -297,85 +297,14 @@ MP3_STUCK_DRIFT_MS = 250.0
 # Long enough that the sync has had at least one correction attempt at it.
 MP3_STUCK_FOR_MS = 3000.0
 
-# Input level advice. A level at or below this has not been measured yet --
-# the meter reads -120 dB before any audio arrives.
-SIGNAL_UNKNOWN_DB = -119.0
-# An RMS this high over a 512-sample hop means the peaks are already against
-# the ceiling, and a clipped waveform has no period for YIN to find.
-CLIPPING_DB = -8.0
-# How loud the loudest hop has to be for the detector to keep its grip.
-# Measured, not guessed: the player's own play-along take was attenuated in
-# steps and read back through the real detector, which gives the level at
-# which pitch accuracy starts to rot. In the same units the HUD shows (RMS
-# over one 512-sample hop):
-#
-#   loudest hop   -20   -32   -38   -44   -50   -56 dB
-#   heard right    96    96    91    83    52     9 %
-#
-# So the knee sits around -38 and the collapse below -44. Note what fails
-# first: strikes keep arriving, they just carry the WRONG PITCH -- which is
-# why "few strikes" is the wrong thing to look for, and why the completion
-# screen counts strikes heard next to notes landed.
-QUIET_PEAK_DB = -40.0
-# How far the loudest playing must clear the gate before the gate itself is
-# the thing eating the notes. A strike decays fast, so most of a note sits
-# well below its own peak.
-QUIET_MARGIN_DB = 12.0
-# How far the quietest moment must stay UNDER the gate before background hum
-# starts firing onsets of its own.
-NOISE_MARGIN_DB = 6.0
-
-
-def gate_band(peak: float, floor: float) -> tuple[float, float]:
-    """The window a noise gate may sit in, as (lowest, highest).
-
-    Above the room by NOISE_MARGIN_DB so hum does not fire onsets of its own,
-    and below the playing by QUIET_MARGIN_DB so a decaying note survives --
-    capped by `MAX_GATE_DB`, which is the level at which the DETECTOR gives
-    up and therefore the point past which gating wins nothing.
-
-    The band can be EMPTY (lowest > highest) and that is a real state, not an
-    error: a hot, compressed signal has less than NOISE_MARGIN_DB +
-    QUIET_MARGIN_DB of range to put a gate in. It has to be a state the
-    advice can express, because for one cycle it was not -- the two pieces of
-    advice named keys that undo each other, and with no gate able to satisfy
-    both, the panel asked for X, then C, then X for ever. Which is what the
-    player saw, and they pressed C until the gate reached the old ceiling and
-    the clean half of the song stopped being heard.
-    """
-    return floor + NOISE_MARGIN_DB, min(peak - QUIET_MARGIN_DB, MAX_GATE_DB)
-
-
-def suggested_gate_db(peak: float, floor: float) -> float:
-    """A gate inside the band, on the 5 dB grid the X and C keys move in.
-
-    As LOW in the band as still clears the room: the two failures are not
-    each other's equals. A gate under the room costs spurious onsets, which
-    the confidence filter and the matcher's candidate search already throw
-    away; a gate over the playing costs the strikes themselves, and a strike
-    that never arrives cannot be recovered by anything downstream.
-    """
-    lowest, highest = gate_band(peak, floor)
-    target = math.ceil(lowest / 5.0) * 5.0
-    if target > highest:
-        target = math.floor(highest / 5.0) * 5.0
-    return max(MIN_GATE_DB, min(MAX_GATE_DB, target))
-# Per frame, so one loud accident does not fix the advice in place for the
-# rest of the song.
-LEVEL_DECAY_DB = 0.05
-
-# The room is what the microphone hears while the song is NOT running, which
-# is the only moment it can be read: a low percentile of a take that is being
-# PLAYED is not the room. Measured across one session's reference takes, the
-# 2nd percentile ranged from -35 dB on a dense passage with no gaps to -94 dB
-# on a sparse one, against a recorded room of -73 -- so a percentile says how
-# busy the playing was, not how quiet the room is.
-#
-# A median over the most recent readings, so a session that changes (a fan, a
-# different guitar) is followed and one frame of the guitar being put down is
-# not. At 60 frames a second the minimum is about a second and a half.
-ROOM_WINDOW = 300
-ROOM_SAMPLES = 90
+# The input level: the thresholds, the gate band, and the verdict on a run.
+# Re-exported here because the tests and tools import them from this module,
+# and because one definition is the whole point -- the live HUD advice and the
+# completion screen must not grade the same run differently.
+from pickhero.level import (  # noqa: E402
+    CLIPPING_DB, LEVEL_DECAY_DB, NOISE_MARGIN_DB, PLAYING_WINDOW_DB,
+    QUIET_MARGIN_DB, QUIET_PEAK_DB, ROOM_SAMPLES, ROOM_WINDOW,
+    SIGNAL_UNKNOWN_DB, gate_band, suggested_gate_db)
 
 # Auto-sync confidence. Scatter does not invalidate the median — a player is
 # simply not a metronome — it only means more strikes are needed before the
@@ -1946,7 +1875,20 @@ class PlayingScreen:
         if self._audio_capture is None or self._matcher is None:
             return
         if self._reanchor_due or self._playback_ms < 0 or not self._playing:
-            return                         # an event owns the clocks this frame
+            # An event owns the clocks this frame. The baseline goes with it:
+            # the device stays open while the song is paused, or during the
+            # count-in, or while a page is being engraved, so the counter
+            # runs on and the song clock does not. Left standing, the next
+            # frame charged the WHOLE of that gap to the audio side and one
+            # frame to the song side -- which is how this run log came to
+            # report `audio_clock_ratio 0.9325`, a 6.75 % drifting device,
+            # on a run whose own control says the clocks were fine
+            # (`audio_clock_pulled_ms 73`, worst error 39 ms, 0 % of strikes
+            # over budget). A diagnostic measuring its own pauses is the
+            # sixth instance of a tool measuring itself in this project, and
+            # the tell was the same every time: a control that disagrees.
+            self._audio_clock_last_heard = None
+            return
         heard = self._audio_capture.elapsed_ms()
         # A restarted capture is a NEW ring with the counter back at zero, so
         # the difference is not time that passed -- it is a different clock.
@@ -6367,8 +6309,22 @@ class PlayingScreen:
         if len(self._level_samples) < ROOM_SAMPLES:
             return None
         loudest = max(self._level_samples)
-        playing = [db for db in self._level_samples if db > loudest - 30.0]
+        playing = [db for db in self._level_samples
+                   if db > loudest - PLAYING_WINDOW_DB]
         return statistics.median(playing) if playing else None
+
+    def _level_report(self):
+        """What the input did over the WHOLE run, or None with nothing heard.
+
+        `_level_advice` is about the last few seconds and is deliberately
+        silent once the song stops. This is about the run, so it survives the
+        song ending -- which is the gap the player found: the completion
+        screen said nothing about the input while the run log beside it
+        carried the four numbers that explain the score.
+        """
+        from pickhero import level as level_module
+        return level_module.measure(self._level_samples, self.room_db(),
+                                    self._noise_gate_db, self._auto_gate)
 
     def _level_advice(self) -> str:
         """What to do about the input level, or "" when nothing needs doing.
@@ -6483,18 +6439,27 @@ class PlayingScreen:
         return statistics.median(self._room_samples)
 
     def _take_gate_by_hand(self) -> None:
-        """Touching X or C switches the automatic off, and says so.
+        """Touching X or C switches the automatic off FOR THIS SONG.
 
-        Otherwise the next song would silently undo the adjustment that was
-        just made by hand, and a setting that will not stay set is worse than
-        one that was never offered. It goes back on from the settings screen.
+        The next song must not silently undo an adjustment just made by hand,
+        and a setting that will not stay set is worse than one that was never
+        offered -- so the automatic stands down while this song is open.
+
+        It used to stand down for ever, writing `auto_gate = False` into the
+        settings file, and that is the fault the player found: one press of a
+        key (on advice the app itself kept repeating, before `gate_band` was
+        fixed) turned the feature off across every song from then on, and the
+        only tell was four characters in brackets in the corner of the HUD.
+        Three weeks later his gate sat 15 dB above where the room puts it and
+        threw away 24 % of the audio. The durable off switch is the settings
+        screen, which is a row that SAYS what it is set to -- which is the
+        whole reason that screen exists.
         """
         if not self._auto_gate:
             return
         self._auto_gate = False
-        self._config.audio.auto_gate = False
-        self._config.save()
-        self._say("Gate von Hand — Automatik aus (O zum Zurueckschalten)")
+        self._say("Gate von Hand — Automatik aus fuer diesen Song "
+                  "(O schaltet sie dauerhaft aus)")
 
     def _auto_gate_from_room(self) -> None:
         """Set the gate from the room, when a song starts.
@@ -6542,7 +6507,15 @@ class PlayingScreen:
 
     def _draw_signal_meter(self, surface: pygame.Surface, font: pygame.font.Font,
                            screen_w: int, y: int) -> None:
-        """Draw a compact horizontal signal level meter with dB label."""
+        """The live input level, and which quantity that is.
+
+        It reads `_signal_db_smooth`, which keeps moving after the song ends
+        -- so on the completion screen it is the ROOM with nobody playing,
+        and it was labelled "Signal". The player read -61 dB there as his
+        playing level, and so did I: his run log says the playing was -28.4
+        dB with a -73.9 dB room, which is healthy. A meter that does not say
+        what it is measuring is a meter that gets read as the wrong thing.
+        """
         t = get_theme()
         db = self._signal_db_smooth
 
@@ -6553,7 +6526,8 @@ class PlayingScreen:
 
         # dB label
         db_display = max(db_min, min(db_max, db))
-        label = f"Signal: {int(db_display)} dB"
+        what = "Signal" if self._playing and self._playback_ms >= 0 else "Room"
+        label = f"{what}: {int(db_display)} dB"
         label_surf = font.render(label, True, t.hud_text)
         label_x = screen_w - label_surf.get_width() - 12
         surface.blit(label_surf, (label_x, y))
@@ -6720,6 +6694,25 @@ class PlayingScreen:
                     f"{part.bars_text()} — the other {part.skipped} notes "
                     f"went past with nothing played",
                     True, t.hud_text), 10)
+
+            # And what the INPUT did, which until now only the run log
+            # could say. *"Es stand nicht da, dass ich die Gitarre lauter
+            # machen soll."* It did -- while the song was running, in 14 px
+            # type, to somebody holding a guitar; `_level_advice` goes quiet
+            # the moment the song stops, so the one screen where "why was it
+            # 21 %" gets asked was the one screen with no answer on it.
+            #
+            # The numbers are printed whatever the verdict, including "fine":
+            # ruling the input out is worth a line, and a verdict without the
+            # measurement behind it is not checkable. Same arithmetic as the
+            # run log, out of `pickhero/level.py`, so the two cannot grade
+            # one run differently.
+            report = self._level_report()
+            if report is not None:
+                say(hint_font.render(
+                    report.headline(), True,
+                    t.feedback_close if report.is_fault else t.hud_text), 4)
+                say(hint_font.render(report.numbers(), True, t.hud_text), 10)
 
             # And where the practice speed CHANGED, the stretches are read
             # apart. *"In der Mitte das Tempo von 90 % auf 100 % geaendert.
@@ -7444,32 +7437,27 @@ class PlayingScreen:
         # player's own take: the loudest hop above -38 dB reads 91-96 %, at
         # -44 dB it is 83 %, at -50 dB 52 %. So these three numbers settle in
         # one reading what would otherwise be a round trip of guessing.
-        levels = sorted(self._level_samples)
-        if levels:
-            loudest = levels[-1]
-            playing = [db for db in levels if db > loudest - 30.0]
-            median = playing[len(playing) // 2] if playing else loudest
-            under = sum(1 for db in levels if db < ac.noise_gate_db)
-            fh.write(f"level_loudest_db\t{loudest:.1f}\n")
-            fh.write(f"level_median_playing_db\t{median:.1f}\n")
-            fh.write(f"level_under_gate_percent\t{100 * under / len(levels):.0f}\n")
+        report = self._level_report()
+        if report is not None:
+            fh.write(f"level_loudest_db\t{report.loudest:.1f}\n")
+            fh.write(f"level_median_playing_db\t{report.median_playing:.1f}\n")
+            fh.write(f"level_under_gate_percent"
+                     f"\t{report.under_gate_percent:.0f}\n")
             # The room is measured while the song is NOT running, never as a
             # low percentile of the playing: across one session's reference
             # takes that percentile ran from -35 dB on a dense passage to
             # -94 dB on a sparse one against a recorded room of -73, so it
             # reports how busy the playing was. Without it there is no honest
             # gate to suggest, and none is printed.
-            room = self.room_db()
-            if room is None:
+            if report.room is None:
                 fh.write("level_room_db\t(nicht gemessen)\n")
             else:
-                low, high = gate_band(loudest, room)
-                fh.write(f"level_room_db\t{room:.1f}\n")
+                low, high = report.band
+                fh.write(f"level_room_db\t{report.room:.1f}\n")
                 # A percentage of discarded audio is only readable next to
                 # the value that would not have discarded it -- the same rule
                 # as "up to 40 s" beside a half-finished run.
-                fh.write(f"gate_suggested_db"
-                         f"\t{suggested_gate_db(loudest, room):.0f}"
+                fh.write(f"gate_suggested_db\t{report.suggested:.0f}"
                          f"\t(band {low:.0f} to {high:.0f}"
                          f"{', empty' if low > high else ''})\n")
                 # The verdict, not two numbers eight lines apart. A room that
@@ -7477,10 +7465,15 @@ class PlayingScreen:
                 # that produced this rule read a room of -37.3 against a
                 # playing median of -37.2 -- the input sounding the same
                 # whether the guitar was played or not.
-                if median - room < QUIET_MARGIN_DB:
+                if report.hears_the_room:
                     fh.write(f"input_hears_the_room\tyes"
-                             f"\t(room {room:.1f} dB vs playing "
-                             f"{median:.1f} dB — check the device)\n")
+                             f"\t(room {report.room:.1f} dB vs playing "
+                             f"{report.median_playing:.1f} dB — check the "
+                             f"device)\n")
+            # The same sentence the completion screen shows, so a log and a
+            # screenshot of one run cannot say different things about it.
+            fh.write(f"level_verdict\t{report.verdict}"
+                     f"\t{report.headline()}\n")
         else:
             fh.write("level_loudest_db\t(nothing measured)\n")
         fh.write(f"confidence_threshold\t{ac.confidence_threshold}\n")
