@@ -2560,6 +2560,11 @@ class PlayingScreen:
                 self._export_timing_samples()
             else:
                 self._show_timing = not self._show_timing
+        elif event.key == pygame.K_w and shift_held(event):
+            # Tested before the plain W, because an `if` chain is read in
+            # order and a shifted key placed after its unshifted twin is
+            # never reached -- which is how the chord view once shipped inert.
+            self._toggle_take()
         elif event.key == pygame.K_w:
             self._toggle_wait_mode()
         elif event.key == pygame.K_k:
@@ -5231,6 +5236,13 @@ class PlayingScreen:
                 and getattr(self._audio_capture, "dropped_buffers", 0)):
             out.append((f"Audio dropouts: {self._audio_capture.dropped_buffers}"
                         "  — close other programs", "feedback_miss"))
+        # A recording nobody can see running is a recording nobody stops, and
+        # it writes 88 kB a second. In the streak colour rather than the
+        # accent: half this panel is already drawn in the accent, and this is
+        # a state the player has switched on rather than a reading.
+        take = self.take_line()
+        if take:
+            out.append((take, "feedback_streak"))
         return out
 
     def footer_segments(self) -> list[tuple[str, str]]:
@@ -7528,6 +7540,14 @@ class PlayingScreen:
         fh.write(f"dropped_buffers\t{dropped}"
                  + (f"\t({busy} of them while measuring — those cost nothing)"
                     if busy else "") + "\n")
+        # A take recorded during THIS run, because a log and a WAV that
+        # describe the same playing are only usable together if one of them
+        # says so. `start_sample` is in the manifest beside it.
+        take = getattr(capture, "take", None)
+        if take is not None:
+            lost = (f", {take.dropped_blocks} block(s) LOST"
+                    if take.dropped_blocks else "")
+            fh.write(f"take\t{take.dir.name}\t{take.seconds:.0f} s{lost}\n")
         # The OUTPUT, which this log never mentioned. A run where the sound
         # went wrong and a run where it did not are otherwise identical here.
         fh.write(f"output_device\t{output.describe()}\n")
@@ -7920,8 +7940,13 @@ class PlayingScreen:
                 ("PgDn/PgUp: practice speed, kept for this song",
                  f"{meta.tempo} BPM ({int(self._tempo_factor * 100)} %)"),
                 ("A: audio on/off", "on" if self._audio_enabled else "off"),
-                ("W: wait mode (holds for the right note)",
-                 "on" if self._wait_mode else "off"),
+                # One entry for the two, because a page that paginates is not
+                # a page that may be filled without measuring -- the third
+                # time in this file, and the suite caught it again.
+                ("W: wait mode (holds for the right note)   "
+                 "Shift+W: record the take",
+                 ("on" if self._wait_mode else "off")
+                 + (" · recording" if self.take_line() else "")),
                 ("E: skip a long rest (jumps to 3 s before the next note)",
                  "a rest is here" if self._rest_hud_text() else "nothing to skip"),
                 ("I/O: loop markers   P: loop   Shift+P: drill it",
@@ -8293,6 +8318,90 @@ class PlayingScreen:
             self._matcher.chord_partial_credit = self._chord_partial_credit
 
     # -- Wait mode --
+
+    def _toggle_take(self) -> None:
+        """Shift+W: record what the detector hears, or finish the take.
+
+        *"Koennen wir ein das Recording in die App einbauen, damit es auf
+        beiden NBs geht?"* -- `tools/record_reference.py --play-along` needs a
+        checkout, and the laptop that most needs to produce a take has only
+        the EXE on it. See `audio/take.py` for why an in-app take is also the
+        BETTER one: it shares the ring buffer's sample counter with every
+        strike, so nothing has to be aligned afterwards.
+
+        On a key, never automatically. 88 kB a second on every song is a few
+        gigabytes over a week, and a take is wanted exactly when it is asked
+        for.
+        """
+        from pickhero.audio.take import TakeRecorder, new_take_dir, takes_dir
+        from pickhero.config import CONFIG_DIR
+
+        capture = self._audio_capture
+        if getattr(capture, "take", None) is not None:
+            self._finish_take()
+            return
+        if capture is None or not capture.is_running():
+            # Nothing is listening, so there is nothing to record. Said
+            # rather than silently doing nothing: a key that answers is a key
+            # somebody can act on.
+            self._say("Take: no input is running — press A or start the song")
+            return
+        song = self._song_key or self._timeline.metadata.title or "take"
+        try:
+            recorder = TakeRecorder(
+                new_take_dir(takes_dir(CONFIG_DIR), song),
+                getattr(capture, "_sample_rate", 44100),
+                song=song,
+                tempo_percent=int(round(self._tempo_factor * 100)),
+                device=(capture.describe_device()
+                        if hasattr(capture, "describe_device") else ""),
+                transpose=self._transpose,
+                tuning=tuning_name(self._timeline.metadata.tuning) or "",
+                start_sample=int(capture.elapsed_ms()
+                                 * getattr(capture, "_sample_rate", 44100)
+                                 / 1000.0),
+                song_ms=self._playback_ms)
+        except Exception as exc:               # a full disk, a bad path
+            # Named on screen. A recording that silently does not happen is
+            # indistinguishable from a key that does nothing, which is the
+            # fault this project has shipped five times.
+            self._say(f"Take could not be started: {exc}")
+            return
+        capture.start_take(recorder)
+        self._say("Recording this take — Shift+W again to finish")
+
+    def _finish_take(self) -> None:
+        """Close the running take and say where it landed."""
+        capture = self._audio_capture
+        running = getattr(capture, "take", None)
+        if running is None:
+            return
+        where = running.dir
+        try:
+            take = capture.stop_take()
+        except Exception as exc:
+            self._say(f"Take could not be finished: {exc}")
+            return
+        if not take:
+            return
+        lost = take.get("dropped_blocks", 0)
+        hole = f" — {lost} block(s) LOST, do not score this one" if lost else ""
+        self._say(f"Take written: {take['seconds']:.0f} s to {where}{hole}")
+
+    def take_line(self) -> str:
+        """What the HUD says while a take is running, or nothing.
+
+        A recording nobody can see running is a recording nobody stops, and
+        88 kB a second adds up. It names the key that ends it, for the same
+        reason every other line here does.
+        """
+        # getattr, not an attribute: the HUD is asked for this line by every
+        # frame of every test that stands a stub in for the capture, and a
+        # status line that can raise takes the frame down with it.
+        take = getattr(self._audio_capture, "take", None)
+        if take is None:
+            return ""
+        return f"Recording take: {take.seconds:.0f} s (Shift+W stops)"
 
     def _toggle_wait_mode(self) -> None:
         """Toggle wait mode on/off."""
@@ -8885,6 +8994,10 @@ class PlayingScreen:
         if (self._matcher is not None and not self._song_completed
                 and not self._run_log_written):
             self._export_run_log()
+        # Before the stream goes: a take is finished where the run is, so
+        # leaving the song never leaves a half-written WAV with no manifest
+        # beside it.
+        self._finish_take()
         self.close_session()
         self._stop_audio()
         self._audio_enabled = False

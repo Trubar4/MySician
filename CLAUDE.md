@@ -4076,6 +4076,7 @@ pickhero/
 │   ├── input.py
 │   ├── detector.py
 │   ├── chord_verify.py  # per-string chord checking (score-informed)
+│   ├── take.py          # Shift+W: record what the detector hears, in the app
 │   ├── midi_playback.py
 │   ├── mp3_playback.py  # a recording as a backing track, kept in sync
 │   └── note_utils.py
@@ -4105,6 +4106,7 @@ pickhero/
 - `tests/test_detector.py` — feed known sine waves to aubio, verify correct note detection
 - `tests/test_tempo_sections.py` — the run split by the speed each stretch was played at, the strip tick, and that the completion screen says it
 - `tests/test_level_report.py` — the verdict on a run's input level, the automatic gate surviving a keypress, and the clock ratio not counting pauses; four of its tests fail on the unfixed code
+- `tests/test_take.py` — recording a take from inside the app: the real audio callback drives it, a stalled write loses blocks instead of blocking, and the manifest is the shape the analysis tools already read
 - `tests/test_room_and_clock.py` — the room as the quietest stretch rather than the average of the count-in, and the clock ratio driven through the real `update()` (which is where the first fix missed it); nine of its ten fail on the unfixed code, and the tenth is the control
 - `tests/test_chord_shape_cost.py` — that no frame derives a chord shape, that the map really holds them, and that the log names what it was drawing; seven of its eight fail on the unfixed code
 - `tests/test_resampler.py` — what survives a resample and what arrives that was never played; seven of its tests fail on linear interpolation
@@ -5641,6 +5643,55 @@ past with nothing played`) hinted otherwise, and a count is not a place.
   line wide enough to wrap, which is how the completion overlay has been pushed off the screen before.
 - **`Section` keeps its span and that is right**: a practice-speed section is one contiguous stretch by construction, so its first and
   last ARE its extent. The fault was only ever in the one label that could hold a hole.
+
+## Shift+W Records What The Detector Hears
+
+*"Koennen wir ein das Recording in die App einbauen, damit es auf beiden NBs geht?"* -- `tools/record_reference.py --play-along` needs a
+checkout, and the laptop that most needs to produce a take has nothing on it but `MySician.exe`. **Anything reachable only from a shell does
+not exist on the machine that needs it most**: the fourth instance in this project, after the merge tool in `tools/`, the ffmpeg fetch and
+the songs folder.
+
+**And an in-app take is BETTER than the tool's, for a reason the tool cannot fix.** An external recorder opens its own stream, so its audio
+carries its own clock and the alignment has to be SEARCHED for afterwards -- which is where every alignment fault in this file came from: the
+take read as "the intro again", the 3-of-46 against a defaulted song, the manifest stating the wrong speed. `audio/take.py` records **the very
+array the detector is handed**, stamped with the ring buffer's own sample counter, so `start_sample` makes a strike's timestamp an index into
+the WAV. There is nothing left to fit.
+
+- **It records the channel the capture CHOSE, not an average.** A second stream could pick the other input of the interface and nobody would
+  know -- which is the fault `_resolve_input_settings` was fixed for once already. The test feeds a block with the guitar in input 2 and
+  requires 0.5 back, not the 0.25 an average would give.
+- **Never a write in the audio callback.** One `put_nowait` and no I/O; a worker thread drains it. A disk touched from the audio thread is
+  dropped buffers, which is the one fault that loses notes at random.
+- **Never a WAIT either.** The queue is bounded at `MAX_QUEUED_BLOCKS` (256, about three seconds), and a stalled write loses blocks rather
+  than stalling the capture -- **counted, and written into the manifest**, because a take with a hole in it cannot be scored and has to say so
+  rather than look complete. The test holds the write open and requires the feed loop to stay under a second.
+- **A write that RAISES does not kill the worker.** A full disk is one counted block, not a thread that quietly stopped and a file that
+  quietly stopped growing.
+
+**Measured on this machine:** the worker costs **24 us a block** against the 86 blocks a second real time needs -- **477x headroom, 0.21 % of
+one core** -- and nothing is dropped at real-time pacing. The audio callback goes from **0.26 ms to 0.45-0.7 ms of its 11.6 ms hop**, so 2 %
+to 4-6 %. That is a real cost and it is reported as one; the control that matters is `dropped_buffers` in the next run log, which has read 0
+on every run this week. The file is **86 kB/s** -- 21 MB for a four-minute song.
+
+- **On a key, never automatically** (*"Nur auf Druck"*). 88 kB a second on every song is gigabytes over a week, and a take is wanted exactly
+  when it is asked for. `MAX_SECONDS` (600) stops one left on by accident.
+- **`Shift+W`, tested before the plain `W`**, or a shifted key placed after its unshifted twin is never reached -- which is how the chord view
+  once shipped inert.
+- **It says it is running**, in the streak colour under the tuning, and names the key that ends it. A recording nobody can see running is a
+  recording nobody stops.
+- **Leaving the song finishes it**, and so does the stream closing. A half-written WAV with no manifest beside it is not a take.
+- **`~/.pickhero/recordings/<stamp> <song>/`, never beside the tab.** 21 MB next to the song would travel with every folder copy and
+  `runs.belongings()` would take it along when the song is deleted -- neither of which is true of a diagnostic recording. The path is read at
+  call time rather than captured at import, because **a constant computed from another module's constant cannot be redirected**, which is the
+  fault the deleted-songs trash shipped with.
+- **The manifest is the shape `analyze_play_along.py` already reads**, field for field. A format with two readers is a format that drifts, and
+  this one has four more in `tools/check_*.py`.
+- **The run log names the take** (`take <folder> <seconds>`), because a log and a WAV of the same playing are only usable together if one of
+  them says so.
+
+**`record_reference.py` keeps the 29 guided exercises.** They need the prompts, and they need the standing promise at the top of that file --
+*"standalone on purpose, so it still runs when the detection stack is broken"* -- which a recorder living inside the app cannot have by
+construction. This replaces `--play-along` and nothing else.
 
 ## The Needle Was Steady And The Bottom String Was Missing
 

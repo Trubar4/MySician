@@ -97,6 +97,7 @@ a = Analysis(
         "verovio",
         "resvg_py",
         "pickhero.played",
+        "pickhero.audio.take",
         "pickhero.ui.tab_view",
         "pickhero.tabs.musicxml",
         # Imported inside the functions that use them, so nothing in the

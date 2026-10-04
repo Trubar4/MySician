@@ -255,6 +255,9 @@ class AudioCapture:
         # from note_queue because they trail their strike by ~380 ms.
         self.strike_queue: queue.Queue[StrikeWindow] = queue.Queue()
         self._ring = _AudioRing(int(ac.sample_rate * RING_SECONDS))
+        #: A TakeRecorder while one is running, else None. Read in the audio
+        #: callback, so it is swapped wholesale rather than mutated.
+        self._take = None
         # [timestamp_ms, sample_pos, length] — length shrinks when a following
         # strike arrives before the full window has been collected.
         self._pending_windows: list[list[float]] = []
@@ -331,6 +334,15 @@ class AudioCapture:
         # once enough of it has arrived. Sample index of hop i is base + i.
         base = self._ring.written
         self._ring.push(mono)
+
+        # A take is the very array the detector is about to be handed -- same
+        # channel, same rate, same ring counter -- so a recording made here
+        # needs no alignment fitted to it afterwards. One put_nowait and no
+        # I/O: the file is written on the recorder's own worker, because a
+        # disk touched from the audio thread is dropped buffers.
+        take = self._take
+        if take is not None:
+            take.feed(mono)
 
         # Process in hop_size chunks
         hop = self.detector.hop_size
@@ -496,6 +508,10 @@ class AudioCapture:
         # The ring is indexed in samples, so it must match the resolved rate
         self._sample_rate = sample_rate
         self._ring = _AudioRing(int(sample_rate * RING_SECONDS))
+        # A new ring is a new counter, so a take started against the old one
+        # can no longer say where its samples sit. It is closed rather than
+        # carried into a file whose `start_sample` would be a lie.
+        self.stop_take()
         self._pending_windows = []
         # Which input of the interface is carrying the guitar, learned from
         # the audio itself. A fresh stream knows nothing about the last one.
@@ -563,6 +579,30 @@ class AudioCapture:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+        # A take outlives nothing: the device it was reading is gone, so the
+        # file is finished here rather than left open for a worker nobody
+        # will feed again.
+        self.stop_take()
+
+    def start_take(self, recorder) -> None:
+        """Send every buffer to this recorder until `stop_take`.
+
+        Returns nothing and raises nothing: the caller already has the
+        recorder and the one thing this adds is the swap the audio thread
+        reads.
+        """
+        self.stop_take()
+        self._take = recorder
+
+    def stop_take(self) -> dict | None:
+        """Finish the running take, or nothing if there is none."""
+        take, self._take = self._take, None
+        return take.close() if take is not None else None
+
+    @property
+    def take(self):
+        """The running take, for a screen that wants to say how long it is."""
+        return self._take
 
     def set_noise_gate_db(self, db: float) -> None:
         """Update the noise gate threshold on the detector.
