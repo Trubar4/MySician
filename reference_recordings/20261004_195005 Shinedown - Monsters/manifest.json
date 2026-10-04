@@ -1,0 +1,30 @@
+{
+  "created": "2026-10-04T19:51:15",
+  "samplerate": 44100,
+  "channels": 1,
+  "device": "Mikrofon (Scarlett Solo USB) — Windows WDM-KS, index 24, 2 of 2 channel(s) at 44100 Hz",
+  "tuning_offset_semitones": 0,
+  "drop_semitones": 0,
+  "recorded_in_app": true,
+  "takes": [
+    {
+      "id": "play_along",
+      "block": 99,
+      "title": "Durchgespielt: Shinedown - Monsters",
+      "file": "play_along.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [],
+      "expected_midi": [],
+      "song": "Shinedown - Monsters",
+      "tempo_percent": 100,
+      "seconds": 69.76,
+      "start_sample": 65023,
+      "start_song_ms": 685.5,
+      "transpose": 0,
+      "tuning": "Drop D",
+      "dropped_blocks": 0,
+      "recorded_in_app": true
+    }
+  ]
+}
