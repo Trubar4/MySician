@@ -34,6 +34,13 @@ import bisect
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
+#: How many separate stretches `Played.bars_text` names before it starts
+#: counting. Two is the ordinary case -- a player who sat one section
+#: out -- and somebody stopping and starting all evening would otherwise
+#: write a line wide enough to wrap, which is how the completion overlay
+#: has been pushed off the screen before.
+MAX_RUNS = 4
+
 
 @dataclass(frozen=True)
 class Played:
@@ -42,10 +49,19 @@ class Played:
     hits: int = 0
     close: int = 0
     total: int = 0
-    first_bar: int | None = None
-    last_bar: int | None = None
+    #: The bars that really were played, in order. Not a first and a last:
+    #: see `bars_text`.
+    bars: tuple[int, ...] = ()
     #: Notes the playhead crossed in bars nobody played in.
     skipped: int = 0
+
+    @property
+    def first_bar(self) -> int | None:
+        return self.bars[0] if self.bars else None
+
+    @property
+    def last_bar(self) -> int | None:
+        return self.bars[-1] if self.bars else None
 
     @property
     def percent(self) -> float | None:
@@ -67,11 +83,34 @@ class Played:
         return self.total > 0 and self.skipped > 0
 
     def bars_text(self) -> str:
-        if self.first_bar is None:
+        """The bars played, as RUNS -- `bars 2-18, 50-73`, never `bars 2-73`.
+
+        This module's own docstring refuses a span: *"One interval cannot say
+        'I played the intro and the solo and sat out the verse'"*. That is
+        why the SCORE is per bar -- and the label was a first and a last
+        anyway, which says exactly the thing the rule refuses. On the run
+        that found it the player had played bars 2-18 and 50-73 and the line
+        read `bars 2-73`, which reads as the whole song.
+
+        Past `MAX_RUNS` the rest are counted rather than listed, for the
+        reason the completion overlay caps its speed lines: a line long
+        enough to wrap is a line that pushes the block off the screen.
+        """
+        if not self.bars:
             return ""
-        if self.first_bar == self.last_bar:
-            return f"bar {self.first_bar}"
-        return f"bars {self.first_bar}-{self.last_bar}"
+        runs: list[tuple[int, int]] = []
+        for bar in self.bars:
+            if runs and bar == runs[-1][1] + 1:
+                runs[-1] = (runs[-1][0], bar)
+            else:
+                runs.append((bar, bar))
+        shown = runs[:MAX_RUNS]
+        text = ", ".join(str(lo) if lo == hi else f"{lo}-{hi}"
+                         for lo, hi in shown)
+        if len(runs) > len(shown):
+            text += f" and {len(runs) - len(shown)} more"
+        word = "bar" if len(runs) == 1 and shown[0][0] == shown[0][1] else "bars"
+        return f"{word} {text}"
 
 
 def bar_of(ms: float, bar_starts: Sequence[float]) -> int | None:
@@ -105,7 +144,10 @@ def score(notes: Iterable[tuple[float, bool, bool, bool]],
     if not bars:
         return Played()
     hits = close = total = skipped = 0
-    first = last = None
+    # The bars a note was really SCORED in, not the bars a strike landed in.
+    # A strike in a bar the song never reached would otherwise put a bar in
+    # the line that holds nothing the player was shown.
+    scored: set[int] = set()
     for ms, reached, is_hit, is_close in notes:
         if not reached:
             continue                      # never in front of the player at all
@@ -116,10 +158,10 @@ def score(notes: Iterable[tuple[float, bool, bool, bool]],
         total += 1
         hits += bool(is_hit)
         close += bool(is_close)
-        first = bar if first is None else min(first, bar)
-        last = bar if last is None else max(last, bar)
+        if bar is not None:
+            scored.add(bar)
     return Played(hits=hits, close=close, total=total,
-                  first_bar=first, last_bar=last, skipped=skipped)
+                  bars=tuple(sorted(scored)), skipped=skipped)
 
 
 @dataclass(frozen=True)

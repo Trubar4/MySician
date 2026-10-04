@@ -81,14 +81,47 @@ class TestTheScoreItself:
         got = score(notes, [2150.0], BARS)
         assert (got.total, got.skipped) == (1, 0)
 
-    def test_the_bars_are_named(self):
+    def test_the_bars_are_named_as_RUNS_not_as_a_span(self):
+        """Bar 2 and bar 4 with bar 3 sat out is not "bars 2-4".
+
+        Inverted from the line it replaces, which asserted the span. On the
+        player's own Shinedown run that span read `bars 2-73` for somebody
+        who had played 2-18 and 50-73 -- the whole song, by the look of it,
+        with a 31-bar hole in the middle that only the note count mentioned.
+        """
         notes = _notes([(1100.0, "hit"), (3100.0, "hit")])
         got = score(notes, [1150.0, 3150.0], BARS)
+        assert got.bars_text() == "bars 2, 4"
+
+    def test_a_run_is_still_written_as_a_run(self):
+        notes = _notes([(1100.0, "hit"), (2100.0, "hit"), (3100.0, "hit")])
+        got = score(notes, [1150.0, 2150.0, 3150.0], BARS)
         assert got.bars_text() == "bars 2-4"
 
     def test_one_bar_reads_as_one_bar(self):
         notes = _notes([(1100.0, "hit")])
         assert score(notes, [1150.0], BARS).bars_text() == "bar 2"
+
+    def test_his_own_run(self):
+        """bars 2-18 and 50-73, which is what the line used to call 2-73."""
+        played = Played(bars=tuple(list(range(2, 19)) + list(range(50, 74))))
+        assert played.bars_text() == "bars 2-18, 50-73"
+        # Anything that wants the ends still gets them.
+        assert (played.first_bar, played.last_bar) == (2, 73)
+
+    def test_a_player_who_stopped_and_started_all_evening_is_counted(self):
+        """A line long enough to wrap pushes the completion block off the
+        screen, which that overlay has been fixed for once already."""
+        text = Played(bars=(1, 3, 5, 7, 9, 11, 13)).bars_text()
+        assert text == "bars 1, 3, 5, 7 and 3 more"
+
+    def test_a_bar_whose_strike_landed_where_the_song_never_got_to(self):
+        """The bars NAMED are the bars a note was scored in. A strike past
+        the playhead would otherwise put a bar in the line holding nothing
+        the player was ever shown."""
+        notes = _notes([(1100.0, "hit"), (3100.0, "pending")])
+        got = score(notes, [1150.0, 3150.0], BARS)
+        assert got.bars_text() == "bar 2"
 
 
 class TestWhenItSaysNothing:

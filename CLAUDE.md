@@ -5623,6 +5623,25 @@ the one you played is something you can see, where a number on its own is not.
 imported inside the function that uses it, so nothing in the static graph reaches it and the EXE would have shipped
 without it. Named in the spec now.
 
+### And The Label Said The Thing The Rule Refuses
+
+*"Die Bewertung scheint zu passen, denke ich."* It does, and one line of it did not. On his Shinedown run he played **bars 2-18 and
+50-73** and sat out the 31 bars between -- and the line read `bars 2-73`, which is the whole song.
+
+**`played.py`'s own docstring is the argument against its own label**: *"NOT a span from the first strike to the last. One interval
+cannot say 'I played the intro and the solo and sat out the verse'"*. That is why the SCORE is per bar, correctly -- and `bars_text`
+was `first-last` anyway, so the label said exactly the thing the rule refuses. Only the note count beside it (`the other 329 notes went
+past with nothing played`) hinted otherwise, and a count is not a place.
+
+- **`Played.bars` is the bars really scored**, and `bars_text` names the RUNS: `bars 2-18, 50-73`. `first_bar` and `last_bar` are
+  properties over it, so everything that wants the ends still gets them.
+- **The bars NAMED are where a note was scored, not where a strike landed.** A strike past the playhead would otherwise put a bar in
+  the line holding nothing the player was ever shown.
+- **`MAX_RUNS` is 4 and the rest are counted** (`bars 1, 3, 5, 7 and 3 more`). Somebody stopping and starting all evening would write a
+  line wide enough to wrap, which is how the completion overlay has been pushed off the screen before.
+- **`Section` keeps its span and that is right**: a practice-speed section is one contiguous stretch by construction, so its first and
+  last ARE its extent. The fault was only ever in the one label that could hold a hole.
+
 ## The Needle Was Steady And The Bottom String Was Missing
 
 *"Das Stimmgerät ist sehr zappelig. Können wir es träger machen? Andere Stimmgeräte sind viel ruhiger."* The complaint is
