@@ -234,15 +234,21 @@ class TestTheChordViewIsFindable:
     def test_it_shows_what_it_is_set_to(self):
         screen, config = self._screen()
         row = next(r for r in screen._rows if r.key == "chord_view")
+        assert row.value() == "blocks only"
+        config.chord_view = 2
+        assert row.value() == "grips and blocks"
+        config.chord_view = 0
         assert row.value() == "off"
-        config.chord_view = True
-        assert row.value() == "on"
 
     def test_and_changing_it_there_changes_the_setting(self):
         screen, config = self._screen()
         row = next(r for r in screen._rows if r.key == "chord_view")
         row.adjust(1)
-        assert config.chord_view is True
+        assert config.chord_view == 2, "one step up puts the grips on"
+        row.adjust(1)
+        assert config.chord_view == 0
+        row.adjust(1)
+        assert config.chord_view == 1, "and round again"
 
     def test_it_is_marked_when_it_is_not_standard(self):
         """A row that is not on its standard value is the one that explains
@@ -250,7 +256,7 @@ class TestTheChordViewIsFindable:
         screen, config = self._screen()
         row = next(r for r in screen._rows if r.key == "chord_view")
         assert row.is_default()
-        config.chord_view = True
+        config.chord_view = 2
         assert not row.is_default()
 
     def test_the_song_screen_starts_from_it_and_writes_it_back(self):
@@ -274,7 +280,8 @@ class TestTheChordViewIsFindable:
             pygame.KEYDOWN, key=pygame.K_c, mod=pygame.KMOD_SHIFT,
             unicode="C"))
         assert not screen._chord_mode
-        assert config.chord_view is False
+        assert not screen._chord_marks, "the top of the ladder wraps to none"
+        assert config.chord_view == 0
 
 
 def test_no_two_rows_share_a_key():

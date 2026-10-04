@@ -1420,7 +1420,7 @@ class TestTheFooterIsTheTwelveWorthWatching:
         joined = "  ".join(self._texts(screen))
         for wanted in ("SPACE", "PgDn/PgUp: Tempo", "A: Audio", "B: Backing",
                        "Shift+B: My Backing", "+/- Size", "G: ",
-                       "Shift+C: Grips", "Shift+T: View", "E: Skip",
+                       "Shift+C: Chords", "Shift+T: View", "E: Skip",
                        "H: help"):
             assert wanted in joined, f"{wanted} is not in the footer"
 

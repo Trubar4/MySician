@@ -497,7 +497,7 @@ class TestTheChordsComeAlong:
     def test_the_grip_cards_are_drawn_in_the_hybrid_too(self, monkeypatch):
         import pickhero.ui.chord_view as chord_view
         screen = _screen(self._chord_song())
-        screen._chord_mode = True
+        screen._chord_level = scrolling.CHORD_CARDS
         drawn = []
         monkeypatch.setattr(chord_view, "draw_diagram",
                             lambda *a, **k: drawn.append(a))
@@ -507,7 +507,7 @@ class TestTheChordsComeAlong:
 
     def test_and_the_blocks_land_on_the_notes(self):
         screen = _screen(self._chord_song())
-        screen._chord_mode = True
+        screen._chord_level = scrolling.CHORD_CARDS
         rows = screen._sheet_layout(1200, 44.0)
         row = rows[0]
         at = {}
@@ -518,7 +518,7 @@ class TestTheChordsComeAlong:
 
     def test_a_song_with_no_chords_draws_nothing_extra(self):
         screen = _screen()
-        screen._chord_mode = True
+        screen._chord_level = scrolling.CHORD_CARDS
         screen._playback_ms = 100.0
         screen.render(_surface())        # must not raise
 

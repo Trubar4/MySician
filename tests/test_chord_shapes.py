@@ -166,21 +166,44 @@ class TestTheCardsOnScreen:
         assert screen._chord_shapes == []
         assert screen._chord_now_and_next() == (None, None)
 
-    def test_shift_c_turns_the_mode_on_and_off_and_says_so(self):
+    def test_shift_c_walks_the_ladder_and_says_where_it_landed(self):
+        """Blocks -> grips and blocks -> nothing -> round again.
+
+        The FIRST press from the default puts the grips up, which is what
+        this key has meant since it existed; a ladder that took the marking
+        away on that press would be the same key doing the opposite thing.
+        """
         import pygame
+        from pickhero.ui.scrolling import (CHORD_BLOCKS, CHORD_CARDS,
+                                           CHORD_OFF)
 
         screen, _ = self._screen()
-        screen._chord_mode = True
-        screen.handle_event(pygame.event.Event(
-            pygame.KEYDOWN, key=pygame.K_c, mod=pygame.KMOD_SHIFT))
-        assert not screen._chord_mode
-        assert "off" in screen._status_note_text()
+        assert screen._chord_level == CHORD_BLOCKS
+        for expected in (CHORD_CARDS, CHORD_OFF, CHORD_BLOCKS):
+            screen.handle_event(pygame.event.Event(
+                pygame.KEYDOWN, key=pygame.K_c, mod=pygame.KMOD_SHIFT))
+            assert screen._chord_level == expected
+            assert screen._status_note_text()
+
+    def test_the_cards_and_the_marking_follow_the_rung(self):
+        from pickhero.ui.scrolling import (CHORD_BLOCKS, CHORD_CARDS,
+                                           CHORD_OFF)
+
+        screen, _ = self._screen()
+        for level, cards, marks in ((CHORD_OFF, False, False),
+                                    (CHORD_BLOCKS, False, True),
+                                    (CHORD_CARDS, True, True)):
+            screen._chord_level = level
+            assert screen._chord_mode is cards
+            assert screen._chord_marks is marks
 
     def test_drawing_one_costs_a_fraction_of_a_frame(self):
         """It runs sixty times a second over a list that grows with the
         song, which is the loop this project has had to move out of a frame
         three times already."""
         import time
+
+        from pickhero.ui.scrolling import CHORD_BLOCKS
 
         screen, surface = self._screen()
         screen._playback_ms = 6000.0
@@ -190,7 +213,7 @@ class TestTheCardsOnScreen:
         for _ in range(60):
             screen.render(surface)
         with_cards = (time.perf_counter() - started) / 60
-        screen._chord_mode = False
+        screen._chord_level = CHORD_BLOCKS
         started = time.perf_counter()
         for _ in range(60):
             screen.render(surface)
@@ -219,7 +242,8 @@ class TestTheChordBlocks:
         notes.append(_note(3, 7, 62, 2000.0))           # a single note
         timeline = Timeline(notes, SongMetadata(title="t", tempo=120))
         screen = PlayingScreen(timeline, config=Config(), song_key="t")
-        screen._chord_mode = True
+        from pickhero.ui.scrolling import CHORD_CARDS
+        screen._chord_level = CHORD_CARDS
         screen.render(surface)
         return screen, surface
 
@@ -310,7 +334,8 @@ class TestTheChordBlocks:
         for _ in range(60):
             screen.render(surface)
         on = (time.perf_counter() - started) / 60
-        screen._chord_mode = False
+        from pickhero.ui.scrolling import CHORD_OFF
+        screen._chord_level = CHORD_OFF
         started = time.perf_counter()
         for _ in range(60):
             screen.render(surface)

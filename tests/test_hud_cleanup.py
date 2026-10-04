@@ -398,7 +398,7 @@ class TestTheChordsOnTheSheet:
         surface = pygame.Surface((1280, 800))
         screen.render(surface)
         with_cards = screen._hud_top_used()
-        screen._chord_mode = False
+        screen._chord_level = scrolling.CHORD_BLOCKS
         assert screen._hud_top_used() < with_cards
 
     def test_the_row_makes_room_for_the_names(self):
@@ -412,9 +412,12 @@ class TestTheChordsOnTheSheet:
         screen = self._chord_screen()
         screen.render(pygame.Surface((1280, 800)))
         assert screen._sheet_strip() == sheet.CHORD_STRIP
-        screen._chord_mode = False
+        screen._chord_level = scrolling.CHORD_BLOCKS
         assert screen._sheet_strip() == sheet.CHORD_STRIP, \
             "the marking stays when the cards go"
+        screen._chord_level = scrolling.CHORD_OFF
+        assert screen._sheet_strip() == sheet.NUMBER_STRIP, \
+            "and goes when the marking itself is switched off"
 
     def test_a_song_with_no_chords_keeps_the_bar_number_strip(self):
         screen = PlayingScreen(_song(), config=Config())
@@ -603,8 +606,8 @@ class TestTheMarkingDoesNotWaitForTheCards:
         screen.render(pygame.Surface((1280, 800)))
         return screen
 
-    def _ink(self, screen, chord_mode):
-        screen._chord_mode = chord_mode
+    def _ink(self, screen, level):
+        screen._chord_level = level
         surface = pygame.Surface((1280, 800))
         screen.render(surface)
         return surface
@@ -616,8 +619,8 @@ class TestTheMarkingDoesNotWaitForTheCards:
         screen = self._chord_screen()
         screen._view = "standard"
         shots = []
-        for mode in (True, False):
-            screen._chord_mode = mode
+        for mode in (scrolling.CHORD_CARDS, scrolling.CHORD_BLOCKS):
+            screen._chord_level = mode
             surface = pygame.Surface((1280, 800))
             screen.render(surface)
             shots.append(surface)
@@ -629,12 +632,33 @@ class TestTheMarkingDoesNotWaitForTheCards:
             range(band.top, band.bottom, 5))
         assert same == total, "the music is marked the same either way"
 
+    def test_and_the_marking_itself_can_be_switched_off(self):
+        """The third rung, and the reason this grew a ladder at all:
+        *"Koennen wir die Chordsgruppierung auch ein und ausschaltbar
+        machen?"* With it off the board must come out exactly as a song with
+        no chords in it does -- which is more than "fewer pixels", since
+        fewer pixels is also what a block drawn in the wrong colour gives."""
+        screen = self._chord_screen()
+        screen._view = "standard"
+        shots = {}
+        for level in (scrolling.CHORD_BLOCKS, scrolling.CHORD_OFF):
+            screen._chord_level = level
+            surface = pygame.Surface((1280, 800))
+            screen.render(surface)
+            shots[level] = surface
+        band = pygame.Rect(0, 300, 1280, 300)
+        differ = sum(1 for x in range(0, band.width, 5)
+                     for y in range(band.top, band.bottom, 5)
+                     if (shots[scrolling.CHORD_BLOCKS].get_at((x, y))
+                         != shots[scrolling.CHORD_OFF].get_at((x, y))))
+        assert differ, "the blocks were never drawn in the first place"
+
     def test_and_a_song_with_chords_really_marks_something(self):
         """Without this the class above passes on a board that draws no
         blocks at all -- two identical empty pictures."""
         screen = self._chord_screen()
         screen._view = "standard"
-        screen._chord_mode = False
+        screen._chord_level = scrolling.CHORD_BLOCKS
         marked = pygame.Surface((1280, 800))
         screen.render(marked)
         plain = PlayingScreen(_song(), config=Config())
@@ -646,17 +670,17 @@ class TestTheMarkingDoesNotWaitForTheCards:
 
     def test_and_the_cards_really_do_go(self):
         screen = self._screen()
-        self._ink(screen, True)
+        self._ink(screen, scrolling.CHORD_CARDS)
         with_cards = screen._hud_top_used()
-        self._ink(screen, False)
+        self._ink(screen, scrolling.CHORD_BLOCKS)
         assert screen._hud_top_used() < with_cards
 
     def test_the_music_gets_the_card_band_back(self):
         """Which is the whole prize: the sheet's room grows by the card band
         while every block and every name stays where it was."""
         screen = self._screen()
-        self._ink(screen, True)
+        self._ink(screen, scrolling.CHORD_CARDS)
         _top, with_cards = screen._tab_room(screen._last_layout)
-        self._ink(screen, False)
+        self._ink(screen, scrolling.CHORD_BLOCKS)
         _top, without = screen._tab_room(screen._last_layout)
         assert without > with_cards

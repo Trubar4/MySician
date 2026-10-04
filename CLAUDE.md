@@ -4102,6 +4102,7 @@ pickhero/
 ## Testing
 
 - `tests/test_detector.py` — feed known sine waves to aubio, verify correct note detection
+- `tests/test_tempo_sections.py` — the run split by the speed each stretch was played at, the strip tick, and that the completion screen says it
 - `tests/test_resampler.py` — what survives a resample and what arrives that was never played; seven of its tests fail on linear interpolation
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
@@ -6285,6 +6286,84 @@ and 2.2 off 12-16 before any aliasing, which is a mix going dull.
 **And this is still not the fault he reported**, which is the half worth keeping straight. He hears it at 100 % speed and the written tuning,
 where no copy is built and this code never runs. The resampler was a real fault found while looking for his, it is fixed, and the mixer-rate
 change above remains the best-founded suspect for what he is actually hearing.
+
+## A Run Played At Two Speeds Is Two Runs
+
+*"Habe hier nicht den ganzen Song gespielt, bzw. in der Mitte das Tempo von 90 % auf 100 % geaendert. Koennen wir das irgendwie darstellen in
+der Auswertung? Was ich nicht gespielt habe, sollte nicht zaehlen und der Rest davor muesste auch nicht verloren sein."*
+
+His run: **21.1 % over 1363 notes**, 344 strikes, 200 of them on a written note — and the strip shows the first two thirds red and the last
+third green and yellow. One percentage over both, which is the average of a passage that did not work and one that did.
+
+**Nothing before the change was ever lost, and that half needed no code.** `set_tempo_factor` spends the verdicts from the playhead FORWARD
+(`forget_from`), and everything forward of the playhead is PENDING anyway — so the change is a no-op on what was already heard. The worry was
+reasonable and the measurement says it is not happening.
+
+**What was missing is that the two halves were added together.** `played.by_speed` splits the run by the speed each stretch was played at, and
+the completion screen names them: `90 %: 8.4 % (34/405, bars 1-45)` over `100 %: 44.1 % (254/576, bars 46-80)`. Same rule as strikes-heard
+beside notes-credited, one level further out.
+
+- **The record is a map from song position to speed, last writer wins** (`_note_tempo_span`) — the same shape as `forget_from`, and for the
+  same reason: changing the speed after a seek back spends what was recorded beyond that point exactly as it spends the verdicts beyond it.
+  Pressing the key twice at one moment leaves one span, and a drill walking its ladder at a loop start leaves one however many rungs it climbs.
+- **A section nobody reached is dropped rather than reported at zero**, the rule `Played.percent` already follows.
+- **The strip ticks where the speed changed**, in the streak colour, because it is a caveat about the dots beside it rather than another reading
+  of them — and the strip is where a run is read back. Drawn before the playhead, which is 2 px wide and would otherwise cover a tick set at the
+  position the player is standing on.
+- **`MAX_SPEED_LINES` is 4.** Two is the ordinary case; a dozen is somebody walking the key, and a dozen lines would push the completion block
+  off the screen, which is the fault that overlay has been fixed for once already. The run log carries all of them (`tempo_sections`), beside
+  `tempo_percent` — which is the speed at the END and, on a run that changed it, describes one half while being read as describing both.
+- **`_scored_notes` is one reader.** The part-played score and the per-speed split asking the matcher separately is how two numbers on one
+  screen come to disagree.
+
+**And "what I did not play should not count" was already built and said nothing.** `played.py` scores the bars the microphone heard a strike
+in — and with 344 strikes spread over the song nearly every bar qualified, so `worth_saying` was False and the line stayed off. That is the
+rule working: he did not sit a section out, he played everywhere with a signal that was failing. Put to him, he said as much — the 90 % half is
+the half he wants read apart, which is the split above and not a second rule about bars.
+
+## The Speed Knob Also Changes Which File Is Playing
+
+*"Ich habe gesehen, dass der Song irrtuemlich auf 90 % lief. Genau hier hatte ich die groessten Soundprobleme."*
+
+That is not a coincidence waiting to be explained: **below 100 % the app does not play his recording at all.** It plays a WSOLA-stretched copy
+built by `timestretch.build`; at 100 % and the written tuning nothing is built and the original file is handed to the mixer. So "the sound was
+worst in the 90 % part" and "the 90 % part is the part that is not his file" are the same sentence.
+
+**Measured on his own mix, and the measurement does NOT single out 90 %** — which is why this is written down as what it is rather than as a
+diagnosis. One minute of Bon Jovi through the real `stretch`, the loudness envelope of the copy warped back onto the original's grid:
+
+| speed | envelope RMS deviation | worst dip | over full scale | 16-22 kHz |
+|---|---|---|---|---|
+| **90 %** | **0.77 dB** | **-3.4 dB** | 0.000 % | **-1.6 dB** |
+| 80 % | 0.60 dB | -2.4 dB | 0.000 % | -2.9 dB |
+| 70 % | 0.91 dB | -3.7 dB | 0.000 % | -4.2 dB |
+| 50 % | 1.09 dB | -7.6 dB | 0.000 % | -3.9 dB |
+
+A real cost — the overlap-add wobbles the level by about a decibel and takes the top of the band down — and **80 % measures better than 90 % on
+the envelope**, so nothing here says 90 % is where it breaks. What is established is that any speed under 100 % is a different file, which is
+the first thing to check the next time the sound is reported bad: **read the speed on the footer before anything else.** Two of the three
+"wesentlich schlechter" reports in this file could have been at a speed nobody had noticed, and the one before this is the player saying so
+himself.
+
+## Shift+C Became A Ladder
+
+*"Koennen wir die Chordsgruppierung in der Hybrid view auch ein und ausschaltbar machen?"* — the other half of the switch split last session,
+when the blocks were made permanent and `Shift+C` became the cards alone. Permanent was one step too far.
+
+Three rungs on one key: **blocks -> grips and blocks -> nothing -> round again**. One value (`CHORD_OFF/BLOCKS/CARDS`), not two booleans: two
+have four states, three of them meaningful and the fourth the bug that gets shipped — the reason `_tab_mode` is a property over `_view` and not
+a flag of its own. `_chord_mode` and `_chord_marks` are properties over the rung.
+
+- **It steps UP, not down.** From the default — the blocks, which is what ships — the FIRST press puts the grips up, which is what this key has
+  meant since it existed. Stepping down would take the marking away on a press whose whole history is "show me more", and a key that does the
+  opposite of what it used to is worse than a key nobody can find.
+- **A stored `true` is the TOP of the ladder and a stored `false` is the MIDDLE rung.** `chord_view` was a bool while the blocks could not be
+  switched off, so `False` meant the blocks alone and never nothing. Migrated as 2 and 1; read as 1 and 0 it would have taken the marking away
+  from everyone who simply had the cards off, which is nearly everyone.
+- **The settings row walks the same ladder through the same helper**, or the row and the key show different states and the screen whose whole
+  job is saying what is set is the thing that lies.
+- The test that matters is the third rung: with the chords off the board must come out **different from** the board with the blocks on, because
+  "fewer pixels" is also what a block drawn in the wrong colour gives.
 
 ## What NOT To Do
 

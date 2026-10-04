@@ -101,3 +101,35 @@ def test_an_onset_threshold_someone_chose_is_left_alone(tmp_path, monkeypatch):
     (tmp_path / "settings.json").write_text(
         json.dumps({"audio": {"onset_threshold": 0.22}}))
     assert Config.load().audio.onset_threshold == 0.22
+
+
+class TestTheChordViewWasABool:
+    """It could not be switched off while the blocks were always drawn, so
+    `True` meant "the cards as well" and `False` meant the blocks ALONE.
+    Read as 1 and 0 a stored False would take the marking away from everyone
+    who simply had the cards off, which is nearly everyone."""
+
+    def test_true_is_the_top_of_the_ladder(self, tmp_path, monkeypatch):
+        assert _loaded({"chord_view": True}, tmp_path, monkeypatch) == 2
+
+    def test_and_false_is_the_middle_rung(self, tmp_path, monkeypatch):
+        assert _loaded({"chord_view": False}, tmp_path, monkeypatch) == 1
+
+    def test_a_stored_number_is_left_alone(self, tmp_path, monkeypatch):
+        assert _loaded({"chord_view": 0}, tmp_path, monkeypatch) == 0
+
+    def test_and_a_fresh_config_shows_the_blocks(self):
+        from pickhero.config import Config
+        from pickhero.ui.scrolling import CHORD_BLOCKS, chord_level
+        assert chord_level(Config().chord_view) == CHORD_BLOCKS
+
+
+def _loaded(data, tmp_path, monkeypatch):
+    import json
+    from pickhero import config as config_module
+
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(data))
+    monkeypatch.setattr(config_module, "CONFIG_FILE", path)
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
+    return config_module.Config.load().chord_view

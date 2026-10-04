@@ -140,7 +140,10 @@ class Config:
     # setting rather than screen state, because the player looked for it in
     # the settings screen -- which is the right place for anything set once
     # and then living on invisibly.
-    chord_view: bool = False
+    #: The chord ladder: 0 nothing, 1 the blocks that say which notes are
+    #: one grip, 2 the grip cards as well. It was a bool while the blocks
+    #: could not be switched off, so a stored one migrates below.
+    chord_view: int = 1
     # Which of the three ways of drawing a song opens first: "standard"
     # (the scrolling board), "hybrid" (two rows that hold still while the
     # playhead moves) or "tab" (the engraved page). A setting rather than
@@ -711,6 +714,12 @@ class Config:
             # setting outlived it in anyone's saved file, and an unknown key
             # here would throw the whole config away.
             data.pop("palm_mute_credit", None)
+            # Migration: the chord view was a bool while the blocks were
+            # always drawn, so True meant "the cards as well" and False
+            # meant the blocks alone -- the MIDDLE rung of the ladder it is
+            # now, never the bottom one.
+            if isinstance(data.get("chord_view"), bool):
+                data["chord_view"] = 2 if data["chord_view"] else 1
             return cls(
                 audio=AudioConfig(**audio_data),
                 display=DisplayConfig(**display_data),

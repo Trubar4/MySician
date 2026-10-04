@@ -1011,6 +1011,38 @@ def _offset_text(ms: float) -> str:
     return f"{sign}{int(size // 60_000)}:{size % 60_000 / 1000:04.1f} min"
 
 
+#: The chord ladder Shift+C walks. Nothing, the blocks that say which notes
+#: are one grip, and the grip cards on top of them.
+CHORD_OFF, CHORD_BLOCKS, CHORD_CARDS = 0, 1, 2
+CHORD_LEVEL_NAMES = {CHORD_OFF: "off",
+                     CHORD_BLOCKS: "blocks only",
+                     CHORD_CARDS: "grips and blocks"}
+
+
+def chord_level(value) -> int:
+    """What a stored chord-view setting means, whether bool or int.
+
+    It was a bool for as long as the blocks could not be switched off, and
+    `True` then meant "the cards as well". So `True` is the top of the ladder
+    and `False` is the MIDDLE rung rather than the bottom -- the state it
+    really named. Reading it as 1 and 0 would quietly take the blocks away
+    from everyone who had the cards off, which is nearly everyone.
+    """
+    if isinstance(value, bool):
+        return CHORD_CARDS if value else CHORD_BLOCKS
+    try:
+        return max(CHORD_OFF, min(CHORD_CARDS, int(value)))
+    except (TypeError, ValueError):
+        return CHORD_BLOCKS
+
+
+#: Speed sections named on the completion screen before the rest are
+#: counted rather than listed. Two is the ordinary case; a run with a dozen
+#: is somebody walking the key, and a dozen lines would push the block off
+#: the screen -- which is the fault that overlay has been fixed for once.
+MAX_SPEED_LINES = 4
+
+
 @dataclass
 class _Layout:
     """Computed layout dimensions for current surface size."""
@@ -1149,6 +1181,13 @@ class PlayingScreen:
         getter = getattr(self._config, "tempo_factor_for", None)
         self._tempo_factor = (getter(song_key) if getter
                               else max(0.5, min(1.0, self._config.tempo_factor)))
+        # And where in the SONG each speed was in force. A run played at two
+        # speeds is two runs as far as reading it goes -- *"ich habe in der
+        # Mitte das Tempo von 90 % auf 100 % geaendert"* -- and one
+        # percentage over both is the average of a passage that worked and
+        # one that did not. `(start_ms, factor)`, in song order.
+        self._tempo_spans: list[tuple[float, float]] = [(0.0,
+                                                         self._tempo_factor)]
 
         # Where the audio clock and the song clock were last agreed to be the
         # same moment. A strike is stamped in recorded time, which runs at
@@ -1362,12 +1401,13 @@ class PlayingScreen:
         self._view: str = (getattr(config, "default_view", "standard")
                            if getattr(config, "default_view", "standard")
                            in VIEWS else "standard")
-        # The chord extension: the two grip cards AND the blocks that say
-        # which notes are one chord. ONE switch, because it is one idea --
-        # "show me the chords" -- and two keys for two halves of an answer
-        # is how a panel ends up with settings nobody can find. Off by
-        # default: it is an extension to the normal view, not the view.
-        self._chord_mode: bool = bool(getattr(config, "chord_view", False))
+        # The chord extension, as a LADDER rather than two switches: the
+        # blocks that say which notes are one grip, and the two grip cards
+        # on top of them. Two booleans would have four states, three of them
+        # meaningful and the fourth the bug that gets shipped -- the reason
+        # `_tab_mode` is a property over `_view` and not a flag of its own.
+        self._chord_level: int = chord_level(getattr(config, "chord_view",
+                                                     CHORD_BLOCKS))
         self._chord_shapes: list = []
         # (rest starts, next note) for every stretch of the song with
         # nothing to play on THIS track. Built once per song, because it
@@ -1784,6 +1824,7 @@ class PlayingScreen:
         # silent until that copy is there rather than playing on at a speed
         # the song has left.
         self._update_mp3()
+        self._note_tempo_span(factor)
         if self._matcher:
             # Same rule as playing: the speed changes what comes next, not
             # what was already heard.
@@ -2415,12 +2456,7 @@ class PlayingScreen:
             # Tested BEFORE the plain C below, which raises the noise gate:
             # an `elif` chain is read in order, so a shifted key placed after
             # its unshifted twin is never reached at all.
-            self._chord_mode = not self._chord_mode
-            if hasattr(self._config, "chord_view"):
-                self._config.chord_view = self._chord_mode
-                self._config.save()
-            self._say("Chord view on — grips and blocks"
-                      if self._chord_mode else "Chord view off")
+            self._step_chord_level()
         elif event.key == pygame.K_c:
             # C is the key that walked this player's gate to the old ceiling,
             # five decibels at a time, on advice the app kept repeating --
@@ -2604,9 +2640,11 @@ class PlayingScreen:
         self._draw_hit_zone(surface, layout)
         # UNDER the notes: the block says "these belong together and this is
         # what it is called", the heads keep saying which string went right.
-        self._draw_chord_blocks(surface, layout)
+        if self._chord_marks:
+            self._draw_chord_blocks(surface, layout)
         self._draw_notes(surface, layout)
-        self._draw_chord_names(surface, layout)
+        if self._chord_marks:
+            self._draw_chord_names(surface, layout)
         self._draw_chord_cards(surface, layout)
         self._draw_hud(surface, layout)
 
@@ -2884,7 +2922,7 @@ class PlayingScreen:
         drawing places the names in it -- two readings of this would put the
         chord names half over the top string.
         """
-        return (sheet.CHORD_STRIP if self._chord_names
+        return (sheet.CHORD_STRIP if self._chord_marks and self._chord_names
                 else sheet.NUMBER_STRIP)
 
     def _sheet_head_px(self, room: int) -> float:
@@ -3069,7 +3107,8 @@ class PlayingScreen:
         pygame.draw.line(surface, t.lane_line, (x0 + content_w, int(lanes_top)),
                          (x0 + content_w, int(lanes_top + band_h)), 1)
 
-        self._draw_sheet_chords(surface, row, x0, y, lanes_top, lane_h)
+        if self._chord_marks:
+            self._draw_sheet_chords(surface, row, x0, y, lanes_top, lane_h)
 
         # Every head first, every number second -- the same two passes the
         # board needs, and for the same reason: a head drawn after its
@@ -4001,6 +4040,35 @@ class PlayingScreen:
             return 12
         from pickhero.ui.chord_view import card_size
         return 12 + 2 * (card_size(CHORD_CARD_SCALE)[0] + CHORD_CARD_GAP) + 8
+
+    @property
+    def _chord_mode(self) -> bool:
+        """Whether the grip CARDS are up. They are what costs room."""
+        return self._chord_level >= CHORD_CARDS
+
+    @property
+    def _chord_marks(self) -> bool:
+        """Whether the blocks and the chord names are drawn."""
+        return self._chord_level >= CHORD_BLOCKS
+
+    def _step_chord_level(self) -> None:
+        """Shift+C: blocks -> grips and blocks -> nothing -> round again.
+
+        *"Koennen wir die Chordsgruppierung in der Hybrid view auch ein und
+        ausschaltbar machen?"* One key, because it is one idea.
+
+        It steps UP the ladder rather than down, so that from the default --
+        the blocks, which is what ships -- the FIRST press puts the grips up,
+        which is what Shift+C has meant all along. Stepping down would have
+        taken the marking away on a press whose whole history is "show me
+        more", and a key that does the opposite of what it used to is worse
+        than a key nobody can find.
+        """
+        self._chord_level = (self._chord_level + 1) % (CHORD_CARDS + 1)
+        if hasattr(self._config, "chord_view"):
+            self._config.chord_view = self._chord_level
+            self._config.save()
+        self._say(f"Chords: {CHORD_LEVEL_NAMES[self._chord_level]}")
 
     def _draw_chord_cards(self, surface: pygame.Surface,
                           layout: _Layout) -> None:
@@ -5215,8 +5283,8 @@ class PlayingScreen:
             (f"G: {window} ms",
              on if window != int(config_module.Config().timing_window_ms)
              else off),
-            (f"Shift+C: Grips {'on' if self._chord_mode else 'off'}",
-             on if self._chord_mode else off),
+            (f"Shift+C: Chords {CHORD_LEVEL_NAMES[self._chord_level]}",
+             on if self._chord_level != CHORD_BLOCKS else off),
             (f"Shift+T: View {VIEW_SHORT[self._view]}", off),
             ("E: Skip", on if self._rest_hud_text() else off),
             ("S: Sync", sync_colour),
@@ -5707,6 +5775,7 @@ class PlayingScreen:
         surface.blit(base, mini.topleft)
         self._blit_strip_verdicts(surface, mini)
         self._blit_strip_loop(surface, mini)
+        self._blit_strip_speed_changes(surface, mini)
         self._blit_strip_marker(surface, mini)
         pygame.draw.rect(surface, t.lane_line, mini, 1)
 
@@ -5810,6 +5879,26 @@ class PlayingScreen:
                    else t.loop_region_disabled)
         surface.blit(shade, (mini.x + int(x0), mini.y))
 
+    def _blit_strip_speed_changes(self, surface: pygame.Surface,
+                                  mini: pygame.Rect) -> None:
+        """A tick where the practice speed changed.
+
+        The strip is where a run is read back, so the one thing that makes
+        two halves of it incomparable belongs in the picture rather than only
+        in the summary -- the same argument the loop shading was built on.
+        In the streak colour, because it is a caveat about the dots beside it
+        and not another reading of them.
+        """
+        if len(self._tempo_spans) < 2:
+            return
+        t = get_theme()
+        duration = self._timeline.duration_ms
+        for at, _factor in self._tempo_spans[1:]:
+            x = mini.x + int(strip.x_for_ms(at, duration, mini.width))
+            surface.fill(t.feedback_streak,
+                         (max(mini.x, min(x, mini.right - 1)), mini.y,
+                          1, mini.height))
+
     def _blit_strip_marker(self, surface: pygame.Surface,
                            mini: pygame.Rect) -> None:
         """Where the song is -- or, while dragging, where it would land."""
@@ -5834,6 +5923,56 @@ class PlayingScreen:
         """Drop the strikes from here on, with the verdicts they made."""
         self._heard_at = [at for at in self._heard_at if at < ms]
 
+    def _note_tempo_span(self, factor: float) -> None:
+        """Record that from HERE on the song is being played at `factor`.
+
+        A map from song position to speed, LAST WRITER WINS -- the same shape
+        as `forget_from`, and for the same reason: changing the speed after a
+        seek back spends what was recorded beyond that point exactly as it
+        spends the verdicts beyond it. Pressing the key twice at one position
+        therefore leaves one span rather than two, and a drill walking its
+        ladder at a loop start leaves one span however many rungs it climbs.
+        """
+        at = max(0.0, self._playback_ms)
+        kept = [span for span in self._tempo_spans if span[0] < at]
+        if kept and abs(kept[-1][1] - factor) < 1e-9:
+            self._tempo_spans = kept      # already the speed in force here
+            return
+        self._tempo_spans = kept + [(at, factor)]
+
+    def _scored_notes(self) -> list[tuple[float, bool, bool, bool]]:
+        """Every written note as `(ms, reached, hit, close)`.
+
+        Plain values rather than matcher objects, so `played.py` can be
+        tested without a timeline -- and ONE reader, because the part-played
+        score and the per-speed split asking the matcher separately is how
+        two numbers on one screen come to disagree.
+        """
+        if self._matcher is None:
+            return []
+        out = []
+        for note in self._timeline.notes:
+            state = self._matcher.get_note_state(note)
+            out.append((note.timestamp_ms,
+                        state != MatchType.PENDING,
+                        state == MatchType.HIT,
+                        state == MatchType.CLOSE))
+        return out
+
+    def _tempo_sections(self) -> list:
+        """The run split by the practice speed each stretch was played at.
+
+        Empty for a run played at one speed throughout, which is most of
+        them: a single section says nothing the score above it does not.
+        """
+        from pickhero import played as played_module
+        if self._matcher is None or len(self._tempo_spans) < 2:
+            return []
+        starts = [m.start_ms for m in self._timeline.measures]
+        sections = played_module.by_speed(self._scored_notes(),
+                                          self._tempo_spans, starts)
+        return sections if len(sections) > 1 else []
+
     def _played_part(self):
         """How the stretch that was actually played went.
 
@@ -5845,14 +5984,8 @@ class PlayingScreen:
         if self._matcher is None or not self._timeline.measures:
             return played_module.Played()
         starts = [m.start_ms for m in self._timeline.measures]
-        notes = []
-        for note in self._timeline.notes:
-            state = self._matcher.get_note_state(note)
-            notes.append((note.timestamp_ms,
-                          state != MatchType.PENDING,
-                          state == MatchType.HIT,
-                          state == MatchType.CLOSE))
-        return played_module.score(notes, self._heard_at, starts)
+        return played_module.score(self._scored_notes(), self._heard_at,
+                                   starts)
 
     def _blit_strip_numbers(self, surface: pygame.Surface,
                             rect: pygame.Rect) -> None:
@@ -6588,6 +6721,28 @@ class PlayingScreen:
                     f"went past with nothing played",
                     True, t.hud_text), 10)
 
+            # And where the practice speed CHANGED, the stretches are read
+            # apart. *"In der Mitte das Tempo von 90 % auf 100 % geaendert.
+            # Koennen wir das darstellen?"* -- on his run the 90 % half was
+            # also the half where the sound broke up, so one percentage over
+            # both answers neither question. Silent on a run played at one
+            # speed, which is most of them.
+            sections = self._tempo_sections()
+            if sections:
+                say(hint_font.render("Played at more than one speed:",
+                                     True, t.hud_text), 8)
+                for section in sections[:MAX_SPEED_LINES]:
+                    say(hint_font.render(
+                        f"{section.speed_text}: {section.percent:.1f} %  "
+                        f"({section.hits}/{section.total}, "
+                        f"{section.bars_text()})",
+                        True, t.feedback_streak), 4)
+                if len(sections) > MAX_SPEED_LINES:
+                    say(hint_font.render(
+                        f"and {len(sections) - MAX_SPEED_LINES} further "
+                        f"changes — the run log has them all",
+                        True, t.hud_text), 4)
+
             # How many strikes were HEARD at all, next to how many scored.
             # Without it a low percentage says only that something is wrong;
             # with it, it says which thing. Far fewer strikes than notes is
@@ -7202,6 +7357,13 @@ class PlayingScreen:
                      f"{'' if self._loop_end_ms is None else f'{self._loop_end_ms:.0f}'}"
                      f" ms (the same bars were played over and over)\n")
         fh.write(f"tempo_percent\t{int(self._tempo_factor * 100)}\n")
+        if len(self._tempo_spans) > 1:
+            # Which stretch of the song ran at which speed. `tempo_percent`
+            # above is the speed at the END, and on a run that changed it
+            # that number describes one half and is read as describing both.
+            fh.write("tempo_sections\t" + "   ".join(
+                f"{at / 1000:.0f}s:{int(round(f * 100))}%"
+                for at, f in self._tempo_spans) + "\n")
         fh.write(f"hit_window_ms\t{self._config.timing_window_ms:.0f}\n")
         fh.write(f"sync_offset_ms\t{self._config.audio_latency_offset_ms:.0f}\n")
         fh.write(f"audio_offset_ms\t{matcher.audio_offset_ms:.1f}\n")
@@ -7669,9 +7831,8 @@ class PlayingScreen:
                 "CLICK the sheet to go there. It lands on the note you",
                 "  pointed at, and leaves the song playing or paused as",
                 "  it was.",
-                ("Shift+C: the grip cards, top left (the blocks and names",
-                 "on" if self._chord_mode else "off"),
-                "  under the notes are always there)",
+                ("Shift+C: the chords", CHORD_LEVEL_NAMES[self._chord_level]),
+                "  grips and blocks, then the blocks alone, then neither",
                 ("V: chord scoring", "one string is enough"
                  if self._chord_partial_credit else "every string"),
                 ("T: theme", self._config.theme),

@@ -44,6 +44,17 @@ STRING_ORDER = [5, 4, 3, 2, 1, 0]
 STRING_NAMES = {5: "E", 4: "A", 3: "D", 2: "G", 1: "B", 0: "e"}
 
 
+def chord_view_level(value) -> int:
+    """The stored chord setting as a rung of the ladder (see `scrolling`)."""
+    from pickhero.ui.scrolling import chord_level
+    return chord_level(value)
+
+
+def _chord_view_text(c) -> str:
+    from pickhero.ui.scrolling import CHORD_LEVEL_NAMES
+    return CHORD_LEVEL_NAMES[chord_view_level(c.chord_view)]
+
+
 def _get_font(name: str, size: int) -> pygame.font.Font:
     for family in (name, "Courier New", "monospace"):
         font = pygame.font.SysFont(family, size)
@@ -120,8 +131,13 @@ class SettingsMenuScreen:
             here = VIEWS.index(c.default_view) if c.default_view in VIEWS else 0
             c.default_view = VIEWS[(here + step) % len(VIEWS)]
 
-        def toggle_chord_view() -> None:
-            c.chord_view = not c.chord_view
+        def cycle_chord_view(step: int) -> None:
+            # The same ladder Shift+C walks, read through the same helper:
+            # the row and the key showing different states is how a settings
+            # screen comes to lie about what is set.
+            from pickhero.ui.scrolling import CHORD_CARDS, chord_level
+            here = chord_level(c.chord_view)
+            c.chord_view = (here + step) % (CHORD_CARDS + 1)
 
         def toggle_auto_gate() -> None:
             c.audio.auto_gate = not c.audio.auto_gate
@@ -221,13 +237,15 @@ class SettingsMenuScreen:
             # A key of its own: "chords" was already taken by the chord
             # SCORING row further down, and two rows sharing one key is a
             # lookup that silently returns the wrong setting.
-            Setting("chord_view", "Grip cards (Shift+C)",
-                    lambda: "on" if c.chord_view else "off",
-                    lambda step: toggle_chord_view(),
-                    note="The grip you are on beside the one coming next, "
-                         "top left. Each chord is drawn as one block with "
-                         "its name either way. Shift+C in the song.",
-                    is_default=lambda: c.chord_view == default.chord_view),
+            Setting("chord_view", "Chords (Shift+C)",
+                    lambda: _chord_view_text(c),
+                    cycle_chord_view,
+                    note="Grips and blocks, the blocks alone, or neither. "
+                         "The block tints the notes of one chord and names "
+                         "it; the grips are the two diagrams top left.",
+                    is_default=lambda: (chord_view_level(c.chord_view)
+                                        == chord_view_level(
+                                            default.chord_view))),
             Setting("view", "View (Shift+T)",
                     lambda: VIEW_NAMES.get(c.default_view, c.default_view),
                     cycle_view,
