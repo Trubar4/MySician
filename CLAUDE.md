@@ -6753,6 +6753,116 @@ song, with which rung of `Shift+C`** -- and the log could not say any of the thr
 they scale with the pixels, and `frame_ms_median 15.6` is a sheet working exactly as designed OR a board in trouble. Same rule as the practice
 speed beside a take and the suggested gate beside the percentage of audio it discarded: a number is only readable next to what it is a number of.
 
+## A Recording That Runs Out Sent The Song Back To Bar One
+
+*"Wenn ich 2 Tabs kombiniere, laeuft das Lied am Ende durch und startet wieder von Anfang."*
+
+**The merge is innocent and his own run log names the real thing in two lines.** `merge_by_bar` takes the bar grid, the tempo and the
+duration from the PRIMARY, so a merged song is exactly as long as the track it leads with -- and `Timeline` sorts, so nothing about the note
+order changes either. What the log says instead:
+
+| | |
+|---|---|
+| `song_ms` | **544238** -- the tab is 9:04 |
+| `mp3_sync_covers` | 3-513s of 544s |
+| `mp3_snaps` | **1** |
+| `mp3_worst_pull_ms` | **493299** |
+
+**A 493-second pull on a 544-second song.** The recording ends around 8:50 and the written piece runs to 9:04, so for the last fourteen
+seconds there is a song and no recording -- and on the one frame where that changes, the picture jumped back to the beginning.
+
+`pygame.mixer.music.get_pos()` goes to **-1** the instant the file finishes. `Mp3Player._playing` is still True, because it is only cleared
+inside `update()`, which `PlayingScreen.update` calls **after** it pulls the picture. So between the two, `_mp3_leads()` says the recording
+is the clock and `position_ms()` -- which falls back to `_origin_ms` whenever the mixer has nothing to say -- answers with **where the
+current `play()` started**. One frame of believing both, and `_follow_recording` snapped the song there:
+
+```
+_playback_ms  500000  ->  3000        # reproduced in the suite, on the unfixed code
+```
+
+- **A frame the mixer has nothing to say about is not a reading, so it moves nothing.** `heard_ms()` is the position or **None**, and
+  `_follow_recording` returns on None. `position_ms()` keeps its old answer, because a drift check does want a number -- the two callers
+  want different things and were sharing one.
+- **Exactly the rule `AUDIO_CLOCK_GAP_SLACK_MS` already applies to the input clock**, and the third time in this file that a diagnostic or a
+  correction was fed a fallback value and treated it as a measurement.
+- **`_mp3_leads()` was not the place.** It asks `player.playing`, which is true and will be false next frame; the fault is that the ANSWER
+  was a lie, not that the question was asked.
+- **The log says when the recording ran out** (`mp3_ran_out`), because a backing track that stops while the song plays on is
+  indistinguishable from one that broke -- and "the tab is as long as it is WRITTEN" means an outro the guitar sits out leaves exactly this
+  state. It is how the November Rain log would have named this in one line.
+- The control is in the same class: a recording the mixer IS playing still pulls the picture, and the three earlier pull tests are unchanged.
+
+## One Tempo For A Song That Has Twelve
+
+*"Beim Song im Anhang passt das Tempo in der Hybrid View nicht. In den Takten 34-45 usw. faehrt der Progress-Bar innerhalb eines Taktes mal
+langsamer und mal schneller. Das heisst kuerzere Noten und Pausen und laengere Noten koennen dieselbe Breite haben."*
+
+Every word of that is a reading of one line. `lay_out` computed its spacing from `timeline.metadata.tempo` -- **the header tempo, once, for
+the whole piece** -- while "November Rain" is written at a header 70 and PLAYS at twelve tempos between 70 and 91 BPM. So a crotchet was
+`QUARTER_HEADS` heads wide only where the music really ran at 70, and an eighth came out:
+
+| real tempo | an eighth is | in heads | against the 1.18 floor |
+|---|---|---|---|
+| 70 BPM (bar 1) | 429 ms | **1.30** | proportional |
+| 76 BPM (bar 42) | 395 ms | **1.20** | proportional |
+| **78 BPM (bar 34)** | **385 ms** | **1.17** | **floored** |
+| 91 BPM (bar 142) | 330 ms | 1.00 | floored |
+
+**The eighth note straddles `MIN_GAP_HEADS` at 77 BPM.** Bar 42 drew its eighths proportionally and bar 34 -- the same written rhythm, eight
+bars away -- floored them to a sixteenth's width. Within one bar the floor then made a 197 ms sixteenth as wide as a 395 ms eighth, and the
+playhead crossed that width in half the time. Which is what he was watching.
+
+- **A note VALUE is the same width wherever it is written.** `quarter_ms(bar, fallback)` reads the bar's own length divided by the crotchets
+  in it, so `per_ms` is per bar. `CLAUDE.md`'s own rule finally reaches this module: *"GP files can have tempo changes per measure. Track
+  cumulative time, don't assume constant BPM."*
+- **The bar's SIGNATURE, not a quarter of its length.** 3/4 and 6/8 are the same length of time and different music; six eighths really are
+  three crotchets, and both come out at 500 ms where "a quarter of the bar" would say 375.
+- **Measured on the song that reported it**: floored gaps on his rhythm track **205 of 466 -> 86**, and the worst speed ratio inside a bar
+  **2.36x -> 1.82x**. The lead track goes 393 -> 319 and 4.72x -> 3.63x.
+- **The cost is named**: 1.97 -> 1.87 bars a row on that track, because the fast sections are now drawn at their true width. No row became
+  crowded.
+- **Every song to hand lays out bit-identically**, Godsmack's seven bar lengths included -- its header tempo is close enough that no gap
+  crossed the floor. That control is what says the change is a repair and not a re-design.
+- **What is LEFT is the design and is not a fault.** A sixteenth still gets a floored width, so the playhead still runs faster through one:
+  1.82x at worst on his track. Parting them proportionally would need more width per crotchet and therefore fewer bars a row, which is the
+  trade `+`/`-` already holds -- not something to move without being asked.
+
+## The Powerchord Was Detected Perfectly And Arrived 200 ms Early
+
+*"Bei diesem Lied werden die Powerchords 1/3/3/0/0/0 nur extrem selten erkannt."* Scorpions, "Still Loving You". **It is not the shape and
+it is not the detection.** Every one of the four 1/3/3 chords in that take came back at the RIGHT pitch at confidence 0.99-1.00. Sorted by
+how far the strike landed from the written note, every three-string chord in the run:
+
+| strike vs the written note | shape | green |
+|---|---|---|
+| -100.7 ms | 3/5/5 | **3/3** |
+| -110.0 | 6/8/8 | 3/3 |
+| -117.2 | 3/5/5 | 3/3 |
+| -130.1 | 3/5/5 | 3/3 |
+| -145.7 | 3/5/5 | 3/3 |
+| -146.1 | 6/8/8 | 3/3 |
+| **-156.3** | **1/3/3** | **0/3** |
+| -164.4 | 3/5/5 | **0/3** |
+| -170.1 | 1/3/3 | 0/3 |
+| -171.7 | 5/7/7 | 0/3 |
+| -204.2 | 1/3/3 | 0/3 |
+| -228.3 | 1/3/3 | 0/3 |
+
+**The line is at exactly -150 ms, which is `hit_window_ms`.** A 3/5/5 at -164 is as red as a 1/3/3 at -170; the four 1/3/3 chords simply
+happen to be the ones he played earliest. `chord_of_3 18/36 50%` is that table.
+
+- **Every chord strike in the take is EARLY**, -100 to -228 ms, where single notes sit at a median of -76. Seventy milliseconds of it is
+  systematic and it is the whole difference between green and red.
+- **And `K` cannot see any of it.** Every one of those strikes is flagged `subharm 1` -- a strum's common period folded up from below the
+  guitar's range, which is what a power chord gives monophonic YIN -- and `_times_its_own_strike` rightly refuses a strike that did not
+  sound the note's own written pitch. So the timing offset is fitted on single notes alone (-76) while the chords sit 65 ms past it, and the
+  one key that sets an offset is blind to the population that needs it. **That is a measured hole, not a fix**: whether a strum's onset
+  genuinely leads the beat, or whether this is one take of one player, needs more than one song, and this project does not ship a threshold
+  it cannot re-fit.
+- **What he can press today is `G`** -- the hit window. At 200 ms, ten of the twelve rows above land.
+- **`chord_windows_judged 6` against `windows_dropped_short 261`** says the verifier is absent on this song too, so nothing downstream could
+  have rescued them either.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

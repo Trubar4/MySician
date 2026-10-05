@@ -283,6 +283,46 @@ def _widths(anchors: list[float], per_ms: float, min_gap: float) -> list[float]:
             for a, b in zip(anchors, anchors[1:])]
 
 
+def quarter_ms(bar: MeasureInfo, fallback_ms: float) -> float:
+    """How long a crotchet lasts IN THIS BAR.
+
+    A tempo per song is the wrong unit for an engraving, and the song that
+    found it says so with no room for argument: Guns N' Roses' "November
+    Rain" is written at a header tempo of 70 and PLAYS at twelve tempos
+    between 70 and 91. Spacing was `(gap in ms) x QUARTER_HEADS / 857 ms`
+    for the whole piece, so a quarter was 2.6 heads only where the music
+    really ran at 70 -- and an eighth came out
+
+        1.30 heads at 70 BPM     1.20 at 76     **1.17 at 78**     1.00 at 91
+
+    against a floor of `MIN_GAP_HEADS` = 1.18. **The eighth note straddles
+    the floor at 77 BPM**, so bar 42 drew its eighths proportionally and bar
+    34 -- the same written rhythm, two bars of music away -- floored them to
+    the width of a sixteenth. Which is exactly what the player reported:
+    *"kürzere Noten und Pausen und längere Noten können dieselbe Breite
+    haben und der Progress-Bar wandert schneller oder langsamer"*, in bars
+    34-45 of that song.
+
+    Read per bar, a note VALUE is the same width wherever it is written, the
+    floor bites only on sixteenths and faster -- which is what it is for --
+    and `CLAUDE.md`'s own rule about GP files finally reaches this module:
+    *"Tempo changes: GP files can have tempo changes per measure. Track
+    cumulative time, don't assume constant BPM."*
+
+    The bar's own length divided by the crotchets in it, so a 3/4 or a 6/8
+    bar is read as the music written in it rather than as a quarter of
+    whatever it lasts. A bar with no length or no signature falls back to the
+    header tempo, which is what the whole song used to use.
+    """
+    beats = bar.beats or 4
+    beat_type = bar.beat_type or 4
+    quarters = beats * 4.0 / beat_type if beat_type else 4.0
+    length = bar.end_ms - bar.start_ms
+    if length <= 0 or quarters <= 0:
+        return fallback_ms
+    return length / quarters
+
+
 def lay_out(timeline: Timeline, width: float, head_px: float,
             passes: object = None) -> list[Row]:
     """Break the song into rows of bars and place every note in them.
@@ -299,13 +339,16 @@ def lay_out(timeline: Timeline, width: float, head_px: float,
         measures = [MeasureInfo(index=0, start_ms=0.0,
                                 end_ms=max(1.0, timeline.duration_ms))]
 
-    quarter_ms = 60_000.0 / max(1, timeline.metadata.tempo)
-    per_ms = (QUARTER_HEADS * head_px) / quarter_ms
+    # Only the FALLBACK, for a bar that cannot say how long a crotchet is in
+    # it. Every bar that can is read on its own -- see `quarter_ms`.
+    written_quarter = 60_000.0 / max(1, timeline.metadata.tempo)
+    per_quarter = QUARTER_HEADS * head_px
     min_gap = MIN_GAP_HEADS * head_px
 
     plans = []
     for bar in measures:
         anchors = _bar_anchors(bar, notes)
+        per_ms = per_quarter / quarter_ms(bar, written_quarter)
         widths = _widths(anchors, per_ms, min_gap)
         plans.append((bar, anchors, widths, sum(widths)))
 

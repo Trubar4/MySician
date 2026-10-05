@@ -373,3 +373,111 @@ class TestReadingAPositionBack:
         a, b = row.xs[0], row.xs[1]
         assert row.moment_at(a + (b - a) * 0.1) == row.times[0]
         assert row.moment_at(a + (b - a) * 0.9) == row.times[1]
+
+
+class TestANoteValueIsTheSameWidthWhereverItIsWritten:
+    """One tempo for a song that has twelve is the wrong unit for a sheet.
+
+    *"Beim Song im Anhang passt das Tempo in der Hybrid View nicht. In den
+    Takten 34-45 usw. fährt der Progress-Bar innerhalb eines Taktes mal
+    langsamer und mal schneller. Das heisst kürzere Noten und Pausen und
+    längere Noten können dieselbe Breite haben."*
+
+    Guns N' Roses' "November Rain" is written at a header tempo of 70 and
+    plays at twelve tempos between 70 and 91. Spacing came off the header, so
+    an eighth measured 1.30 heads at 70 BPM and 1.17 at 78 -- across the
+    `MIN_GAP_HEADS` floor of 1.18. Two bars of music apart, the same written
+    rhythm was drawn proportionally in one bar and floored to a sixteenth's
+    width in the next.
+    """
+
+    def _two_tempos(self, slow_ms, fast_ms, header):
+        """Two 4/4 bars of straight eighths, at two different tempos."""
+        notes, measures = [], []
+        start = 0.0
+        for index, bar_ms in enumerate((slow_ms, fast_ms)):
+            measures.append(MeasureInfo(index=index, start_ms=start,
+                                        end_ms=start + bar_ms,
+                                        beats=4, beat_type=4))
+            for i in range(8):
+                notes.append(NoteEvent(timestamp_ms=start + i * bar_ms / 8,
+                                       duration_ms=100.0, midi_note=40,
+                                       string=1, fret=0, measure=index))
+            start += bar_ms
+        return Timeline(notes, SongMetadata(title="t", tempo=header),
+                        measures=measures)
+
+    def _gaps(self, row, bar_lines, which):
+        """The pixel gaps between consecutive anchors inside one bar."""
+        left = bar_lines[which]
+        right = bar_lines[which + 1] if which + 1 < len(bar_lines) else None
+        xs = [x for x in row.xs
+              if x >= left - 1e-6 and (right is None or x <= right + 1e-6)]
+        return [b - a for a, b in zip(xs, xs[1:])]
+
+    def test_an_eighth_is_an_eighth_in_both_bars(self):
+        # 70 BPM and 91 BPM: the two ends of that song's real tempo range.
+        song = self._two_tempos(3428.6, 2637.4, header=70)
+        rows = lay_out(song, 100_000.0, HEAD)       # one row, no justifying
+        assert len(rows) == 1
+        row = rows[0]
+        slow = self._gaps(row, row.bar_lines, 0)
+        fast = self._gaps(row, row.bar_lines, 1)
+        # Inside each bar every gap is one eighth, so every gap is equal...
+        for gaps in (slow, fast):
+            assert max(gaps) == pytest.approx(min(gaps), rel=1e-6)
+        # ...and an eighth is the same WIDTH in both, whatever the tempo.
+        # (A row is justified to the line, so the absolute pixels are the
+        # line's; what the layout decides is the ratio, and it is 1.)
+        assert slow[0] == pytest.approx(fast[0], rel=1e-6)
+
+    def test_an_eighth_asks_for_half_a_quarter_in_every_bar(self):
+        """Before the scale: what the layout wants, in heads."""
+        from pickhero.ui.sheet import _bar_anchors, _widths, quarter_ms
+        song = self._two_tempos(3428.6, 2637.4, header=70)
+        header_quarter = 60_000.0 / 70
+        for bar in song.measures:
+            per_ms = QUARTER_HEADS * HEAD / quarter_ms(bar, header_quarter)
+            widths = _widths(_bar_anchors(bar, song.notes), per_ms,
+                             MIN_GAP_HEADS * HEAD)
+            assert widths == pytest.approx([QUARTER_HEADS * HEAD / 2] * 8,
+                                           rel=1e-6)
+
+    def test_the_fast_bar_used_to_be_floored_and_the_slow_one_not(self):
+        """The bug, written down: it is what the fix has to not do."""
+        song = self._two_tempos(3428.6, 2637.4, header=70)
+        header_quarter = 60_000.0 / 70
+        floor = MIN_GAP_HEADS * HEAD
+        for bar_ms, floored in ((3428.6, False), (2637.4, True)):
+            width = (bar_ms / 8) * QUARTER_HEADS * HEAD / header_quarter
+            assert (width < floor) is floored
+
+    def test_the_playhead_crosses_both_bars_at_the_same_speed(self):
+        """Which is the whole of what he was reading off the screen."""
+        song = self._two_tempos(3428.6, 2637.4, header=70)
+        row = lay_out(song, 100_000.0, HEAD)[0]
+        def speed(ms, span):
+            return (row.x_at(ms + span) - row.x_at(ms)) / span
+        slow = speed(100.0, 300.0)                 # inside the 70 BPM bar
+        fast = speed(3428.6 + 100.0, 300.0)        # inside the 91 BPM bar
+        # A sheet spaces by note VALUE, so the same written rhythm is the
+        # same pixels -- and at 91 BPM those pixels are crossed faster.
+        assert fast / slow == pytest.approx(3428.6 / 2637.4, rel=0.01)
+
+    def test_a_bar_that_cannot_say_falls_back_to_the_header(self):
+        from pickhero.ui.sheet import quarter_ms
+        bar = MeasureInfo(index=0, start_ms=0.0, end_ms=0.0)
+        assert quarter_ms(bar, 857.0) == 857.0
+
+    def test_a_six_eight_bar_is_read_as_the_music_in_it(self):
+        """6/8 and 3/4 are the same length of time and different music."""
+        from pickhero.ui.sheet import quarter_ms
+        three_four = MeasureInfo(index=0, start_ms=0.0, end_ms=1500.0,
+                                 beats=3, beat_type=4)
+        six_eight = MeasureInfo(index=0, start_ms=0.0, end_ms=1500.0,
+                                beats=6, beat_type=8)
+        assert quarter_ms(three_four, 1.0) == pytest.approx(500.0)
+        assert quarter_ms(six_eight, 1.0) == pytest.approx(500.0)
+        # Same here, which is right: six eighths ARE three crotchets. What a
+        # fixed "a quarter of the bar" would have given is 375 ms.
+        assert quarter_ms(six_eight, 1.0) != pytest.approx(375.0)

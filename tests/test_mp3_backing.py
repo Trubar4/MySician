@@ -1174,6 +1174,11 @@ class TestTheRecordingKeepsTimeAndThePictureFollows:
         monkeypatch.setattr(Mp3Player, "playing", property(lambda self: True))
         monkeypatch.setattr(Mp3Player, "position_ms",
                             lambda self: self._fake_at)
+        # The follow loop reads `heard_ms`, which is None whenever the mixer
+        # has nothing to say -- so a fake recording has to answer THAT, or
+        # these tests exercise a reader the app does not use.
+        monkeypatch.setattr(Mp3Player, "heard_ms",
+                            lambda self: self._fake_at)
         screen = PlayingScreen(_timeline(), config=config, song_key="song")
         screen._mp3_player._fake_at = at_ms
         screen._playing = True
@@ -1258,6 +1263,67 @@ class TestTheRecordingKeepsTimeAndThePictureFollows:
         assert moved > 0
         assert screen._matcher.audio_offset_ms == pytest.approx(moved)
         assert screen._audio_anchor_song_ms == pytest.approx(moved)
+
+    def test_a_recording_that_has_run_out_does_not_move_the_picture(
+            self, tmp_path, monkeypatch):
+        """The fault that sent the song back to bar one fourteen seconds
+        before the end.
+
+        `get_pos()` goes to -1 the instant the file finishes while `playing`
+        is still True -- it is cleared in `_update_mp3`, which the frame runs
+        AFTER the pull. `position_ms` then answers with where the current
+        play() STARTED, so for one frame the recording claimed to be sounding
+        and to be back near the beginning, and the pull obeyed it: on the
+        player's own 9:04 tab against a recording ending at 8:50,
+        `mp3_snaps 1` and `mp3_worst_pull_ms 493299`.
+        """
+        screen = self._screen(tmp_path, monkeypatch, at_ms=3_000.0)
+        # What the real object answers once the mixer has stopped.
+        monkeypatch.setattr(Mp3Player, "heard_ms", lambda self: None)
+        screen._playback_ms = 500_000.0
+        screen._follow_recording(1 / 60)
+        assert screen._playback_ms == 500_000.0
+        assert screen._mp3_snaps == 0
+        assert screen._worst_sync_pull_ms == 0.0
+
+    def test_but_a_recording_the_mixer_is_still_playing_does(
+            self, tmp_path, monkeypatch):
+        """The control: a reading that IS a reading still pulls."""
+        screen = self._screen(tmp_path, monkeypatch, at_ms=60_000.0)
+        self._sync(screen, [(0.0, 0.0), (240_000.0, -2400.0)])
+        screen._playback_ms = 59_500.0
+        screen._follow_recording(1 / 60)
+        assert screen._playback_ms != 59_500.0
+
+    def test_heard_ms_is_none_exactly_when_the_mixer_is_silent(self):
+        """Asserted on the real object, because that is what the app asks."""
+        import types
+        from pickhero.audio import mp3_playback as module
+
+        player = Mp3Player.__new__(Mp3Player)
+        player._scale = 1.0
+        player._ready = True
+        player._playing = True
+        player._suspended = False
+        player._origin_ms = 3_000.0
+        pos = [12_000]
+        fake = types.SimpleNamespace(
+            mixer=types.SimpleNamespace(
+                music=types.SimpleNamespace(get_pos=lambda: pos[0])))
+        real, module.pygame = module.pygame, fake
+        try:
+            assert player.heard_ms() == pytest.approx(15_000.0)
+            pos[0] = -1                      # the file has finished
+            assert player.heard_ms() is None
+            assert player.position_ms() == 3_000.0   # the old answer, kept
+            pos[0] = 12_000
+            player._suspended = True         # held by a paused song
+            assert player.heard_ms() is None
+            player._suspended = False
+            player._playing = False
+            assert player.heard_ms() is None
+        finally:
+            module.pygame = real
 
     def test_the_recording_is_never_corrected_while_it_leads(self, tmp_path,
                                                              monkeypatch):

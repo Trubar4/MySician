@@ -7740,6 +7740,15 @@ class PlayingScreen:
         fh.write(f"mp3_worst_pull_ms\t{self._worst_sync_pull_ms:.0f}\n")
         fh.write(f"mp3_snaps\t{self._mp3_snaps}\n")
         fh.write(f"mp3_leads\t{'yes' if self._mp3_led else 'no'}\n")
+        # A recording SHORTER than the tab stops while the song runs on, and
+        # from the inside that is a backing track that broke. The tab is as
+        # long as it is WRITTEN, so an outro the guitar sits out can leave
+        # seconds of song after the last of the music -- which is also the
+        # state that used to snap the picture back to the beginning.
+        if self._mp3_player is not None and self._mp3_player.ended:
+            fh.write(f"mp3_ran_out\tyes\tthe recording ended before the "
+                     f"tab did ({self._timeline.duration_ms / 1000:.0f}s "
+                     f"written)\n")
         fh.write(f"seeks\t{self._seeks}\n")
         self._frame_line(fh)
         self._interval_line(fh)
@@ -9093,7 +9102,17 @@ class PlayingScreen:
         """Pull the song clock towards where the recording actually is."""
         if not self._mp3_leads():
             return
-        wanted = self._sync_map().song_at(self._mp3_player.position_ms())
+        # What the MIXER says, not what this object remembers. `position_ms`
+        # falls back to where the current play() started when the mixer has
+        # nothing to report -- and the instant the recording runs out that is
+        # exactly the state: `get_pos()` is already -1 while `playing` is
+        # still True, because it is cleared in `_update_mp3`, which this
+        # method runs BEFORE. One frame of believing both snapped the song
+        # back to where the recording began. See `Mp3Player.heard_ms`.
+        heard = self._mp3_player.heard_ms()
+        if heard is None:
+            return
+        wanted = self._sync_map().song_at(heard)
         error = wanted - self._playback_ms
         if abs(error) < 1.0:
             return

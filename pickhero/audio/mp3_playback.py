@@ -231,6 +231,40 @@ class Mp3Player:
         # spends `scale` of them on every millisecond of song.
         return self._origin_ms + float(elapsed) / self._scale
 
+    def heard_ms(self) -> float | None:
+        """Where the recording really is, or None when nothing is sounding.
+
+        `position_ms` has to answer with a number for every caller, so when
+        the mixer says nothing it falls back to `_origin_ms` -- the song
+        position the current `play()` STARTED from. That is the right default
+        for a drift check and a lie about a CLOCK, and the moment the
+        recording runs out it is a lie that costs the whole song.
+
+        `get_pos()` goes to -1 the instant the file ends, while `_playing` is
+        still True: it is cleared inside `update`, which the playing screen
+        calls LATER in the frame than it pulls the picture. So for exactly one
+        frame the recording claims to be sounding AND to be back where it
+        started, and `_follow_recording` believed both and snapped the song
+        there. On the player's own run -- a 9:04 tab against a recording that
+        ends at about 8:50 -- that is `mp3_snaps 1` and
+        `mp3_worst_pull_ms 493299`: the song jumped back to the beginning
+        fourteen seconds before the last bar.
+
+        A frame the mixer has nothing to say about is not a reading, so it
+        must not move anything. Same rule as `AUDIO_CLOCK_GAP_SLACK_MS`.
+        """
+        if not self._ready or not self._playing or self._suspended:
+            return None
+        elapsed = pygame.mixer.music.get_pos()
+        if elapsed < 0:
+            return None
+        return self._origin_ms + float(elapsed) / self._scale
+
+    @property
+    def ended(self) -> bool:
+        """The recording played to its own end and stopped there."""
+        return self._ended
+
     def drift_ms(self, target_ms: float) -> float:
         """How far behind (positive) or ahead the recording is running."""
         return target_ms - self.position_ms()
