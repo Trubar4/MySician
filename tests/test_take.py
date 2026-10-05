@@ -12,9 +12,11 @@ the file must be finished wherever the stream ends.
 """
 
 import json
+import tempfile
 import threading
 import time
 import wave
+from pathlib import Path
 
 import numpy as np
 import pygame
@@ -23,6 +25,7 @@ import pytest
 from pickhero.audio import take as take_mod
 from pickhero.audio.take import TakeRecorder, new_take_dir, takes_dir
 from pickhero.config import Config
+from pickhero.matcher import NoteMatcher
 from pickhero.ui.scrolling import PlayingScreen
 from tests.test_scrolling import _make_timeline
 
@@ -360,3 +363,150 @@ class TestItIsReallyWiredToTheCallback:
         cap.stop_take()
         assert taped < plain * 1.5 + 0.0005, (
             f"the tap cost {1000 * (taped - plain):.3f} ms a callback")
+
+
+# ── The mapping moves during a take ─────────────────────────────────────────
+# The first build stored ONE `start_song_ms`, read at the keypress, and
+# `_reanchor_audio_clock` moves that relationship at every seek, pause, resume,
+# tempo change and loop breath. Pressing record before pressing play is the
+# natural order, so the anchor fires AFTER the reading every time -- and on the
+# player's own take that put the manifest 3.7 s out and the take read 31 %
+# where the app's own offset reads 87 %.
+#
+# These drive the real `update()` rather than `note_offset` by hand: a test
+# that calls the helper cannot see a caller that does not call it, which is how
+# the audio-clock pause fix went green while being wired to nothing.
+
+class _MarkCapture(_Capture):
+    """A capture whose ring counter the test can move."""
+
+    def __init__(self):
+        super().__init__()
+        self.ring_ms = 1000.0
+
+    def elapsed_ms(self):
+        return self.ring_ms
+
+
+class TestTheMappingIsMarkedWheneverItMoves:
+    def _screen(self):
+        screen = PlayingScreen(_make_timeline(), config=Config(),
+                               song_key="A Song")
+        screen._audio_capture = _MarkCapture()
+        screen._audio_enabled = True
+        screen._playing = True
+        # In the app the matcher exists whenever the capture does: `_toggle_take`
+        # refuses unless the capture runs, and `_start_audio` builds both.
+        screen._matcher = NoteMatcher(screen._timeline)
+        return screen
+
+    def _press(self, screen):
+        screen.handle_event(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_w, mod=pygame.KMOD_LSHIFT,
+            unicode="W"))
+
+    def test_a_take_always_carries_at_least_one_mark(self):
+        screen = self._screen()
+        screen._matcher.audio_offset_ms = -5929.4
+        self._press(screen)
+        take = screen._audio_capture.stop_take()
+        assert take["song_at"], "a take with no mapping cannot be scored at all"
+        assert take["song_at"][0][0] == 0
+        assert take["song_at"][0][1] == pytest.approx(-5929.4, abs=0.1)
+
+    def test_the_first_mark_is_the_MATCHERS_offset_not_the_clock_pair(self):
+        """The offset carries the player's K calibration; the pair does not."""
+        screen = self._screen()
+        screen._playback_ms = 421.3
+        screen._audio_capture.ring_ms = 6350.7
+        screen._matcher.audio_offset_ms = -6192.4      # pair would say -5929.4
+        self._press(screen)
+        take = screen._audio_capture.stop_take()
+        assert take["song_at"][0][1] == pytest.approx(-6192.4, abs=0.1)
+
+    def test_a_move_during_the_take_is_marked_by_the_real_frame(self):
+        screen = self._screen()
+        screen._matcher.audio_offset_ms = -5929.4
+        self._press(screen)
+        screen.update()
+        # What an anchor does: the offset jumps and the song clock carries on.
+        screen._audio_capture.ring_ms = 7000.0
+        screen._matcher.audio_offset_ms = -9675.0
+        screen.update()
+        take = screen._audio_capture.stop_take()
+        offsets = [round(off) for _, off in take["song_at"]]
+        assert offsets == [-5929, -9675], (
+            "the take never heard about the anchor, so its manifest describes "
+            f"a mapping the next seek invalidated: {take['song_at']}")
+
+    def test_a_mapping_that_does_not_move_writes_no_second_mark(self):
+        screen = self._screen()
+        screen._matcher.audio_offset_ms = -1000.0
+        self._press(screen)
+        for _ in range(40):
+            screen._audio_capture.ring_ms += 16.7
+            screen.update()
+        take = screen._audio_capture.stop_take()
+        assert len(take["song_at"]) == 1, take["song_at"]
+
+    def test_the_creep_is_marked_in_steps_rather_than_every_frame(self):
+        """A pull of 1 ms a frame must not write a mark a frame."""
+        screen = self._screen()
+        screen._matcher.audio_offset_ms = -1000.0
+        self._press(screen)
+        for _ in range(100):
+            screen._audio_capture.ring_ms += 16.7
+            screen._matcher.audio_offset_ms -= 1.0
+            screen.update()
+        take = screen._audio_capture.stop_take()
+        assert 3 <= len(take["song_at"]) <= 8, take["song_at"]
+
+    def test_a_pause_does_not_stop_the_marking(self):
+        """The frames most likely to move the mapping are the ones that return.
+
+        `update()` returns above the anchor for a pause and for the drill's
+        breath, and a pause is followed by a resume that re-anchors. A mark
+        taken beside the anchor is therefore never taken across exactly the
+        gap it exists to describe.
+        """
+        screen = self._screen()
+        screen._matcher.audio_offset_ms = -1000.0
+        self._press(screen)
+        screen._playing = False                  # paused
+        screen._audio_capture.ring_ms = 20000.0  # the device ran on
+        screen._matcher.audio_offset_ms = -9000.0
+        screen.update()
+        take = screen._audio_capture.stop_take()
+        assert [round(o) for _, o in take["song_at"]] == [-1000, -9000], (
+            f"the pause frame never marked the move: {take['song_at']}")
+
+    def test_the_marks_are_bounded(self):
+        rec = _rec(Path(tempfile.mkdtemp()), start_sample=0, offset_ms=0.0)
+        try:
+            for i in range(take_mod.MAX_OFFSET_MARKS + 500):
+                rec.note_offset(i * 100, i * 1000.0)
+            assert len(rec._offsets) == take_mod.MAX_OFFSET_MARKS
+        finally:
+            rec.close()
+
+
+class TestOneReaderOfTheMapping:
+    def test_a_sample_is_placed_by_the_mark_in_force(self):
+        take = {"start_sample": 44100,
+                "song_at": [[0, -1000.0], [44100, -2000.0]]}
+        # sample 0 is ring 44100 = 1000 ms, offset -1000 -> song 0
+        assert take_mod.song_ms_at(take, 0, 44100) == pytest.approx(0.0)
+        # sample 22050 is still under the first mark
+        assert take_mod.song_ms_at(take, 22050, 44100) == pytest.approx(500.0)
+        # sample 44100 is ring 88200 = 2000 ms and takes the second mark
+        assert take_mod.song_ms_at(take, 44100, 44100) == pytest.approx(0.0)
+        assert take_mod.song_ms_at(take, 66150, 44100) == pytest.approx(500.0)
+
+    def test_an_old_manifest_still_reads_as_it_always_meant(self):
+        """A take recorded before `song_at` existed carries one mark."""
+        old = {"start_sample": 280064, "start_song_ms": 421.3}
+        assert take_mod.song_ms_at(old, 0, 44100) == pytest.approx(421.3, abs=0.1)
+
+    def test_a_take_with_no_mapping_says_so_rather_than_bar_one(self):
+        assert take_mod.song_ms_at({}, 0, 0) is None
+        assert take_mod.offset_marks({"samplerate": 0}) == []

@@ -2010,6 +2010,20 @@ class PlayingScreen:
             self._take_tab_engraving()
 
         # Update signal level meter and tuner even when paused (so user can verify signal)
+        # A running take has to be told when the audio-to-song mapping moves,
+        # or its manifest describes a relationship the next seek has already
+        # invalidated -- which is what put one of the player's own takes 3.7 s
+        # out and made it read 31 % where the app's own offset reads 87 %.
+        #
+        # Above every early return, and that is the whole point of the
+        # placement. Beside `_apply_audio_anchor` reads better and is
+        # unreachable through a pause and through the drill's breath, which
+        # both return before it -- and a pause is followed by a resume that
+        # re-anchors, so those are the frames where the mapping is most likely
+        # to have moved. Same fault as the audio clock's baseline, which was
+        # also fixed inside a helper the early returns skip.
+        self._mark_take_offset()
+
         if self._audio_capture is not None:
             raw_db = self._audio_capture.get_signal_db()
             self._signal_db = raw_db
@@ -8360,7 +8374,14 @@ class PlayingScreen:
                 start_sample=int(capture.elapsed_ms()
                                  * getattr(capture, "_sample_rate", 44100)
                                  / 1000.0),
-                song_ms=self._playback_ms)
+                song_ms=self._playback_ms,
+                # The mapping as the MATCHER has it, not as the two clocks
+                # imply it: the matcher's offset already carries the player's
+                # own `K` calibration, and a take placed without that is out
+                # by exactly that much. It moves during a take, which is why
+                # `note_offset` marks it every frame from here on.
+                offset_ms=(self._matcher.audio_offset_ms
+                           if self._matcher is not None else None))
         except Exception as exc:               # a full disk, a bad path
             # Named on screen. A recording that silently does not happen is
             # indistinguishable from a key that does nothing, which is the
@@ -8369,6 +8390,16 @@ class PlayingScreen:
             return
         capture.start_take(recorder)
         self._say("Recording this take — Shift+W again to finish")
+
+    def _mark_take_offset(self) -> None:
+        """Tell a running take where the audio-to-song mapping stands now."""
+        capture = self._audio_capture
+        take = getattr(capture, "take", None)
+        if take is None or self._matcher is None:
+            return
+        rate = getattr(capture, "_sample_rate", 44100) or 44100
+        take.note_offset(int(capture.elapsed_ms() * rate / 1000.0),
+                         self._matcher.audio_offset_ms)
 
     def _finish_take(self) -> None:
         """Close the running take and say where it landed."""

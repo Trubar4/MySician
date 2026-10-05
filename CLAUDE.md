@@ -4106,7 +4106,7 @@ pickhero/
 - `tests/test_detector.py` — feed known sine waves to aubio, verify correct note detection
 - `tests/test_tempo_sections.py` — the run split by the speed each stretch was played at, the strip tick, and that the completion screen says it
 - `tests/test_level_report.py` — the verdict on a run's input level, the automatic gate surviving a keypress, and the clock ratio not counting pauses; four of its tests fail on the unfixed code
-- `tests/test_take.py` — recording a take from inside the app: the real audio callback drives it, a stalled write loses blocks instead of blocking, and the manifest is the shape the analysis tools already read
+- `tests/test_take.py` — recording a take from inside the app: the real audio callback drives it, a stalled write loses blocks instead of blocking, the manifest is the shape the analysis tools already read, and the audio-to-song mapping is marked whenever it moves (driven through the real `update()`, including across a pause); ten of its tests fail on the unfixed code
 - `tests/test_room_and_clock.py` — the room as the quietest stretch rather than the average of the count-in, and the clock ratio driven through the real `update()` (which is where the first fix missed it); nine of its ten fail on the unfixed code, and the tenth is the control
 - `tests/test_chord_shape_cost.py` — that no frame derives a chord shape, that the map really holds them, and that the log names what it was drawing; seven of its eight fail on the unfixed code
 - `tests/test_resampler.py` — what survives a resample and what arrives that was never played; seven of its tests fail on linear interpolation
@@ -5728,6 +5728,79 @@ on every run this week. The file is **86 kB/s** -- 21 MB for a four-minute song.
 **`record_reference.py` keeps the 29 guided exercises.** They need the prompts, and they need the standing promise at the top of that file --
 *"standalone on purpose, so it still runs when the detection stack is broken"* -- which a recorder living inside the app cannot have by
 construction. This replaces `--play-along` and nothing else.
+
+### A Take Carries A Mapping, Not A Reading Of One
+
+*"Die Runs koennen nun auch mit NB2 aufgenommen werden"* -- and the two takes he sent found a bug in the recorder itself,
+inside a day of shipping it. **`Shift+W` works**: 73.7 s and 69.8 s, `dropped_blocks 0` on both, `start_sample` written, the
+tuning and the speed right. What was wrong is the one field the whole feature rests on.
+
+The chapter above promised *"`start_sample` makes a strike's timestamp an index into the WAV. There is nothing left to fit."*
+That is true only while nothing moves the mapping -- and `_reanchor_audio_clock` moves it at every seek, pause, resume, tempo
+change and loop breath. **Pressing record before pressing play is the natural order, so the anchor fires AFTER the reading,
+every time.** Measured on his own two takes, scored through the real path against the tab reconstructed from the run log:
+
+| take | anchors in its run | manifest implies | app really used | manifest as written | app's own offset |
+|---|---|---|---|---|---|
+| 19:48 | **2**, worst move 8649 ms | -5930 ms | **-9675** | **31 %** (58/187) | **87 %** (152/175) |
+| 19:50 | 1, before the take | -789 ms | -1052 | 95 % (174/184) | 90 % (164/183) |
+
+The 3745 ms the first take is out is the second anchor's move **to the millisecond** -- so this is arithmetic, not a theory.
+
+- **The manifest carries `song_at` now**: the app's own `audio_offset_ms`, marked whenever it MOVES, as
+  `[[wav_sample, offset_ms], ...]`. `song_ms_at` is the one reader, so the five tools that read a manifest cannot each derive
+  it differently.
+- **The matcher's offset, not the two clocks.** `_playback_ms - ring_ms` omits `_sync_offset_song_ms()`, which is the player's
+  own `K` calibration -- and that is the other 276 ms by which the SECOND take was out while looking fine. Storing what the
+  app actually matched against means nothing has to be reconstructed.
+- **`OFFSET_STEP_MS` is 20 ms**, a tenth of the hit window: fine enough that a mark is never why a strike misses, coarse
+  enough that the recording pull and the sound-card tracking (174 and 20 ms over this run) write a handful of marks rather
+  than one a frame. Bounded by `MAX_OFFSET_MARKS`.
+- **An old manifest still reads as it always meant**: with no `song_at`, `offset_marks` derives the one mark
+  `start_song_ms` implied. A take with no mapping at all returns `None` rather than placing every strike at bar one.
+- **And the mark is taken ABOVE every early return, which is the whole of the placement.** Beside `_apply_audio_anchor`
+  reads better and is unreachable through a pause and through the drill's breath -- both of which `update()` returns before,
+  and a pause is followed by a resume that re-anchors. So a mark taken there is never taken across exactly the gap it exists
+  to describe. **Same fault as the audio clock's baseline**, which was also first fixed inside a helper the early returns
+  skip; the test for it drives the real `update()` through a pause, because a test that calls the helper cannot see a caller
+  that does not call it.
+
+### And The Rescue's Missing Windows Are Not A Threshold
+
+The funnel on those two runs is `rescue_held 28 / 31` against `rescue_no_window 19 / 29`: two thirds of the holds are never
+asked. The obvious fix was `MIN_WINDOW_MS` -- 200 ms, fitted for `verify`, which CONVICTS, where `confirms` can only
+acquit. That is the same shape as `MARGIN_DB` against `CONFIRM_MARGIN_DB`, so it looked like the same fix.
+
+**Swept on the real takes, and it buys nothing at all:**
+
+| window floor | windows emitted | holds asked | notes credited, take 1 | take 2 |
+|---|---|---|---|---|
+| **200 ms** (shipped) | 127 / 127 | 11 / 4 | **152/175** | **164/183** |
+| 160 ms | 160 / 147 | 14 / 4 | 152/175 | 164/183 |
+| 120 ms | 176 / 172 | 14 / 7 | 152/175 | 164/183 |
+| 100 ms | — | 14 / 7 | **152/175** | **164/183** |
+
+**Forty-nine more windows arrive and not one more note is credited.** A constant that changes nothing is a constant nobody
+can calibrate, the same reason `onset_min_interval_ms` lasted an hour and the 80 ms hit window was thrown away.
+
+**And the reason is structural rather than a threshold, which is why no floor reaches it.** The gap to the next strike, for
+the holds that get a window and the holds that lose one:
+
+| | holds answered | holds lost |
+|---|---|---|
+| take 1 | 11, median gap **348 ms** | 21, median gap **70 ms** |
+| take 2 | 4, median gap **406 ms** | 30, median gap **75 ms**, max **174** |
+
+`SKIP_MS` (40) and `NEXT_STRIKE_GUARD_MS` (15) already eat 55 ms of any gap, so even a 120 ms floor needs 175 ms -- and
+**every one of take 2's thirty lost holds is under that, with the largest at 174 ms.** A 70 ms gap is not a pick rate: this
+file already measured *"a hard floor of 64 ms in the gap distribution, which is a re-trigger and not a pick"*. So most of
+those holds are the detector's own second onset on one pick, and crediting them would be crediting a strike nobody played.
+**The evidence does not arrive late, it does not exist.**
+
+**What the takes DO say about detection, and it is the useful half.** Read at the offset the app really used, the detector
+and matcher credit **87 %** and **90 %** of the notes he reached, where the app itself scored **78 %** both times. One
+constant offset beats the app's moving one by about fifteen notes a take -- which is `audio_offset_ms` walking 122 ms over
+the run (`-9662` to `-9784`), not detection. That is the gap worth the next session, and it is a clock, not a threshold.
 
 ## The Needle Was Steady And The Bottom String Was Missing
 
