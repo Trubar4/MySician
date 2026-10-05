@@ -95,10 +95,10 @@ def _check() -> int:
     # is being asked is whether anything was drawn at all -- SDL's loader
     # managed 20 pixels of a full page, and a blank page is 0.
     if ink < 50:
-        print(f"the page rasterised with {ink} ink pixels — blank.")
+        print(f"the page rasterised with {ink} ink pixels - blank.")
         return 1
     times = tk.renderToTimemap()
-    print(f"verovio OK — {len(svg)} bytes of SVG, ink on the "
+    print(f"verovio OK - {len(svg)} bytes of SVG, ink on the "
           f"page ({ink} px, {share:.2%}), {len(times)} timemap entries")
     return 0
 

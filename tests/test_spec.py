@@ -14,6 +14,8 @@ import ast
 import builtins
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = ROOT / "pickhero.spec"
 
@@ -186,14 +188,30 @@ class TestTheWorkflowBuildsWhatBuildBatBuilds:
             "the stamp is written AFTER the build, so the bundle cannot "
             "carry it")
 
-    def test_ffmpeg_is_fetched_before_pyinstaller_runs(self):
-        steps = _run_steps()
-        fetch = [i for i, s in enumerate(steps) if "fetch_ffmpeg.py" in s]
-        build = [i for i, s in enumerate(steps) if "pyinstaller" in s and "pip" not in s]
-        assert fetch, (
-            "the workflow never fetches ffmpeg, so the EXE cannot play the "
-            f"audio it downloads. Its steps: {steps}")
-        assert min(fetch) < min(build), "ffmpeg is fetched after the bundle is made"
+    def test_the_two_builds_agree_about_ffmpeg(self):
+        """Whichever answer is right, it has to be the same in both files.
+
+        An ffmpeg.exe is 37 MB of the bundle -- the week the workflow
+        fetched one the EXE went from 43 to 80 MB -- so the two builds
+        disagreeing here is a player downloading twice the file he needs,
+        or not getting the feature he was promised, depending on which
+        build he ran. Neither fetches it today: the audio download is dead
+        behind YouTube's bot check, and an ffmpeg.exe dropped beside
+        MySician.exe is found with no rebuild. Deliberately fetch one
+        before PyInstaller and it is bundled.
+        """
+        workflow = "fetch_ffmpeg.py" in "\n".join(_run_steps())
+        bat = (ROOT / "build.bat").read_text(encoding="utf-8", errors="replace")
+        in_bat = "fetch_ffmpeg.py" in "".join(
+            line for line in bat.splitlines() if not line.lstrip().startswith("::"))
+        assert workflow == in_bat, (
+            "one build fetches ffmpeg and the other does not: workflow="
+            f"{workflow}, build.bat={in_bat}")
+
+    def test_an_ffmpeg_that_is_there_is_still_bundled(self):
+        """Not fetching one is not the same as refusing to carry one."""
+        spec = (ROOT / "pickhero.spec").read_text(encoding="utf-8")
+        assert 'glob.glob(os.path.join("tools", "ffmpeg*"))' in spec
 
     def test_build_bat_uses_the_same_stamp_writer(self):
         """One writer of the stamp format, not three.
@@ -206,3 +224,70 @@ class TestTheWorkflowBuildsWhatBuildBatBuilds:
         assert "stamp_build.py" in bat
         assert "_build_stamp.txt" not in bat.split("stamp_build.py")[0], (
             "build.bat still writes the stamp itself before calling the script")
+
+
+# ── What the build PRINTS ───────────────────────────────────────────────────
+# `fetch_ffmpeg.py` printed one arrow, on the single line that reports a
+# SUCCESSFUL download. An arrow is in neither cp1252 (the Windows runner's
+# console) nor cp850 (a German one), so that print raised
+# UnicodeEncodeError and the script exited 1 with the 88 MB file already
+# written -- which is how a green workflow came to carry a red "Process
+# completed with exit code 1" annotation beside an EXE that had grown by
+# 37 MB. The same runner printed an em dash from `check_verovio.py` two
+# steps later without complaining, which is what says it was the arrow and
+# not the encoding in general.
+#
+# So the rule is about the tools the BUILD runs, and they are read off the
+# workflow and build.bat rather than listed here: a step added later that
+# runs a new tool comes under the rule by being a build step.
+
+
+def _build_tools() -> list[Path]:
+    """The tools/*.py the workflow or build.bat invokes."""
+    commands = list(_run_steps())
+    bat = (ROOT / "build.bat").read_text(encoding="utf-8", errors="replace")
+    commands += [line for line in bat.splitlines()
+                 if not line.lstrip().startswith("::")]
+    found = set()
+    for path in (ROOT / "tools").glob("*.py"):
+        if any(path.name in command for command in commands):
+            found.add(path)
+    return sorted(found)
+
+
+def _non_ascii_prints(path: Path) -> list[tuple[int, str]]:
+    out = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "print":
+            for part in ast.walk(node):
+                if (isinstance(part, ast.Constant)
+                        and isinstance(part.value, str)
+                        and not part.value.isascii()):
+                    out.append((node.lineno, part.value))
+    return out
+
+
+class TestTheToolsTheBuildRunsPrintAscii:
+    def test_the_build_really_does_run_some_tools(self):
+        """Without this the rule below passes by finding nothing."""
+        names = {path.name for path in _build_tools()}
+        assert "stamp_build.py" in names, names
+        assert "check_verovio.py" in names, names
+
+    def test_nothing_the_build_prints_can_raise_on_a_windows_console(self):
+        offenders = {
+            path.name: _non_ascii_prints(path) for path in _build_tools()
+        }
+        bad = {name: found for name, found in offenders.items() if found}
+        assert not bad, (
+            "a build step prints a character a Windows console cannot "
+            f"encode, which exits 1 after the work is done: {bad}")
+
+    def test_the_arrow_really_was_unencodable(self):
+        """The check is only worth having if it catches the shipped bug."""
+        for encoding in ("cp1252", "cp850", "cp437"):
+            with pytest.raises(UnicodeEncodeError):
+                "ffmpeg: 88 MB \u2192 tools/ffmpeg.exe".encode(encoding)
+        # ...while the em dash the same runner printed two steps later is
+        # fine on cp1252, which is why only one of the two steps failed.
+        assert "verovio OK \u2014".encode("cp1252")

@@ -4725,13 +4725,53 @@ things first, and two of them matter:
   in the package tested and called by nothing -- the tested-and-unused fault this file has already written up for `system_pitch` and
   `PAPER`. `tools/stamp_build.py` is the one caller, used by the batch file and by the workflow.
 - **The property is asserted, in the file that exists for this.** `tests/test_spec.py` was written because *"a file that only runs on
-  the build machine is a file that is only tested there"* -- and then read the spec only. It reads the workflow too: the stamp and the
-  ffmpeg fetch must both come BEFORE PyInstaller, and `build.bat` must not write the stamp itself. All three fail on the unfixed files.
+  the build machine is a file that is only tested there"* -- and then read the spec only. It reads the workflow too: the stamp must come
+  BEFORE PyInstaller, `build.bat` must not write the stamp itself, and the two builds must agree about ffmpeg (see below). All of them
+  fail on the unfixed files.
   No YAML parser: pyyaml is not in `requirements.txt`, and a test that skips itself catches nothing on the machine that matters.
 
 **The lesson is the one the chapter above already states and I applied to one of the two files in the pair.** `pickhero.spec` and
 `release.yml` are both build-machine-only code; reading one and not the other left the other free to drift, and it had drifted by two
 steps. **Where a build exists in two places, a step added to one of them is a step missing from the other.**
+
+**And one of the two steps I added was worth 37 MB and a red cross.** Fixing the drift was right; fetching ffmpeg as part of it was not.
+Measured off the build artifacts, which carry their own size:
+
+| run | commit | artifact |
+|---|---|---|
+| #259 | `d62e49a` | **43.4 MB** |
+| **#260** | **`b7f739a`** (the fetch added) | **80.2 MB** |
+| #262 | `e600a56` | 80.2 MB |
+
+**Near half the .exe, for a feature that does not work.** YouTube's bot check killed the audio half of the download and the recording is
+picked by hand -- that is its own chapter, two above this one -- so the ffmpeg that exists to transcode what YouTube serves transcodes
+nothing. And when it works again, `youtube._search_folders` finds an `ffmpeg.exe` dropped BESIDE `MySician.exe` **with no rebuild at
+all**, which is exactly the sentence `missing()` already prints at the player. So nothing fetches one now, in either build, and the spec
+still bundles a `tools/ffmpeg*` that somebody put there on purpose. Back to 43 MB.
+
+**The red cross beside that green run was the same step, and it is the better half of the story.** Every run from #260 on carried a
+`failure` annotation -- *"Process completed with exit code 1"* -- while every step read `success`, because `continue-on-error` reports the
+step as passed and leaves the annotation standing. The script exits 1 on exactly one path, the download FAILING, which cannot be what
+happened: the file was plainly in the bundle. What exits 1 is the **last line of the path that SUCCEEDS**:
+
+```python
+print(f"ffmpeg: {size} MB → {TARGET}")      # U+2192, and the console is cp1252
+```
+
+**An arrow is in neither cp1252 (the runner's console) nor cp850 (a German one).** So the 88 MB landed on disk, the final print raised
+`UnicodeEncodeError`, and the script exited 1 -- a bigger .exe and a build error, from one character, reported as two separate problems a
+day apart. The tell that it was the arrow rather than the encoding in general is two steps later in the same job: `check_verovio.py`
+printed an **em dash** and did not complain, because cp1252 has one.
+
+- **The rule is about the tools the BUILD runs, and it is read off the build.** `tests/test_spec.py` collects the `tools/*.py` named in
+  `release.yml` and `build.bat` and fails on any non-ASCII string one of them prints, so a step added later that runs a new tool comes
+  under the rule by being a build step rather than by anybody remembering. `test_the_build_really_does_run_some_tools` is there because
+  without it the rule passes by finding nothing.
+- **The two builds are asserted to AGREE about ffmpeg rather than both to fetch it.** Whichever answer is right has to be the same in both
+  files; the test fails naming the one that drifted. That is the lesson above, written so it survives the answer changing -- which it just
+  did.
+- **A diagnostic print cost a build step.** The project's own rule is that a feature which cannot be seen working is indistinguishable
+  from one that does not work, so the prints stay; what goes is the assumption that a console can render them.
 
 ### A Folder Of Histories Looked Like An Empty Folder
 

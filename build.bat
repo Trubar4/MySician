@@ -39,16 +39,18 @@ if errorlevel 1 (
 )
 
 :: ── The audio half of the Songsterr download ───────────────────────────────
-:: yt-dlp pulls the recording the bar map was made against; ffmpeg turns what
-:: YouTube serves (m4a/webm) into something SDL can play. Neither is fatal:
-:: without them the .exe still builds and the download screen says in words
-:: which one is missing.
+:: yt-dlp pulls the recording the bar map was made against. ffmpeg, which
+:: turns what YouTube serves (m4a/webm) into something SDL can play, is NOT
+:: fetched here: it is 37 MB of the .exe for a feature that does not
+:: currently work -- YouTube's bot check killed the audio download, so the
+:: recording is picked by hand. Run `python tools\fetch_ffmpeg.py` first if
+:: you want one bundled; the spec picks up tools\ffmpeg* whenever it is
+:: there, and the app finds an ffmpeg.exe dropped beside MySician.exe with
+:: no rebuild at all.
 
 echo Installing/upgrading yt-dlp...
 pip install --upgrade yt-dlp >nul 2>&1
 if errorlevel 1 echo WARNING: yt-dlp not installed. YouTube audio will be unavailable.
-
-python tools\fetch_ffmpeg.py
 
 :: ── Verify spec file exists ────────────────────────────────────────────────
 

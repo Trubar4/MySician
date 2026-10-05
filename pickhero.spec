@@ -54,11 +54,15 @@ binaries += collect_dynamic_libs("numpy")
 binaries += collect_dynamic_libs("verovio")
 binaries += collect_dynamic_libs("resvg_py")
 
-# ffmpeg, fetched by build.bat into tools/. yt-dlp downloads what YouTube
-# serves -- m4a or webm -- and SDL_mixer decodes neither, so without this in
-# the bundle the audio lands on disk and silently will not play. Bundled
-# rather than looked for on the machine: the whole point of the .exe is that
-# the second laptop needs nothing installed on it.
+# ffmpeg, IF somebody put one in tools/ on purpose. Nothing fetches it any
+# more: an ffmpeg.exe is 37 MB of this bundle -- it took the EXE from 43 to
+# 80 MB the one week a build did fetch it -- and it serves one feature that
+# does not currently work, since YouTube's bot check killed the audio half
+# of the download and the recording is picked by hand. The app finds an
+# ffmpeg.exe dropped BESIDE MySician.exe with no rebuild at all
+# (`youtube._search_folders`), which is what the download screen already
+# tells the player to do. `python tools/fetch_ffmpeg.py` before PyInstaller
+# is the deliberate way to have one in here.
 for _ffmpeg in glob.glob(os.path.join("tools", "ffmpeg*")):
     binaries.append((_ffmpeg, "."))
 

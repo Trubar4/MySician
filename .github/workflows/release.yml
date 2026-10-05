@@ -43,15 +43,14 @@ jobs:
         # was asked to verify a commit his log could not name.
         run: python tools/stamp_build.py
 
-      - name: Fetch ffmpeg for the bundle
-        # yt-dlp downloads what YouTube serves -- m4a or webm -- and SDL_mixer
-        # decodes neither, so without this the downloaded audio lands on disk
-        # and silently will not play. build.bat has done this all along; this
-        # workflow did not, so the EXE the player actually runs had no ffmpeg
-        # in it. Not fatal on its own: the download screen says in words which
-        # half is missing, which is why the build carries on either way.
-        run: python tools/fetch_ffmpeg.py
-        continue-on-error: true
+      # ffmpeg is deliberately NOT bundled -- it is 37 MB of the EXE, and it
+      # serves one feature that does not currently work: YouTube's bot check
+      # killed the audio half of the download, so the recording is picked by
+      # hand. When it works again, `_search_folders` finds an ffmpeg.exe
+      # dropped BESIDE MySician.exe with no rebuild at all, which is exactly
+      # what the download screen already tells the player to do. Run
+      # `python tools/fetch_ffmpeg.py` before PyInstaller to bundle one; the
+      # spec picks up tools/ffmpeg* whenever it is there.
 
       - name: Build exe
         run: pyinstaller pickhero.spec --noconfirm
