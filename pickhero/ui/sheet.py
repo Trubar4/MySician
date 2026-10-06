@@ -43,6 +43,43 @@ QUARTER_HEADS = 2.6
 # eye there are two notes rather than one wide one.
 MIN_GAP_HEADS = 1.18
 
+# How much WIDER than proportional a bar may be drawn so that its shortest
+# note still clears MIN_GAP_HEADS. The floor used to be applied gap by gap,
+# which equalises exactly the notes it is meant to keep apart: in bar 38 of
+# the player's November Rain an eighth came out 65 px and a sixteenth 59 px
+# -- 10 % apart for twice the duration -- so the playhead crossed the
+# sixteenths 1.82x faster than the eighths beside them.
+#
+#   *"Es müssten aber manche Töne breiter sein. Niemand sagt, dass jeder
+#    Takt gleich viel Platz in der Breite haben muss."*
+#
+# He is right, and the fix is his: stretch the whole BAR instead, so the
+# gaps keep their exact ratios and the playhead runs at one speed through
+# it. The stretch a note value needs is MIN_GAP_HEADS / QUARTER_HEADS x
+# (crotchet / gap) and is independent of the head size -- 0.91 for an
+# eighth (nothing to do), 1.82 for a sixteenth, 2.72 for a triplet
+# sixteenth, 3.63 for a thirty-second.
+#
+# 2.0 covers the sixteenth with headroom and is measured, not chosen.
+# Swept over 23 guitar tracks of 9 songs:
+#
+#   cap          1.82   1.9    2.0    2.2    2.5    2.72
+#   bars still varying >5%     47     47     47     46     46     25
+#   rows a single bar overflows  5      6      6     25     55     55
+#
+# A plateau from 1.82 to 2.0 and then a cliff: past 2.0 a bar wider than a
+# whole line has to be SQUEEZED, heads touch and the row is `crowded` --
+# which is a worse picture than a bar whose playhead speed varies, and it
+# buys one bar in nineteen hundred rows. Total rows are identical at every
+# cap, so the cap costs no page turns at all; what the stretch itself costs
+# is +11 % of them (1686 -> 1879), which is the trade he asked for.
+#
+# It is also what keeps a degenerate bar drawable: two anchors a fraction
+# of a millisecond apart would otherwise ask for a stretch of 10^13. Past
+# the cap the gap is floored individually, exactly as every gap used to be,
+# so two heads can still never overlap.
+MAX_BAR_STRETCH = 2.0
+
 # A bar this much wider than the row it is in cannot be helped by breaking
 # the line -- it is a bar too dense to draw at this size, and it is squeezed
 # rather than dropped. Reported, never silent: see `Row.crowded`.
@@ -275,12 +312,24 @@ def _bar_anchors(bar: MeasureInfo, notes: list[NoteEvent]) -> list[float]:
 def _widths(anchors: list[float], per_ms: float, min_gap: float) -> list[float]:
     """How wide each gap in a bar wants to be.
 
-    Proportional to time, but never narrower than two heads can sit apart.
-    That single `max` is the whole idea: rhythm is visible wherever there is
-    room for it, and legibility wins wherever there is not.
+    Strictly proportional to time, with the WHOLE BAR stretched until its
+    shortest gap clears `min_gap`. Keeping the ratios exact is the point: a
+    bar is the stretch of music the playhead crosses between two bar lines,
+    and a floor applied gap by gap makes it cross one note faster than the
+    next -- which is the thing the player was reading off the screen.
+
+    The stretch is bounded by `MAX_BAR_STRETCH`, and what it cannot reach is
+    floored one gap at a time as before, so two heads never overlap however
+    pathological the bar.
     """
-    return [max((b - a) * per_ms, min_gap)
-            for a, b in zip(anchors, anchors[1:])]
+    wanted = [(b - a) * per_ms for a, b in zip(anchors, anchors[1:])]
+    if not wanted:
+        return wanted
+    smallest = min(wanted)
+    stretch = 1.0
+    if 0.0 < smallest < min_gap:
+        stretch = min(MAX_BAR_STRETCH, min_gap / smallest)
+    return [max(w * stretch, min_gap) for w in wanted]
 
 
 def quarter_ms(bar: MeasureInfo, fallback_ms: float) -> float:

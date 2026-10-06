@@ -481,3 +481,129 @@ class TestANoteValueIsTheSameWidthWhereverItIsWritten:
         # Same here, which is right: six eighths ARE three crotchets. What a
         # fixed "a quarter of the bar" would have given is 375 ms.
         assert quarter_ms(six_eight, 1.0) != pytest.approx(375.0)
+
+
+class TestOneSpeedThroughOneBar:
+    """*"Hier ändert sich bspw. im Takt im Anhangsbild noch immer die
+    Geschwindigkeit des Balkens innerhalb einem Takt. Es müssten aber manche
+    Töne breiter sein. Niemand sagt, dass jeder Takt gleich viel Platz in der
+    Breite haben muss."*
+
+    Reading the tempo per bar stopped a note value changing width from one
+    bar to the next. It did nothing about the floor being applied gap by
+    gap, which equalises the notes it is meant to keep apart. Bar 38 of his
+    November Rain, at 78 BPM with a 50 px head, as it was drawn:
+
+        gap      385  192  192  385  385  385  192  192  385  385   ms
+        wanted    65   33   33   65   65   65   33   33   65   65   px
+        drawn     65   59   59   65   65   65   59   59   65   65   px
+
+    An eighth and a sixteenth 10 % apart for twice the duration, so the
+    playhead crossed the sixteenths 1.82x faster. Stretching the whole bar
+    instead keeps the ratios exact -- 118 against 59 -- and the bar grows
+    from 626 px to 944 px, which is the price he named.
+    """
+
+    # Bar 38, 4/4 at 78 BPM: eighth eighth-of-two-sixteenths, and so on.
+    BAR_MS = 3076.9
+    GAPS = (385.0, 192.0, 192.0, 385.0, 385.0, 385.0, 192.0, 192.0, 385.0)
+
+    def _bar(self, gaps=None, bar_ms=None, tempo=78):
+        gaps = self.GAPS if gaps is None else gaps
+        bar_ms = self.BAR_MS if bar_ms is None else bar_ms
+        offsets, at = [0.0], 0.0
+        for gap in gaps:
+            at += gap
+            offsets.append(at)
+        return _song([offsets], tempo=tempo, bar_ms=bar_ms)
+
+    def _widths_of(self, song, head=HEAD):
+        from pickhero.ui.sheet import _bar_anchors, _widths, quarter_ms
+        bar = song.measures[0]
+        fallback = 60_000.0 / song.metadata.tempo
+        per_ms = QUARTER_HEADS * head / quarter_ms(bar, fallback)
+        return _widths(_bar_anchors(bar, song.notes), per_ms,
+                       MIN_GAP_HEADS * head)
+
+    def test_a_sixteenth_is_half_an_eighth(self):
+        """The whole complaint, in one ratio. It was 1.10 before."""
+        widths = self._widths_of(self._bar())
+        eighths = [w for w, g in zip(widths, self.GAPS) if g > 300.0]
+        sixteenths = [w for w, g in zip(widths, self.GAPS) if g < 300.0]
+        assert min(eighths) == pytest.approx(max(eighths), rel=1e-6)
+        assert min(sixteenths) == pytest.approx(max(sixteenths), rel=1e-6)
+        assert eighths[0] / sixteenths[0] == pytest.approx(2.0, rel=0.01)
+
+    def test_the_playhead_runs_at_one_speed_through_it(self):
+        row = lay_out(self._bar(), 100_000.0, HEAD)[0]
+
+        def speed(ms, span=80.0):
+            return (row.x_at(ms + span) - row.x_at(ms)) / span
+
+        # Inside the first eighth, and inside the first sixteenth after it.
+        assert speed(100.0) == pytest.approx(speed(450.0), rel=0.02)
+
+    def test_the_bar_gets_wider_instead(self):
+        """Which is the half he granted: no bar owes the next one its width."""
+        from pickhero.ui.sheet import _bar_anchors, quarter_ms
+        head = 50.0
+        song = self._bar()
+        bar = song.measures[0]
+        per_ms = QUARTER_HEADS * head / quarter_ms(bar, 1.0)
+        anchors = _bar_anchors(bar, song.notes)
+        wanted = [(b - a) * per_ms for a, b in zip(anchors, anchors[1:])]
+        was = sum(max(w, MIN_GAP_HEADS * head) for w in wanted)
+        now = sum(self._widths_of(song, head))
+        assert was == pytest.approx(626.0, rel=0.02)     # what he saw
+        assert now == pytest.approx(944.0, rel=0.02)     # what it costs
+
+    def test_two_heads_still_never_touch(self):
+        head = 50.0
+        widths = self._widths_of(self._bar(), head)
+        assert min(widths) >= MIN_GAP_HEADS * head - 1e-6
+
+    def test_a_bar_of_one_value_costs_nothing(self):
+        """The control. Where every gap is the same, there is nothing to
+        part and the stretch must not widen the bar by a pixel."""
+        sixteenths = (192.0,) * 15
+        widths = self._widths_of(self._bar(sixteenths,
+                                           bar_ms=sum(sixteenths)))
+        assert len(widths) == 15
+        assert sum(widths) == pytest.approx(15 * MIN_GAP_HEADS * HEAD,
+                                            rel=1e-6)
+
+    def test_the_stretch_is_capped(self):
+        """A bar of crotchets with one thirty-second in it asks for 3.63x."""
+        from pickhero.ui.sheet import MAX_BAR_STRETCH
+        from pickhero.ui.sheet import _bar_anchors, quarter_ms
+        gaps = (769.0, 769.0, 96.0, 96.0, 769.0)
+        song = self._bar(gaps, bar_ms=sum(gaps))
+        bar = song.measures[0]
+        per_ms = QUARTER_HEADS * HEAD / quarter_ms(bar, 1.0)
+        anchors = _bar_anchors(bar, song.notes)
+        wanted = [(b - a) * per_ms for a, b in zip(anchors, anchors[1:])]
+        widths = self._widths_of(song)
+        # A thirty-second against a crotchet asks for 3.63x and gets 2.0,
+        # so the short gap is floored and the bar still varies in speed --
+        # which is honest: it cannot be drawn in proportion at this size.
+        assert widths[0] / wanted[0] == pytest.approx(MAX_BAR_STRETCH,
+                                                      rel=1e-6)
+        assert min(widths) >= MIN_GAP_HEADS * HEAD - 1e-6
+
+    def test_an_anchor_a_hair_away_does_not_blow_the_bar_up(self):
+        """Two onsets a fraction of a millisecond apart really occur, and
+        without the cap they ask for a stretch of ten to the thirteenth."""
+        gaps = (769.0, 0.0001, 769.0, 769.0)
+        widths = self._widths_of(self._bar(gaps, bar_ms=sum(gaps)))
+        assert sum(widths) < 20 * QUARTER_HEADS * HEAD
+        assert min(widths) >= MIN_GAP_HEADS * HEAD - 1e-6
+
+    def test_the_stretch_does_not_depend_on_the_head_size(self):
+        """Which is why +/- is still the lever for bars per row: the shape of
+        a bar is the same at every zoom, only its pixels change."""
+        shapes = []
+        for head in (29.0, 44.0, 58.0):
+            widths = self._widths_of(self._bar(), head)
+            shapes.append([w / widths[0] for w in widths])
+        for shape in shapes[1:]:
+            assert shape == pytest.approx(shapes[0], rel=1e-6)

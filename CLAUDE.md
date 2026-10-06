@@ -6823,9 +6823,10 @@ playhead crossed that width in half the time. Which is what he was watching.
   crowded.
 - **Every song to hand lays out bit-identically**, Godsmack's seven bar lengths included -- its header tempo is close enough that no gap
   crossed the floor. That control is what says the change is a repair and not a re-design.
-- **What is LEFT is the design and is not a fault.** A sixteenth still gets a floored width, so the playhead still runs faster through one:
-  1.82x at worst on his track. Parting them proportionally would need more width per crotchet and therefore fewer bars a row, which is the
-  trade `+`/`-` already holds -- not something to move without being asked.
+- **What was LEFT was written up here as the design and was not.** A sixteenth still got a floored width, so the playhead still ran 1.82x
+  faster through one -- and the conclusion drawn was that parting them proportionally would cost bars a row and so was not something to move
+  without being asked. The second half was right and the first was not his to accept: he came back with a screenshot of exactly that, and
+  asking him first would have saved the round. See the chapter below.
 
 ## The Powerchord Was Detected Perfectly And Arrived 200 ms Early
 
@@ -6862,6 +6863,65 @@ happen to be the ones he played earliest. `chord_of_3 18/36 50%` is that table.
 - **What he can press today is `G`** -- the hit window. At 200 ms, ten of the twelve rows above land.
 - **`chord_windows_judged 6` against `windows_dropped_short 261`** says the verifier is absent on this song too, so nothing downstream could
   have rescued them either.
+
+## A Floor Per GAP Equalises The Notes It Is There To Part
+
+*"Hier ändert sich bspw. im Takt im Anhangsbild noch immer die Geschwindigkeit des Balkens innerhalb einem Takt. Es müssten aber manche Töne
+breiter sein. Niemand sagt, dass jeder Takt gleich viel Platz in der Breite haben muss."*
+
+Reading the tempo per bar stopped a note value changing width from one bar to the NEXT. It did nothing about the second half, and the player
+found it in one screenshot. Bar 38 of his November Rain, 4/4 at 78 BPM, at a 50 px head — the clean-guitar track he was actually looking at:
+
+| | | | | | | | | | | |
+|---|---|---|---|---|---|---|---|---|---|---|
+| gap | 385 | 192 | 192 | 385 | 385 | 385 | 192 | 192 | 385 | 385 ms |
+| proportional | 65 | 33 | 33 | 65 | 65 | 65 | 33 | 33 | 65 | 65 px |
+| **drawn** | **65** | **59** | **59** | **65** | **65** | **65** | **59** | **59** | **65** | **65 px** |
+
+**An eighth and a sixteenth 10 % apart for twice the duration**, so the playhead crossed the sixteenths **1.82x** faster than the eighths
+beside them. `_widths` applied `MIN_GAP_HEADS` gap by gap, which is the one operation that flattens exactly the difference the floor exists to
+protect: the short gap is lifted to the floor and the long one is left where it was.
+
+- **The whole BAR is stretched instead**, until its shortest gap clears the floor, so every gap keeps its exact ratio and the playhead runs at
+  one speed from bar line to bar line. Bar 38 comes out 118 against 59 — a true 2:1 — and grows from **626 px to 944 px**, which is the price
+  he granted in the same sentence.
+- **The stretch is `MIN_GAP_HEADS / QUARTER_HEADS x (crotchet / gap)` and is independent of the head size** — 0.91 for an eighth (nothing to
+  do), 1.82 for a sixteenth, 2.72 for a triplet sixteenth, 3.63 for a thirty-second. That is what keeps `+`/`-` the lever for bars per row: the
+  SHAPE of a bar is the same at every zoom and only its pixels change, so a smaller head still buys back the width this spends. Asserted, not
+  reasoned.
+- **`MAX_BAR_STRETCH` is 2.0 and it sits on a plateau.** Swept over 23 guitar tracks of 9 songs:
+
+| cap | 1.82 | 1.9 | **2.0** | 2.2 | 2.5 | 2.72 |
+|---|---|---|---|---|---|---|
+| bars whose speed still varies >5 % | 47 | 47 | **47** | 46 | 46 | 25 |
+| rows a single bar overflows | 5 | 6 | **6** | 25 | 55 | 55 |
+
+  **Past 2.0 a bar wider than a whole line has to be SQUEEZED**, heads touch and the row is `crowded` — a worse picture than a bar whose
+  playhead speed varies — and it buys one bar in nineteen hundred rows. Total rows are **identical at every cap**, so the cap costs no page
+  turns whatsoever; everything below is the cost of the stretch itself.
+- **What it is worth, over those 23 tracks: bars whose playhead speed varies by more than 5 % inside the bar, 719 → 47**, crowded rows 5 → 6,
+  and **+11 % of rows** (1686 → 1879). The 47 that remain hold thirty-seconds or faster, where no stretch under the cap can part them — honest,
+  and the row says so where it overflows.
+- **On his own track, at his own 1280 window, the cost is zero at the size the view opens at:**
+
+| zoom | head | bars a row | worst speed ratio in a bar |
+|---|---|---|---|
+| 0.50 | 29 px | 2.97 → 2.87 | 1.82 → **1.00** |
+| 0.60 | 35 px | 2.87 → 2.66 | 1.82 → **1.00** |
+| 0.70 | 41 px | 1.99 → **1.99** | 1.82 → **1.00** |
+| 0.85 | 49 px | 1.97 → 1.77 | 1.82 → **1.00** |
+| **1.00** | **58 px** | **1.00 → 1.00** | **1.82 → 1.00** |
+
+- **A bar of ONE note value costs nothing, and that is the control the change rests on.** Where every gap is equal both rules give the
+  identical width, so a run of sixteenths is unchanged to the pixel and `test_a_sixteenth_run_is_evenly_spaced` never moved. The whole effect
+  lives in MIXED bars, which is where the complaint was.
+- **The cap is also what keeps a degenerate bar drawable.** Two onsets a fraction of a millisecond apart really occur — three bars of that
+  song's lead track have them — and without a bound they ask for a stretch of **10^13**. Past the cap a gap is floored individually, exactly as
+  every gap used to be, so two heads can still never overlap however pathological the bar.
+- **What was NOT built, and the reason is that it does not answer him.** Every engraver (Gourlay, Lilypond, MuseScore) spaces by a CONCAVE
+  function of duration — a crotchet about twice a sixteenth rather than four times — which would cost a third of the width this does. It also
+  leaves the playhead running at two speeds inside a bar by construction, which is the thing being reported. A compromise that keeps the fault
+  is not a fix.
 
 ## What NOT To Do
 
