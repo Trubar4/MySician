@@ -6923,6 +6923,75 @@ protect: the short gap is lifted to the floor and the long one is left where it 
   leaves the playhead running at two speeds inside a bar by construction, which is the thing being reported. A compromise that keeps the fault
   is not a fix.
 
+### And Then One Bar Owned A Whole Line
+
+*"Es funktioniert, aber nun ist ab und zu nur noch ein Takt in einer ganzen Zeile, obwohl die Köpfe schmaler gemacht werden könnten und 2 Takte
+Platz hätten."*
+
+He is right twice over, and the first measurement of the change had missed it by reporting a mean. Counted properly over 17 guitar tracks of
+7 songs at his own 1920 window:
+
+| | rows holding ONE bar | rows in all |
+|---|---|---|
+| the floor, gap by gap | **22 of 1245** | 1245 |
+| **proportional, as shipped** | **362 of 1418** | 1418 |
+
+Godsmack's rhythm track goes from 0 one-bar rows to **82 of 110**. The mean (1.25 bars a row) hid it; the count does not.
+
+**And the arithmetic says there is no lever inside the spacing.** With a bar's gaps in exact proportion its width is
+
+    (bar duration / its shortest gap) x MIN_GAP_HEADS heads
+
+so a 4/4 bar costs **16 x 1.18 heads the moment it contains ONE sixteenth**, whether it holds two notes or sixteen. At a 58 px head that is
+1095 px, and two of them do not fit a 1786 px line. Every candidate between "stretch the bar" and "do not" was measured and all of them are
+nothing:
+
+| | one-bar rows | bars whose speed still varies |
+|---|---|---|
+| floor, gap by gap | 22 | 504 of 2608 |
+| **cap the bar at half a line** | **320** | **475** |
+| cap it at 0.40 of a line | 138 | 495 |
+| floor only pairs on the SAME string | 334 | 0 |
+| proportional (shipped) | 362 | 47 |
+
+A partial stretch leaves the short gaps sitting on the floor, so the bar is **just as wide AND the speed varies again** — the cap buys nothing
+in either direction. And flooring only same-string pairs (the board's own rule: notes in different lanes can never collide) saves no width
+either, because a sixteenth run is on one string anyway.
+
+**So the head is the only lever, and it does not have to be square — which is exactly what he said.** The scrolling board has squeezed a head
+sideways for months, keeping the lane's full height to buy look-ahead. Here the two questions are simply asked of different things:
+
+- **how TALL** a head may be is the VERTICAL room — two rows on the window, which is what `+`/`-` moves;
+- **how WIDE** it may be is the MUSIC — the largest width at which a bar still shares a line with the bar after it.
+
+`sheet.bar_units` measures every bar at a head of one pixel (every width in `lay_out` is linear in the head, which is what makes this
+arithmetic rather than a search) and `head_width_for` divides the line by the pair at `PAIR_PERCENTILE`.
+
+- **Measured over those 17 tracks: one-bar rows 362 -> 141, and the whole song comes out in 1224 rows against 1418** — fewer page turns than
+  the 1245 of the floor rule it replaced. Californication's rhythm track goes 36 one-bar rows of 82 to **0 of 51**; Godsmack's 82 of 110 to
+  **15 of 73**.
+- **Nine of the seventeen keep the full 58 px head** and are bit-for-bit what they were. That is the control: a song that already fits is never
+  narrowed.
+- **`PAIR_PERCENTILE` is 0.90 and there is no plateau to hide behind**, so the sweep is written down rather than a number asserted:
+
+| percentile | 0.80 | 0.85 | **0.90** | 0.95 | 1.00 |
+|---|---|---|---|---|---|
+| head width across the set | 47-58 | 47-58 | **45-58** | 41-58 | **30-58** |
+| rows holding one bar | 198 | 173 | **125** | 80 | 6 |
+
+  **1.00 lets the song's single densest bar set the head for the whole piece**, which is the pathology `MAX_BAR_STRETCH` exists to refuse one
+  level down — one 32nd run and every note in the song is drawn at 30 px. 0.90 is the most music that can vote without one bar owning the
+  answer.
+- **The note is as TALL as it ever was**, which is the regression this could have shipped: handing the narrow number to `row_height` would have
+  shrunk the music vertically too, and that is the one thing it exists not to do. A test pins the row pitch against the TALL head.
+- **The fret number is sized and centred on the head's own WIDTH now.** `radius = head / 2` was both, so a digit centred at `x + head/2` would
+  have sat outside a narrow head — and `_draw_sheet_row` **silently skips** a number wider than its head, so this would have quietly stopped
+  saying which fret to press. Measured on the player's own songs at the narrowed head: **0 of 3625 numbers dropped**, worst label 44 px in a
+  45 px head. It is the SONG's head width, never the row's narrowest note: a number that is one size on one row and another on the next is this
+  display's one standing rule broken.
+- **The layout costs 16 ms more** (`bar_units` walks the song a second time) on top of `lay_out`'s 38 ms, once per song, size and filter —
+  never in a frame. The frame itself is unchanged at 5.1 ms median on Californication's rhythm track at 1920x1080.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

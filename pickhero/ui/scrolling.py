@@ -1393,6 +1393,9 @@ class PlayingScreen:
         self._sheet_hit: tuple | None = None
         self._sheet_next: dict = {}
         self._sheet_key: tuple = ()
+        # How wide a head is drawn here. Not its height -- see
+        # `sheet.head_width_for`, and `_sheet_layout` is the only writer.
+        self._sheet_head_w: float = sheet.MIN_HEAD_PX
         self._sheet_zoom: int = sheet.ZOOM_DEFAULT
         self._sheet_scroll: float = 0.0
         self._sheet_glide_from: float = 0.0
@@ -2961,17 +2964,28 @@ class PlayingScreen:
     def _sheet_layout(self, width: int, head_px: float) -> list:
         """The song as rows, laid out once per song, size and filter.
 
-        Never per frame: this walks every bar of the song. A loop that looks
-        cheap until it runs sixty times a second is the fault this display
-        has had to fix three times.
+        `head_px` is how TALL a head may be -- the vertical room, which is
+        what +/- moves. How WIDE it is drawn is a different question with a
+        different answer (`sheet.head_width_for`), because the thing that
+        decides it is the music rather than the window: a bar holding one
+        sixteenth needs sixteen minimum gaps of width whatever the screen
+        is, so on a dense song a square head puts one bar on a line.
+
+        Never per frame: this walks every bar of the song twice. A loop that
+        looks cheap until it runs sixty times a second is the fault this
+        display has had to fix three times.
         """
         key = (width, round(head_px, 1), self._filter_signature(),
                id(self._timeline))
         if key != self._sheet_key:
             notes = [n for n in self._timeline.notes
                      if self._note_passes_filter(n)]
+            units = sheet.bar_units(self._timeline,
+                                    passes=self._note_passes_filter)
+            wide = sheet.head_width_for(units, float(width), head_px)
+            self._sheet_head_w = wide
             self._sheet_rows = sheet.lay_out(
-                self._timeline, float(width), head_px,
+                self._timeline, float(width), wide,
                 passes=self._note_passes_filter)
             # Where each slide, hammer-on and pull-off is GOING. Over the
             # whole song rather than the row, because the note a technique
@@ -3179,17 +3193,24 @@ class PlayingScreen:
                           or note.slide_out)
             if ((note.timestamp_ms, note.string) in self._palm_mute_starts
                     and not badged):
-                self._draw_badge(surface, "PM", x + head,
+                self._draw_badge(surface, "PM", x + width,
                                  self._badge_y(cy, head, head / 2), head,
                                  base, False)
 
-        fret_font = self._fret_font(radius, radius, self._fret_digits)
-        for note, x, cy, _width, _base in marks:
+        # Sized and centred on the head's own WIDTH, which is no longer its
+        # height: a digit centred at x + head/2 would sit outside a narrow
+        # head, and one sized for the height would not fit in it. The SONG's
+        # head width, never the row's narrowest note -- a number that is a
+        # different size on one row from the next is this display's one
+        # standing rule broken.
+        fret_font = self._fret_font(self._sheet_head_w / 2, radius,
+                                    self._fret_digits)
+        for note, x, cy, width, _base in marks:
             text = "X" if note.dead else str(note.fret)
             drawn = fret_font.render(text, True, t.note_text)
-            if drawn.get_width() > 2 * radius:
+            if drawn.get_width() > width:
                 continue
-            tx = int(x + radius) - drawn.get_width() // 2
+            tx = int(x + width / 2) - drawn.get_width() // 2
             ty = int(cy) - drawn.get_height() // 2
             outline = fret_font.render(text, True, (0, 0, 0))
             for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):

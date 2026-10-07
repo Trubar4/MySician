@@ -12,7 +12,8 @@ import pytest
 
 from pickhero.tabs.timeline import (MeasureInfo, NoteEvent, SongMetadata,
                                     Timeline)
-from pickhero.ui.sheet import (MIN_GAP_HEADS, QUARTER_HEADS, lay_out, row_at)
+from pickhero.ui.sheet import (MIN_GAP_HEADS, QUARTER_HEADS, bar_units,
+                               head_width_for, lay_out, row_at)
 
 HEAD = 44.0
 WIDTH = 1200.0
@@ -607,3 +608,100 @@ class TestOneSpeedThroughOneBar:
             shapes.append([w / widths[0] for w in widths])
         for shape in shapes[1:]:
             assert shape == pytest.approx(shapes[0], rel=1e-6)
+
+
+class TestAHeadIsAsWideAsTheMusicAllows:
+    """*"Nun ist ab und zu nur noch ein Takt in einer ganzen Zeile, obwohl
+    die Köpfe schmaler gemacht werden könnten und 2 Takte Platz hätten."*
+
+    With the gaps of a bar in exact proportion, a 4/4 bar costs
+    `16 x MIN_GAP_HEADS` heads the moment it holds ONE sixteenth -- 1095 px
+    at a 58 px head, so two of them do not fit a 1786 px line. The head is
+    the only lever left, and it does not have to be square: the vertical
+    room says how TALL it may be, the music how WIDE.
+    """
+
+    LINE = 1786.0
+    TALL = 58.0
+
+    def _bar(self, gaps, bar_ms=None, tempo=78, bars=4):
+        """`bars` copies of one rhythm, as a song."""
+        bar_ms = bar_ms if bar_ms is not None else sum(gaps)
+        return _song([[sum(gaps[:i]) for i in range(len(gaps) + 1)]] * bars,
+                     tempo=tempo, bar_ms=bar_ms)
+
+    def _sixteenths(self):
+        """A 4/4 bar of eighths with one pair of sixteenths in it."""
+        return self._bar((385.0, 192.0, 192.0, 385.0, 385.0, 385.0,
+                          192.0, 192.0, 385.0), bar_ms=3076.9)
+
+    def _quarters(self):
+        return self._bar((769.0, 769.0, 769.0), bar_ms=3076.0)
+
+    def test_a_dense_song_gets_a_narrower_head(self):
+        song = self._sixteenths()
+        wide = head_width_for(bar_units(song), self.LINE, self.TALL)
+        assert wide < self.TALL
+
+    def test_a_roomy_song_keeps_the_whole_head(self):
+        """The control: nothing narrows a song that already fits."""
+        song = self._quarters()
+        assert head_width_for(bar_units(song), self.LINE,
+                              self.TALL) == self.TALL
+
+    def test_two_bars_now_fit_where_one_did(self):
+        song = self._sixteenths()
+        square = lay_out(song, self.LINE, self.TALL)
+        wide = head_width_for(bar_units(song), self.LINE, self.TALL)
+        narrow = lay_out(song, self.LINE, wide)
+        assert all(r.last_bar == r.first_bar for r in square), "test is moot"
+        assert all(r.last_bar > r.first_bar for r in narrow)
+
+    def test_it_never_goes_below_the_floor_or_above_the_room(self):
+        from pickhero.ui.sheet import MIN_HEAD_PX
+        for line in (120.0, 400.0, 1786.0, 9000.0):
+            for tall in (24.0, 58.0):
+                wide = head_width_for(bar_units(self._sixteenths()),
+                                      line, tall)
+                assert MIN_HEAD_PX - 1e-6 <= wide <= tall + 1e-6
+
+    def test_a_song_with_no_bars_asks_for_nothing(self):
+        assert head_width_for([], self.LINE, self.TALL) == self.TALL
+
+    def test_the_gaps_still_clear_the_narrowed_head(self):
+        """Narrower heads need a narrower floor, or they overlap."""
+        song = self._sixteenths()
+        wide = head_width_for(bar_units(song), self.LINE, self.TALL)
+        for row in lay_out(song, self.LINE, wide):
+            per_string = {}
+            for placed in row.notes:
+                per_string.setdefault(placed.note.string, []).append(placed.x)
+            for xs in per_string.values():
+                xs.sort()
+                for a, b in zip(xs, xs[1:]):
+                    assert b - a >= wide, f"{b - a:.1f} px for a {wide:.1f} head"
+
+    def test_the_bar_is_laid_out_in_proportion_at_either_width(self):
+        """The shape of a bar is the head's business only in pixels -- which
+        is what keeps the one speed through a bar that this was built for."""
+        song = self._sixteenths()
+        wide = head_width_for(bar_units(song), self.LINE, self.TALL)
+        a = lay_out(song, 100_000.0, self.TALL)[0]
+        b = lay_out(song, 100_000.0, wide)[0]
+        shape = lambda r: [(x - r.xs[0]) / (r.xs[-1] - r.xs[0]) for x in r.xs]
+        assert shape(a) == pytest.approx(shape(b), rel=1e-6)
+
+    def test_bar_units_are_the_layout_at_one_pixel(self):
+        """Every width in `lay_out` is linear in the head, which is the whole
+        reason the width can be chosen by arithmetic instead of a search.
+
+        Laid out at exactly the width it asks for, so the row is neither
+        stretched nor squeezed and the pixels on screen ARE the answer.
+        """
+        song = self._bar((385.0, 192.0, 192.0, 385.0, 385.0, 385.0,
+                          192.0, 192.0, 385.0), bar_ms=3076.9, bars=1)
+        unit = bar_units(song)[0]
+        for head in (23.0, 37.0, 58.0):
+            row = lay_out(song, unit * head, head)[0]
+            assert row.xs[-1] - row.xs[0] == pytest.approx(unit * head,
+                                                           rel=1e-6)

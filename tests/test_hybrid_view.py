@@ -845,3 +845,97 @@ class TestTheLeadIn:
         be: 56 px of travel in a second is a millimetre a frame."""
         from pickhero.ui.scrolling import LEAD_IN_DIM, LEAD_IN_DIM_START
         assert 0.0 < LEAD_IN_DIM_START < LEAD_IN_DIM < 1.0
+
+
+class TestTheHeadIsAsWideAsTheMusicAllows:
+    """*"Nun ist ab und zu nur noch ein Takt in einer ganzen Zeile, obwohl die
+    Köpfe schmaler gemacht werden könnten und 2 Takte Platz hätten."*
+
+    The arithmetic in `sheet.head_width_for` says how wide; this is about the
+    half that reaches the eye -- that the narrow number really governs the
+    layout, that the TALL one still governs the row, and that the fret number
+    still fits in the head it is drawn in.
+    """
+
+    def _dense(self, bars=16):
+        """A 4/4 bar of eighths with one pair of sixteenths, over and over.
+
+        One sixteenth is all it takes: with the gaps in proportion the bar
+        then costs 16 minimum gaps of width however few notes it holds.
+        """
+        gaps = (385.0, 192.0, 192.0, 385.0, 385.0, 385.0, 192.0, 192.0, 385.0)
+        notes, measures = [], []
+        for bar in range(bars):
+            start = bar * 3076.9
+            measures.append(MeasureInfo(index=bar, start_ms=start,
+                                        end_ms=start + 3076.9,
+                                        beats=4, beat_type=4))
+            at = 0.0
+            for i, gap in enumerate((0.0,) + gaps):
+                at += gap
+                notes.append(NoteEvent(timestamp_ms=start + at,
+                                       duration_ms=120.0, midi_note=40 + i,
+                                       string=1 + (i % 3), fret=12 + i % 7,
+                                       measure=bar))
+        return Timeline(notes, SongMetadata(title="dense", tempo=78),
+                        measures=measures)
+
+    def test_a_dense_song_narrows_the_head(self):
+        screen = _screen(self._dense())
+        screen.render(_surface())
+        room = screen._sheet_hit[1]
+        assert screen._sheet_head_w < screen._sheet_head_px(room)
+
+    def test_and_a_roomy_one_does_not(self):
+        """The control: a song that already fits is bit-for-bit what it was."""
+        screen = _screen(_song())
+        screen.render(_surface())
+        room = screen._sheet_hit[1]
+        assert screen._sheet_head_w == pytest.approx(
+            screen._sheet_head_px(room))
+
+    def test_the_narrow_head_is_what_the_layout_got(self):
+        screen = _screen(self._dense())
+        screen.render(_surface())
+        widths = [p.width for r in screen._sheet_rows for p in r.notes]
+        assert min(widths) == pytest.approx(screen._sheet_head_w, rel=1e-6)
+
+    def test_the_row_is_still_as_tall_as_the_screen_allows(self):
+        """The regression this change could have shipped: handing the narrow
+        number to `row_height` would have shrunk the music vertically as
+        well, which is the whole thing it exists not to do."""
+        screen = _screen(self._dense())
+        screen.render(_surface())
+        room = screen._sheet_hit[1]
+        tall = screen._sheet_head_px(room)
+        assert screen._sheet_hit[3] == pytest.approx(
+            sheet.row_height(tall, strip=screen._sheet_strip())
+            + sheet.ROW_GAP)
+
+    def test_two_bars_land_on_a_row_where_one_did(self):
+        song = self._dense()
+        screen = _screen(song)
+        screen.render(_surface())
+        narrow = screen._sheet_rows
+        pad = scrolling.PlayingScreen._sheet_pad(1280)
+        square = sheet.lay_out(song, 1280 - 2 * pad,
+                               screen._sheet_head_px(screen._sheet_hit[1]))
+        assert all(r.last_bar == r.first_bar for r in square), "test is moot"
+        assert any(r.last_bar > r.first_bar for r in narrow)
+
+    def test_every_fret_number_fits_the_head_it_is_drawn_in(self):
+        """`_draw_sheet_row` silently SKIPS a number wider than its head, so
+        a head narrowed past the digits would quietly stop saying which fret
+        to press -- which is this project's own definition of a feature that
+        does not work."""
+        screen = _screen(self._dense())
+        screen.render(_surface())
+        font = screen._fret_font(screen._sheet_head_w / 2,
+                                 screen._sheet_head_px(screen._sheet_hit[1])
+                                 / 2, screen._fret_digits)
+        for row in screen._sheet_rows:
+            for placed in row.notes:
+                drawn = font.render(str(placed.note.fret), True, (0, 0, 0))
+                assert drawn.get_width() <= placed.width, (
+                    f"fret {placed.note.fret} is {drawn.get_width()} px in a "
+                    f"{placed.width:.0f} px head")

@@ -372,6 +372,84 @@ def quarter_ms(bar: MeasureInfo, fallback_ms: float) -> float:
     return length / quarters
 
 
+# What share of a song's bars has to be narrow enough to share a line with
+# the bar after it. See `head_width_for`: the head is as TALL as the screen
+# allows and as WIDE as the music allows, and this says how much of the
+# music gets a vote.
+#
+# It is a fitted number and there is no plateau to hide behind. Swept over
+# 17 guitar tracks of 7 songs at the player's own 1920 window:
+#
+#   percentile      0.80   0.85   **0.90**   0.95   1.00
+#   head width      47-58  47-58  **45-58**  41-58  30-58
+#   rows holding one bar   198    173  **125**     80      6
+#
+# 1.00 means the song's single densest bar sets the head for the whole
+# piece, which is the pathology `MAX_BAR_STRETCH` already exists to refuse
+# one level down. 0.90 keeps the full-size head on 8 of those 17 tracks and
+# narrows the dense ones by a fifth.
+PAIR_PERCENTILE = 0.90
+
+
+def bar_units(timeline: Timeline, passes: object = None) -> list[float]:
+    """Each bar's width at a head of ONE pixel, in bar order.
+
+    Every width in `lay_out` is linear in the head, so this is the whole
+    song measured once in a unit the head can then be chosen against --
+    which is what makes `head_width_for` arithmetic rather than a search.
+    """
+    measures = list(timeline.measures)
+    notes = [n for n in timeline.notes if passes is None or passes(n)]
+    if not measures:
+        return [1.0]
+    written_quarter = 60_000.0 / max(1, timeline.metadata.tempo)
+    out = []
+    for bar in measures:
+        anchors = _bar_anchors(bar, notes)
+        per_ms = QUARTER_HEADS / quarter_ms(bar, written_quarter)
+        out.append(sum(_widths(anchors, per_ms, MIN_GAP_HEADS)))
+    return out
+
+
+def head_width_for(units: list[float], line: float, tall: float) -> float:
+    """How WIDE a head may be drawn, given how tall the screen lets it be.
+
+    *"Nun ist ab und zu nur noch ein Takt in einer ganzen Zeile, obwohl die
+    Koepfe schmaler gemacht werden koennten und 2 Takte Platz haetten."*
+
+    He is right, and the arithmetic says there is no other lever. With the
+    gaps of a bar in exact proportion, the bar's width is
+
+        (bar duration / its shortest gap) x MIN_GAP_HEADS heads
+
+    -- so a 4/4 bar is 16 x 1.18 heads the moment it contains ONE sixteenth,
+    whether it holds two notes or sixteen. At a 58 px head that is 1095 px
+    and two of them do not fit a 1786 px line. Nothing between "stretch the
+    bar" and "do not" exists: a partial stretch leaves the short gaps on the
+    floor, so the bar is just as wide AND the playhead speed varies again
+    (swept: capping the bar at half a line left 320 one-bar rows and brought
+    475 of the 504 uneven bars back).
+
+    The head is the lever, and it does not have to be square. The scrolling
+    board already squeezes a head sideways while it keeps the lane's full
+    height; here the two questions are simply asked of different things:
+    the VERTICAL room says how tall a head can be, and the music says how
+    wide it may be before two bars stop fitting a line.
+
+    Measured over 17 guitar tracks: rows holding a single bar 362 -> 125,
+    and the whole song comes out in 1215 rows against 1418 -- fewer page
+    turns than before the proportional spacing was built at all.
+    """
+    if not units or line <= 0:
+        return tall
+    pairs = sorted(a + b for a, b in zip(units, units[1:])) or [max(units)]
+    want = pairs[min(len(pairs) - 1,
+                     int(PAIR_PERCENTILE * (len(pairs) - 1)))]
+    if want <= 0:
+        return tall
+    return max(MIN_HEAD_PX, min(tall, line / want))
+
+
 def lay_out(timeline: Timeline, width: float, head_px: float,
             passes: object = None) -> list[Row]:
     """Break the song into rows of bars and place every note in them.
