@@ -152,6 +152,22 @@ class MatchType(Enum):
     MISS = "miss"
 
 
+#: How good a verdict is, for the one comparison that needs an order: which
+#: of two verdicts for the same note is the better one. PENDING is below MISS
+#: because it is not a verdict at all -- a note nobody has judged must never
+#: win over one that was played.
+_VERDICT_RANK = {
+    MatchType.PENDING: 0,
+    MatchType.MISS: 1,
+    MatchType.CLOSE: 2,
+    MatchType.HIT: 3,
+}
+
+
+def _rank(state: MatchType) -> int:
+    return _VERDICT_RANK.get(state, 0)
+
+
 @dataclass
 class MatchResult:
     """Result of matching a detected note against the timeline."""
@@ -245,6 +261,11 @@ class NoteMatcher:
 
         # State per note event, keyed by (timestamp_ms, string)
         self._note_states: dict[tuple[float, int], MatchType] = {}
+        # The verdict a note is not allowed to fall BELOW, and what that
+        # verdict rested on. Only the pause rewind puts anything in here --
+        # see `forget_from(floor_until_ms=...)`.
+        self._verdict_floor: dict[tuple[float, int],
+                                  tuple[MatchType, bool]] = {}
 
         # Statistics
         self.hits = 0
@@ -500,6 +521,13 @@ class NoteMatcher:
         question a six-string chord scoring 94 % raises.
         """
         key = self._note_key(event)
+        floored = self._verdict_floor.get(key)
+        if floored is not None and _rank(floored[0]) > _rank(match_type):
+            # A note replayed after a pause may only ever get BETTER. The
+            # player's rule, and it is why the rewind is safe to do on every
+            # pause: coming back in sloppily cannot cost three notes that
+            # were already right.
+            match_type, proved = floored[0], floored[1]
         self._set_state(event, match_type)
         self._unreliable.pop(key, None)
         if match_type in (MatchType.HIT, MatchType.CLOSE):
@@ -566,13 +594,18 @@ class NoteMatcher:
             if inherited is not None:
                 self._record_match(note, inherited, proved=False)
                 results.append(MatchResult(
-                    match_type=inherited,
+                    # What was RECORDED, which the verdict floor may have
+                    # raised: a note replayed after a pause keeps its better
+                    # verdict, and the colour on screen has to agree with it.
+                    match_type=self._get_state(note),
                     matched_events=[note],
                     semitone_distance=None,
                 ))
                 continue
             self._record_match(note, MatchType.MISS)
-            if self._struck_unreadably(note.timestamp_ms):
+            verdict = self._get_state(note)
+            if verdict is MatchType.MISS and self._struck_unreadably(
+                    note.timestamp_ms):
                 # Something WAS struck here and the detector could make
                 # nothing of it -- ringing neighbours leaving YIN no single
                 # period, or a subharmonic naming the chord in the room
@@ -581,7 +614,7 @@ class NoteMatcher:
                 # playing, and the screen should not pretend it is.
                 self._unreliable[self._note_key(note)] = "unreadable"
             results.append(MatchResult(
-                match_type=MatchType.MISS,
+                match_type=verdict,
                 matched_events=[note],
                 semitone_distance=None,
             ))
@@ -1610,7 +1643,8 @@ class NoteMatcher:
         weak_runs.sort(key=lambda x: x[2])
         return weak_runs
 
-    def forget_from(self, song_ms: float) -> None:
+    def forget_from(self, song_ms: float,
+                    floor_until_ms: float | None = None) -> None:
         """Put every note at or after `song_ms` back to PENDING.
 
         Seeking used to call `reset()`, which threw the WHOLE run away -- so
@@ -1625,13 +1659,33 @@ class NoteMatcher:
         replays a passage is no longer one run through the song, and its
         percentage is the best of several attempts at the parts that were
         repeated.
+
+        `floor_until_ms` marks a stretch the player is about to hear AGAIN
+        rather than for the first time -- the few onsets the pause rewind
+        gives back. Those notes go PENDING like the rest, so a new strike can
+        credit them, but their old verdict is remembered as a FLOOR: replayed
+        better the better verdict stands, replayed worse or not at all the old
+        one does. *"Bester gilt."*
+
+        It stops at that point rather than running to the end, because
+        nothing beyond it has been played in this pass -- and a floor that
+        reached further would quietly stop a drill from ever scoring a pass
+        worse than the one before it.
         """
         notes = self._timeline.get_notes_in_range(song_ms, float("inf"))
         for note in notes:
             key = self._note_key(note)
             state = self._note_states.get(key)
+            # A floor from an earlier rewind describes verdicts this call is
+            # clearing, so it goes whatever happens; the new stretch asks for
+            # its own below.
+            self._verdict_floor.pop(key, None)
             if state is None or state is MatchType.PENDING:
                 continue
+            if (floor_until_ms is not None
+                    and note.timestamp_ms < floor_until_ms):
+                self._verdict_floor[key] = (
+                    state, self._credit_proved.get(key, True))
             self._undo_match(note, state)
             self._note_states.pop(key, None)
             self._credit_proved.pop(key, None)
@@ -1681,6 +1735,7 @@ class NoteMatcher:
         self._unreliable.clear()
         self._unreadable_strikes.clear()
         self._note_states.clear()
+        self._verdict_floor.clear()
         self.hits = 0
         self.close = 0
         self.misses = 0

@@ -342,6 +342,29 @@ MAX_FRAME_STALL_S = 0.25
 #: because the practice speed did.
 LOOP_BREATH_S = 1.5
 
+#: Coming back from a pause, the song gives a few onsets back and stands
+#: still for a moment before it starts again. *"Nach Pause beim wieder
+#: Anlaufen 3 Anschlaege zurueck und 1 Sekunde einzaehlen."*
+#:
+#: Onsets rather than written notes: one power chord is three written notes
+#: on one stroke, so three notes back would be a third of a second and three
+#: strokes back is about a second of music -- which is what a player means by
+#: three notes.
+PAUSE_REWIND_ONSETS = 3
+#: Silent, and one second of real time: the picture stands still with a
+#: countdown on it, the way a loop turn already does. No clicks -- a count-in
+#: worth hearing is counted in BEATS, and one second at 170 BPM is 2.8 of
+#: them, which is not a bar anybody can count.
+PAUSE_COUNT_IN_S = 1.0
+#: The playhead lands this far BEFORE the onset it rewound to, and the reason
+#: is measured rather than felt. Landing on the onset means the note is due
+#: the instant the countdown ends -- and this player's own strikes run 13 to
+#: 90 ms ahead of the written note, so the first one would be struck while
+#: the picture was still held, where strikes are DROPPED. A quarter of a
+#: second clears the hit window (150 ms by default) and gives the hand a
+#: moving target to come in on.
+PAUSE_REWIND_LEAD_MS = 250.0
+
 #: The track picker's geometry. See track_menu_box.
 TRACK_MENU_ROW_H = 28
 TRACK_MENU_MIN_WIDTH = 300
@@ -1187,6 +1210,11 @@ class PlayingScreen:
         #: Real seconds left of the drill's breath at the top of a passage.
         #: Zero when nothing is being held.
         self._breath_s: float = 0.0
+        #: Did a seek choose the current position? Then the next resume does
+        #: not rewind -- see `_rewind_for_pause`.
+        self._position_chosen: bool = False
+        #: How many times the pause rewind fired, for the run log.
+        self._pause_rewinds: int = 0
         self._matcher: NoteMatcher | None = None
         self._feedback = FeedbackRenderer()
         self._audio_enabled = True
@@ -1616,16 +1644,26 @@ class PlayingScreen:
             self._recommendations = []
         self._playing = not self._playing
         if self._playing:
+            # A few onsets back, then stand still for a moment -- so coming
+            # out of a pause means coming in ON the beat rather than guessing
+            # where it is. Before everything else here, because every line
+            # below works from `_playback_ms`.
+            resumed_at = self._rewind_for_pause()
             # Playing from HERE re-judges from here, and only from here. What
             # is behind the playhead was already judged and is the record of
             # the run -- the thing the player goes back to look at. A seek no
             # longer throws it away; this is where it is spent, deliberately,
             # because the notes ahead are about to be played again.
             if self._matcher:
-                self._matcher.forget_from(max(0.0, self._playback_ms))
+                self._matcher.forget_from(max(0.0, self._playback_ms),
+                                          floor_until_ms=resumed_at)
                 # The strikes go with the verdicts, or a passage
-                # replayed would leave its old bars counted as played.
-                self._forget_heard_from(max(0.0, self._playback_ms))
+                # replayed would leave its old bars counted as played. The
+                # rewound stretch keeps both: it really was played, and its
+                # verdicts can now only improve.
+                self._forget_heard_from(
+                    max(0.0, resumed_at if resumed_at is not None
+                        else self._playback_ms))
             # Only start audio capture when past count-in. If the stream is
             # already open -- which after a pause it now is -- re-anchoring is
             # the whole of what resuming needs, and it does not touch the
@@ -1642,10 +1680,20 @@ class PlayingScreen:
                     player.seek(self._backing_ms(self._playback_ms))
             if self._mp3_player is not None and self._playback_ms >= 0:
                 if self._mp3_plays() and self._mp3_pending_seek_ms is None:
-                    if self._mp3_player.suspended:
+                    if self._mp3_player.suspended and resumed_at is None:
                         self._mp3_player.set_suspended(False)
                     else:
+                        # A rewind HAS to seek: unsuspending resumes the
+                        # recording where it stood, which is the position the
+                        # song just gave back. That is the one cost of this
+                        # feature -- a seek decodes the file up to that point,
+                        # where unsuspending costs nothing -- and it is why
+                        # `mp3_worst_seek_ms` is worth reading after it.
                         self._seek_mp3(self._mp3_ms(self._playback_ms))
+            if resumed_at is not None:
+                # Last: the hold suspends the backing again, so it has to
+                # come after the seek that put it in the right place.
+                self._hold_breath(PAUSE_COUNT_IN_S)
             # LAST, not first: opening a device or starting a recording can
             # take a moment, and the clock must start when the song does. Set
             # before them, that moment is charged to the song and the picture
@@ -1717,6 +1765,11 @@ class PlayingScreen:
             self._release_breath()
         was = self._playback_ms
         self._playback_ms = max(0.0, min(ms, self._timeline.duration_ms))
+        # The player picked this spot, so the pause rewind must not move them
+        # off it. `take_passage` lands a marked passage with the song paused
+        # at the loop start, and rewinding three onsets out of it on the next
+        # SPACE would be a key fighting the one that was just pressed.
+        self._position_chosen = True
         # Spooling FORWARD is not playing badly. The notes it jumps over were
         # never in front of the player, so they stay unreached rather than
         # being swept up as misses -- see `matcher.skip_to`.
@@ -2150,6 +2203,12 @@ class PlayingScreen:
             if raw_elapsed > MAX_FRAME_STALL_S:
                 self._clock_stalls += 1
             self._playback_ms += real_elapsed * 1000.0 * self._tempo_factor
+            # The song has run on from wherever a seek put it, so the spot is
+            # no longer one the player is standing on -- and the next pause
+            # may rewind again. Without this the flag outlived its reason: an
+            # arrow key while PLAYING would switch the rewind off for the rest
+            # of the song.
+            self._position_chosen = False
             # REAL seconds, not song time: at 70 % speed the song is shorter
             # than the time you spent on it, and it is the time you spent that
             # a practice diary is about.
@@ -5641,8 +5700,8 @@ class PlayingScreen:
         if note:
             self._say(note)
 
-    def _hold_breath(self) -> None:
-        """Stand still at the top of the passage for `LOOP_BREATH_S`.
+    def _hold_breath(self, seconds: float = LOOP_BREATH_S) -> None:
+        """Stand still where the song is for `seconds`.
 
         The recording is SUSPENDED rather than stopped: `pause` means the
         next start is a `play(start=)`, which decodes the file up to that
@@ -5654,11 +5713,48 @@ class PlayingScreen:
         The MIDI backing needs nothing: it only sounds where `update()` plays
         its events, and the breath returns before that.
         """
-        self._breath_s = LOOP_BREATH_S
+        self._breath_s = seconds
         for player in self._midi_all():
             player.pause()
         if self._mp3_player is not None:
             self._mp3_player.set_suspended(True)
+
+    def _rewind_for_pause(self) -> float | None:
+        """Give `PAUSE_REWIND_ONSETS` onsets back. Returns where we were.
+
+        None when nothing was given back, and that is most of the reasons:
+
+        * the count-in is running, so there is no run to rewind into;
+        * a seek chose this spot, and a key must not undo the key before it;
+        * there are not that many onsets behind the playhead yet;
+        * a loop is on and its start is already in front of the target --
+          rewinding past it would be undone by the loop on the next frame.
+
+        Onsets are read off the notes the SCREEN shows: a note a filter hides
+        is not an onset the player can see, so it cannot be one of the three
+        they are counting back.
+        """
+        was = self._playback_ms
+        if was <= 0.0:
+            return None
+        if self._position_chosen:
+            self._position_chosen = False
+            return None
+        onsets = sorted({n.timestamp_ms for n in self._timeline.notes
+                         if n.timestamp_ms < was
+                         and self._note_passes_filter(n)})
+        if len(onsets) < PAUSE_REWIND_ONSETS:
+            return None
+        target = onsets[-PAUSE_REWIND_ONSETS] - PAUSE_REWIND_LEAD_MS
+        floor = 0.0
+        if self._loop_start_ms is not None and self._loop_enabled:
+            floor = max(floor, self._loop_start_ms)
+        target = max(floor, target)
+        if target >= was:
+            return None
+        self._playback_ms = target
+        self._pause_rewinds += 1
+        return was
 
     def _release_breath(self) -> None:
         """Start the passage again: the backing, then the clocks.
@@ -6282,14 +6378,21 @@ class PlayingScreen:
         # the wallpaper this HUD was cut down to remove.
         if self._drill is not None and not self._drill.finished:
             loop_info = self._drill.line()
-            if self._breath_s > 0.0:
-                # Counted down rather than merely implied. A picture that
-                # stands still is what a frozen app looks like, and this one
-                # stands still on purpose every few seconds.
-                loop_info += f" — ready in {self._breath_s:.1f} s"
         else:
             loop_info = self._loop_hud_text()
-        if loop_info and self._loop_enabled:
+        if not self._loop_enabled:
+            loop_info = ""
+        if self._breath_s > 0.0:
+            # Counted down rather than merely implied. A picture that stands
+            # still is what a frozen app looks like, and this one stands
+            # still on purpose -- at every loop turn, and now after every
+            # pause, where there is no loop line to hang it off. On its own
+            # line in that case: the countdown was drawn INSIDE the drill's
+            # line and behind `_loop_enabled`, so the pause rewind would have
+            # held the picture for a second with nothing on screen saying why.
+            count = f"ready in {self._breath_s:.1f} s"
+            loop_info = f"{loop_info} — {count}" if loop_info else count
+        if loop_info:
             loop_surf = hint_font.render(loop_info, True, t.hud_accent)
             surface.blit(loop_surf, (w // 2 - loop_surf.get_width() // 2, 12))
 
@@ -7771,6 +7874,12 @@ class PlayingScreen:
                      f"tab did ({self._timeline.duration_ms / 1000:.0f}s "
                      f"written)\n")
         fh.write(f"seeks\t{self._seeks}\n")
+        # How often the pause rewind gave onsets back. A run with many
+        # of them replayed that much of itself, so the score is the best
+        # of several attempts at those stretches -- the same cost
+        # `forget_from` already names, and a number is the only way to
+        # see how much of it a run actually paid.
+        fh.write(f"pause_rewinds\t{self._pause_rewinds}\n")
         self._frame_line(fh)
         self._interval_line(fh)
         # Which pacing this reading came from. Two logs that differ in the
@@ -7971,7 +8080,9 @@ class PlayingScreen:
             # bound and written down nowhere is a key nobody finds, and this
             # overlay is the only place left that can carry them all.
                 ("Playing", [
-                ("SPACE: play/pause", "playing" if self._playing else "paused"),
+                ("SPACE: play/pause — restarting gives back "
+                 f"{PAUSE_REWIND_ONSETS} strokes, then counts 1 s in",
+                 "playing" if self._playing else "paused"),
                 "HOME: restart     ESC: song list",
                 "LEFT/RIGHT: a beat   Shift: a bar   Ctrl: 30 seconds",
                 "The strip along the bottom is the whole song: click it to",

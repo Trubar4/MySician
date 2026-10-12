@@ -4114,6 +4114,7 @@ pickhero/
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
+- `tests/test_pause_rewind.py` — the pause rewind: the arithmetic, the verdict floor through the one place a verdict is written, and the real `toggle_play` and `update()`. Its control is in the same file rather than in the old code — omitting the floor IS the old behaviour
 - `tests/test_review.py` — what could not be judged, that a seek keeps the run, and the right-drag loop
 - `tests/test_runs.py` — the stored runs, and the two synthetic ones, on strings and without a screen
 - `tests/test_stats_view.py` — the list, picking two, and that marking a passage does not start playing
@@ -6991,6 +6992,55 @@ arithmetic rather than a search) and `head_width_for` divides the line by the pa
   display's one standing rule broken.
 - **The layout costs 16 ms more** (`bar_units` walks the song a second time) on top of `lay_out`'s 38 ms, once per song, size and filter —
   never in a frame. The frame itself is unchanged at 5.1 ms median on Californication's rhythm track at 1920x1080.
+
+## Coming Back From A Pause, On The Beat
+
+*"Nach Pause beim wieder Anlaufen 3 Noten zurück und 1 Sekunde einzählen. Wenn ich die Noten neu spiele überschreibt es sie und sonst gilt
+der alte Wert."*
+
+**It makes an accidental finding deliberate, and that is the honest reason to build it.** The chapter above measured what his pause really
+does: the re-anchor accounted for exactly the 2.56 s he stood still and corrected **nothing** — what changed between a passage scoring 0 of 48
+and the same shapes scoring 12 of 12 three seconds later is that he came back in on the beat. The app was never recovering. This is that
+recovery given a mechanism instead of being left to chance.
+
+- **Three STROKES, not three written notes.** A drop-tuning power chord is three written notes on one stroke, so three notes back is a third
+  of a second and three strokes back is about a second of music — which is what a player means. `PAUSE_REWIND_ONSETS` counts distinct onsets,
+  and only among the notes the SCREEN shows: a note a fret filter hides is not one of the three anybody is counting back.
+- **It lands `PAUSE_REWIND_LEAD_MS` (250) BEFORE that onset, and the number is measured rather than felt.** Landing on the onset puts the note
+  due the instant the countdown ends — and this player's own strikes run 13 to 90 ms ahead of the written note, so the first one would be
+  struck while the picture was still held, where strikes are **dropped**. A quarter of a second clears the hit window and gives the hand a
+  moving target to come in on. The test asserts the room, not the constant.
+- **Silent, one second, and it is the loop's own breath.** `_hold_breath` took a constant and now takes the length; everything else was already
+  right there — the picture holds, the recording is suspended, both audio queues are drained, the clock is paused and the anchor is re-armed on
+  release. No clicks: a count-in worth hearing is counted in BEATS, and one second at 170 BPM is 2.8 of them, which is not a bar anybody can
+  count.
+- **Bester gilt, which is what makes it safe to do on EVERY pause.** The rewound notes go PENDING like any replayed stretch, so a new strike can
+  credit them — but their old verdict is remembered as a floor (`forget_from(floor_until_ms=...)`), and `_record_match`, the one place a verdict
+  is written, refuses to record a worse one. Replay them better and the better verdict stands; replay them worse, or not at all, and the old one
+  does. Without that the feature is a trap: he pauses for a reason that has nothing to do with those three chords, comes back in sloppily, and
+  **loses three notes he had already played right.**
+- **The floor stops at the pause position.** Nothing beyond it has been played in this pass. A floor that ran to the end of the song would
+  quietly stop a drill from ever scoring a pass worse than the one before it — and `drill.count` reads exactly those verdicts. A plain
+  `forget_from` (a loop turn, a tempo change) clears any floor it finds, so the two cannot leak into each other.
+- **A position the player CHOSE is left alone.** `take_passage` lands a marked passage paused at the loop start, so rewinding three strokes out
+  of it on the next SPACE would be one key undoing the key before it. `seek` sets `_position_chosen` and the next resume spends it. Same for the
+  count-in, for a song with fewer than three strokes behind the playhead, and for a live loop whose start is already past the target — there the
+  loop would drag it back on the next frame anyway, which is a key that looks broken.
+- **The verdict it REPORTS is the one it recorded.** `_mark_missed_notes` proposed MISS and appended a `MatchResult` saying MISS; with a floor
+  the recorded verdict can be better than the proposal, and the colour that flashes on screen has to agree with the colour that stays. Two
+  readings of one verdict is how a note comes to flash red and then sit there green.
+- **The one cost, named rather than hidden: every resume now SEEKS the recording.** Unsuspending resumes it where it stood, which is the position
+  the song just gave back, so a rewind has to seek — and a seek decodes the file up to that point, which is the mechanism this project has
+  already paid seconds of frozen picture for. On the player's own logs `mp3_worst_seek_ms` reads 0, so it is cheap there; the run log counts
+  `pause_rewinds` beside it, because a run that gave twenty stretches back is a run whose score is the best of several attempts at them.
+- **And the countdown had to be let out of the drill's line.** It was drawn inside `self._drill.line()` and behind `self._loop_enabled`, so a
+  pause rewind would have stood the picture still for a second with **nothing on screen saying why** — which is what a frozen app looks like, and
+  the fifth time in this file. It is its own line when there is no loop to hang it off, and a test renders the frame with and without the hold
+  and requires them to differ.
+
+**What this does NOT do, said out loud because the temptation is obvious:** it does not fix the ±150 ms the chapter above measured. It gives him
+a clean entry after a pause and nothing else; the wander within a passage is still unexplained, and whether it is his timing or a sync map with
+no point between 72 and 113 s is still the open question there.
 
 ## What NOT To Do
 
