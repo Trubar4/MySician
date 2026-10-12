@@ -385,3 +385,147 @@ class TestTheChosenSpotDoesNotOutliveItsReason:
         screen.seek(5000.0)
         screen.toggle_play()                   # play
         assert screen._playback_ms == 5000.0
+
+
+class _FakeMp3:
+    """The shape `_update_mp3` drives, recording what it was told to do."""
+
+    ready = True
+    time_scale = 1.0
+
+    def __init__(self):
+        self.suspended = False
+        self.playing = False
+        self.stopped = 0
+        self.seeks = 0
+        self.sounded_frames = 0
+
+    def pause(self):
+        self.stopped += 1
+        self.suspended = False
+
+    def seek(self, ms):
+        self.seeks += 1
+        self.suspended = False
+
+    def set_suspended(self, value):
+        self.suspended = value
+
+    def update(self, ms, correct=True):
+        # The real player only advances the mixer when it is not suspended.
+        if not self.suspended:
+            self.sounded_frames += 1
+
+    def position_ms(self):
+        return 0.0
+
+    def heard_ms(self):
+        return None
+
+    def drift_ms(self, ms):
+        return 0.0
+
+
+class TestTheRecordingIsSilentWhileTheSongStandsStill:
+    """*"Nach der Pause bin ich um 1 Sek. versetzt und Bild und Ton sind nicht
+    mehr Sync."*
+
+    `_update_mp3` runs every frame of the hold, and `_mp3_plays` asked
+    `self._playing` -- which is True through a breath, so the next frame
+    unsuspended the recording and it played the whole second out against a
+    picture that was not moving. Then the pull crept it back at 5 %/s,
+    because 1 s never reaches `SYNC_SNAP_MS`.
+
+    Every test here fails on the code before this, the loop one included:
+    the fault was in the loop breath from the day it shipped and nobody had
+    looped a song with a recording loaded.
+    """
+
+    def _screen(self, mp3):
+        screen = _screen()
+        screen._mp3_player = mp3
+        return screen
+
+    def _breathe(self, screen, frames=6):
+        for _ in range(frames):
+            screen._last_tick = time.perf_counter() - 0.05
+            screen.update()
+
+    def test_it_does_not_sound_during_the_count_in(self):
+        mp3 = _FakeMp3()
+        screen = self._screen(mp3)
+        screen.toggle_play()
+        screen._playback_ms = 4000.0
+        screen._position_chosen = False
+        screen.toggle_play()                      # pause
+        screen.toggle_play()                      # play: rewind + hold
+        assert screen._breath_s > 0.0
+        mp3.sounded_frames = 0
+        self._breathe(screen)
+        assert screen._breath_s > 0.0, "the fixture ran the hold out"
+        assert mp3.sounded_frames == 0, \
+            "the recording played while the picture stood still"
+
+    def test_it_is_held_rather_than_stopped(self):
+        """Stopping means `play(start=)` to come back, which re-decodes the
+        file -- the cost `set_suspended` exists to avoid, at every loop turn."""
+        mp3 = _FakeMp3()
+        screen = self._screen(mp3)
+        screen.toggle_play()
+        screen._playback_ms = 4000.0
+        screen._position_chosen = False
+        screen.toggle_play()
+        screen.toggle_play()
+        stopped = mp3.stopped
+        self._breathe(screen)
+        assert mp3.stopped == stopped
+        assert mp3.suspended is True
+
+    def test_and_it_sounds_again_afterwards(self):
+        mp3 = _FakeMp3()
+        screen = self._screen(mp3)
+        screen.toggle_play()
+        screen._playback_ms = 4000.0
+        screen._position_chosen = False
+        screen.toggle_play()
+        screen.toggle_play()
+        for _ in range(40):
+            screen._last_tick = time.perf_counter() - 0.1
+            screen.update()
+            if screen._breath_s <= 0.0:
+                break
+        assert screen._breath_s == 0.0
+        mp3.sounded_frames = 0
+        screen._last_tick = time.perf_counter() - 0.05
+        screen.update()
+        assert mp3.sounded_frames == 1
+
+    def test_a_rewind_really_does_seek_the_recording(self):
+        """The one cost of the feature, asserted rather than assumed: it has
+        to move, because unsuspending resumes it where it stood."""
+        mp3 = _FakeMp3()
+        screen = self._screen(mp3)
+        screen.toggle_play()
+        screen._playback_ms = 4000.0
+        screen._position_chosen = False
+        before = mp3.seeks
+        screen.toggle_play()
+        screen.toggle_play()
+        assert mp3.seeks > before
+
+    def test_the_loop_breath_had_the_same_fault(self):
+        """Not my instance -- the loop turn has held the picture since the
+        drill shipped, and the recording played through every turn."""
+        mp3 = _FakeMp3()
+        screen = self._screen(mp3)
+        screen._loop_start_ms = 1000.0
+        screen._loop_end_ms = 3000.0
+        screen._loop_enabled = True
+        screen.toggle_play()
+        screen._playback_ms = 3001.0
+        screen._last_tick = time.perf_counter() - 0.02
+        screen.update()                           # the turn holds its breath
+        assert screen._breath_s > 0.0
+        mp3.sounded_frames = 0
+        self._breathe(screen)
+        assert mp3.sounded_frames == 0

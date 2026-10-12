@@ -9291,6 +9291,20 @@ class PlayingScreen:
         """
         return self._sync_map().recording_at(playback_ms)
 
+    def _song_still(self) -> bool:
+        """Is the song NOT advancing -- paused, or holding its breath.
+
+        Two states, one answer, because the recording cannot tell them apart
+        and must not: a breath is the picture standing still on purpose, at a
+        loop turn and after a pause, and `self._playing` is True throughout
+        it. Asked as `_playing` alone, `_update_mp3` unsuspended the recording
+        on the very next frame and it played the whole hold out against a
+        picture that was not moving -- a second after a pause, a second and a
+        half at every loop turn, and then twenty seconds of the pull creeping
+        it back, because 1 s is under `SYNC_SNAP_MS` and never snaps.
+        """
+        return not self._playing or self._breath_s > 0.0
+
     def _mp3_plays(self) -> bool:
         """Whether the recording may sound at all right now.
 
@@ -9299,7 +9313,8 @@ class PlayingScreen:
         this, nudging the offset on a paused song set the recording playing
         against a picture standing still, which is exactly the state the
         offset is meant to be judged in. Pausing has to mean silence for both
-        backings or neither.
+        backings or neither -- and so does a breath, which is the same state
+        with `_playing` still True. See `_song_still`.
 
         And whether the file loaded is the one this practice speed needs. Below
         full speed that is a stretched copy, which takes seconds to build --
@@ -9309,7 +9324,7 @@ class PlayingScreen:
         return (self._mp3_player is not None
                 and self._mp3_player.ready
                 and not self._mp3_muted
-                and self._playing
+                and not self._song_still()
                 and self._mp3_source_fits())
 
     def _seek_mp3(self, target_ms: float) -> None:
@@ -9350,8 +9365,14 @@ class PlayingScreen:
         return False
 
     def _mp3_paused_only(self) -> bool:
-        """True when the song standing still is the ONLY reason for silence."""
-        return (not self._playing
+        """True when the song standing still is the ONLY reason for silence.
+
+        A breath counts, or `_update_mp3` would take the other branch and
+        `pause()` the recording -- which STOPS it, so the next start is a
+        `play(start=)` and a re-decode of the file, at every loop turn. That
+        is the cost `set_suspended` exists to avoid.
+        """
+        return (self._song_still()
                 and self._mp3_player is not None
                 and self._mp3_player.ready
                 and not self._mp3_muted

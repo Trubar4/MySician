@@ -7042,6 +7042,34 @@ recovery given a mechanism instead of being left to chance.
 a clean entry after a pause and nothing else; the wander within a passage is still unexplained, and whether it is his timing or a sync map with
 no point between 72 and 113 s is still the open question there.
 
+### And The Recording Played Through The Hold
+
+*"Da hat was nicht geklappt. Nach der Pause bin ich um 1 Sek. versetzt und Bild und Ton sind nicht mehr Sync."* The number names the fault:
+**1 second is exactly the countdown.**
+
+`_update_mp3` runs on every frame of the hold -- the breath branch calls it deliberately, so a stretched copy that lands during a pause is
+still swapped in -- and it ends with `if self._mp3_player.suspended: set_suspended(False)`. The gate in front of that is `_mp3_plays()`, which
+asked **`self._playing`**, and `self._playing` is True right through a breath: the song is playing, only the clock is held. So `_hold_breath`
+suspended the recording and the very next frame lifted it, and it played the whole second out against a picture that was not moving.
+
+Then the pull put it back the slow way. One second is UNDER `SYNC_SNAP_MS` (1.5 s), so nothing snaps: `_follow_recording` creeps at
+`SYNC_PULL_FRACTION` (5 % of real time), which is **twenty seconds of visible desync** for one press of the space bar.
+
+- **`_song_still()` is the one predicate**: paused, or holding its breath. Both are the picture standing still, and the recording cannot tell
+  them apart and must not -- which `_mp3_plays`'s own docstring had already said in as many words (*"Pausing has to mean silence for both
+  backings or neither"*) about the half it could express.
+- **`_mp3_paused_only` had to learn it too**, or `_update_mp3` takes the other branch and `pause()`s the recording -- which STOPS it, so coming
+  back is a `play(start=)` and a re-decode of the file, at every loop turn. That is the cost `set_suspended` exists to avoid.
+- **It was in the LOOP breath from the day that shipped**, and that is the half worth keeping: the chapter above wrote *"three things, all of
+  which wait mode already does: the picture holds, the backing is held, nothing is matched"* -- and the backing was not held. Nobody had looped
+  a song with a recording loaded, so a 1.5 s version of this had been sitting there unreported. `test_the_loop_breath_had_the_same_fault`
+  drives the real loop turn and fails on the old code, which is what says it was never mine alone.
+- **The MIDI backing was always fine** and for a reason that does not generalise: `update()` returns before the loop that plays its events, so
+  it needs no gate. The mixer has its own clock in the sound card, which is the whole difference -- the same asymmetry as every other sync
+  chapter in this file.
+- **A rewind really does seek the recording**, asserted now rather than reasoned, and the old test that said resuming never seeks says why it
+  still holds: its fixture has one note, so there is nothing to rewind into.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

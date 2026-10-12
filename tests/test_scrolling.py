@@ -2050,6 +2050,9 @@ class TestPausingIsNotStoppingEverything:
         assert mp3.stopped == 0
 
     def test_resuming_lifts_the_hold_rather_than_seeking_again(self):
+        """Holds only because there is nothing to rewind into: this song has
+        one note, so the pause rewind stands down and the resume is the plain
+        one. A rewind HAS to seek -- see test_pause_rewind.py."""
         mp3 = self._FakeMp3()
         screen = self._screen(mp3)
         screen.toggle_play()
