@@ -44,7 +44,19 @@ def _song(tuning=None, bars=8):
 
 
 def _screen(tuning=None, transpose=0):
-    screen = PlayingScreen(_song(tuning), config=Config())
+    """A screen on a song WRITTEN in `tuning` and played `transpose` away.
+
+    The timeline carries the tuning being PLAYED -- `_load_song` transposes
+    it before the screen ever sees it -- so the fixture has to move both or
+    it describes a state the app is never in. It used to move only the
+    transpose, which put the written tuning 5 semitones from where the test
+    meant it; that passed only because a tuning with no NAME had no entry of
+    its own in `reachable_tunings` and the written mark collapsed onto the
+    played one.
+    """
+    written = tuning if tuning is not None else _named("Standard")
+    played = {s: v + transpose for s, v in written.items()}
+    screen = PlayingScreen(_song(played), config=Config())
     screen._transpose = transpose
     return screen
 
@@ -94,11 +106,13 @@ class TestTheTuningsAreOneLine:
         assert below <= scrolling.TUNINGS_BELOW + 1
 
     def test_the_top_of_the_list_is_the_standard_shaped_one(self):
-        screen = _screen(_named("C Standard"), -4)
+        # Written in Standard, played four semitones down: the tunings the
+        # strip offers run UP to the standard-shaped one by construction.
+        screen = _screen(_named("Standard"), -4)
         assert screen.tuning_segments()[-1][0] == "EADGBE"
 
     def test_the_notes_are_the_notes_of_that_tuning(self):
-        screen = _screen(_named("C Standard"), -4)
+        screen = _screen(_named("Standard"), -4)
         assert ("CFA#D#GC", "played") in [
             (n, role) for n, role, _shift in screen.tuning_segments()]
 

@@ -1597,6 +1597,11 @@ class PlayingScreen:
         # the picker has marked while it is open. Empty is the ordinary song.
         self._merge_tracks: list[int] = []
         self._merge_picked: list[int] = []
+        # Copies the picker is leaving out, mapped to the track they copy,
+        # and the names of every track in the file so the line can say
+        # which. See _duplicate_line.
+        self._hidden_tracks: dict[int, int] = {}
+        self._track_names: dict[int, str] = {}
         # The easier reading, and what it would cost on THIS song. Both are
         # told to the screen rather than worked out here: the arithmetic
         # lives in tabs/simplify.py and the timeline arrives already made.
@@ -4310,18 +4315,27 @@ class PlayingScreen:
 
     def set_track_options(self, options: list[tuple[int, str]],
                           current: int | None,
-                          merge: list | None = None) -> None:
+                          merge: list | None = None,
+                          hidden: dict | None = None,
+                          names: dict | None = None) -> None:
         """Tell the screen which tracks exist, so it can offer them.
 
         `merge` is the tracks this song is being played as, most important
         first, or empty for the ordinary single-track song. `_track_index`
         stays the PRIMARY whichever it is, so the picker's `*` marks a row
         that exists -- what the merge changes is which rows carry a number.
+
+        `hidden` is the copies left out of `options`, mapped to the track
+        each one copies, and `names` names every track in the file. A row
+        that simply vanishes is indistinguishable from a reader that stopped
+        working, so the panel says what it left out and why.
         """
         self._track_options = list(options)
         self._track_index = current
         self._merge_tracks = [int(i) for i in (merge or [])]
         self._merge_picked = list(self._merge_tracks)
+        self._hidden_tracks = {int(k): int(v) for k, v in (hidden or {}).items()}
+        self._track_names = {int(k): str(v) for k, v in (names or {}).items()}
         self._track_menu_cursor = next(
             (i for i, (idx, _) in enumerate(self._track_options) if idx == current), 0
         )
@@ -4386,7 +4400,10 @@ class PlayingScreen:
         font = _get_font("arial", 18)
         title = _get_font("arial", 15)
         rows = [label for _, label in self._track_options]
-        note = self._merge_line()
+        # The merge line wins: it says what Enter will DO, where the hidden
+        # copies are a standing fact about the file. One note row either way,
+        # so neither can resize the panel -- see track_menu_box.
+        note = self._merge_line() or self._duplicate_line()
         row_h = TRACK_MENU_ROW_H
         width, height = track_menu_box([font.size(r)[0] for r in rows], len(rows))
         x = int(surface.get_width() / 2 - width / 2)
@@ -4417,7 +4434,7 @@ class PlayingScreen:
         # so pressing M or E cannot resize the panel the list is being read
         # in -- see track_menu_box.
         if note:
-            surface.blit(title.render(note, True, t.hud_accent),
+            surface.blit(self._fit_line(title, note, width - 32, t.hud_accent),
                          (x + 16, y + 40 + row_h * len(rows) + 4))
 
     def _merge_line(self) -> str:
@@ -4436,6 +4453,25 @@ class PlayingScreen:
         first = names.get(picked[0], picked[0])
         rest = ", ".join(str(names.get(i, i)) for i in picked[1:])
         return f"merge: {first} — empty bars filled from {rest}"
+
+    def _duplicate_line(self) -> str:
+        """Which identical copies the list is leaving out, in words.
+
+        Two guitarists are regularly written down as two tracks of the same
+        part -- note for note, 513 of them on the file this came from -- and
+        a picker offering both asks a question with one answer. The copy is
+        hidden; it is SAID, because a row that simply vanishes cannot be
+        told apart from a reader that stopped working, and because the
+        numbers then have a gap in them that nothing else would explain.
+        """
+        hidden = self._hidden_tracks
+        if not hidden:
+            return ""
+        if len(hidden) == 1:
+            copy, original = next(iter(hidden.items()))
+            name = self._track_names.get(copy, "")
+            return f"{copy + 1}. {name} hidden — same notes as {original + 1}."
+        return f"{len(hidden)} identical copies hidden"
 
     def _cycle_timing_window(self) -> None:
         """Step through how much timing slack a hit gets (G)."""

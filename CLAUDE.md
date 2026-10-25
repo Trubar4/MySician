@@ -4114,6 +4114,9 @@ pickhero/
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
+- `tests/test_track_twins.py` — a tuning nobody named being the one the tab is in, and the picker leaving out a track that is
+  note for note an earlier one; four of its tests fail on the unfixed tuning strip, and the fixture builds its own GP5 rather than
+  vendoring the player's file
 - `tests/test_pause_rewind.py` — the pause rewind: the arithmetic, the verdict floor through the one place a verdict is written, and the real `toggle_play` and `update()`. Its control is in the same file rather than in the old code — omitting the floor IS the old behaviour
 - `tests/test_review.py` — what could not be judged, that a seek keeps the run, and the right-drag loop
 - `tests/test_runs.py` — the stored runs, and the two synthetic ones, on strings and without a screen
@@ -7085,3 +7088,58 @@ Then the pull put it back the slow way. One second is UNDER `SYNC_SNAP_MS` (1.5 
   Verifying the notes the tab already predicts is a different problem and is allowed: `audio/chord_verify.py` checks each expected string against
   the partials no other chord tone can produce. That is signal processing against a known answer, costs ~1 ms per strike, and is what makes
   per-string right/wrong feedback possible.
+
+## The Strip Named A Tuning The File Does Not Use
+
+*"Mir zeigt es alle Spuren mit Drop A an, wenn ich sie der Reihe nach öffne."* Reproduced on his own file in one run, and the app was wrong
+rather than the player. I Prevail, "There's Fear In Letting Go":
+
+| # | track | tuning |
+|---|---|---|
+| 0, 1 | Rhythm, Lead | A E A D F# B (Drop A) |
+| **2, 3** | **"Pitched" Lead, "Pitched" Rhythm** | **E B E A C# F#** — five semitones under Drop A |
+| 4 | Clean | A E A D F# B |
+
+**`reachable_tunings` listed only NAMED tunings**, and `NAMED_TUNINGS` bottoms out at Drop A. So for a tab in a tuning nobody named there was
+no entry at **shift 0** — and `tuning_segments`, finding none, fell back to index 0 and starred the NEAREST named tuning as the one the file was
+written in, in blue as the one being played. Both marks on a tuning the file does not use, on the one line whose whole job is to say what the tab
+is in. The same order drives `R`, so the first press would have moved the song five semitones without the strip ever having named where it
+started.
+
+- **The written tuning is always in the list now, named where it has a name and spelled in LETTERS where it has none.** It is a fact about the
+  file; everything else in that list is a suggestion. The strip reads `EBEAC#F#*  AEADF#B  A#FA#D#GC  BF#BEG#C#` for those two tracks, which is
+  what they are.
+- **The test that should have caught it was passing because of the bug.** `test_and_so_is_the_one_it_was_written_in` built its screen by setting
+  the timeline to the WRITTEN tuning and then moving `_transpose` — but `_load_song` transposes the timeline, so the app's `metadata.tuning` is
+  the tuning being PLAYED. Under that fixture the written tuning landed five semitones from where the test meant it, came out unnamed, and the
+  written mark collapsed onto the played one. A fixture that cannot reach the app's own state is a test of something else.
+- **Two more tests in that file asked for a Standard-shaped top of the list from a song written in C Standard**, which only held under the same
+  misreading. They say what they mean now.
+
+## Two Guitarists, One Part, Two Rows In The Picker
+
+*"Spuren, die ident sind, kannst du eine von beiden ausblenden bitte."* On that file the Rhythm and the Lead guitar are **note for note the
+same part** — same timestamps, pitches, strings and frets, 513 notes each — so the picker was asking a question with one answer, and a merge of
+the two is a no-op: 513 notes in, 513 out, **0 bars filled**.
+
+- **Identical means every field of every `NoteEvent`**, which is stricter than it sounds and is the only honest test: the midi pitch is the
+  tuning plus the fret, so two tracks with the same notes are in the same tuning, and the comparison covers the bends, the slides and the mutes
+  with them. `duplicate_tracks` is in the loader, because that is the one place that reads a file's tracks.
+- **The FIRST of a set stays.** A lower index is what a stored track, a stored merge and every run in the history already point at.
+- **And the track being played is never hidden**, nor one of the live merge: the picker's `*` has to mark a row that exists, which is the rule
+  `_track_index` already follows for a merge.
+- **The real track numbers are kept**, so hiding a copy leaves a GAP in them rather than renumbering what a run is recorded under.
+- **It is said rather than done quietly** — `2. Lead Guitar hidden — same notes as 1.` under the list. A row that simply vanishes cannot be told
+  apart from a reader that stopped working, and the gap in the numbers would otherwise be the only tell. Short on purpose: `_fit_line` shrinks the
+  MIDDLE away, so a sentence too long for the narrowest panel comes back as "2. Lead Guitar hidden … ys exactly what 1. does", which says less
+  than saying less. The merge line still wins while tracks are marked, because that one says what Enter will DO.
+- **It costs a note extraction per offered track** — 64-253 ms for a real GP8 file, 119 ms for "What's Up", which also has a duplicate pair — so
+  it is asked once per file and kept, the rule `_tracks_of` already follows. `canon.gp5` is 1038 ms, and that is the GP3-5 parse rather than this:
+  `_gpif_root` caches a parsed GPIF document and nothing caches a parsed `guitarpro.Song`, so a GP5 song is still parsed three times on every open.
+- **Not in the song list.** Its "5 instruments" counts guitar tracks and still counts both halves of a pair; answering otherwise means loading
+  every track of every file in the folder, where the picker answers for one file the player has already opened.
+
+**And what was NOT changed: a merge still refuses two different tunings.** *"Ich möchte nicht, dass unterschiedliche Stimmungen gemischt werden
+können."* On that song the guitar is split by tuning rather than by rôle — Drop A plays 42 bars, the Drop E pair 34, and they overlap in 4 — so
+the merge that would fill the holes is exactly the one that cannot be honoured, and the 30 bars it would add are not reachable without putting
+fret numbers on the board that belong to another instrument.

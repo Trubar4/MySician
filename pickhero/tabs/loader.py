@@ -447,6 +447,43 @@ def _list_gpif_tracks(path: str | Path) -> list[dict]:
     return tracks
 
 
+def duplicate_tracks(path: str | Path,
+                     indices: list[int] | None = None) -> dict[int, int]:
+    """Tracks that play EXACTLY what an earlier track plays, mapped to it.
+
+    Two guitarists are regularly written down as two tracks of the same part:
+    I Prevail's "There's Fear In Letting Go" has its Rhythm and its Lead
+    guitar note for note identical -- same timestamps, pitches, strings and
+    frets, 513 notes each -- so a merge of the two is a no-op (513 in, 513
+    out) and a picker offering both asks a question with one answer.
+
+    Identical means every field of every `NoteEvent`, which is stricter than
+    it sounds and is the only honest test: the midi pitch is the tuning plus
+    the fret, so two tracks with the same notes are in the same tuning, and
+    the comparison covers the bends, the slides and the mutes as well.
+
+    `indices` limits it to the tracks worth asking about; the whole file
+    otherwise. It costs a note extraction per track -- 31 ms each on a real
+    GP8 file -- so the caller is expected to ask once per file and keep the
+    answer. Never raises: a track that will not load simply has no twin.
+    """
+    if indices is None:
+        indices = [t["index"] for t in list_tracks(path)]
+    seen: dict[tuple, int] = {}
+    twins: dict[int, int] = {}
+    for index in indices:
+        try:
+            notes = tuple(load_gp_file(path, index).notes)
+        except Exception:
+            continue
+        if not notes:
+            continue          # an empty track is not a copy of another one
+        first = seen.setdefault(notes, index)
+        if first != index:
+            twins[index] = first
+    return twins
+
+
 #: Every Guitar Pro extension this loader can open. Here rather than in the
 #: song list, because what the app can READ is a property of the reader --
 #: the downloader needs the same set to name a file it did not choose the

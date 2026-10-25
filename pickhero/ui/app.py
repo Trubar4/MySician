@@ -76,6 +76,11 @@ class App:
         # The last file's track list. See _tracks_of.
         self._tracks_cache_key: str | None = None
         self._tracks_cache: list[dict] = []
+        # Which of its tracks are an exact copy of an earlier one, and of
+        # which. See _duplicates_of -- it costs a note extraction per track,
+        # so it is asked once per file.
+        self._dupes_cache_key: str | None = None
+        self._dupes_cache: dict[int, int] = {}
         self._menu: MenuScreen | None = None
         self._playing_screen: PlayingScreen | None = None
         self._device_menu: DeviceMenuScreen | None = None
@@ -741,10 +746,51 @@ class App:
                    if t.get("is_guitar") and not t.get("is_percussion")]
         return guitars or [t["index"] for t in tracks]
 
-    def _track_options(self, path: Path) -> list[tuple[int, str]]:
-        """(index, label) for every track worth offering."""
+    def _duplicates_of(self, path: Path) -> dict[int, int]:
+        """Offered tracks that play exactly an earlier one, and which, cached.
+
+        Measured over the songs to hand: 64-253 ms for a real GP8 file,
+        once, on the same song open that already builds three timelines and
+        a backing track. A file's tracks cannot change while it is sitting
+        there being played, which is the rule `_tracks_of` already follows.
+        """
+        key = str(path)
+        if self._dupes_cache_key != key:
+            from pickhero.tabs.loader import duplicate_tracks
+            try:
+                self._dupes_cache = duplicate_tracks(
+                    path, self._playable_track_indices(path))
+            except Exception:
+                self._dupes_cache = {}
+            self._dupes_cache_key = key
+        return self._dupes_cache
+
+    def _hidden_tracks(self, path: Path, keep=()) -> dict[int, int]:
+        """The copies to leave out of the picker, mapped to their original.
+
+        *"Spuren, die ident sind, kannst du eine von beiden ausblenden."*
+        The FIRST of a set stays -- a lower index is the one a stored track,
+        a stored merge and every run in the history already point at.
+
+        `keep` is never hidden: the track being played has to be in the list
+        for the `*` to mark a row that exists, and a track of the live merge
+        has to be there for its number to.
+        """
+        keeping = {int(i) for i in keep}
+        return {hidden: first
+                for hidden, first in self._duplicates_of(path).items()
+                if hidden not in keeping}
+
+    def _track_options(self, path: Path, keep=()) -> list[tuple[int, str]]:
+        """(index, label) for every track worth offering.
+
+        The label keeps the track's REAL number, so hiding a copy leaves a
+        gap in them rather than renumbering what a merge and a run history
+        are recorded under.
+        """
         tracks = self._tracks_of(path)
         wanted = set(self._playable_track_indices(path))
+        wanted -= set(self._hidden_tracks(path, keep))
         return [(t["index"], f"{t['index'] + 1}. {t['name']}")
                 for t in tracks if t["index"] in wanted]
 
@@ -946,8 +992,11 @@ class App:
         self._current_song_path = path
         self._current_track_index = timeline.metadata.track_index
         self._current_merge = list(merge)
+        keep = [timeline.metadata.track_index, *merge]
         self._playing_screen.set_track_options(
-            self._track_options(path), timeline.metadata.track_index, merge
+            self._track_options(path, keep), timeline.metadata.track_index,
+            merge, hidden=self._hidden_tracks(path, keep),
+            names={t["index"]: t["name"] for t in self._tracks_of(path)},
         )
         self._playing_screen.set_simplify(simple, self._simplify_drops,
                                           written=written)

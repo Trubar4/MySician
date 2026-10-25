@@ -240,6 +240,10 @@ def reachable_tunings(written: dict[int, int] | None
     the tunings a player can use without retuning and without the tab being
     touched -- ordered by how far they are, nearest first, with the written
     one at nothing.
+
+    The written tuning is always in the list, named where it has a name and
+    spelled in letters where it has none. It is a FACT about the file, where
+    everything else here is a suggestion.
     """
     if not written:
         return []
@@ -248,6 +252,16 @@ def reachable_tunings(written: dict[int, int] | None
         shift = uniform_shift(written, shape)
         if shift is not None:
             out.append((name, shift))
+    if not any(shift == 0 for _, shift in out):
+        # A tab in a tuning nobody NAMED still has to appear as itself. Only
+        # the named tunings were listed, so such a song had no entry at
+        # nothing -- and the strip then starred the nearest named one as the
+        # tuning it was written in. I Prevail's "Pitched" tracks
+        # (E B E A C# F#, five semitones under Drop A) were shown as Drop A:
+        # the one line on screen that exists to say what the file is in named
+        # a tuning the file does not use, and R's first press would have
+        # moved five semitones without ever having said so.
+        out.append((" ".join(tuning_notes(written)), 0))
     out.sort(key=lambda pair: (abs(pair[1]), pair[1]))
     return out
 
