@@ -530,3 +530,106 @@ class TestThePageSlidesRatherThanJumps:
         screen._tab_glide_at -= scrolling.TAB_GLIDE_S
         first = screen._tab_offset_for(page, 1, 4000.0, 700.0)
         assert screen._tab_offset_for(page, 1, 4000.0, 700.0) == first
+
+
+def _one_string_song(bars=48, plain_from=8):
+    """A song whose second half is written on ONE string.
+
+    Which is all it takes: a row of music whose notes are all on the B
+    string contributes one note height instead of six, so a rule that reads
+    the string spacing off the gaps between note heights reads the distance
+    between ROWS instead -- and then three times it swallows whole rows.
+    Shinedown's "My Name (Wearing Me Out)" ends on eight such bars; this is
+    forty, because the fault needs several of those rows on ONE page before
+    the page's own median gap is the distance between rows.
+    """
+    notes = []
+    for bar in range(bars):
+        for beat in range(4):
+            string = 2 if bar >= plain_from else 1 + (beat % 6)
+            notes.append(NoteEvent(
+                timestamp_ms=bar * 2000.0 + beat * 500.0,
+                duration_ms=500.0, midi_note=40 + beat,
+                string=string, fret=beat + 1, measure=bar,
+                duration_quarters=1.0))
+    measures = [MeasureInfo(index=b, start_ms=b * 2000.0,
+                            end_ms=(b + 1) * 2000.0) for b in range(bars)]
+    return Timeline(notes, SongMetadata(title="One string", tempo=120,
+                                        tuning={1: 64, 2: 59, 3: 55,
+                                                4: 50, 5: 45, 6: 40}),
+                    measures=measures)
+
+
+class TestARowOfMusicIsTheEngraversRowNotOurGuess:
+    """"Der Balken springt nach Takt 117 nicht in die naechste Zeile,
+    sondern an den Anfang der Zeile, und die Zeile bewegt sich nicht."
+
+    Both halves are one fault. The rows used to be inferred from where the
+    notes landed -- the median gap between note heights read as the string
+    spacing, a break at three times it -- and on a passage written on one
+    string a row contributes ONE height, so the median becomes the distance
+    between rows and the limit swallows four of them. The page then has one
+    band where it has four lines: `system_index` stops changing, so nothing
+    scrolls, and `at_ms` walks from the end of one line to the start of the
+    next without ever leaving the band.
+    """
+
+    def test_the_engraver_says_where_its_systems_are(self):
+        from pickhero.tabs.musicxml import system_bands
+        svg = ('<svg viewBox="0 0 24000 32000">'
+               '<g class="system"><g class="staff">'
+               '<path d="M0 942 L3254 942" /><path d="M0 2517 L3254 2517" />'
+               '</g></g>'
+               '<g class="system"><g class="staff">'
+               '<path d="M0 4202 L3254 4202" /><path d="M0 5934 L3254 5934" />'
+               '</g></g></svg>')
+        assert system_bands(svg) == [(942.0, 2517.0), (4202.0, 5934.0)]
+
+    def test_a_page_with_no_system_groups_still_answers(self):
+        from pickhero.tabs.musicxml import system_bands
+        assert system_bands("<svg></svg>") == []
+
+    def test_one_string_rows_are_told_apart(self):
+        """The heights and staves of page 3 of the player's own song.
+
+        Four of its six rows are the outro, played on the B string alone.
+        """
+        from pickhero.ui.tab_view import _systems
+        ys = [0.0427, 0.0721, 0.0819, 0.1789, 0.1887, 0.2857, 0.2955,
+              0.3925, 0.4023, 0.4698, 0.4993, 0.5091, 0.5766]
+        staves = [(0.0245, 0.0787), (0.1313, 0.1854), (0.2381, 0.2922),
+                  (0.3449, 0.3990), (0.4517, 0.5058), (0.5584, 0.6126)]
+        assert len(_systems(ys, staves)) == 6
+        # The guess, which is what shipped: four bands for six rows, and the
+        # last of them 0.39 to 0.58 -- most of the page in one row.
+        assert len(_systems(ys)) == 4
+
+    def test_a_note_just_outside_its_staff_still_belongs_to_it(self):
+        """A note's y is the BASELINE of its fret number, which sits a hair
+        below the string it is on -- 0.0819 against a staff ending 0.0787."""
+        from pickhero.ui.tab_view import _systems
+        rows = _systems([0.0427, 0.0819, 0.1789],
+                        [(0.0245, 0.0787), (0.1313, 0.1854)])
+        assert rows == [(0.0427, 0.0819), (0.1789, 0.1789)]
+
+    def test_every_row_the_engraver_drew_is_a_row_here(self):
+        import re
+        engraving = TabEngraving(_one_string_song())
+        for page in engraving.pages:
+            drawn = len(page.staves)
+            assert drawn > 1, "this page would not show the fault"
+            assert len(page.systems) == drawn
+
+    def test_the_playhead_never_walks_backwards_inside_one_row(self):
+        """The player's own symptom, as a property of the whole song."""
+        song = _one_string_song()
+        engraving = TabEngraving(song)
+        seen = None
+        for ms in range(0, int(song.duration_ms), 50):
+            page, x, top, _bottom = engraving.at_ms(float(ms))
+            row = engraving.pages[page].system_index(top)
+            if seen is not None and (page, row) == seen[:2]:
+                assert x >= seen[2] - 1e-9, (
+                    f"at {ms} ms the playhead went back to the start of "
+                    f"its own row: {seen[2]:.3f} -> {x:.3f}")
+            seen = (page, row, x)

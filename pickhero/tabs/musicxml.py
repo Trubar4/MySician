@@ -148,6 +148,30 @@ def note_positions(svg: str) -> dict[str, tuple[int, int]]:
                 svg)}
 
 
+def system_bands(svg: str) -> list[tuple[float, float]]:
+    """The top and bottom of every SYSTEM the engraver drew, in page units.
+
+    A system is a row of music, and verovio says where each one is: the page
+    carries a `<g class="system">` per row, and the staff lines inside it are
+    plain horizontal paths. Reading them is the whole point -- the rows used
+    to be INFERRED from where the notes landed, by taking the median gap
+    between note heights as the string spacing, and that estimate collapses
+    on music written mostly on one string: an outro played on the B string
+    alone contributes one height per row, so the median gap becomes the
+    distance between ROWS and three times it swallows four of them.
+
+    Returned in the SVG's own coordinates, which is what `note_positions`
+    gives too, so the caller divides both by the same page height.
+    """
+    bands = []
+    for chunk in re.split(r'<g[^>]*class="system"[^>]*>', svg)[1:]:
+        ys = [float(m.group(1)) for m in
+              re.finditer(r'<path d="M[-\d.]+ ([-\d.]+) L', chunk)]
+        if ys:
+            bands.append((min(ys), max(ys)))
+    return sorted(bands)
+
+
 def _note_xml(note: NoteEvent, quarters: float, in_chord: bool,
               string_count: int, voice: int = 1,
               note_id: str = "") -> str:

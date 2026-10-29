@@ -29,7 +29,8 @@ from typing import Callable
 
 import pygame
 
-from pickhero.tabs.musicxml import note_positions, to_musicxml
+from pickhero.tabs.musicxml import (note_positions, system_bands,
+                                    to_musicxml)
 from pickhero.tabs.timeline import Timeline
 
 # Zoom is the PAGE WIDTH, not verovio's `scale`. The first version stepped
@@ -82,6 +83,11 @@ class TabPage:
     # it sits on, so following it made the page scroll up and down by the
     # string spacing on every note of an arpeggio. Filled in by `_systems`.
     systems: list[tuple[float, float]] = field(default_factory=list)
+    # Where the ENGRAVER put each row of music, as fractions. Read off the
+    # page's own `<g class="system">` groups rather than guessed at from the
+    # notes, and used only to say which notes share a row -- the band itself
+    # is still the notes', because that is what `system_at` is asked about.
+    staves: list[tuple[float, float]] = field(default_factory=list)
 
     def system_index(self, y: float) -> int:
         """Which row of music this y sits in, 0 when it sits in none."""
@@ -120,14 +126,29 @@ class TabPage:
         return y, y
 
 
-def _systems(ys: list[float]) -> list[tuple[float, float]]:
+def _systems(ys: list[float],
+             staves: list[tuple[float, float]] | None = None
+             ) -> list[tuple[float, float]]:
     """Group note positions into rows of music.
 
-    The six string lines of one tab staff sit a small, even distance apart;
-    the gap to the next row is several times that. So the break is found from
-    the spacing the page itself uses rather than from a constant, which would
-    have to be re-fitted at every zoom.
+    `staves` is where the ENGRAVER drew each row, and where it is known this
+    is a reading rather than a guess: every note is put in the row whose
+    staff it is nearest, and the band kept is still the notes' own, because
+    that is the space `system_at` is asked about. A note's y is the baseline
+    of its fret number, which sits a hair below the string it is on, so a
+    note really can fall outside the staff lines it belongs to.
+
+    Without them the rows are INFERRED, which is what this did for its first
+    month and what the player's Shinedown outro broke: the six string lines
+    of one tab staff sit a small, even distance apart and the gap to the next
+    row is several times that, so the median gap reads as the string spacing
+    -- until a passage is written on ONE string. Then a row contributes one
+    height instead of six, the median becomes the distance between ROWS, and
+    three times it swallows four of them: the page stopped scrolling and the
+    playhead jumped back to the start of the line at every line break.
     """
+    if staves:
+        return _by_stave(ys, staves)
     # NOT rounded: the band's edges are compared against the very
     # values that made them, and rounding to 1e-6 left a note a
     # hair outside its own row -- which then became a band of its
@@ -147,6 +168,22 @@ def _systems(ys: list[float]) -> list[tuple[float, float]]:
             start = b
     rows.append((start, distinct[-1]))
     return rows
+
+
+def _by_stave(ys: list[float],
+              staves: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """The note heights grouped by the stave each one is nearest."""
+    def distance(y: float, band: tuple[float, float]) -> float:
+        top, bottom = band
+        if top <= y <= bottom:
+            return 0.0
+        return min(abs(y - top), abs(y - bottom))
+
+    rows: dict[int, list[float]] = {}
+    for y in sorted(set(ys)):
+        nearest = min(range(len(staves)), key=lambda i: distance(y, staves[i]))
+        rows.setdefault(nearest, []).append(y)
+    return [(min(group), max(group)) for _, group in sorted(rows.items())]
 
 
 def rasterise(svg: str, width: int) -> pygame.Surface:
@@ -229,10 +266,14 @@ def engrave(timeline: Timeline, page_width: int = ZOOM_STEPS[DEFAULT_ZOOM],
         width, height = _view_box(svg)
         surface = rasterise(svg, raster_width)
         spots = {}
+        staves = []
         if width > 0 and height > 0:
             for note_id, (x, y) in note_positions(svg).items():
                 spots[note_id] = (x / width, y / height)
-        pages.append(TabPage(number=number, surface=surface, spots=spots))
+            staves = [(top / height, bottom / height)
+                      for top, bottom in system_bands(svg)]
+        pages.append(TabPage(number=number, surface=surface, spots=spots,
+                             staves=staves))
     return pages
 
 
@@ -266,7 +307,8 @@ class TabEngraving:
         self.spots.sort()
         for page in self.pages:
             page.placed.sort()
-            page.systems = _systems([y for y, _, _ in page.placed])
+            page.systems = _systems([y for y, _, _ in page.placed],
+                                    page.staves)
 
     @property
     def zoom(self) -> int:

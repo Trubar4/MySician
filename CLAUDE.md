@@ -4114,6 +4114,8 @@ pickhero/
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
+- `tests/test_tab_view.py` — the engraved page: where its rows of music are (read off verovio's own system groups, not guessed
+  from note heights), and that the playhead never walks backwards inside one row; six of its tests fail on the unfixed code
 - `tests/test_track_twins.py` — a tuning nobody named being the one the tab is in, and the picker leaving out a track that is
   note for note an earlier one; four of its tests fail on the unfixed tuning strip, and the fixture builds its own GP5 rather than
   vendoring the player's file
@@ -7143,3 +7145,44 @@ the two is a no-op: 513 notes in, 513 out, **0 bars filled**.
 können."* On that song the guitar is split by tuning rather than by rôle — Drop A plays 42 bars, the Drop E pair 34, and they overlap in 4 — so
 the merge that would fill the holes is exactly the one that cannot be honoured, and the 30 bars it would add are not reachable without putting
 fret numbers on the board that belong to another instrument.
+
+## A Row Of Music Is Not A Guess About Note Heights
+
+*"Der Balken springt nach Takt 117 nicht in die naechste Zeile zu Takt 118, sondern an den Anfang der Zeile zu 117, und die Zeile bewegt sich
+nicht nach oben."* Two symptoms, one line of code, and it is not in the transport at all.
+
+`_systems` INFERRED where the rows of music are, from where the notes landed: the six string lines of one tab staff sit a small even distance
+apart, so the **median gap between note heights** is the string spacing and a break is three times it. That is true of a page of ordinary
+guitar music and false of a page written on one string. Shinedown's "My Name" ends on eight bars of outro played on the B string alone — so
+each of those rows contributes **one** note height instead of six, the median becomes the distance between ROWS, and three times it swallows
+four of them.
+
+Measured on the player's own file, page 3 of 3:
+
+| | |
+|---|---|
+| rows verovio drew (`<g class="system">`) | **6** |
+| rows the guess found | **4** |
+| the last of them | **0.39 to 0.58 of the page** — four lines in one band |
+
+**Both halves of his report follow from that one band.** `system_index` stops changing, so `_tab_offset_for` holds the page still; and `at_ms`
+walks from the end of one line to the start of the next without ever leaving the band, so the playhead jumps back to the left edge. On screen
+that is exactly "it goes back to the start of the line and the line does not move".
+
+- **The engraver says where its systems are, so it is read rather than guessed.** `musicxml.system_bands` takes the staff-line paths inside
+  each `<g class="system">`; `_systems` puts every note height in the row whose staff it is NEAREST.
+- **The band kept is still the NOTES' own**, which is what `system_at` and `row_window` were fitted on. And nearest rather than inside,
+  because a note's y is the BASELINE of its fret number and sits a hair below the string it is on — 0.0819 against a staff ending at 0.0787
+  on that page. A note really can fall outside the staff it belongs to.
+- **The inference stays as the fallback** for a page with no system groups, so a verovio that stops emitting them degrades to what shipped
+  rather than to nothing.
+- **It was never only the outro, which the sweep is what shows.** Over the whole song at every zoom, backwards jumps on the shipped code:
+  0, 0, **2**, 1, **4**, **18** — and at the smallest zoom it found **43 rows where the page has 61**. Eighteen swallowed rows, eighteen
+  places where the page stops and the playhead jumps. After the fix: **0 at every zoom**, and the row counts match the engraver's.
+- The test that matters is his symptom as a property — the playhead never walks backwards inside one row, over a whole song written half on
+  one string. All six of the new tests fail on the shipped code.
+
+**And his first question had no bug behind it at all**, which is worth keeping beside this one: *"Bei Shinedown - My Name werden die Takte 116
+und 117 wiederholt - warum?"* The file has **no repeat signs anywhere** (0 of 121 bars), each bar is played once, and the sheet puts every bar
+in exactly one row. What repeats is the MUSIC: the outro is a two-bar figure written out four times. The app was showing the tab correctly and
+drawing it wrongly, and only the second half was ours.
