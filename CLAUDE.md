@@ -7186,3 +7186,30 @@ that is exactly "it goes back to the start of the line and the line does not mov
 und 117 wiederholt - warum?"* The file has **no repeat signs anywhere** (0 of 121 bars), each bar is played once, and the sheet puts every bar
 in exactly one row. What repeats is the MUSIC: the outro is a two-bar figure written out four times. The app was showing the tab correctly and
 drawing it wrongly, and only the second half was ours.
+
+## A Setting That Can Stop The Picture, Said Nowhere On The Picture
+
+Two run logs came in as *"die App läuft auf einmal nicht mehr rund, der Balken hängt, dann bewegt er sich kurz und hängt wieder"*, with a
+laptop restarted twice and almost nothing else open. Both logs answer it on line 47: **`wait_mode True`**, and the strike table shows
+`playback_ms` standing on **2398.2 for seventeen strikes in a row** against a first written note at 2400.0 ms. The timing test reached
+**0 of 62 notes in 14.8 s**; the other run 29 of 834, with the clock stepping 2.7 → 220.6 → 1761.8 → 3517.9 → 5278.6 → 7049.4 → 8815.7 ms.
+Each step is one note that got through. That is not a hang, it is wait mode working.
+
+**And nothing on the screen said so.** `W` was in the help page and in the settings screen — both shut while playing. `wait_mode` lives in
+`settings.json`, not per song, so one accidental press held **every** song over **every** restart, which is precisely why it read as a
+machine fault. The app's own clock was exact in both runs (`clock_ratio 1.0000`, `clock_lost_ms 0`, `clock_stalls 0`).
+
+- **`W: Wait on` is in the footer, and only while it is on.** The rule the footer already applies to `Q`: an entry that would say "off" on
+  every song ever played is the wallpaper the footer was cut down to remove, and "off" is the state that needs no explaining. **Appearing is
+  the signal.**
+- **An always-visible `W: Wait off` was built first and measured away.** At his own 1280x729 it shrinks the footer's type from 11 px to
+  10 px for a line that is "off" on every normal run; with the longer wording it wrapped to a **second** line, which takes a row of music
+  out of the sheet. The test that caught the first version is `test_it_is_one_line_of_a_dozen` — the cap is the feature, and the cap had
+  already been argued for in the file this entry was being added to.
+- **The general rule, for the third time in this file**: a setting that changes what the app DOES has to be readable at the moment it is
+  doing it, in the same words the run log uses. The first two were `pace`/`vsync` (three runs measured against settings nobody could read)
+  and the automatic gate (`(nicht gemessen)` as its only tell).
+
+The same two logs carry the second half of that sitting and it is worth keeping beside this one: `input_device Mikrofonarray (2- Intel®
+Smart — MME, index default` in both, `input_hears_the_room yes`, `level_room_db -37.2` against `level_median_playing_db -29.4`. The guitar
+was never in the signal path, so wait mode could never be released. Two faults, one report, and neither of them the laptop.

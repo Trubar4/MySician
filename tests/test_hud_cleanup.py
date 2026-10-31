@@ -365,6 +365,68 @@ class TestTheRecordedBackingIsInTheFooter:
         assert ("U: MP3 off", "hud_text") in screen.footer_segments()
 
 
+class TestWaitModeIsInTheFooter:
+    """Wait mode holds the picture until the written note is played, and it
+    said so nowhere a player can read while playing: only in H and in the
+    settings screen, both of which are shut.
+
+    It cost a week. Two run logs came in reporting "the app is suddenly slow,
+    the bar hangs, then moves briefly, then hangs" -- `wait_mode True`, the
+    song clock standing on 2398 ms for seventeen strikes, and `W` nowhere on
+    the screen. He restarted the laptop twice. And because the setting is
+    stored rather than per song, one accidental press held every song over
+    every restart, which is exactly why it read as a machine fault.
+
+    Only while it is ON, which is the rule the footer already applies to Q:
+    "off" needs no explaining, and the entry APPEARING is the signal.
+    """
+
+    def test_it_is_there_while_it_is_on(self):
+        screen = _screen()
+        screen._wait_mode = True
+        assert any(text.startswith("W: Wait on")
+                   for text, _ in screen.footer_segments())
+
+    def test_and_takes_no_slot_while_it_is_off(self):
+        screen = _screen()
+        screen._wait_mode = False
+        assert not any("Wait" in text for text, _ in screen.footer_segments())
+
+    def test_it_is_highlighted_rather_than_one_more_grey_line(self):
+        screen = _screen()
+        screen._wait_mode = True
+        colour = next(c for text, c in screen.footer_segments()
+                      if text.startswith("W: Wait"))
+        assert colour == "hud_accent"
+
+    def test_the_key_and_the_line_agree(self):
+        """Pressing W moves the thing the line names, both ways."""
+        screen = _screen()
+        screen._wait_mode = False
+
+        def says_wait():
+            return any("Wait" in t for t, _ in screen.footer_segments())
+
+        for expected in (True, False):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, key=pygame.K_w, mod=0,
+                                   unicode="w"))
+            assert screen._wait_mode is expected
+            assert says_wait() is expected
+
+    def test_the_footer_still_fits_on_one_line(self):
+        """His own window is 1280x729, which is the narrowest case to hand.
+
+        A second line would take the room the sheet lays its rows out in,
+        which is the loop this footer has been bitten by once already.
+        """
+        screen = _screen()
+        screen._wait_mode = True
+        for w, h in ((1280, 729), (1366, 768), (1920, 1080)):
+            _, rows, _, _ = screen._footer_geometry(w, h)
+            assert len(rows) == 1, f"{w}x{h} wrapped to {len(rows)} lines"
+
+
 class TestTheChordsOnTheSheet:
     """"Die Chords überlappen oben das Griffbrett" and "Chords um 10 %
     kleiner". On the scrolling board the grip cards sit above a lane band

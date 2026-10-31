@@ -5450,7 +5450,23 @@ class PlayingScreen:
             ("E: Skip", on if self._rest_hud_text() else off),
             ("S: Sync", sync_colour),
             ("H: help", on if self._show_help else off),
-        ] + ([("Q: Simple on", on)] if self._simplified else [])
+        ] + (
+            # Wait mode can stop the picture dead and said so nowhere a
+            # player can read while playing: only in H and in the settings
+            # screen, both of which are shut. It cost a week -- two run logs
+            # of "the bar hangs, then moves briefly, then hangs", a laptop
+            # restarted twice, and `wait_mode True` in both. And because it
+            # is stored rather than per song, one accidental press holds
+            # every song over every restart, which is why it read as a
+            # machine fault rather than a setting.
+            #
+            # Only while it is ON, the same rule as Q beside it: an entry
+            # that would say "off" on every song ever played is the
+            # wallpaper this footer was cut down to remove, and "off" is
+            # the state that needs no explaining. Appearing IS the signal.
+            [("W: Wait on", on)]
+            if self._wait_mode else []
+        ) + ([("Q: Simple on", on)] if self._simplified else [])
 
     def _simplify_help(self) -> str:
         """What Q is set to AND what it is worth on this song."""
