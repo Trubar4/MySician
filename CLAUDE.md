@@ -7213,3 +7213,23 @@ machine fault. The app's own clock was exact in both runs (`clock_ratio 1.0000`,
 The same two logs carry the second half of that sitting and it is worth keeping beside this one: `input_device Mikrofonarray (2- Intel®
 Smart — MME, index default` in both, `input_hears_the_room yes`, `level_room_db -37.2` against `level_median_playing_db -29.4`. The guitar
 was never in the signal path, so wait mode could never be released. Two faults, one report, and neither of them the laptop.
+
+### Sorted By Pitch, And Two Measures Of It Disagree
+
+*"Kannst du die Tuning Filter in der Uebersicht nach Tonhoehe sortieren? Start mit e Standard, dann drop d, usw."*
+
+**His own example settles which measure, and the two obvious ones give different answers.** Over the sixteen named tunings:
+
+| ordered by | first three |
+|---|---|
+| **the MEAN of the six open strings** | Standard, **Drop D**, DADGAD |
+| the LOWEST string | Standard, **Eb Standard**, Drop D |
+
+Eb Standard is a semitone under E on every string; Drop D moves one string by a tone and leaves five alone. By the bottom string alone Eb is higher (39 against 38); by the whole instrument Drop D is. **"Start mit e Standard, dann drop d" is only true of the mean**, so that is what `mean_pitch` is.
+
+- **The pitch is STORED, not reconstructed.** The chip is keyed by the letters the song list shows, and letters carry no octave: "E A D G B E" is a standard guitar or a Nashville high-strung one. The index has the real numbers (it opened the file), so `SongInfo.pitch` carries the mean per guitar track and `ENTRY_VERSION` goes to **3** -- an entry written before this cannot be ordered at all, so those files are read again, on the thread, with `reading songs… 12/240` on the header as usual.
+- **Reconstruction was measured and refused.** Walking up from the bottom string -- each letter at the lowest pitch at or above the previous, the bottom in [33, 44] -- reproduces **all sixteen** named tunings exactly, because every guitar tuning ascends and every bottom string sits in 33-40, which is narrower than an octave. It is still a guess: a high-strung tuning does not ascend. It lives in the TEST file, where a hand-built `SongInfo` has to supply a number the app gets from the file, and `test_the_reconstruction_these_fixtures_use_is_exact` is the control for every order asserted there.
+- **A tuning with no pitch goes LAST.** A strip that opened with the entries nobody has re-read would read as a sort that is not working.
+- **The cost is named and it is visible on his own folder.** Two of his three unnamed tunings really do sit above standard -- four of the six strings of "E A E A C# E" are higher than standard's -- so the strip opens on `F C F A# D# G 1` and `E A E A C# E 2` before `Standard 41`. That is pitch order doing exactly what was asked; the count on each chip is what says the two above it hold one song and two. Ordering by the bottom string would keep Standard first and break the Drop D half of the instruction, so there is no free version.
+- **This overturns the commonest-first rule, and the reason that rule gave survives anyway**: *"standard tuning should not sit between two things nobody has"* -- on a folder with nothing tuned above standard it is still first. On a metal folder it will not be, which is the player's call and not a measurement.
+- **One source, so the key cannot disagree with the strip.** `tunings_present` feeds the chips AND `TAB`, and `test_the_key_and_the_chips_agree` walks the key over the strip and requires the same tunings in the same order.

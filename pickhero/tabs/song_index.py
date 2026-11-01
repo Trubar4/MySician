@@ -50,8 +50,11 @@ SAVE_EVERY = 25
 
 # Bumped when what an entry MEANS changes, so old ones are re-read rather
 # than believed. It went to 2 when only guitar tracks began to be counted:
-# an older entry's number answers a different question.
-ENTRY_VERSION = 2
+# an older entry's number answers a different question. And to 3 when the
+# open strings' PITCH was stored beside their letters -- an older entry
+# cannot be ordered by pitch at all, and reconstructing it from the letters
+# is a guess (they carry no octave), so those files are read again.
+ENTRY_VERSION = 3
 
 
 @dataclass
@@ -61,6 +64,10 @@ class SongInfo:
     tracks: int = 0
     tunings: list[str] = field(default_factory=list)   # "E A D G B E" each
     names: list[str] = field(default_factory=list)     # track names
+    # The mean open-string MIDI of each guitar track, parallel to `tunings`.
+    # The letters have no octave, so this is the only thing that can order
+    # the tuning filter by pitch -- see `tuning_pitch`.
+    pitch: list[float] = field(default_factory=list)
     # Whether the file could be opened at all. Without this, a file that
     # failed to parse and a file holding no guitar are the same empty record,
     # and the row would blame the wrong one.
@@ -109,6 +116,21 @@ def describe_tuning(tuning: dict[int, int] | None) -> str:
     return " ".join(notes) if notes else ""
 
 
+def mean_pitch(tuning: dict[int, int] | None) -> float:
+    """The mean of the open strings, in MIDI, or 0.0 for no tuning.
+
+    What "by pitch" means for a whole tuning, and the only measure of the two
+    obvious ones that matches what was asked for. Over the sixteen named
+    tunings, ordering by the mean gives Standard, Drop D, ...; ordering by the
+    LOWEST string puts Eb Standard between them, because Eb is a semitone
+    under E while Drop D's other five strings have not moved at all.
+    """
+    if not tuning:
+        return 0.0
+    values = [tuning[s] for s in sorted(tuning)]
+    return sum(values) / len(values)
+
+
 def describe_file(path: Path) -> SongInfo:
     """Open one file and say what is playable in it."""
     from pickhero.tabs.loader import list_tracks
@@ -122,6 +144,7 @@ def describe_file(path: Path) -> SongInfo:
         tracks=len(guitars),
         tunings=[describe_tuning(t.get("tuning")) for t in guitars],
         names=[t.get("name", "") for t in guitars],
+        pitch=[mean_pitch(t.get("tuning")) for t in guitars],
     )
 
 
@@ -161,6 +184,7 @@ class SongIndex:
         return SongInfo(tracks=entry.get("tracks", 0),
                         tunings=list(entry.get("tunings", [])),
                         names=list(entry.get("names", [])),
+                        pitch=[float(v) for v in entry.get("pitch", [])],
                         readable=bool(entry.get("readable", True)))
 
     def tuning_counts(self, files: list[Path]) -> dict[str, int]:
@@ -179,15 +203,45 @@ class SongIndex:
                 counts[tuning] = counts.get(tuning, 0) + 1
         return counts
 
-    def tunings_present(self, files: list[Path]) -> list[str]:
-        """Every tuning that appears in these songs, commonest first.
+    def tuning_pitch(self, files: list[Path]) -> dict[str, float]:
+        """The mean open-string pitch of each tuning present, in MIDI.
 
-        Ordered by how many songs use it rather than alphabetically: the
-        filter exists to reach the ones actually played, and standard tuning
-        should not sit between two things nobody has.
+        Read off the index rather than off the letters, which carry no
+        octave: "E A D G B E" could be a standard guitar or a Nashville
+        high-strung one, and reconstructing the octaves would be a guess.
+        The first reading of a tuning wins, so a letter string the folder
+        holds at two octaves still gets one answer -- the filter keys on the
+        letters and already treats those as one tuning.
         """
-        counts = self.tuning_counts(files)
-        return sorted(counts, key=lambda k: (-counts[k], k))
+        out: dict[str, float] = {}
+        for file in files:
+            info = self.get(file)
+            if info is None:
+                continue
+            for tuning, pitch in zip(info.tunings, info.pitch):
+                if tuning and tuning not in out:
+                    out[tuning] = float(pitch)
+        return out
+
+    def tunings_present(self, files: list[Path]) -> list[str]:
+        """Every tuning that appears in these songs, HIGHEST pitch first.
+
+        "Kannst du die Tuning Filter in der Uebersicht nach Tonhoehe
+        sortieren? Start mit e Standard, dann drop d, usw." -- which
+        overturns the commonest-first rule this used to follow, and the
+        reason that rule gave ("standard tuning should not sit between two
+        things nobody has") survives anyway on his own folder: nothing in it
+        is tuned above standard, so standard is still first. On a folder of
+        metal it will not be, and the count on each chip is what says so.
+
+        A tuning with no pitch stored goes last rather than first: an entry
+        written before `ENTRY_VERSION` 3 has none, and a strip that opened
+        with those would read as a sort that is not working. The letters
+        break a tie, so the order is the same on every machine.
+        """
+        pitch = self.tuning_pitch(files)
+        return sorted(self.tuning_counts(files),
+                      key=lambda k: (-pitch.get(k, -1.0), k))
 
     def has(self, file: Path, tuning: str) -> bool:
         """Whether any playable track of this song uses that tuning."""
@@ -237,6 +291,7 @@ class SongIndex:
                 "tracks": info.tracks,
                 "tunings": info.tunings,
                 "names": info.names,
+                "pitch": info.pitch,
                 "readable": info.readable,
             }
 

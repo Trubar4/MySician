@@ -139,20 +139,47 @@ class TestCountingTheFolder:
         index = SongIndex(tmp_path / "idx.json")
         song = tmp_path / "a.gp5"
         song.write_bytes(b"x")
-        index._record(song, SongInfo(3, ["E A D G B E", "E A D G B E",
-                                         "D A D G B E"]))
+        index._record(song, _info(["E A D G B E", "E A D G B E",
+                                   "D A D G B E"], tracks=3))
         assert index.tuning_counts([song]) == {"E A D G B E": 1,
                                                "D A D G B E": 1}
 
-    def test_the_order_is_still_commonest_first(self, tmp_path):
+    def test_the_order_is_by_pitch_not_by_count(self, tmp_path):
+        """"Start mit e Standard, dann drop d, usw." -- so the three songs in
+        Drop D do not come first for being three, and would have under the
+        commonest-first rule this replaced."""
         index = SongIndex(tmp_path / "idx.json")
         files = []
-        for i, tuning in enumerate(["D A D G B E"] * 3 + ["E A D G B E"] * 5):
+        for i, tuning in enumerate(["D A D G B E"] * 3 + ["E A D G B E"] * 1):
             song = tmp_path / f"s{i}.gp5"
             song.write_bytes(b"x")
             files.append(song)
-            index._record(song, SongInfo(1, [tuning]))
+            index._record(song, _info([tuning]))
         assert index.tunings_present(files) == ["E A D G B E", "D A D G B E"]
+
+    def test_a_tuning_with_no_pitch_stored_goes_last(self, tmp_path):
+        """An entry from before `ENTRY_VERSION` 3 has none, and a strip that
+        opened with those would read as a sort that is not working."""
+        index = SongIndex(tmp_path / "idx.json")
+        files = []
+        for i, info in enumerate([SongInfo(1, ["A E A D F# B"]),
+                                  _info(["C G C F A D"])]):
+            song = tmp_path / f"s{i}.gp5"
+            song.write_bytes(b"x")
+            files.append(song)
+            index._record(song, info)
+        assert index.tunings_present(files) == ["C G C F A D", "A E A D F# B"]
+
+    def test_the_reconstruction_these_fixtures_use_is_exact(self):
+        """The control for every expectation in this file: if `_pitches` did
+        not reproduce the real tunings, the orders below would be fiction."""
+        from pickhero.tabs.song_index import mean_pitch
+        for name, shape in NAMED_TUNINGS:
+            letters = " ".join(tuning_notes(shape))
+            assert _pitches(letters) == [shape[s]
+                                         for s in sorted(shape, reverse=True)]
+            notes = _pitches(letters)
+            assert abs(sum(notes) / len(notes) - mean_pitch(shape)) < 1e-9
 
     def test_a_song_nobody_has_read_counts_for_nothing(self, tmp_path):
         index = SongIndex(tmp_path / "idx.json")
@@ -166,6 +193,40 @@ class TestCountingTheFolder:
 
 TUNINGS = ["E A D G B E"] * 5 + ["D A D G B E"] * 3 + ["C G C F A D"] * 2 \
     + ["E A E A C# E"]
+
+
+#: Open-string MIDI reconstructed from the letters, for the FIXTURES only.
+#: The index stores the real numbers (it has the file); a fixture that
+#: records a `SongInfo` by hand has to supply them, and the letters carry no
+#: octave. Ascending with the bottom string in [33, 44] -- which reproduces
+#: all sixteen named tunings exactly, asserted below, and is a reconstruction
+#: rather than a measurement, which is why the app does not do this.
+_PITCH_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#",
+                "B")
+
+
+def _pitches(letters: str) -> list[int]:
+    out: list[int] = []
+    for letter in letters.split():
+        step = _PITCH_NAMES.index(letter)
+        if not out:
+            value = step + 36
+            while value < 33:
+                value += 12
+            while value > 44:
+                value -= 12
+        else:
+            value = out[-1] + (step - out[-1]) % 12
+        out.append(value)
+    return out
+
+
+def _info(tunings, tracks=None) -> SongInfo:
+    """A `SongInfo` shaped the way the index really records one."""
+    notes = [_pitches(t) for t in tunings]
+    return SongInfo(tracks=len(tunings) if tracks is None else tracks,
+                    tunings=list(tunings),
+                    pitch=[sum(n) / len(n) for n in notes])
 
 
 def _menu(tmp_path, monkeypatch, tunings):
@@ -185,7 +246,7 @@ def _menu(tmp_path, monkeypatch, tunings):
     for i, tuning in enumerate(tunings):
         song = songs / f"Song {i:02d}.gp5"
         song.write_bytes(b"x")
-        screen._index._record(song, SongInfo(1, [tuning]))
+        screen._index._record(song, _info([tuning]))
     screen.scan_files()
     return screen
 
@@ -438,15 +499,22 @@ class TestClickingOne:
             pygame.quit()
 
     def test_his_folder_names_the_ones_he_asked_about(self, his_menu):
-        """Ten tunings, three of them unnamed, commonest first."""
+        """Ten tunings, three of them unnamed, HIGHEST pitch first.
+
+        Two of the unnamed ones really do sit above standard -- four of the
+        six strings of "E A E A C# E" are higher than standard's -- so the
+        strip no longer opens on the tuning 41 of his 95 songs are in. That
+        is pitch order doing what it was asked to do, and the count on each
+        chip is what says the two above it hold one song and two.
+        """
         pygame.init()
         pygame.display.set_mode((320, 240))
         try:
             his_menu.render(pygame.Surface((1920, 1080)))
             assert [c.label for c in his_menu._tuning_chips] == [
-                "All 95", "Standard 41", "Drop D 20", "Drop C 17",
-                "Eb Standard 5", "Drop C# 3", "D Standard 3", "Drop A 2",
-                "E A E A C# E 2", "C# G# C# F# B E 1", "F C F A# D# G 1"]
+                "All 95", "F C F A# D# G 1", "E A E A C# E 2", "Standard 41",
+                "Drop D 20", "C# G# C# F# B E 1", "Eb Standard 5",
+                "Drop C# 3", "D Standard 3", "Drop C 17", "Drop A 2"]
             drop_d = next(c for c in his_menu._tuning_chips
                           if c.value == "D A D G B E")
             self._click(his_menu, drop_d)

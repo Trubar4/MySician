@@ -177,6 +177,40 @@ class TestNotReadingItTwice:
         assert index.get(song) is not None
 
 
+#: Open-string MIDI reconstructed from the letters, for the FIXTURES only.
+#: The index stores the real numbers (it has the file); a fixture that
+#: records a `SongInfo` by hand has to supply them, and the letters carry no
+#: octave. Ascending with the bottom string in [33, 44] -- which reproduces
+#: all sixteen named tunings exactly, asserted below, and is a reconstruction
+#: rather than a measurement, which is why the app does not do this.
+_PITCH_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#",
+                "B")
+
+
+def _pitches(letters: str) -> list[int]:
+    out: list[int] = []
+    for letter in letters.split():
+        step = _PITCH_NAMES.index(letter)
+        if not out:
+            value = step + 36
+            while value < 33:
+                value += 12
+            while value > 44:
+                value -= 12
+        else:
+            value = out[-1] + (step - out[-1]) % 12
+        out.append(value)
+    return out
+
+
+def _info(tunings, tracks=None) -> SongInfo:
+    """A `SongInfo` shaped the way the index really records one."""
+    notes = [_pitches(t) for t in tunings]
+    return SongInfo(tracks=len(tunings) if tracks is None else tracks,
+                    tunings=list(tunings),
+                    pitch=[sum(n) / len(n) for n in notes])
+
+
 class TestWhichTuningsArePresent:
     def _stocked(self, tmp_path, mapping):
         index = SongIndex(tmp_path / "i.json")
@@ -184,18 +218,19 @@ class TestWhichTuningsArePresent:
         for name, tunings in mapping.items():
             f = tmp_path / f"{name}.gp5"
             f.write_bytes(b"x")
-            index._record(f, SongInfo(tracks=len(tunings), tunings=tunings))
+            index._record(f, _info(tunings))
             files.append(f)
         return index, files
 
-    def test_the_commonest_comes_first(self):
-        """The filter exists to reach what is actually played; standard tuning
-        must not sit between two things nobody has."""
+    def test_the_highest_pitch_comes_first(self):
+        """"Start mit e Standard, dann drop d, usw." -- and the count no
+        longer decides, so one song in standard still outranks two in Drop D.
+        """
         import tempfile
         tmp = Path(tempfile.mkdtemp())
         index, files = self._stocked(tmp, {
-            "a": ["E A D G B E"], "b": ["E A D G B E"], "c": ["D A D G B E"]})
-        assert index.tunings_present(files)[0] == "E A D G B E"
+            "a": ["D A D G B E"], "b": ["D A D G B E"], "c": ["E A D G B E"]})
+        assert index.tunings_present(files) == ["E A D G B E", "D A D G B E"]
 
     def test_a_song_with_two_tunings_counts_for_both(self):
         import tempfile
@@ -231,15 +266,15 @@ class TestFilteringTheList:
             (songs / f"{name}.gp5").write_bytes(b"x")
         screen = MenuScreen(songs, config=Config())
         screen._index._record(songs / "standard_a.gp5",
-                              SongInfo(1, ["E A D G B E"]))
+                              _info(["E A D G B E"]))
         screen._index._record(songs / "standard_b.gp5",
-                              SongInfo(1, ["E A D G B E"]))
+                              _info(["E A D G B E"]))
         screen._index._record(songs / "dropd.gp5",
-                              SongInfo(2, ["D A D G B E", "E A D G B E"]))
+                              _info(["D A D G B E", "E A D G B E"], tracks=2))
         screen._apply_filter()
         return screen
 
-    def test_tab_steps_to_the_commonest_tuning(self, menu):
+    def test_tab_steps_to_the_highest_tuning(self, menu):
         menu.handle_event(_key(pygame.K_TAB))
         assert menu._tuning_filter == "E A D G B E"
         assert len(menu._display_files) == 3     # dropd has a standard track too
