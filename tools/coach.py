@@ -325,7 +325,7 @@ def report(run: Run) -> str:
             about = ("your playing" if reason.startswith(PLAYER_FAULTS)
                      else "the detector, not you")
             lines.append(f"    {count:5}  {100 * count / total:5.1f} %  "
-                         f"{reason:22} — {about}")
+                         f"{reason:22} -- {about}")
         if intervals:
             # Which way the wrong ones went. One fret flat over and over is a
             # hand that has drifted; scatter is reading the tab wrong.
@@ -336,7 +336,7 @@ def report(run: Run) -> str:
     found = passages(run)
     if run.notes and all(n["bar"] is None for n in run.notes):
         lines.append("\n  This log has no bar numbers, so no passage can be "
-                     "named — it was written by an older build. One run with "
+                     "named -- it was written by an older build. One run with "
                      "the current one is all it takes.")
     elif not found:
         lines.append("\n  No weak passage stands out.")
@@ -345,12 +345,12 @@ def report(run: Run) -> str:
         for passage in found[:6]:
             span = (f"bar {passage['bars'][0]}"
                     if len(passage["bars"]) == 1
-                    else f"bars {passage['bars'][0]}–{passage['bars'][-1]}")
+                    else f"bars {passage['bars'][0]}-{passage['bars'][-1]}")
             lines.append(
                 f"\n    {span}  ({passage['start_ms'] / 1000:.0f} s)  "
                 f"{passage['good']}/{passage['notes']}")
             if passage["frets"]:
-                lines.append(f"      frets {passage['frets'][0]}–"
+                lines.append(f"      frets {passage['frets'][0]}-"
                              f"{passage['frets'][1]}, "
                              f"{passage['strings']:.1f} strings per strike"
                              + (f", techniques: "
@@ -700,7 +700,7 @@ def pattern_report(runs: list[Run], dropped: int) -> str:
             continue
         lines.append(f"      {total['faults']} readable mistakes in "
                      f"{total['good'] + total['faults']} judgeable notes "
-                     f"— {100 * base:.0f} %"
+                     f"-- {100 * base:.0f} %"
                      f"   ({total['unreadable']} set aside as unreadable)")
 
         for name, _ in GROUPS:
@@ -722,7 +722,7 @@ def pattern_report(runs: list[Run], dropped: int) -> str:
                              f"{judged:5} notes   {away:+5.0f} pts{flag}")
                 if cell["unreadable"] > judged:
                     lines.append(f"{'':<34}(more unreadable than judgeable "
-                                 f"here — read this one with care)")
+                                 f"here -- read this one with care)")
 
         # Which way the wrong ones went, over the whole band. One fret flat
         # over and over is a hand that has drifted; scatter is reading the

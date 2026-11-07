@@ -291,3 +291,71 @@ class TestTheToolsTheBuildRunsPrintAscii:
         # ...while the em dash the same runner printed two steps later is
         # fine on cp1252, which is why only one of the two steps failed.
         assert "verovio OK \u2014".encode("cp1252")
+
+
+# ── The tools the PLAYER is told to run ─────────────────────────────────────
+#
+# The rule above covers the tools the BUILD runs, and that is where it was
+# first paid for: one em dash in `fetch_ffmpeg.py` landed the file on disk,
+# raised UnicodeEncodeError on the final print, exited 1, and turned a
+# working build into a red annotation beside an EXE that had grown 37 MB.
+#
+# A tool the player runs from cmd.exe has the same problem and a worse
+# failure: the analysis finishes, the numbers are computed, and the traceback
+# replaces the answer. `coach.py` prints its whole report through one
+# `print("\n".join(lines))`, so walking `print` calls for literals finds
+# nothing -- the dashes are built into the lines a dozen functions earlier.
+#
+# So for these the rule is every string literal in the file, which is
+# stricter than it needs to be and costs only that `--` is written instead of
+# an em dash. A `Usage:` line in the module docstring is what marks a tool as
+# one somebody is told to type, so a tool added to the guide later comes
+# under the rule by documenting itself rather than by being listed here.
+#
+# cp850 is the German console's code page, which is the one that matters:
+# cp1252 HAS an em dash, which is exactly why this survived unnoticed.
+
+
+def _player_tools() -> list[Path]:
+    """The tools/*.py whose docstring tells the player how to run them."""
+    found = []
+    for path in sorted((ROOT / "tools").glob("*.py")):
+        doc = ast.get_docstring(ast.parse(
+            path.read_text(encoding="utf-8"))) or ""
+        if "Usage:" in doc:
+            found.append(path)
+    return found
+
+
+class TestTheToolsThePlayerRunsPrintAscii:
+    def test_some_tool_really_does_document_how_to_run_it(self):
+        """Without this the rule below passes by finding nothing."""
+        names = {path.name for path in _player_tools()}
+        assert "coach.py" in names, names
+
+    def test_no_literal_in_them_can_raise_on_a_german_console(self):
+        bad = {}
+        for path in _player_tools():
+            text = path.read_text(encoding="utf-8")
+            cannot = sorted({c for c in text if ord(c) > 127
+                             and not _encodable(c, "cp850")})
+            if cannot:
+                bad[path.name] = cannot
+        assert not bad, (
+            "a tool the player is told to run holds a character cp850 "
+            f"cannot encode, which replaces its answer with a traceback: "
+            f"{bad}")
+
+    def test_the_dash_really_is_unencodable_there(self):
+        """The check is only worth having if it catches the shipped bug."""
+        assert _encodable("—", "cp1252")      # which is why nobody saw it
+        assert not _encodable("—", "cp850")
+        assert not _encodable("–", "cp850")
+
+
+def _encodable(text: str, encoding: str) -> bool:
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        return False
+    return True

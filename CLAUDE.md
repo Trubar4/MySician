@@ -7257,3 +7257,13 @@ He has **290 run logs over 22 playing days**, 20 August to 6 November, across ab
 - **The new code was appended after the `if __name__` guard**, so running the script exited at that line before a single new function was defined. **Every unit test passed on it**, because importing a module is not running it. Only `main()` called through the same door the player uses catches that, which is why `TestTheWholeThingRunsFromTheCommandLine` is not decoration.
 
 **`_expand` resolves wildcards in the tool**, because cmd.exe does not: `coach.py %USERPROFILE%\.pickhero\run_*.txt` arrives as one literal word with a star in it, and cmd is the shell this is run from.
+
+### And It Would Have Printed A Traceback Instead Of The Answer
+
+`coach.py` held an en dash and an em dash, and **cp850 -- the German console's code page -- can encode neither.** The analysis would have run, computed every number, and died on the way out.
+
+This is the `fetch_ffmpeg.py` arrow for the second time, and the rule written then did not reach it: `TestTheToolsTheBuildRunsPrintAscii` walks `print` calls for non-ASCII literals, and `coach.py` prints its whole report through one `print("\n".join(lines))` -- the dashes are built into the lines a dozen functions earlier, so there was nothing for that walk to find.
+
+- **The rule for a tool the PLAYER runs is every string literal in the file**, which is stricter than it needs to be and costs only that `--` is written instead of a dash.
+- **A `Usage:` line in the module docstring is what marks such a tool**, so one added to a guide later comes under the rule by documenting itself rather than by being remembered. Across all of `tools/` that currently selects exactly the files it should.
+- **cp1252 HAS an em dash**, which is precisely why this survived unnoticed: the fault appears only on the console the player actually has.
