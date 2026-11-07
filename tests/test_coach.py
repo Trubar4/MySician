@@ -233,3 +233,348 @@ class TestAWrongPitchNoHandCouldHaveMade:
         """Five semitones is about a hand's span AND the gap between two
         adjacent strings, so it covers a fret slip and a string slip."""
         assert coach.REACH_SEMITONES == 5
+
+
+# ── Several logs at once ────────────────────────────────────────────────────
+
+def _dated(tmp_path, name, strikes=(), notes=(), head=HEAD):
+    """A log under a real run-log filename, so the day can be read off it."""
+    text = head + STRIKES
+    for at, midi, unpitched, subharm in strikes:
+        text += (f"{at:.1f}\t{at:.1f}\t{at:.1f}\t{midi}\t1.00"
+                 f"\t{int(unpitched)}\t{int(subharm)}\tmatched\t\t\n")
+    text += NOTES
+    for at, bar, string, fret, midi, tech, chord, verdict in notes:
+        text += (f"{at:.1f}\t{bar}\t{string}\t{fret}\t{midi}\t{tech}"
+                 f"\t{chord}\t{verdict}\n")
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return coach.Run(path)
+
+
+class TestTheDayComesFromTheName:
+    """A log that travelled on a USB stick has a new mtime and the old name."""
+
+    def test_the_stamp_is_read_out_of_the_filename(self):
+        assert coach.played_day(
+            "run_Bon_Jovi___I_d_Die_For_You_20260902_203417.txt") \
+            == "2026-09-02"
+
+    def test_a_song_whose_name_holds_digits_is_not_mistaken_for_a_date(self):
+        # Shinedown's "45" and "Papa Roach - 20 Something" are real titles.
+        assert coach.played_day("run_Shinedown___45_20260906_182919.txt") \
+            == "2026-09-06"
+
+    def test_a_name_with_no_stamp_says_so_rather_than_guessing(self):
+        assert coach.played_day("whatever.txt") is None
+
+
+class TestTheWindowIsDaysNotFiles:
+    """One busy evening must not swallow the whole window.
+
+    The player's own folder has eleven logs from 2026-09-01 and one from
+    2026-08-21: counted as files, "the last twenty" would be one evening
+    and a bit.
+    """
+
+    def test_an_evening_of_many_logs_counts_as_one_day(self, tmp_path):
+        names = [f"run_S_20260901_18000{i}.txt" for i in range(9)]
+        names += ["run_S_20260902_180000.txt", "run_S_20260903_180000.txt"]
+        for name in names:
+            (tmp_path / name).write_text("x", encoding="utf-8")
+        kept = coach.recent_days([tmp_path / n for n in names], 2)
+        days = {coach.played_day(p) for p in kept}
+        assert days == {"2026-09-02", "2026-09-03"}
+        assert len(kept) == 2            # the nine-log evening is left out
+
+    def test_zero_means_every_day_there_is(self, tmp_path):
+        names = ["run_S_20260901_180000.txt", "run_S_20260902_180000.txt"]
+        for name in names:
+            (tmp_path / name).write_text("x", encoding="utf-8")
+        assert len(coach.recent_days([tmp_path / n for n in names], 0)) == 2
+
+
+class TestTheSameSittingWrittenTwice:
+    """D is not in App.NEVER_REPEAT, so one run can produce many files.
+
+    Measured on the player's own folder: eight files of 19 294 bytes within
+    twelve seconds, five of 57 093, three of 50 032. Counted as evenings,
+    one sitting would weigh eight.
+    """
+
+    def _pair(self, tmp_path, first, second):
+        strikes = [(1000.0, 60, 0, 0), (2000.0, 62, 0, 0), (3000.0, 64, 0, 0)]
+        a = _dated(tmp_path, "run_S_20260901_180000.txt", strikes[:first])
+        b = _dated(tmp_path, "run_S_20260901_180005.txt", strikes[:second])
+        return coach.deduplicate([a, b])
+
+    def test_a_prefix_collapses_and_the_longest_survives(self, tmp_path):
+        kept, dropped = self._pair(tmp_path, 3, 1)
+        assert dropped == 1
+        assert len(kept) == 1
+        assert len(kept[0].strikes) == 3
+
+    def test_an_identical_pair_collapses_too(self, tmp_path):
+        # The commonest shape: the key pressed twice, nothing new heard.
+        kept, dropped = self._pair(tmp_path, 3, 3)
+        assert (len(kept), dropped) == (1, 1)
+
+    def test_two_different_sittings_are_both_kept(self, tmp_path):
+        a = _dated(tmp_path, "run_S_20260901_180000.txt",
+                   [(1000.0, 60, 0, 0), (2000.0, 62, 0, 0)])
+        b = _dated(tmp_path, "run_S_20260902_180000.txt",
+                   [(1000.0, 67, 0, 0), (2000.0, 69, 0, 0)])
+        kept, dropped = coach.deduplicate([a, b])
+        assert (len(kept), dropped) == (2, 0)
+
+    def test_two_logs_with_no_strikes_are_never_collapsed(self, tmp_path):
+        """Nothing in them can show they are the same evening.
+
+        These are the 2 kB files where the microphone was dead, and throwing
+        a sitting away on no evidence is the fault this whole tool is built
+        to avoid.
+        """
+        a = _dated(tmp_path, "run_S_20260901_180000.txt")
+        b = _dated(tmp_path, "run_S_20260902_180000.txt")
+        kept, dropped = coach.deduplicate([a, b])
+        assert (len(kept), dropped) == (2, 0)
+
+    def test_songs_are_never_mixed(self, tmp_path):
+        strikes = [(1000.0, 60, 0, 0)]
+        a = _dated(tmp_path, "run_A_20260901_180000.txt", strikes,
+                   head=HEAD.replace("song\tA Song", "song\tA"))
+        b = _dated(tmp_path, "run_B_20260901_180005.txt", strikes,
+                   head=HEAD.replace("song\tA Song", "song\tB"))
+        kept, dropped = coach.deduplicate([a, b])
+        assert (len(kept), dropped) == (2, 0)
+
+
+class TestRunsAreBandedSoNothingIsAveragedAcrossACodeChange:
+    """Eleven weeks of this project is not one instrument.
+
+    onset_threshold went 0.30 -> 0.05 (+296 notes on one song), the audio
+    anchor was fixed (29 % -> 40 %), the gate stopped discarding 40 % of the
+    audio. A pattern computed across that is the app improving.
+    """
+
+    def _run(self, tmp_path, day, build):
+        return _dated(tmp_path, f"run_S_{day}_180000.txt",
+                      head=HEAD.replace("song\tA Song",
+                                        f"build\t{build}\nsong\tA Song"))
+
+    def test_a_build_change_starts_a_new_band(self, tmp_path):
+        runs = [self._run(tmp_path, "20260901", "aaaa"),
+                self._run(tmp_path, "20260902", "bbbb")]
+        assert len(coach.bands(runs)) == 2
+
+    def test_a_long_gap_starts_one_too_even_with_no_build_recorded(
+            self, tmp_path):
+        """Most of this history carries no build at all.
+
+        Every EXE the release workflow produced before it learnt to stamp
+        reports "unknown build", so for those logs only the calendar can
+        separate September from November.
+        """
+        runs = [self._run(tmp_path, "20260917", "unknown build"),
+                self._run(tmp_path, "20261106", "unknown build")]
+        assert len(coach.bands(runs)) == 2
+
+    def test_but_a_short_gap_does_not(self, tmp_path):
+        runs = [self._run(tmp_path, "20260901", "unknown build"),
+                self._run(tmp_path, "20260910", "unknown build")]
+        bands = coach.bands(runs)
+        assert len(bands) == 1
+        assert len(bands[0]["runs"]) == 2
+
+    def test_the_gap_is_measured_in_calendar_days_across_a_month_end(
+            self, tmp_path):
+        # 31 Aug to 10 Sep is ten days, not seventy-nine.
+        runs = [self._run(tmp_path, "20260831", "unknown build"),
+                self._run(tmp_path, "20260910", "unknown build")]
+        assert len(coach.bands(runs)) == 1
+
+
+class TestTheDenominatorLeavesOutWhatNothingCouldRead:
+    """A note whose failure the detector could not read is not a mistake.
+
+    Counting it as one convicts on absence of evidence; counting it as a
+    success flatters. It is set aside from BOTH sides and said out loud --
+    the presumption of innocence this project runs on, applied to the
+    arithmetic.
+    """
+
+    def _one(self, tmp_path, verdict, strike):
+        notes = [(1000.0, 1, 3, 12, 49, "-", 1, verdict)]
+        run = _dated(tmp_path, "run_S_20260901_180000.txt", strike, notes)
+        found = coach.patterns([run])
+        return found["tally"]["Where on the neck"]["frets 12+"]
+
+    def test_a_clean_wrong_pitch_is_a_fault(self, tmp_path):
+        cell = self._one(tmp_path, "miss", [(1000.0, 48, 0, 0)])
+        assert (cell["faults"], cell["good"], cell["unreadable"]) == (1, 0, 0)
+
+    def test_a_subharmonic_is_set_aside(self, tmp_path):
+        cell = self._one(tmp_path, "miss", [(1000.0, 30, 0, 1)])
+        assert (cell["faults"], cell["good"], cell["unreadable"]) == (0, 0, 1)
+
+    def test_a_pitchless_strike_is_set_aside(self, tmp_path):
+        cell = self._one(tmp_path, "miss", [(1000.0, 0, 1, 0)])
+        assert (cell["faults"], cell["good"], cell["unreadable"]) == (0, 0, 1)
+
+    def test_nothing_struck_at_all_is_a_fault(self, tmp_path):
+        cell = self._one(tmp_path, "miss", [])
+        assert (cell["faults"], cell["good"], cell["unreadable"]) == (1, 0, 0)
+
+    def test_a_hit_counts_in_the_denominator(self, tmp_path):
+        cell = self._one(tmp_path, "hit", [(1000.0, 49, 0, 0)])
+        assert (cell["faults"], cell["good"], cell["unreadable"]) == (0, 1, 0)
+
+    def test_a_pending_note_is_in_no_group_at_all(self, tmp_path):
+        run = _dated(tmp_path, "run_S_20260901_180000.txt", [],
+                     [(1000.0, 1, 3, 12, 49, "-", 1, "pending")])
+        assert coach.patterns([run])["tally"]["Where on the neck"] == {}
+
+
+class TestAPlantedWeaknessIsFound:
+    """The control: a fault put in on purpose has to come out again.
+
+    Without this the whole class passes on a report that groups correctly
+    and finds nothing.
+    """
+
+    def _runs(self, tmp_path, bad_string, bad_from_fret):
+        strikes, notes = [], []
+        for i in range(240):
+            # Independent, or the two cycles interfere: `1 + i % 6` is even
+            # exactly when `i % 4` is odd, so string 3 never once met fret 14
+            # and the planted fault was not in the fixture at all.
+            string = 1 + (i % 6)
+            fret = (0, 3, 7, 14)[(i // 6) % 4]
+            midi = 40 + string * 3 + fret
+            bad = string == bad_string and fret >= bad_from_fret
+            ms = 500.0 + i * 400
+            strikes.append((ms, midi - 1 if bad else midi, 0, 0))
+            notes.append((ms, 1 + i // 8, string, fret, midi, "-", 1,
+                          "miss" if bad else "hit"))
+        return [_dated(tmp_path, "run_S_20260901_180000.txt", strikes, notes)]
+
+    def test_the_string_it_was_planted_on_stands_out(self, tmp_path):
+        found = coach.patterns(self._runs(tmp_path, 3, 14))
+        rates = {label: coach._rate(cell)
+                 for label, cell in found["tally"]["Which string"].items()}
+        # One fret of the four is planted bad, so exactly a quarter of the
+        # notes on that string fail -- asserted as the number the fixture
+        # really implies rather than as a comfortable threshold.
+        assert rates["string 3"] == 0.25
+        assert all(rate == 0 for label, rate in rates.items()
+                   if label != "string 3")
+
+    def test_so_does_the_fret_region(self, tmp_path):
+        found = coach.patterns(self._runs(tmp_path, 3, 14))
+        rates = {label: coach._rate(cell)
+                 for label, cell in found["tally"]["Where on the neck"].items()}
+        assert rates["frets 12+"] > rates["frets 5-11"]
+
+    def test_and_the_interval_names_which_way_the_hand_went(self, tmp_path):
+        found = coach.patterns(self._runs(tmp_path, 3, 14))
+        cell = found["tally"]["Which string"]["string 3"]
+        assert list(cell["intervals"]) == ["-1"]
+
+    def test_the_report_marks_it_as_worse_than_its_band(self, tmp_path):
+        text = coach.pattern_report(self._runs(tmp_path, 3, 14), 0)
+        assert "string 3" in text
+        line = next(l for l in text.splitlines() if "string 3" in l)
+        assert "worse than this band" in line
+
+
+class TestAnUnreadableRunIsLeftOutOfThePatterns:
+    """A wrong input device makes every other number in a log meaningless.
+
+    This project has spent whole sessions diagnosing playing that was never
+    in the signal path, so such a run is excluded rather than averaged in --
+    and the exclusion is reported, because a silently dropped evening looks
+    like a tool that lost it.
+    """
+
+    def test_it_is_excluded_and_named(self, tmp_path):
+        dead = HEAD.replace("level_loudest_db\t-12.0",
+                            "level_loudest_db\t-52.0")
+        run = _dated(tmp_path, "run_S_20260901_180000.txt",
+                     [(1000.0, 48, 0, 0)],
+                     [(1000.0, 1, 3, 12, 49, "-", 1, "miss")], head=dead)
+        text = coach.pattern_report([run], 0)
+        assert "left out as unreadable" in text
+        assert "Nothing readable in this band" in text
+        assert "Which string" not in text
+
+    def test_a_healthy_run_is_not_excluded(self, tmp_path):
+        run = _dated(tmp_path, "run_S_20260901_180000.txt",
+                     [(1000.0, 48, 0, 0)],
+                     [(1000.0, 1, 3, 12, 49, "-", 1, "miss")])
+        text = coach.pattern_report([run], 0)
+        assert "left out as unreadable" not in text
+
+
+class TestTheWildcardIsExpandedHere:
+    """cmd.exe does not expand `*`, and cmd is the shell this is run from.
+
+    `coach.py %USERPROFILE%\\.pickhero\\run_*.txt` arrives as one literal
+    word with a star in it, so without this every path is a file that is
+    not there.
+    """
+
+    def test_a_star_finds_the_files(self, tmp_path):
+        for name in ("run_A_20260901_180000.txt", "run_B_20260902_180000.txt"):
+            (tmp_path / name).write_text("x", encoding="utf-8")
+        (tmp_path / "other.log").write_text("x", encoding="utf-8")
+        found = coach._expand([str(tmp_path / "run_*.txt")])
+        assert sorted(p.name for p in found) == [
+            "run_A_20260901_180000.txt", "run_B_20260902_180000.txt"]
+
+    def test_a_plain_path_is_left_alone(self, tmp_path):
+        path = tmp_path / "run_A_20260901_180000.txt"
+        path.write_text("x", encoding="utf-8")
+        assert coach._expand([str(path)]) == [path]
+
+    def test_a_name_that_matches_nothing_is_kept_so_the_error_names_it(
+            self, tmp_path):
+        found = coach._expand([str(tmp_path / "nope.txt")])
+        assert [p.name for p in found] == ["nope.txt"]
+
+
+class TestTheWholeThingRunsFromTheCommandLine:
+    """The end-to-end check, and it is not decoration.
+
+    The pattern code was appended AFTER the `if __name__` guard, so running
+    the script exited at that line before a single new function existed.
+    Every unit test above passed on it, because importing the module is not
+    running it. Only calling main() through the same door the player uses
+    catches that.
+    """
+
+    def test_patterns_over_two_logs(self, tmp_path, capsys):
+        for day in ("20260901", "20260902"):
+            _dated(tmp_path, f"run_S_{day}_180000.txt",
+                   [(1000.0, 48, 0, 0)] * 1,
+                   [(1000.0, 1, 3, 12, 49, "-", 1, "miss")])
+        code = coach.main(["coach.py", str(tmp_path / "run_*.txt"),
+                           "--patterns"])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "WHAT RECURS" in out
+        assert "2 sittings over 2 playing days" in out
+
+    def test_days_narrows_it(self, tmp_path, capsys):
+        for day in ("20260901", "20260902", "20260903"):
+            _dated(tmp_path, f"run_S_{day}_180000.txt")
+        coach.main(["coach.py", str(tmp_path / "run_*.txt"),
+                    "--patterns", "--days", "1"])
+        assert "1 of 3 logs" in capsys.readouterr().out
+
+    def test_without_patterns_it_still_reports_each_log(self, tmp_path,
+                                                        capsys):
+        _dated(tmp_path, "run_S_20260901_180000.txt")
+        coach.main(["coach.py", str(tmp_path / "run_S_20260901_180000.txt")])
+        out = capsys.readouterr().out
+        assert "A Song" in out
+        assert "WHAT RECURS" not in out
