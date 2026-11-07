@@ -23,6 +23,12 @@ arithmetic but what it refuses to say.
 - **In tune is a state that has to be HELD.** One frame inside the band is a
   string passing through the note on its way somewhere else. `STEADY_MS` of
   it is a string that is actually there.
+- **And it can be asked which tuning the guitar is IN** (`D`), which is the
+  one thing the player came to find out and the one thing this screen used
+  to ask THEM. The arithmetic is `audio/tuning_detect.py`; what belongs
+  here is only feeding it and drawing it. A tuning it names is set on this
+  screen straight away, so the answer is somewhere to carry on tuning from
+  rather than a sentence that expires.
 """
 
 from __future__ import annotations
@@ -34,10 +40,14 @@ import pygame
 
 from pickhero.audio.input import AudioCapture
 from pickhero.audio.note_utils import (
-    NAMED_TUNINGS, midi_to_freq, midi_to_name, tuning_for_notes,
+    NAMED_TUNINGS, midi_to_freq, midi_to_name, tuning_for_notes, tuning_notes,
+)
+from pickhero.audio.tuning_detect import (
+    CONFIRM_READINGS, OUT_OF_TUNE_CENTS, Detection,
 )
 from pickhero.config import Config
 from pickhero.ui.colors import get_theme
+from pickhero.ui.footer import wrap_on_bars
 
 # How far from a string a reading may be and still be about that string --
 # an upper bound, not the whole rule. The test that asserts the window
@@ -158,6 +168,21 @@ class TunerMenuScreen:
         self._peak_db = -120.0
         #: (when, Hz) of the last confident reading no string owned.
         self._stray: tuple[float, float] | None = None
+        #: A shape that is not one of the named ones, once the detector has
+        #: found one. The letters are the fact and a name is a label --
+        #: `reachable_tunings` already answers an unnamed tuning this way,
+        #: and a detector that finds one and then cannot show it is the
+        #: "feature that cannot be seen working" this project keeps paying
+        #: for.
+        self._custom: dict[int, int] | None = None
+        #: The narrowing, while it is running.
+        self._detect: Detection | None = None
+        #: What the last reading offered to the detector came to, and what
+        #: the finished query concluded. Both are drawn: a query that
+        #: refuses a reading every frame and says nothing is a key that
+        #: looks dead.
+        self._refused = ""
+        self._found = ""
         self._start_capture()
 
     @staticmethod
@@ -191,13 +216,19 @@ class TunerMenuScreen:
 
     @property
     def tuning_name(self) -> str:
+        if self._custom is not None:
+            return " ".join(tuning_notes(self._custom))
         return NAMED_TUNINGS[self._tuning_index][0]
 
     @property
     def tuning(self) -> dict[int, int]:
+        if self._custom is not None:
+            return self._custom
         return NAMED_TUNINGS[self._tuning_index][1]
 
     def _choose_tuning(self, step: int) -> None:
+        self._custom = None
+        self._found = ""
         self._tuning_index = (self._tuning_index + step) % len(NAMED_TUNINGS)
         # Chosen by hand now, so the line naming the song it came from would
         # be describing something that is no longer true.
@@ -222,6 +253,9 @@ class TunerMenuScreen:
         # question is whether the signal is ever strong enough, not what it
         # is doing this instant.
         self._peak_db = max(self._peak_db, self._capture.get_signal_db())
+        if self._detect is not None:
+            self._offer(float(freq))
+            return
         found = self._reading(float(freq))
         if found is None:
             # A confident reading that no string owns. Until now this was
@@ -309,11 +343,132 @@ class TunerMenuScreen:
         self._done.discard(string)
         self._active = self._locked
 
+    # -- which tuning is it? -------------------------------------------
+
+    def _start_detect(self) -> None:
+        """Begin the narrowing, and say nothing about the old tuning.
+
+        Whatever was selected is about to be answered properly, so the
+        checklist measured against it is thrown away: every cent of it was
+        measured against targets that are no longer the question.
+        """
+        self._detect = Detection()
+        self._refused = ""
+        self._found = ""
+        self._cents.clear()
+        self._steady_since.clear()
+        self._done.clear()
+        self._active = None
+        self._locked = None
+        self._stray = None
+
+    def _stop_detect(self) -> None:
+        self._detect = None
+        self._refused = ""
+
+    def _offer(self, freq: float) -> None:
+        """Hand one confident reading to the narrowing.
+
+        The refusals are kept, not dropped. A reading the detector cannot
+        place is the commonest thing that happens to the bottom string of a
+        guitar, and a screen that drops it goes on saying "play string 6"
+        while the player is playing string 6 -- which is this project's own
+        definition of a feature that cannot be told from a broken one.
+        """
+        detect = self._detect
+        if detect is None:
+            return
+        reading = detect.offer(freq)
+        self._refused = reading.why
+        if not detect.finished:
+            return
+        found = detect.answer()
+        if found is None:
+            # It ran out of strings to ask, which only a skip can cause.
+            # Two tunings is a far better answer than whichever of them a
+            # guess would have landed on.
+            self._found = f"Narrowed to: {detect.still_possible()}"
+            self._stop_detect()
+            return
+        name, shape = found
+        self._settle(shape)
+        off = [s for s, cents in detect.cents.items()
+               if abs(cents) > OUT_OF_TUNE_CENTS]
+        # What each string gave, beside the name -- unless the name IS the
+        # notes, which it is for a tuning nobody named, where
+        # "C A D G B E (6: C, 5: G, ...)" says one thing twice.
+        heard = detect.evidence()
+        self._found = (f"{name} ({heard})"
+                       if heard and detect.notes_heard() != name else name)
+        if off:
+            # Said out loud, because it is the reason the next thing to do
+            # is tune rather than play: a string this far out was still
+            # plainly that note, which is why it was accepted.
+            which = ", ".join(str(s) for s in sorted(off, reverse=True))
+            self._found += f" - string {which} is well out of tune"
+        self._stop_detect()
+
+    def _settle(self, shape: dict[int, int]) -> None:
+        """Make the detected tuning the one this screen is tuning to."""
+        for index, (_, candidate) in enumerate(NAMED_TUNINGS):
+            if candidate == shape:
+                self._tuning_index = index
+                self._custom = None
+                self._song = ""
+                return
+        self._custom = dict(shape)
+        self._song = ""
+
+    def detect_lines(self) -> list[str]:
+        """What the narrowing has to say, top line first.
+
+        Returned rather than drawn, so the words are in one place and the
+        rule is testable without a screen -- the same seam as `notes`.
+        """
+        detect = self._detect
+        if detect is None:
+            return []
+        string = detect.asking
+        if string is None:
+            return []
+        out = [f"Play string {string}"]
+        heard = detect.notes_heard()
+        if heard:
+            out.append(f"heard so far: {heard}")
+        out.append(f"still possible: {detect.still_possible()}")
+        if self._refused:
+            out.append(f"that reading {self._refused} - play it again")
+        return out
+
     def handle_event(self, event: pygame.event.Event) -> str | None:
         if event.type != pygame.KEYDOWN:
             return None
         if event.key in (pygame.K_ESCAPE, pygame.K_g):
             return "escape"
+        if event.key == pygame.K_d:
+            if self._detect is None:
+                self._start_detect()
+            else:
+                self._stop_detect()
+            return None
+        if event.key == pygame.K_s and self._detect is not None:
+            # A dead string, or one so far out that nothing places it, must
+            # not be able to stop the query. What is lost is only the
+            # narrowing that string would have done, and the answer then
+            # says which tunings are still standing rather than picking one.
+            self._detect.skip()
+            self._refused = ""
+            return None
+        # A hand on a manual control stands the narrowing down, rather than
+        # the key doing nothing: the rule `X` and `C` already follow for the
+        # automatic gate. A key that looks dead is worse than one that ends
+        # something.
+        manual = (pygame.K_1 <= event.key <= pygame.K_6
+                  or pygame.K_KP1 <= event.key <= pygame.K_KP6
+                  or event.key in (pygame.K_LEFT, pygame.K_UP, pygame.K_RIGHT,
+                                   pygame.K_DOWN, pygame.K_r))
+        if manual and self._detect is not None:
+            self._stop_detect()
         # 1 to 6, the way a guitarist counts them and the way the rest of
         # this app already numbers them: 6 is the low E, 1 the high one.
         # They are written under the pips, so nothing has to be remembered.
@@ -334,6 +489,7 @@ class TunerMenuScreen:
             self._active = None
             self._locked = None
             self._stray = None
+            self._found = ""
             self._peak_db = -120.0
         return None
 
@@ -417,21 +573,37 @@ class TunerMenuScreen:
         t = get_theme()
         surface.fill(t.menu_bg)
         w, h = surface.get_size()
+        # Set before anything asks how tall the footer came out: it wraps on
+        # a narrow window, and the height and the drawing have to wrap at
+        # the same width or the block above is drawn through it.
+        self._footer_width = max(200, w - 40)
         huge = pygame.font.SysFont("Arial", 96, bold=True)
         title = pygame.font.SysFont("Arial", 30, bold=True)
         body = pygame.font.SysFont("Arial", 22)
         small = pygame.font.SysFont("Arial", 16)
 
-        head = title.render(self.tuning_name, True, t.hud_accent)
+        detecting = self._detect is not None
+        head = title.render(
+            "Which tuning is this?" if detecting else self.tuning_name,
+            True, t.hud_accent)
         surface.blit(head, (w // 2 - head.get_width() // 2, 24))
-        under = (f"from {self._song}" if self._song
-                 else "LEFT / RIGHT: another tuning")
+        if detecting:
+            under = "play the string it asks for"
+        elif self._song:
+            under = f"from {self._song}"
+        else:
+            under = "LEFT / RIGHT: another tuning"
         hint = small.render(under, True, t.hud_text)
         surface.blit(hint, (w // 2 - hint.get_width() // 2, 62))
 
         if self._error:
             msg = body.render(f"No input: {self._error}", True, t.feedback_miss)
             surface.blit(msg, (w // 2 - msg.get_width() // 2, h // 2))
+            return
+
+        if detecting:
+            self._draw_detect(surface, title, body, small)
+            self._draw_footer(surface, small)
             return
 
         action, note = self.advice()
@@ -511,15 +683,95 @@ class TunerMenuScreen:
             note = midi_to_name(self.tuning[self._locked])
             tail.append((f"Listening only to string {self._locked} ({note}) — "
                          f"{self._locked} again for automatic", t.hud_accent))
+        if self._found:
+            tail.append((self._found, t.tuner_in_tune))
         for line in self.notes():
             tail.append((line, t.feedback_close))
-        y = h - 80
+        y = h - 80 - self._footer_height(small)
         for text, colour in reversed(tail):
             surf = small.render(text, True, colour)
             y -= surf.get_height() + 4
             surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
 
-        done = small.render(
-            f"{len(self._done)} of 6 in tune   |   1-6: pick the string   "
-            f"|   R: start over   |   ESC: back", True, t.hud_text)
-        surface.blit(done, (w // 2 - done.get_width() // 2, h - 56))
+        self._draw_footer(surface, small)
+
+    def footer_line(self) -> str:
+        """The shortcut line, which says what each key is FOR.
+
+        `D` has to be on it or it is a key nobody can find, which is this
+        project's own rule; and `S` appears only while there is a string to
+        skip, because an entry that would read "skip" with nothing to skip
+        is the wallpaper a footer gets cut down to remove.
+        """
+        if self._detect is not None:
+            return ("D: stop   |   S: that string will not read   "
+                    "|   ESC: back")
+        return (f"{len(self._done)} of 6 in tune   |   D: which tuning?   "
+                f"|   1-6: pick the string   |   R: start over   "
+                f"|   ESC: back")
+
+    def _footer_height(self, font) -> int:
+        """How tall the footer came out, so the block above can clear it.
+
+        Measured rather than assumed: the line wraps on narrow windows, and
+        a constant here is what draws the notes through the shortcuts --
+        the fault this screen's own tail stack was already fixed for.
+        """
+        lines = max(1, len(self._footer_lines(font, self._footer_width)))
+        return (lines - 1) * (font.get_height() + 2)
+
+    #: Set by `_draw_footer` from the surface it is given, so the height
+    #: and the drawing wrap at the same width.
+    _footer_width = 1280
+
+    def _footer_lines(self, font, width: int) -> list[str]:
+        return wrap_on_bars(self.footer_line(), font, width)
+
+    def _draw_footer(self, surface: pygame.Surface, font) -> None:
+        t = get_theme()
+        w, h = surface.get_size()
+        self._footer_width = max(200, w - 40)
+        lines = self._footer_lines(font, self._footer_width)
+        y = h - 56
+        for line in lines:
+            surf = font.render(line, True, t.hud_text)
+            surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
+            y += font.get_height() + 2
+
+    def _draw_detect(self, surface: pygame.Surface, title, body,
+                     small) -> None:
+        """What to play, what has been heard, and what is still possible.
+
+        No needle: until the string is identified there is nothing for one
+        to point at, and a needle drawn against a target that is still a
+        question would be the screen asserting an answer it has not got.
+        """
+        t = get_theme()
+        w, h = surface.get_size()
+        lines = self.detect_lines()
+        if not lines:
+            return
+        ask = title.render(lines[0], True, t.hud_accent)
+        surface.blit(ask, (w // 2 - ask.get_width() // 2, h // 2 - 120))
+        # How far into the run this string is. Five agreeing readings is
+        # what the detector wants, and a player holding a string for a
+        # second with nothing moving on screen has no way to know whether
+        # it is being heard at all.
+        detect = self._detect
+        if detect is not None:
+            pip, gap = 7, 26
+            x0 = w // 2 - (gap * (CONFIRM_READINGS - 1)) // 2
+            for i in range(CONFIRM_READINGS):
+                lit = i < detect.confirmed
+                pygame.draw.circle(
+                    surface, t.tuner_in_tune if lit else t.signal_cold,
+                    (x0 + i * gap, h // 2 - 56), pip, 0 if lit else 2)
+        y = h // 2 - 16
+        for line in lines[1:]:
+            surf = body.render(line, True, t.hud_text)
+            surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
+            y += surf.get_height() + 10
+        for line in self.notes():
+            surf = small.render(line, True, t.feedback_close)
+            surface.blit(surf, (w // 2 - surf.get_width() // 2, y))
+            y += surf.get_height() + 6

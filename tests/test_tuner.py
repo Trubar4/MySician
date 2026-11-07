@@ -235,23 +235,23 @@ class TestNamingTheStringYourself:
     stops applying.
     """
 
-    def _tuner(self):
+    def _tuner(self, monkeypatch=None):
+        """The REAL constructor, with only the device stubbed out.
+
+        It used to be built field by field through `__new__`, which breaks
+        the moment the screen grows one -- and worse, a fixture that cannot
+        reach the app's own state is a test of something else. The one
+        thing a test has no business doing here is opening an input device.
+        """
         from pickhero.config import Config
         from pickhero.ui.tuner_menu import TunerMenuScreen
-        screen = TunerMenuScreen.__new__(TunerMenuScreen)
-        screen._config = Config()
+        original = TunerMenuScreen._start_capture
+        TunerMenuScreen._start_capture = lambda self: None
+        try:
+            screen = TunerMenuScreen(Config())
+        finally:
+            TunerMenuScreen._start_capture = original
         screen._capture = None
-        screen._error = ""
-        screen._tuning_index = 0
-        screen._song = ""
-        screen._cents = {}
-        screen._steady_since = {}
-        screen._done = set()
-        screen._active = None
-        screen._locked = None
-        screen._last_heard = 0.0
-        screen._peak_db = -120.0
-        screen._stray = None
         return screen
 
     def _press(self, screen, key):
@@ -390,20 +390,15 @@ class TestTheBottomStringCanBeTunedAtAll:
     """
 
     def _tuner(self, locked):
-        screen = TunerMenuScreen.__new__(TunerMenuScreen)
-        screen._config = Config()
+        """The real constructor, with the device stubbed and a string named."""
+        original = TunerMenuScreen._start_capture
+        TunerMenuScreen._start_capture = lambda self: None
+        try:
+            screen = TunerMenuScreen(Config())
+        finally:
+            TunerMenuScreen._start_capture = original
         screen._capture = None
-        screen._error = ""
-        screen._tuning_index = 0
-        screen._song = ""
-        screen._cents = {}
-        screen._steady_since = {}
-        screen._done = set()
-        screen._active = None
         screen._locked = locked
-        screen._last_heard = 0.0
-        screen._peak_db = -120.0
-        screen._stray = None
         return screen
 
     def test_a_third_of_the_low_e_is_read_as_the_low_e(self):
@@ -514,3 +509,201 @@ class TestItSaysWhatItCannotShow:
         finally:
             pygame.display.quit()
             pygame.quit()
+
+
+class TestAskingWhichTuningItIs:
+    """*"Ich vergesse über Nacht oft, was ich als letztes als Tuning
+    hatte."* The arithmetic is `audio/tuning_detect.py` and is tested
+    there. What is held here is that this screen really drives it: the key,
+    the real `update()`, and the answer being SET rather than said -- a
+    detector that names a tuning and then leaves the screen tuning to
+    another one is the "feature that cannot be seen working" fault.
+    """
+
+    def _screen(self):
+        original = TunerMenuScreen._start_capture
+        TunerMenuScreen._start_capture = lambda self: None
+        try:
+            screen = TunerMenuScreen(Config())
+        finally:
+            TunerMenuScreen._start_capture = original
+        screen._capture = None
+        return screen
+
+    def _press(self, screen, key):
+        return screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, key=key, mod=0))
+
+    def _hear(self, screen, freq, times=6):
+        class _Fake:
+            def get_tuner_data(self, raw=False):
+                assert raw, "the calibration must not get an opinion here"
+                return (freq, 1.0)
+
+            def get_signal_db(self):
+                return -12.0
+        screen._capture = _Fake()
+        for _ in range(times):
+            screen.update()
+
+    def _detect(self, screen, shape, fold=1.0):
+        """Play the whole query through the real update loop."""
+        guard = 0
+        while screen._detect is not None:
+            guard += 1
+            assert guard < 20, "the query did not end"
+            string = screen._detect.asking
+            self._hear(screen, midi_to_freq(shape[string]) / fold)
+            if screen._detect is not None and screen._detect.asking == string:
+                return False
+        return True
+
+    def test_d_starts_it(self):
+        screen = self._screen()
+        assert screen._detect is None
+        self._press(screen, pygame.K_d)
+        assert screen._detect is not None
+        assert screen._detect.asking in (1, 2, 3, 4, 5, 6)
+
+    def test_d_again_stops_it(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_d)
+        self._press(screen, pygame.K_d)
+        assert screen._detect is None
+
+    def test_the_answer_is_set_on_the_screen(self):
+        screen = self._screen()
+        drop_c = dict(NAMED_TUNINGS[5][1])
+        assert NAMED_TUNINGS[5][0] == "Drop C"
+        self._press(screen, pygame.K_d)
+        assert self._detect(screen, drop_c)
+        assert screen.tuning_name == "Drop C"
+        assert screen.tuning == drop_c
+        assert "Drop C" in screen._found
+
+    def test_it_works_on_the_bottom_string_too(self):
+        """Every reading a third of its pitch, which is what the low E
+        really does through this detector."""
+        screen = self._screen()
+        drop_b = dict(NAMED_TUNINGS[7][1])
+        assert NAMED_TUNINGS[7][0] == "Drop B"
+        self._press(screen, pygame.K_d)
+        assert self._detect(screen, drop_b, fold=3.0)
+        assert screen.tuning_name == "Drop B"
+
+    def test_a_tuning_nobody_named_is_shown_as_its_letters(self):
+        screen = self._screen()
+        mixed = {1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 36}
+        self._press(screen, pygame.K_d)
+        assert self._detect(screen, mixed)
+        assert screen.tuning_name == "C A D G B E"
+        assert screen.tuning == mixed
+
+    def test_a_string_well_out_of_tune_is_said_out_loud(self):
+        screen = self._screen()
+        shape = {s: v for s, v in NAMED_TUNINGS[0][1].items()}
+        self._press(screen, pygame.K_d)
+        guard = 0
+        while screen._detect is not None and guard < 20:
+            guard += 1
+            string = screen._detect.asking
+            wanted = midi_to_freq(shape[string]) * (2 ** (0.4 / 12))
+            self._hear(screen, wanted)
+        assert screen.tuning_name == "Standard"
+        assert "out of tune" in screen._found
+
+    def test_the_lines_say_what_to_play_and_what_is_left(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_d)
+        lines = screen.detect_lines()
+        assert lines[0].startswith("Play string ")
+        assert any("still possible" in line for line in lines)
+
+    def test_a_reading_it_cannot_place_is_said_rather_than_dropped(self):
+        """Dropped, the screen goes on asking for a string the player is
+        already playing -- which is indistinguishable from a broken key."""
+        screen = self._screen()
+        self._press(screen, pygame.K_d)
+        self._hear(screen, 1000.0)
+        assert any("play it again" in line for line in screen.detect_lines())
+
+    def test_s_gives_up_on_a_string_that_will_not_read(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_d)
+        first = screen._detect.asking
+        self._press(screen, pygame.K_s)
+        assert screen._detect.asking != first
+
+    def test_s_does_nothing_while_nothing_is_being_asked(self):
+        screen = self._screen()
+        assert self._press(screen, pygame.K_s) is None
+        assert screen._detect is None
+
+    def test_a_manual_key_stands_it_down(self):
+        """The rule `X` and `C` already follow for the automatic gate: a
+        hand on a manual control ends the automatic rather than the key
+        doing nothing."""
+        for key in (pygame.K_4, pygame.K_LEFT, pygame.K_RIGHT, pygame.K_r):
+            screen = self._screen()
+            self._press(screen, pygame.K_d)
+            self._press(screen, key)
+            assert screen._detect is None, key
+
+    def test_choosing_a_tuning_by_hand_forgets_the_answer(self):
+        screen = self._screen()
+        mixed = {1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 36}
+        self._press(screen, pygame.K_d)
+        assert self._detect(screen, mixed)
+        self._press(screen, pygame.K_RIGHT)
+        assert screen._custom is None and screen._found == ""
+        assert screen.tuning_name in [name for name, _ in NAMED_TUNINGS]
+
+    def test_the_footer_names_the_key(self):
+        """A key nobody can find is a key nobody presses."""
+        screen = self._screen()
+        assert "D:" in screen.footer_line()
+        self._press(screen, pygame.K_d)
+        assert "D:" in screen.footer_line() and "S:" in screen.footer_line()
+
+    def test_the_footer_only_offers_s_when_there_is_something_to_skip(self):
+        screen = self._screen()
+        assert "S:" not in screen.footer_line()
+
+    def test_it_draws(self):
+        pygame.init()
+        try:
+            surface = pygame.Surface((1280, 720))
+            screen = self._screen()
+            self._press(screen, pygame.K_d)
+            screen.render(surface)
+            assert surface.get_at((0, 0))[:3] is not None
+            self._hear(screen, 1000.0)
+            screen.render(surface)
+        finally:
+            pygame.quit()
+
+    def test_the_footer_wraps_rather_than_being_cut_at_both_ends(self):
+        pygame.init()
+        try:
+            screen = self._screen()
+            font = pygame.font.SysFont("Arial", 16)
+            lines = screen._footer_lines(font, 200)
+            assert len(lines) > 1
+            assert all(font.size(line)[0] <= 400 for line in lines)
+        finally:
+            pygame.quit()
+
+    def test_the_letters_are_not_said_twice(self):
+        """A tuning nobody named is answered as its own letters, so the
+        notes beside the name would be the same string twice."""
+        screen = self._screen()
+        mixed = {1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 36}
+        self._press(screen, pygame.K_d)
+        assert self._detect(screen, mixed)
+        assert screen._found == "C A D G B E"
+
+    def test_but_a_named_one_shows_which_string_gave_what(self):
+        screen = self._screen()
+        self._press(screen, pygame.K_d)
+        assert self._detect(screen, dict(NAMED_TUNINGS[0][1]))
+        assert screen._found == "Standard (6: E, 3: G)"

@@ -5905,6 +5905,60 @@ to press. A weak input said nothing, so it looked like a tuner that does not wor
 `notes()` returns them rather than drawing them, so the rule is tested without a screen, and they stack UPWARD on
 measured heights — the rule the footer, the sync panel and the completion overlay have each been fixed for once already.
 
+## Which Tuning Is This? Ask For The Strings That Decide
+
+*"Ich vergesse über Nacht oft, was ich als letztes als Tuning hatte."* The tuner asked the player which tuning they were in, and that is the one
+thing they came to find out. The information is in the instrument: six open strings name a tuning outright. `D` on the tuner asks for them;
+`audio/tuning_detect.py` is the arithmetic and nothing else -- no audio, no pygame, no clock -- so the whole rule is tested without a screen.
+
+**It is a guided query rather than a listener, and the fold is why.** Through yinfast the low E comes back as a THIRD of its pitch on every
+confident reading of a clean take, so a detector that simply listens cannot read the one string that matters most -- and multiplying a reading
+back up is only safe when something else says which string it is. The app names the string it wants, which turns the fold into a hypothesis to
+confirm. Same shape as `ChordVerifier.confirms`, and the same rule the tuner's own `1`-`6` already rest on.
+
+- **It asks only the strings that decide**, and that is measured over the sixteen named tunings. The high three separate 10 of them (a Drop
+  tuning moves string 6 and nothing else, so Standard and Drop D are identical up there), the low three separate 14, and no three separate all
+  sixteen -- every minimum covering set contains string 6. Skipping any string every surviving candidate agrees about, the query needs **2.25
+  questions on average and 4 at worst** (Drop D against DADGAD, which differ only on strings 2 and 1).
+- **Which string it opens on was decided by the fold, not by the ask order, and the measurement overturned the design.** If a reading is half
+  of pitch A it is also, to within two cents, a third of A+7 -- the tempered fifth against 3/2. So where a string's candidate pitches hold
+  both A and A+7, a folded reading cannot be placed at all. Over the full set that is **strings 6, 5 and 4** -- (33, 40), (40, 47), (45, 52) --
+  and it is impossible on 3, 2 and 1, whose pitches span under a fifth. Asked low-string-first, **all sixteen tunings open on a question a fold
+  cannot answer**, and E2 over three reads as Drop A's A1 -- the commonest tuning there is, answered as the rarest.
+- **Preferring a string with no such pair costs nothing, which is why it is done.** Same 2.25 average, same 4 at worst, and ambiguous questions
+  **16 of 16 → 0**. The query opens on string 3 and drops back to the low strings once the candidates have narrowed and their own pair is gone.
+  Measured end to end: every one of the sixteen is found **with every reading a third of its pitch**, and again with every reading an octave
+  low.
+- **The two folds do not outrank each other.** Reading them in order of multiple answers "Drop A" for Standard; the other order answers
+  "Standard" for Drop A's own octave error. Neither is decidable from one reading, so both are weighed together and a disagreement **refuses**.
+  A direct reading still outranks a fold, because a fold is only ever offered for a reading nothing else explains.
+- **Five agreeing readings, unbroken.** One frame can be a harmonic or a neighbour still ringing, and narrowing on it is the expensive mistake:
+  it sets the wrong targets for every string after it. A disagreeing reading resets the run rather than being averaged into it -- the rule the
+  bend hold already uses -- and the screen draws the run as five pips, because a player holding a string with nothing moving has no way to know
+  it is being heard.
+- **A string more than half a semitone from every candidate pitch names nothing**, and the refusal says the frequency AND the note it would be
+  chromatically, so the player sees what was heard without the detector claiming a tuning. A string **more than 30 cents out is accepted and
+  said out loud**: it is still plainly that note, which is why it is accepted, and it is also the reason the next thing to do is tune.
+- **Two tiers of targets.** The surviving candidates' pitches first; every pitch any named tuning uses on that string only when the first places
+  nothing. Without the second tier a guitar whose strings are not all from one named tuning stalls on the first string that disagrees -- and
+  with it, the reading that empties the candidate list is placed, and the strings after it are still named. It is a tier rather than the rule
+  because the full set is where the fifth-pairs live.
+- **A tuning nobody named is answered as its own letters**, which is what `reachable_tunings` already does and for the same reason: the letters
+  are the fact and a name is a label. What it cannot reach is a string outside every named tuning's range for that string -- a seven-string
+  tab's "pitched" tuning puts string 3 at A2, which no named six-string tuning uses there. Refused rather than placed on the nearest, and the
+  tuner's own `LEFT`/`RIGHT` and `1`-`6` are what that player reaches for.
+- **The answer is SET on the screen, not said.** A detector that names a tuning and leaves the tuner tuning to another one is the "feature that
+  cannot be seen working" fault -- and the useful next thing after finding out is tuning up, which is already the screen it is on. The line
+  beside it names which string gave which note (`Standard (6: E, 3: G)`), because the query usually asks two strings and "heard E G" is an
+  answer nobody can check.
+- **`S` gives up on a string that will not read**, and skipping the string that would have decided it leaves the answer as the two tunings still
+  standing rather than whichever of them a guess would have landed on. **A manual key stands the query down** -- the rule `X` and `C` already
+  follow for the automatic gate, because a key that looks dead is worse than one that ends something.
+
+**And the fixture that could not have caught any of this.** Two classes in `tests/test_tuner.py` built the screen field by field through
+`__new__`, so every new field broke them -- and worse, a fixture that cannot reach the app's own state is a test of something else. They call
+the real constructor now with only the device stubbed out, which is the one thing a test has no business opening.
+
 ## The Tuner Inside The Song, And Why It Has To Stop The Song
 
 *"Auf Stimmgerät wechseln innerhalb eines Songs -> mit richtiger Stimmung eingestellt."* `Shift+G`, and the only part of
