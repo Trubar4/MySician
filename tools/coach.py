@@ -413,6 +413,12 @@ def report(run: Run) -> str:
 #: the detector in a way that moves every number in a log.
 BAND_GAP_DAYS = 14
 
+#: What a log says when it does not know which build wrote it. `build_info`
+#: answers "unknown build" from an EXE with no stamp, and a log written
+#: before that field existed carries nothing at all. Neither is a build, so
+#: neither may end a band.
+UNSTAMPED = ("", "unknown build")
+
 #: A group with fewer judgeable notes than this says nothing. The same
 #: argument as MIN_BAR_NOTES, one level up.
 MIN_GROUP_NOTES = 12
@@ -505,21 +511,33 @@ def bands(runs: list[Run]) -> list[dict]:
     only became reliable late: every EXE the release workflow produced before
     it learnt to stamp reports "unknown build", so most of this player's
     history carries no build at all and only the calendar can separate it.
+
+    **A log that does not say which build it is cannot contradict the one
+    around it.** That is the same presumption of innocence the denominator
+    runs on, and without it the report fragments: on this player's own
+    2026-09-07 an unstamped log between two stamped ones split one evening
+    into FOUR bands of 1, 6, 1 and 2 sittings, and 2026-09-09 into another
+    four. Fifteen bands where the history holds about five, most of them
+    too small for a single group to clear MIN_GROUP_NOTES. A band's build
+    is the first one that really named itself.
     """
     out: list[dict] = []
     for run in sorted(runs, key=lambda r: (played_day(r.path) or "",
                                            r.path.name)):
         day = played_day(run.path)
         build = run.head.get("build", "").strip()
+        if build in UNSTAMPED:
+            build = ""
         if out:
             last = out[-1]
-            same_build = build == last["build"]
+            same_build = not build or not last["build"] or build == last["build"]
             near = (day is None or last["last_day"] is None
                     or _ordinal(day) - _ordinal(last["last_day"])
                     <= BAND_GAP_DAYS)
             if same_build and near:
                 last["runs"].append(run)
                 last["last_day"] = day or last["last_day"]
+                last["build"] = last["build"] or build
                 continue
         out.append(dict(build=build, runs=[run],
                         first_day=day, last_day=day))
@@ -598,6 +616,16 @@ def patterns(runs: list[Run]) -> dict:
         lambda: dict(good=0, faults=0, unreadable=0, intervals=defaultdict(int))
     ) for name, _ in GROUPS}
     timing_by: dict[str, list[float]] = defaultdict(list)
+    # The band's own baseline, counted here rather than summed out of a
+    # group. Every picker is allowed to answer None -- `_fret_region` does
+    # it for a log written before the fret column existed, `_technique` for
+    # every ordinary note -- so a total read off one group is a total over
+    # whatever that group happened to see. On this player's first band the
+    # fret group holds 1285 judgeable notes and the string group 20685, so
+    # the "+30 pts worse than this band" beside every row was measured
+    # against a population sixteen times smaller than the rows above it.
+    total = dict(good=0, faults=0, unreadable=0)
+    every_interval: dict[str, int] = defaultdict(int)
 
     for run in runs:
         ordered = sorted((n for n in run.notes
@@ -608,6 +636,12 @@ def patterns(runs: list[Run]) -> dict:
             good = note["verdict"] in ("hit", "close")
             reason = None if good else run.why(note)
             fault = bool(reason and reason.startswith(PLAYER_FAULTS))
+            interval = (reason[len("wrong pitch ("):-1]
+                        if fault and reason.startswith("wrong pitch")
+                        else None)
+            total["good" if good else "faults" if fault else "unreadable"] += 1
+            if interval is not None:
+                every_interval[interval] += 1
             for name, pick in GROUPS:
                 label = pick(note, previous)
                 if label is None:
@@ -617,8 +651,8 @@ def patterns(runs: list[Run]) -> dict:
                     cell["good"] += 1
                 elif fault:
                     cell["faults"] += 1
-                    if reason.startswith("wrong pitch"):
-                        cell["intervals"][reason[len("wrong pitch ("):-1]] += 1
+                    if interval is not None:
+                        cell["intervals"][interval] += 1
                 else:
                     cell["unreadable"] += 1
             # Timing is honest where the pitch is not: a strike proves
@@ -632,7 +666,30 @@ def patterns(runs: list[Run]) -> dict:
             previous = note
 
     return dict(tally={name: dict(cells) for name, cells in tally.items()},
+                total=total, intervals=dict(every_interval),
                 timing={k: v for k, v in timing_by.items()})
+
+
+def _kind_of(doubt: str) -> str:
+    """One row per KIND of fault, not one per number inside the wording.
+
+    `trustworthy` writes the measurement into the sentence -- "43 % of the
+    audio was below the noise gate" -- so counting the sentences gave this
+    player's first band FORTY rows, most of them 1x, for what is one fault
+    with forty readings. The number belongs in the single-log report, where
+    it is about one run; here the question is how many evenings went that
+    way.
+    """
+    for mark, kind in (("below the noise gate", "the noise gate ate the audio"),
+                       ("hears the room", "the input heard the room, "
+                                          "not the guitar"),
+                       ("peaks at", "the input was too quiet for the pitch"),
+                       ("dropped buffers", "dropped buffers -- "
+                                           "notes lost at random"),
+                       ("after a seek", "written straight after a seek")):
+        if mark in doubt:
+            return kind
+    return doubt.split("(")[0].strip()
 
 
 def _rate(cell: dict) -> float | None:
@@ -672,7 +729,7 @@ def pattern_report(runs: list[Run], dropped: int) -> str:
             doubts = trustworthy(run)
             if doubts:
                 for doubt in doubts:
-                    excluded[doubt.split("(")[0].strip()] += 1
+                    excluded[_kind_of(doubt)] += 1
             else:
                 trusted.append(run)
         if excluded:
@@ -687,13 +744,11 @@ def pattern_report(runs: list[Run], dropped: int) -> str:
             continue
 
         found = patterns(trusted)
-        # The band's own baseline. Every group is read against THIS, never
-        # against another band: a rate is about the detector and only its
-        # position relative to its own band is about the hand.
-        total = dict(good=0, faults=0, unreadable=0)
-        for cell in found["tally"]["Where on the neck"].values():
-            for key in total:
-                total[key] += cell[key]
+        # The band's own baseline, over every judged note of the band and
+        # independent of any one group. Every group is read against THIS,
+        # never against another band: a rate is about the detector and only
+        # its position relative to its own band is about the hand.
+        total = found["total"]
         base = _rate(total)
         if base is None:
             lines.append("      No note in this band could be judged.")
@@ -727,10 +782,7 @@ def pattern_report(runs: list[Run], dropped: int) -> str:
         # Which way the wrong ones went, over the whole band. One fret flat
         # over and over is a hand that has drifted; scatter is reading the
         # tab wrong, and the two are practised differently.
-        every: dict[str, int] = defaultdict(int)
-        for cell in found["tally"]["Where on the neck"].values():
-            for interval, count in cell["intervals"].items():
-                every[interval] += count
+        every = found["intervals"]
         if every:
             lines.append("\n      Wrong by how much:")
             for interval, count in sorted(every.items(),

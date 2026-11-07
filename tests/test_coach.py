@@ -613,3 +613,156 @@ class TestASongNameNeverReplacesTheReportWithATraceback:
             def flush(self): pass
         monkeypatch.setattr(coach.sys, "stdout", Plain())
         coach._never_die_on_a_song_name()         # must not raise
+
+
+class TestTheBaselineCountsEveryJudgedNote:
+    """The band's own rate must not be read off one GROUP.
+
+    Every picker may answer None -- `_fret_region` does for a log written
+    before the fret column existed, `_technique` for every ordinary note --
+    so a total summed out of one group is a total over whatever that group
+    happened to see. Summed out of the fret group, this player's first band
+    reported 1285 judgeable notes where the string group held 20685, and
+    every "worse than this band" beside a row was measured against a
+    population sixteen times smaller than the row above it.
+    """
+
+    def _old_format(self, tmp_path, name="run_S_20260901_180000.txt"):
+        """A log from before the fret column -- which this folder is full
+        of, and which no group but `Which string` can label."""
+        rows = []
+        for i in range(60):
+            string = 1 + (i % 6)
+            verdict = "miss" if string == 3 else "hit"
+            rows.append(f"{500.0 + i * 400:.1f}\t{string}\t{40 + string}"
+                        f"\t{verdict}\n")
+        text = (HEAD + STRIKES
+                + "\n# every written note and how it ended up\n"
+                + "note_ms\tstring\tmidi\tverdict\n" + "".join(rows))
+        path = tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        return coach.Run(path)
+
+    def test_a_log_with_no_frets_still_has_a_baseline(self, tmp_path):
+        found = coach.patterns([self._old_format(tmp_path)])
+        assert found["tally"]["Where on the neck"] == {}
+        assert found["total"]["good"] + found["total"]["faults"] == 60
+
+    def test_and_the_report_names_a_rate_rather_than_giving_up(self, tmp_path):
+        out = coach.pattern_report([self._old_format(tmp_path)], 0)
+        assert "No note in this band could be judged" not in out
+        assert "60 judgeable notes" in out
+
+    def test_the_baseline_matches_what_the_rows_are_compared_against(
+            self, tmp_path):
+        """The arithmetic the flags rest on: a group that sees every note
+        must average to the baseline, or `+N pts` is measured against
+        something else."""
+        found = coach.patterns([self._old_format(tmp_path)])
+        cells = found["tally"]["Which string"].values()
+        assert sum(c["good"] + c["faults"] for c in cells) == 60
+        assert sum(c["faults"] for c in cells) == found["total"]["faults"]
+        assert coach._rate(found["total"]) == pytest.approx(10 / 60)
+
+    def test_the_intervals_are_counted_once_and_not_per_group(self, tmp_path):
+        """They were summed out of the same group, so an old log reported
+        no wrong intervals at all however many it held."""
+        strikes, notes = [], []
+        for i in range(30):
+            ms = 500.0 + i * 400
+            strikes.append((ms, 39, 0, 0))
+            notes.append((ms, 1 + i // 8, 6, 3, 40, "-", 1, "miss"))
+        run = _dated(tmp_path, "run_S_20260901_180000.txt", strikes, notes)
+        found = coach.patterns([run])
+        assert sum(found["intervals"].values()) == 30
+        # and the same count the fret group holds, since here every note
+        # does carry a fret -- the control that says nothing was double
+        # counted on the way out of the group.
+        per_group = sum(
+            sum(cell["intervals"].values())
+            for cell in found["tally"]["Where on the neck"].values())
+        assert per_group == 30
+
+
+class TestALogThatDoesNotSayItsBuildDoesNotEndABand:
+    """Absence of evidence, at the level of the banding.
+
+    On this player's own 2026-09-07 an unstamped log between two stamped
+    ones split one evening into four bands of 1, 6, 1 and 2 sittings, and
+    2026-09-09 into another four -- fifteen bands where the history holds
+    about five, most of them too small for any group to clear
+    MIN_GROUP_NOTES.
+    """
+
+    def _run(self, tmp_path, name, build):
+        head = HEAD + (f"build\t{build}\n" if build is not None else "")
+        return _dated(tmp_path, name, [], [(1000.0, 1, 6, 3, 40, "-", 1,
+                                            "hit")], head=head)
+
+    def test_an_unstamped_log_joins_the_band_around_it(self, tmp_path):
+        runs = [self._run(tmp_path, "run_A_20260907_180000.txt", "400ac736"),
+                self._run(tmp_path, "run_B_20260907_190000.txt", None),
+                self._run(tmp_path, "run_C_20260907_200000.txt", "400ac736")]
+        found = coach.bands(runs)
+        assert len(found) == 1
+        assert found[0]["build"] == "400ac736"
+
+    def test_and_so_does_one_that_says_unknown(self, tmp_path):
+        runs = [self._run(tmp_path, "run_A_20260907_180000.txt", "400ac736"),
+                self._run(tmp_path, "run_B_20260907_190000.txt",
+                          "unknown build")]
+        assert len(coach.bands(runs)) == 1
+
+    def test_two_real_builds_still_part(self, tmp_path):
+        """The control: this must not become a rule that never splits."""
+        runs = [self._run(tmp_path, "run_A_20260907_180000.txt", "400ac736"),
+                self._run(tmp_path, "run_B_20260909_180000.txt", "451fc182")]
+        assert len(coach.bands(runs)) == 2
+
+    def test_the_band_takes_the_build_that_named_itself(self, tmp_path):
+        runs = [self._run(tmp_path, "run_A_20260907_180000.txt", None),
+                self._run(tmp_path, "run_B_20260907_190000.txt", "400ac736")]
+        found = coach.bands(runs)
+        assert len(found) == 1 and found[0]["build"] == "400ac736"
+
+    def test_a_long_gap_still_parts_them(self, tmp_path):
+        runs = [self._run(tmp_path, "run_A_20260901_180000.txt", None),
+                self._run(tmp_path, "run_B_20261101_180000.txt", None)]
+        assert len(coach.bands(runs)) == 2
+
+
+class TestOneRowPerKindOfFault:
+    """`trustworthy` writes the measurement into the sentence, so counting
+    the sentences gave forty rows for one fault with forty readings."""
+
+    def test_the_gate_is_one_row_however_many_percentages(self):
+        kinds = {coach._kind_of(f"{n} % of the audio was below the noise gate")
+                 for n in (21, 43, 99)}
+        assert len(kinds) == 1
+
+    def test_the_level_is_one_row_however_many_decibels(self):
+        kinds = {coach._kind_of(
+            f"the input peaks at {db} dB, where the pitch starts coming "
+            f"back wrong") for db in (-42.6, -68.8)}
+        assert len(kinds) == 1
+
+    def test_the_kinds_are_still_told_apart(self):
+        said = [
+            "43 % of the audio was below the noise gate",
+            "the input hears the room, not the guitar (room -37 dB)",
+            "the input peaks at -42.6 dB, where the pitch starts coming "
+            "back wrong",
+            "15 dropped buffers -- notes were lost at random",
+            "the log was written straight after a seek, so it describes "
+            "only what happened since",
+        ]
+        assert len({coach._kind_of(d) for d in said}) == len(said)
+
+    def test_every_wording_trustworthy_can_produce_is_covered(self, tmp_path):
+        """A kind this helper does not recognise falls back to the whole
+        sentence, which is the forty-row behaviour coming straight back --
+        so the helper is asserted against the function that writes them."""
+        import inspect
+        source = inspect.getsource(coach.trustworthy)
+        said = [line for line in source.splitlines() if "doubts.append" in line]
+        assert len(said) == 5, "trustworthy grew a doubt this test has not seen"
