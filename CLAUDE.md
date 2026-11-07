@@ -7312,6 +7312,42 @@ He has **290 run logs over 22 playing days**, 20 August to 6 November, across ab
 
 **`_expand` resolves wildcards in the tool**, because cmd.exe does not: `coach.py %USERPROFILE%\.pickhero\run_*.txt` arrives as one literal word with a star in it, and cmd is the shell this is run from.
 
+### Three Faults The Player's Own 257 Logs Found, And A Fourth In What They Measured
+
+The tool shipped and the first real report was unreadable in three different ways. Each was found by READING the output against the player's
+folder rather than by reasoning about the code, and none of them had a test that could have caught it, because every test fixture was one
+well-formed log.
+
+- **The band baseline was summed out of ONE group.** Every picker may answer None -- `_fret_region` does for a log written before the fret
+  column existed, `_technique` for every ordinary note -- so a total read off a group is a total over whatever that group happened to see. On
+  his first band the fret group holds **1285** judgeable notes and the string group **20685**, so the report printed a 3 % baseline and then
+  flagged every string row `+30 pts worse than this band` against a population sixteen times smaller than the rows above it. The true baseline
+  there is **24 %** and the worst string is **+8**. `patterns()` counts the total once per note now, outside the groups -- and the intervals had
+  the identical fault, read off the same group, so an old log reported no wrong intervals at all however many it held.
+- **A log that does not say which build wrote it was ending a band.** `unknown build` and a missing field are both absence of evidence, and
+  neither can contradict the build around it -- but an unstamped log between two stamped ones split **2026-09-07 into four bands** of 1, 6, 1
+  and 2 sittings and 2026-09-09 into another four. **Fifteen bands where the history holds about five**, most of them too small for a group to
+  clear `MIN_GROUP_NOTES`. A band takes the first build that really named itself, and two real builds still part.
+- **The exclusion summary had one row per WORDING.** `trustworthy` writes the measurement into the sentence, so "43 % of the audio was below
+  the noise gate" and "21 %" counted as two kinds: **forty rows, most of them 1x**, for one fault with forty readings. `_kind_of` groups them,
+  and the test asserts it against `trustworthy`'s own source, so a sixth doubt cannot silently fall back to the forty-row behaviour.
+
+**And then the corrected report convicted the player of the detector's own blind spot.** The wrong-pitch bucket -- the 8-9 % of red notes this
+whole tool was built around, because it is the one thing a log can say about a finger -- came back on his latest band as **+5 twenty-seven
+times, +4 twenty-six, -4 fifteen**, against **fourteen** of the one-fret error it exists to find. A fourth and a third are the interval between
+adjacent guitar strings, which this file has measured twice as monophonic YIN reporting the string that was ringing beside the one struck (24 of
+50 clean unmatched strikes on one run).
+
+- **It is also a hand on the wrong string, which IS a fault, and the log holds nothing that parts the two.** So it is set aside from BOTH sides
+  -- the rule the denominator already runs on -- rather than counted as either.
+- **The set is read off the TUNING, not written down.** `midi - fret` is the open pitch of that string, so the notes carry it. Across the sixteen
+  named tunings the adjacent gaps run **2, 3, 4, 5 and 7** -- nearly every interval this classifier can see -- so a hard-coded set would swallow
+  the 2 and 3 semitones that are a plain wrong fret. Standard gives {4, 5}; a drop tuning's 7 never reaches the test at all, because
+  `out of reach` has already taken anything past `REACH_SEMITONES` and that pair was therefore never counted as a fault.
+- **A log with no fret column says nothing about its tuning and sets nothing aside**, which is the same abstention as the banding one chapter up.
+- **It is NAMED rather than folded into the unreadable count**, because it is the one bucket a player might want to argue with: it holds their own
+  wrong-string mistakes as well as the detector's.
+
 ### And It Would Have Printed A Traceback Instead Of The Answer
 
 `coach.py` held an en dash and an em dash, and **cp850 -- the German console's code page -- can encode neither.** The analysis would have run, computed every number, and died on the way out.

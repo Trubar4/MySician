@@ -766,3 +766,110 @@ class TestOneRowPerKindOfFault:
         source = inspect.getsource(coach.trustworthy)
         said = [line for line in source.splitlines() if "doubts.append" in line]
         assert len(said) == 5, "trustworthy grew a doubt this test has not seen"
+
+
+class TestTheStringNextToItIsNotAFinger:
+    """*"a fourth and a fifth are the interval between adjacent guitar
+    strings and the two notes of a power chord"* -- and on one of this
+    player's runs 24 of the 50 clean unmatched strikes were exactly that.
+    Over twenty days of logs it is the LARGEST group in the wrong-pitch
+    bucket: +5 twenty-seven times, +4 twenty-six, against fourteen of the
+    one-fret error the bucket exists to find.
+
+    The same reading is also a hand on the wrong string, which IS a fault,
+    and the log holds nothing that parts the two -- so it is set aside
+    from both sides, the rule the denominator already runs on.
+    """
+
+    def _standard(self, tmp_path, heard, written_string=4, fret=2):
+        """A log in standard tuning, so `midi - fret` names the strings."""
+        tuning = {1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 40}
+        notes, strikes = [], []
+        for i, (string, midi) in enumerate(sorted(tuning.items())):
+            ms = 500.0 + i * 400
+            notes.append((ms, 1, string, 0, midi, "-", 1, "hit"))
+            strikes.append((ms, midi, 0, 0))
+        ms = 4000.0
+        notes.append((ms, 2, written_string, fret,
+                      tuning[written_string] + fret, "-", 1, "miss"))
+        strikes.append((ms, heard, 0, 0))
+        return _log(tmp_path, strikes, notes)
+
+    def test_the_tuning_is_read_off_the_notes(self, tmp_path):
+        run = self._standard(tmp_path, 52)
+        assert run.neighbour_steps == frozenset({4, 5})
+
+    def test_a_fourth_away_is_set_aside(self, tmp_path):
+        run = self._standard(tmp_path, 50 + 2 + 5)
+        assert run.why(run.notes[-1]) == "struck, the string next to it"
+
+    def test_and_a_major_third_away(self, tmp_path):
+        run = self._standard(tmp_path, 50 + 2 - 4)
+        assert run.why(run.notes[-1]) == "struck, the string next to it"
+
+    def test_it_is_not_counted_as_the_playing(self, tmp_path):
+        run = self._standard(tmp_path, 50 + 2 + 5)
+        assert not run.why(run.notes[-1]).startswith(coach.PLAYER_FAULTS)
+        found = coach.patterns([run])
+        assert found["total"]["faults"] == 0
+        assert found["total"]["unreadable"] == 1
+        assert found["neighbours"] == 1
+        assert found["intervals"] == {}
+
+    def test_one_fret_off_is_still_the_playing(self, tmp_path):
+        """The control. A rule that sets aside everything finds nothing."""
+        run = self._standard(tmp_path, 50 + 2 + 1)
+        assert run.why(run.notes[-1]) == "wrong pitch (+1)"
+        found = coach.patterns([run])
+        assert found["total"]["faults"] == 1
+        assert found["neighbours"] == 0
+
+    def test_and_so_are_two_and_three_semitones(self, tmp_path):
+        """The reason the set is read off the tuning rather than written
+        down: over the sixteen named tunings the adjacent gaps run 2, 3,
+        4, 5 and 7, so a hard-coded set swallows a plain wrong fret."""
+        for off in (2, 3, -2, -3):
+            run = self._standard(tmp_path, 50 + 2 + off)
+            assert run.why(run.notes[-1]).startswith("wrong pitch"), off
+
+    def test_a_log_with_no_frets_sets_nothing_aside(self, tmp_path):
+        """It says nothing about its tuning, so it may not claim one."""
+        text = (HEAD + STRIKES
+                + "4000.0\t4000.0\t4000.0\t57\t0.90\t0\t0\tmatched\t\t\n"
+                + "\n# every written note and how it ended up\n"
+                + "note_ms\tstring\tmidi\tverdict\n"
+                + "4000.0\t4\t52\tmiss\n")
+        path = tmp_path / "old.txt"
+        path.write_text(text, encoding="utf-8")
+        run = coach.Run(path)
+        assert run.neighbour_steps == frozenset()
+        assert run.why(run.notes[0]) == "wrong pitch (+5)"
+
+    def test_a_drop_tuning_was_never_counted_anyway(self, tmp_path):
+        """Its sixth-to-fifth gap is 7 semitones, which `out of reach` has
+        already taken -- so the drop case needs nothing added here."""
+        tuning = {1: 62, 2: 57, 3: 53, 4: 48, 5: 43, 6: 36}   # Drop C
+        notes, strikes = [], []
+        for i, (string, midi) in enumerate(sorted(tuning.items())):
+            notes.append((500.0 + i * 400, 1, string, 0, midi, "-", 1, "hit"))
+            strikes.append((500.0 + i * 400, midi, 0, 0))
+        notes.append((4000.0, 2, 6, 0, 36, "-", 1, "miss"))
+        strikes.append((4000.0, 43, 0, 0))        # the fifth string, +7
+        run = _log(tmp_path, strikes, notes)
+        assert 7 not in run.neighbour_steps
+        assert run.why(run.notes[-1]) == "struck, out of reach"
+
+    def test_the_report_says_how_many_it_set_aside(self, tmp_path):
+        run = self._standard(tmp_path, 50 + 2 + 5)
+        run.path = tmp_path / "run_S_20260901_180000.txt"
+        run.path.write_text((tmp_path / "run.txt").read_text(),
+                            encoding="utf-8")
+        out = coach.pattern_report([coach.Run(run.path)], 0)
+        assert "adjacent strings" in out
+
+    def test_the_two_readers_share_one_name(self, tmp_path):
+        """`why` writes it and `patterns` counts it; spelled out twice, one
+        of them silently counts nothing."""
+        run = self._standard(tmp_path, 50 + 2 + 5)
+        assert run.why(run.notes[-1]) == coach.NEIGHBOUR_STRING
+        assert coach.patterns([run])["neighbours"] == 1

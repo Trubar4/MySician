@@ -55,7 +55,7 @@ from __future__ import annotations
 import bisect
 import statistics
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 # A note whose nearest strike is further away than the windows the run used
@@ -78,6 +78,10 @@ MIN_BAR_NOTES = 4
 # lower string still ringing under the note, which is the detector's business
 # and not the player's. Counted as mistakes they were a third of the advice.
 REACH_SEMITONES = 5
+#: What `why` calls a reading at the interval between two adjacent strings.
+#: Named once because two places read it, and a reason spelled out twice is
+#: how one of them comes to count nothing.
+NEIGHBOUR_STRING = "struck, the string next to it"
 # What counts as a passage worth naming. Not a grade: a bar under this, in a
 # run whose readable notes mostly land, is where the practice time goes.
 WEAK_SHARE = 0.62
@@ -121,6 +125,7 @@ class Run:
             else:
                 self.notes.append(self._note(field))
         self._adjusted = sorted(s["adjusted"] for s in self.strikes)
+        self._neighbours: frozenset[int] | None = None
         self._by_adjusted = {s["adjusted"]: s for s in self.strikes}
 
     def _note(self, field: list[str]) -> dict:
@@ -175,7 +180,49 @@ class Run:
             return "octave"
         if abs(difference) > REACH_SEMITONES:
             return "struck, out of reach"
+        if abs(difference) in self.neighbour_steps:
+            return NEIGHBOUR_STRING
         return f"wrong pitch ({difference:+d})"
+
+    @property
+    def neighbour_steps(self) -> frozenset[int]:
+        """The semitone gaps between ADJACENT strings in this song's tuning.
+
+        A reading that far from the written note cannot be told from the
+        neighbouring string sounding, which this project has measured twice:
+        *"a fourth and a fifth are the interval between adjacent guitar
+        strings and the two notes of a power chord"*, and on one run 24 of
+        the 50 clean unmatched strikes were exactly that. The same reading
+        is also a hand on the wrong string -- a real fault -- and the log
+        holds nothing that separates them, so it is set aside from BOTH
+        sides rather than counted as either.
+
+        **Read off the tuning rather than hard-coded.** Across the sixteen
+        named tunings the adjacent gaps run 2, 3, 4, 5 and 7 -- nearly
+        every interval this classifier can see -- so a hard-coded set
+        would swallow the 2 and 3 semitones that are a plain wrong fret.
+        Standard gives {4, 5} and a drop tuning {4, 5, 7}, of which the 7
+        never reaches this test: `out of reach` has already taken anything
+        past REACH_SEMITONES, so that pair was never counted as a fault
+        anyway. A log with no fret column says nothing about its tuning,
+        and then nothing is set aside.
+        """
+        if self._neighbours is None:
+            self._neighbours = self._read_neighbours()
+        return self._neighbours
+
+    def _read_neighbours(self) -> frozenset[int]:
+        """`midi - fret` is the open pitch of that string, so the notes
+        carry the tuning. The commonest answer per string, because a log
+        may hold one note whose fret and pitch disagree."""
+        seen: dict[int, Counter] = defaultdict(Counter)
+        for note in self.notes:
+            if note["fret"] is not None and note["midi"] is not None:
+                seen[note["string"]][note["midi"] - note["fret"]] += 1
+        opens = {s: c.most_common(1)[0][0] for s, c in seen.items() if c}
+        steps = {abs(opens[s] - opens[s + 1])
+                 for s in opens if s + 1 in opens}
+        return frozenset(step for step in steps if 0 < step <= REACH_SEMITONES)
 
 
 # The two verdicts that are evidence about the PLAYING. Everything else the
@@ -626,6 +673,7 @@ def patterns(runs: list[Run]) -> dict:
     # against a population sixteen times smaller than the rows above it.
     total = dict(good=0, faults=0, unreadable=0)
     every_interval: dict[str, int] = defaultdict(int)
+    neighbours = 0
 
     for run in runs:
         ordered = sorted((n for n in run.notes
@@ -642,6 +690,8 @@ def patterns(runs: list[Run]) -> dict:
             total["good" if good else "faults" if fault else "unreadable"] += 1
             if interval is not None:
                 every_interval[interval] += 1
+            if reason == NEIGHBOUR_STRING:
+                neighbours += 1
             for name, pick in GROUPS:
                 label = pick(note, previous)
                 if label is None:
@@ -667,6 +717,7 @@ def patterns(runs: list[Run]) -> dict:
 
     return dict(tally={name: dict(cells) for name, cells in tally.items()},
                 total=total, intervals=dict(every_interval),
+                neighbours=neighbours,
                 timing={k: v for k, v in timing_by.items()})
 
 
@@ -788,6 +839,15 @@ def pattern_report(runs: list[Run], dropped: int) -> str:
             for interval, count in sorted(every.items(),
                                           key=lambda kv: -kv[1])[:6]:
                 lines.append(f"        {interval:>4} semitones   {count:4}x")
+        if found["neighbours"]:
+            # Named rather than left inside the unreadable count, because
+            # it is the one bucket a player might want to argue with: it
+            # holds their own wrong-string mistakes as well as the
+            # detector's, and nothing here can part the two.
+            lines.append(f"\n      {found['neighbours']} more came back at "
+                         f"the interval between two adjacent strings, which "
+                         f"is\n      the neighbour sounding or a hand on the "
+                         f"wrong string -- set aside, not counted.")
 
         chord = found["timing"].get("chord") or []
         single = found["timing"].get("single") or []
