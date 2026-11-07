@@ -578,3 +578,38 @@ class TestTheWholeThingRunsFromTheCommandLine:
         out = capsys.readouterr().out
         assert "A Song" in out
         assert "WHAT RECURS" not in out
+
+
+class TestASongNameNeverReplacesTheReportWithATraceback:
+    """The literals are cp850-clean; a TITLE comes out of the log.
+
+    The player's own folder holds "I Prevail - There’s Fear In Letting
+    Go" -- a curly apostrophe, which cp1252 encodes and cp850 does not. So
+    the fault appears only on the console he actually has, and it would
+    throw away a finished analysis over one character in one title.
+    """
+
+    def test_the_apostrophe_really_is_the_problem(self):
+        name = "I Prevail - There’s Fear In Letting Go"
+        name.encode("cp1252")                     # why nobody saw it
+        with pytest.raises(UnicodeEncodeError):
+            name.encode("cp850")
+
+    def test_the_report_survives_it(self, tmp_path, capsys):
+        head = HEAD.replace("song\tA Song",
+                            "song\tI Prevail - There’s Fear")
+        _dated(tmp_path, "run_S_20260901_180000.txt",
+               [(1000.0, 48, 0, 0)],
+               [(1000.0, 1, 3, 12, 49, "-", 1, "miss")], head=head)
+        assert coach.main(["coach.py",
+                           str(tmp_path / "run_*.txt"), "--patterns"]) == 0
+        assert "WHAT RECURS" in capsys.readouterr().out
+
+    def test_a_stream_that_cannot_be_reconfigured_is_not_an_error(self,
+                                                                  monkeypatch):
+        """A pipe, a captured stream, an old Python: none is a reason to die."""
+        class Plain:
+            def write(self, _): pass
+            def flush(self): pass
+        monkeypatch.setattr(coach.sys, "stdout", Plain())
+        coach._never_die_on_a_song_name()         # must not raise

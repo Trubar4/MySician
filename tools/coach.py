@@ -787,7 +787,25 @@ def _expand(words: list[str]) -> list[Path]:
     return out
 
 
+def _never_die_on_a_song_name() -> None:
+    """A character that cannot be shown becomes a question mark.
+
+    Every literal in this file is cp850-clean and a test holds it there --
+    but a song NAME comes out of the log, and this player's own folder has
+    "I Prevail - There\u2019s Fear In Letting Go" with a curly apostrophe,
+    which cp850 cannot encode either. Without this the whole analysis runs,
+    every number is computed, and the report is replaced by a traceback
+    because of one character in one title. cp1252 encodes it fine, which is
+    how a fault like this reaches only the console the player actually has.
+    """
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, OSError):      # not a real stream, or too old
+        pass
+
+
 def main(argv: list[str]) -> int:
+    _never_die_on_a_song_name()
     words = [a for a in argv[1:]]
     show_patterns = "--patterns" in words
     each = "--each" in words
