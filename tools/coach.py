@@ -171,6 +171,21 @@ class Run:
         strike, _ = self.nearest_strike(note["ms"])
         if strike is None:
             return "nothing was struck"
+        if "d" in note["tech"]:
+            # A DEAD note has no pitch to be wrong about. Its written fret
+            # says where the hand damps the string, not what will sound, so
+            # comparing a strike against it is comparing against a note the
+            # tab never asked for -- and the app knows that: it credits a
+            # dead note from ANY strike, pitched or not. A red one with a
+            # strike beside it therefore means the strike was explained by
+            # the note next door, which says nothing either way.
+            #
+            # It cost a finding. On the player's own latest band this read
+            # 35 % wrong against an 8 % baseline and was reported to him as
+            # the one thing worth practising; judged honestly it is 8 % of
+            # 129 against 13 %, which is BETTER than his average. A dead
+            # note that nobody struck is still his, and still counted.
+            return "struck, a dead note has no pitch to check"
         if strike["unpitched"]:
             return "struck, no pitch"
         if strike["subharmonic"]:

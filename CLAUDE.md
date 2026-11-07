@@ -7348,6 +7348,25 @@ adjacent guitar strings, which this file has measured twice as monophonic YIN re
 - **It is NAMED rather than folded into the unreadable count**, because it is the one bucket a player might want to argue with: it holds their own
   wrong-string mistakes as well as the detector's.
 
+### A Dead Note Has No Pitch To Be Wrong About, And It Cost A Recommendation
+
+With the three faults above fixed, the clean report put the player's dead notes at **8 % of 129 against a 13 % baseline** -- better than his
+average. The broken one had read **35 % against 8 %**, and that number had already been given to him as the one thing worth practising.
+
+**`why` was comparing a strike against a pitch the tab never asked for.** A dead note's written fret says where the hand DAMPS the string, not
+what will sound -- which the app itself knows: `_dead_note_credit` accepts any strike, pitched or not, and a dead note is held out of the
+ordinary candidate list so it only catches strikes nothing else explains. So a red dead note with a strike beside it means the strike was
+explained by the note next door, which says nothing either way. It is unreadable, and `nothing was struck` -- silence where a stroke was
+written -- is still his.
+
+- **The neighbouring-string rule is what made the size of it visible.** It swallowed most of those phantom wrong pitches on its way past,
+  which is how a 35 % cell became 8 % and how the artefact showed itself at all. A fix for one fault exposing another is the cheapest kind
+  of measurement there is.
+- **`"d" in note["tech"]`, not `== "d"`.** The flags are a set of letters, so a dead note inside a chug run reads `dp`; compared as a whole
+  word it would miss every one of them.
+- **The recommendation was retracted to the player in the same message as the fix.** A finding built on a bug is worse than no finding, and
+  this one had already sent him to practise the one technique he is above average at.
+
 ### And It Would Have Printed A Traceback Instead Of The Answer
 
 `coach.py` held an en dash and an em dash, and **cp850 -- the German console's code page -- can encode neither.** The analysis would have run, computed every number, and died on the way out.

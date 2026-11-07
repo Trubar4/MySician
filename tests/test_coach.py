@@ -873,3 +873,52 @@ class TestTheStringNextToItIsNotAFinger:
         run = self._standard(tmp_path, 50 + 2 + 5)
         assert run.why(run.notes[-1]) == coach.NEIGHBOUR_STRING
         assert coach.patterns([run])["neighbours"] == 1
+
+
+class TestADeadNoteHasNoPitchToBeWrongAbout:
+    """Its written fret says where the hand DAMPS the string, not what will
+    sound -- and the app knows it: `_dead_note_credit` accepts any strike,
+    pitched or not. Comparing a strike against that fret is comparing
+    against a note the tab never asked for.
+
+    It cost a finding. On the player's own latest band it read 35 % wrong
+    against an 8 % baseline and was reported to him as the one thing worth
+    practising; judged honestly it is 8 % of 129 against 13 %, which is
+    better than his average.
+    """
+
+    def _one(self, tmp_path, tech, heard):
+        run = _log(tmp_path, [(1000.0, heard, False, False)],
+                   [(1000.0, 1, 6, 3, 43, tech, 1, "miss")])
+        return run.why(run.notes[0])
+
+    def test_a_struck_dead_note_is_not_a_wrong_pitch(self, tmp_path):
+        assert self._one(tmp_path, "d", 45) \
+            == "struck, a dead note has no pitch to check"
+
+    def test_nor_an_unpitched_one(self, tmp_path):
+        run = _log(tmp_path, [(1000.0, 0, True, False)],
+                   [(1000.0, 1, 6, 3, 43, "d", 1, "miss")])
+        assert run.why(run.notes[0]).startswith("struck, a dead note")
+
+    def test_and_it_is_not_counted_as_the_playing(self, tmp_path):
+        run = _log(tmp_path, [(1000.0, 45, False, False)],
+                   [(1000.0, 1, 6, 3, 43, "d", 1, "miss")])
+        assert not run.why(run.notes[0]).startswith(coach.PLAYER_FAULTS)
+
+    def test_a_dead_note_nobody_struck_is_still_his(self, tmp_path):
+        """The control. A dead note IS a stroke the tab asks for, and the
+        strike is the whole of its evidence -- so silence there is a fault
+        and a rule that excused it would find nothing."""
+        run = _log(tmp_path, [], [(1000.0, 1, 6, 3, 43, "d", 1, "miss")])
+        assert run.why(run.notes[0]) == "nothing was struck"
+        assert run.why(run.notes[0]).startswith(coach.PLAYER_FAULTS)
+
+    def test_an_ordinary_note_is_judged_as_before(self, tmp_path):
+        assert self._one(tmp_path, "-", 45) == "wrong pitch (+2)"
+
+    def test_a_dead_note_inside_a_chug_run_counts_too(self, tmp_path):
+        """`tech` is a set of letters, so a dead palm-muted note carries
+        "dp" -- read as a whole word it would miss every one of them."""
+        assert self._one(tmp_path, "dp", 45) \
+            == "struck, a dead note has no pitch to check"
