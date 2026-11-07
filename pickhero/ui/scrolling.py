@@ -3921,6 +3921,53 @@ class PlayingScreen:
                 (n.end_ms for n in self._timeline.notes), default=0.0)
         return self._last_end_ms
 
+    def _bar_ms_at(self, ms: float) -> float | None:
+        """How long the bar at `ms` is, or None for a tab with no measures.
+
+        Read off the BAR rather than from the tempo, so it follows a time
+        signature change: 3/4 and 6/8 at one tempo are the same length of
+        time and a different piece of music. Past the last bar line the last
+        bar answers, because there is nothing else that could.
+        """
+        measures = getattr(self._timeline, "measures", None) or []
+        if not measures:
+            return None
+        for measure in measures:
+            if measure.start_ms <= ms < measure.end_ms:
+                length = measure.end_ms - measure.start_ms
+                return length if length > 0 else None
+        length = measures[-1].end_ms - measures[-1].start_ms
+        return length if length > 0 else None
+
+    def _lead_in_to(self, note_ms: float) -> float:
+        """Where to land so the player can count themselves into `note_ms`.
+
+        The bar line of the bar BEFORE the one the note is in -- a point you
+        can count from (1-2-3-4 and in), which a fixed number of seconds is
+        not. A note sitting exactly on a bar line therefore gets one whole
+        bar; one sitting mid-bar gets between one and two.
+
+        `GAP_LEAD_IN_MS` is the fallback for a tab that parsed without
+        measure info, because a key that silently does nothing is worse than
+        one that does less -- the same fallback the arrow keys' bar snap has.
+
+        One reader, because three things want this answer: where E lands,
+        whether a rest is still worth jumping to at all, and whether the HUD
+        should offer the key. Two of them disagreeing would be a key that
+        jumps backwards or one that is advertised and refuses.
+        """
+        starts = [m.start_ms
+                  for m in getattr(self._timeline, "measures", None) or []]
+        if not starts:
+            return max(0.0, note_ms - GAP_LEAD_IN_MS)
+        # The margin is what stops a note a hair under its own bar line --
+        # which float arithmetic produces -- from being read as the bar
+        # before and given two bars of lead-in instead of one.
+        index = bisect.bisect_right(starts, note_ms + BAR_SNAP_MARGIN_MS) - 1
+        if index <= 0:
+            return 0.0
+        return starts[index - 1]
+
     def _rest_at(self, ms: float) -> tuple[float, float] | None:
         """The long rest the given moment sits inside, if any."""
         for start, until in self._rests:
@@ -3933,10 +3980,13 @@ class PlayingScreen:
 
         A rest already within the lead-in is not worth jumping into: the jump
         would be backwards, or a fraction of a second forwards, and either is
-        worse than doing nothing.
+        worse than doing nothing. Which is why this asks `_lead_in_to` rather
+        than subtracting a constant -- the lead-in is a bar now, and a bar at
+        50 BPM is 4.8 s where the old constant was 3, so a test that did not
+        move with it would offer a jump that goes backwards.
         """
         for start, until in self._rests:
-            if until - GAP_LEAD_IN_MS > ms + 1.0:
+            if self._lead_in_to(until) > ms + 1.0:
                 return (start, until)
         return None
 
@@ -3950,19 +4000,19 @@ class PlayingScreen:
         """
         if not self._rests:
             if self._playback_ms >= self._last_note_end_ms() > 0:
-                self._say("Nothing left to play on this track")
+                self._skip_to_end()
             else:
                 self._say("No long rest in this track")
             return
         rest = self._next_rest_after(self._playback_ms)
         if rest is None:
             if self._playback_ms >= self._last_note_end_ms() > 0:
-                self._say("Nothing left to play on this track")
+                self._skip_to_end()
             else:
                 self._say("No rest ahead to skip")
             return
         start, until = rest
-        target = until - GAP_LEAD_IN_MS
+        target = self._lead_in_to(until)
         # A loop is a decision about where the song is allowed to be, and it
         # outranks this: jumping out of one would be undone by the loop itself
         # on the very next frame, which is a key that looks broken.
@@ -3970,12 +4020,46 @@ class PlayingScreen:
                 and target > self._loop_end_ms):
             self._say("Loop is on — the next rest is outside it (I/O)")
             return
-        skipped = target - max(self._playback_ms, start)
+        # Floored, because the lead-in is a bar now and a bar line can fall
+        # BEFORE the rest it leads into -- which would otherwise report a
+        # negative number of seconds skipped.
+        skipped = max(0.0, target - max(self._playback_ms, start))
         self.seek(target)
         if skipped >= 1000.0:
             self._say(f"Skipped {skipped / 1000.0:.0f} s of rest")
         else:
             self._say("Jumped to the next note")
+
+    def _skip_to_end(self) -> None:
+        """Nothing left to play, so go to the end of the song.
+
+        The outro is the biggest hole in the material -- 52 s on one song's
+        lead guitar, 37 s on its rhythm track -- and `_build_rests`
+        deliberately leaves it out because there is no next note to land in
+        front of. Saying so while the player sits in it is still right;
+        refusing to MOVE was not, and a picture scrolling through nothing
+        looks exactly like a picture that has stopped.
+
+        The notes it jumps over stay unreached rather than being swept up as
+        misses: `seek` carries `matcher.skip_to` for every forward jump, and
+        past the last note there are none to jump over anyway.
+        """
+        end = self._timeline.duration_ms
+        if self._playback_ms >= end - 1.0:
+            self._say("Already at the end of the song")
+            return
+        # A loop outranks this, the same as it outranks a rest jump: landing
+        # outside one is undone by the loop on the very next frame.
+        if (self._loop_enabled and self._loop_end_ms is not None
+                and end > self._loop_end_ms):
+            self._say("Loop is on — the end is outside it (I/O)")
+            return
+        skipped = (end - self._playback_ms) / 1000.0
+        self.seek(end)
+        if skipped >= 1.0:
+            self._say(f"Skipped {skipped:.0f} s of outro — song over")
+        else:
+            self._say("Jumped to the end of the song")
 
     def _rest_hud_text(self) -> str | None:
         """What to say while the player has nothing to play, or None.
@@ -3988,16 +4072,20 @@ class PlayingScreen:
             return None
         rest = self._rest_at(self._playback_ms)
         if rest is not None:
-            left = (rest[1] - self._playback_ms) / 1000.0
-            if left <= GAP_LEAD_IN_MS / 1000.0:
+            # The same reader the key uses, so the line cannot offer a jump
+            # the key then refuses -- the property K and its HUD line have
+            # been held to since the timing report.
+            if self._lead_in_to(rest[1]) <= self._playback_ms + 1.0:
                 return None
+            left = (rest[1] - self._playback_ms) / 1000.0
             return f"Rest: {left:.0f} s to the next note — E skips ahead"
         last_end = self._last_note_end_ms()
         if last_end > 0 and self._playback_ms >= last_end:
             left = (self._timeline.duration_ms - self._playback_ms) / 1000.0
             if left < 1.0:
                 return None
-            return f"Nothing left to play — {left:.0f} s of song to run"
+            return (f"Nothing left to play — {left:.0f} s of song to run "
+                    "— E jumps to the end")
         return None
 
     def _build_chord_names(self) -> list[tuple[float, str]]:
@@ -5772,15 +5860,27 @@ class PlayingScreen:
             self._mp3_player.set_suspended(True)
 
     def _rewind_for_pause(self) -> float | None:
-        """Give `PAUSE_REWIND_ONSETS` onsets back. Returns where we were.
+        """Give up to `PAUSE_REWIND_ONSETS` onsets back, at most a bar.
 
-        None when nothing was given back, and that is most of the reasons:
+        Returns where we were. None when nothing was given back, and that is
+        most of the reasons:
 
         * the count-in is running, so there is no run to rewind into;
         * a seek chose this spot, and a key must not undo the key before it;
         * there are not that many onsets behind the playhead yet;
+        * the last bar holds no stroke at all -- a pause inside a rest, where
+          there is nothing to count into and nothing to give back;
         * a loop is on and its start is already in front of the target --
           rewinding past it would be undone by the loop on the next frame.
+
+        *"Wenn dazwischen leere Takte sind, dann macht das keinen Sinn.
+        Spring max. einen Takt zurueck und wenn es geht mind. 3 Toene."*
+        Three onsets back can be half a minute of rest -- the material to
+        hand holds inner rests of 12 s and outros of 52 -- and giving that
+        back is not giving a passage back, it is losing your place. So the
+        bar is a CAP and three onsets is the aim: the earliest onset still
+        inside the cap wins, which also means the landing is always ON a
+        note rather than in a hole.
 
         Onsets are read off the notes the SCREEN shows: a note a filter hides
         is not an onset the player can see, so it cannot be one of the three
@@ -5797,11 +5897,23 @@ class PlayingScreen:
                          and self._note_passes_filter(n)})
         if len(onsets) < PAUSE_REWIND_ONSETS:
             return None
-        target = onsets[-PAUSE_REWIND_ONSETS] - PAUSE_REWIND_LEAD_MS
+        # The hard floor: a place the song is not allowed to be. The cap is
+        # softer -- it chooses which onsets are reachable, and the lead-in is
+        # then allowed to step past it, because a quarter of a second is not
+        # music and landing ON the onset would have the note due the instant
+        # the countdown ends. That is what PAUSE_REWIND_LEAD_MS was measured
+        # to prevent.
         floor = 0.0
         if self._loop_start_ms is not None and self._loop_enabled:
             floor = max(floor, self._loop_start_ms)
-        target = max(floor, target)
+        cap = floor
+        bar = self._bar_ms_at(was)
+        if bar is not None:
+            cap = max(cap, was - bar)
+        reachable = [t for t in onsets[-PAUSE_REWIND_ONSETS:] if t >= cap]
+        if not reachable:
+            return None
+        target = max(floor, reachable[0] - PAUSE_REWIND_LEAD_MS)
         if target >= was:
             return None
         self._playback_ms = target
@@ -8132,8 +8244,9 @@ class PlayingScreen:
             # bound and written down nowhere is a key nobody finds, and this
             # overlay is the only place left that can carry them all.
                 ("Playing", [
-                ("SPACE: play/pause — restarting gives back "
-                 f"{PAUSE_REWIND_ONSETS} strokes, then counts 1 s in",
+                ("SPACE: play/pause — restarting gives back up to "
+                 f"{PAUSE_REWIND_ONSETS} strokes, at most a bar, "
+                 "then counts 1 s in",
                  "playing" if self._playing else "paused"),
                 "HOME: restart     ESC: song list",
                 "LEFT/RIGHT: a beat   Shift: a bar   Ctrl: 30 seconds",
@@ -8154,7 +8267,8 @@ class PlayingScreen:
                  "Shift+W: record the take",
                  ("on" if self._wait_mode else "off")
                  + (" · recording" if self.take_line() else "")),
-                ("E: skip a long rest (jumps to 3 s before the next note)",
+                ("E: skip a long rest — lands a bar before the next note, "
+                 "or at the end when nothing is left",
                  "a rest is here" if self._rest_hud_text() else "nothing to skip"),
                 ("I/O: loop markers   P: loop   Shift+P: drill it",
                  (self._drill.line() if self._drill is not None

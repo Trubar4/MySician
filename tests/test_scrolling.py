@@ -4034,12 +4034,20 @@ class TestSkippingALongRest:
         def get_size(self):
             return self._size
 
+    #: 4/4 at 120 BPM. Real bars, not one measure spanning the song: the
+    #: lead-in E lands on is a BAR LINE now, so a fixture with a single bar
+    #: would have no bar line to land on and would be testing nothing.
+    BAR_MS = 2_000.0
+
     def _screen(self, notes, duration_pad_ms=0.0):
         from pickhero.ui.scrolling import PlayingScreen
         end = max(n.end_ms for n in notes) + duration_pad_ms
+        bars = int(end // self.BAR_MS) + 1
         song = Timeline(
             notes, SongMetadata(title="t", tempo=120),
-            measures=[MeasureInfo(index=0, start_ms=0.0, end_ms=end)])
+            measures=[MeasureInfo(index=i, start_ms=i * self.BAR_MS,
+                                  end_ms=(i + 1) * self.BAR_MS)
+                      for i in range(bars)])
         screen = PlayingScreen(song, config=Config())
         layout = screen._layout(self._MockSurface(1280, 720))
         screen._last_layout = layout
@@ -4081,12 +4089,14 @@ class TestSkippingALongRest:
         screen = self._screen(notes, duration_pad_ms=60_000.0)
         assert screen._rests == []
 
-    def test_the_key_lands_a_lead_in_before_the_next_note(self):
-        from pickhero.ui.scrolling import GAP_LEAD_IN_MS
+    def test_the_key_lands_on_the_bar_line_before_the_next_note(self):
+        """*"Beim Vorspringen mit e -> Gehe bis auf einen Takt zum naechsten
+        Ton."* The bar LINE, not a number of seconds: a point the player can
+        count from. The note sits in bar 10, so bar 9 is where E lands."""
         screen = self._with_a_rest()
         screen._playback_ms = 2_000.0
         screen._skip_rest()
-        assert screen._playback_ms == pytest.approx(21_000.0 - GAP_LEAD_IN_MS)
+        assert screen._playback_ms == pytest.approx(9 * self.BAR_MS)
 
     def test_it_never_jumps_backwards(self):
         screen = self._with_a_rest()
@@ -4124,7 +4134,7 @@ class TestSkippingALongRest:
         screen._playback_ms = 20_000.0
         assert screen._rest_hud_text() is None
 
-    def test_the_outro_is_announced_even_though_it_cannot_be_skipped(self):
+    def test_the_outro_is_announced(self):
         notes = [self._note(0.0), self._note(500.0)]
         screen = self._screen(notes, duration_pad_ms=60_000.0)
         screen._playback_ms = 10_000.0
@@ -4146,6 +4156,67 @@ class TestSkippingALongRest:
         assert screen._rest_hud_text()
         assert dict(screen.footer_segments())["E: Skip"] != quiet
 
+    def test_a_note_mid_bar_still_gets_a_whole_bar_in_front_of_it(self):
+        """Between one and two bars, which is the price of landing on a line
+        you can count from rather than mid-bar at a tidy number of seconds."""
+        notes = [self._note(0.0), self._note(500.0), self._note(21_500.0)]
+        screen = self._screen(notes)
+        screen._playback_ms = 2_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(9 * self.BAR_MS)
+
+    def _slow(self, notes):
+        """48 BPM in 4/4 -- a bar is 5 s, where the old constant was 3."""
+        from pickhero.ui.scrolling import PlayingScreen
+        end = max(n.end_ms for n in notes)
+        bars = int(end // 5_000.0) + 1
+        song = Timeline(
+            notes, SongMetadata(title="t", tempo=48),
+            measures=[MeasureInfo(index=i, start_ms=i * 5_000.0,
+                                  end_ms=(i + 1) * 5_000.0)
+                      for i in range(bars)])
+        screen = PlayingScreen(song, config=Config())
+        screen._audio_enabled = False
+        layout = screen._layout(self._MockSurface(1280, 720))
+        screen._last_layout = layout
+        screen._recompute_scroll_speed(layout)
+        return screen
+
+    def test_a_slow_bar_gives_more_lead_in_than_the_old_three_seconds(self):
+        """The lead-in follows the tempo now, which is the whole point of
+        counting it in bars."""
+        from pickhero.ui.scrolling import GAP_LEAD_IN_MS
+        screen = self._slow([self._note(0.0), self._note(22_000.0)])
+        screen._playback_ms = 2_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(15_000.0)
+        assert screen._playback_ms < 22_000.0 - GAP_LEAD_IN_MS
+
+    def test_the_rest_ahead_test_moved_with_the_lead_in(self):
+        """Or E jumps BACKWARDS: at 16 s the old rule still offered a jump to
+        19 s, and the new landing point is 15."""
+        screen = self._slow([self._note(0.0), self._note(22_000.0)])
+        screen._playback_ms = 16_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(16_000.0)
+        assert "rest" in (screen._status_note_text() or "").lower()
+
+    def test_a_tab_with_no_bars_falls_back_to_the_seconds(self):
+        """A key that silently does nothing is worse than one that does
+        less, so no measure info keeps the constant it always used."""
+        from pickhero.ui.scrolling import GAP_LEAD_IN_MS, PlayingScreen
+        notes = [self._note(0.0), self._note(21_000.0)]
+        song = Timeline(notes, SongMetadata(title="t", tempo=120))
+        screen = PlayingScreen(song, config=Config())
+        screen._audio_enabled = False
+        layout = screen._layout(self._MockSurface(1280, 720))
+        screen._last_layout = layout
+        screen._recompute_scroll_speed(layout)
+        screen._playback_ms = 2_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(21_000.0 - GAP_LEAD_IN_MS)
+
+
     def test_the_rest_list_is_built_once_per_song_and_never_in_a_frame(self):
         """A walk over every note, so it must not run 60 times a second."""
         pygame.init()
@@ -4163,6 +4234,82 @@ class TestSkippingALongRest:
             assert calls == []
         finally:
             pygame.quit()
+
+
+class TestEAtTheEndOfTheSong:
+    """*"Beim Vorspringen am Ende vom Song mit e -> Spring einfach zum
+    Songende, wenn nichts mehr kommt."*
+
+    The outro is the biggest hole in the material -- 52 s on one song's lead
+    guitar -- and `_build_rests` leaves it out because there is no next note
+    to land in front of. Saying so while the player sits in it was right;
+    refusing to MOVE was not.
+    """
+
+    _MockSurface = TestSkippingALongRest._MockSurface
+    _note = staticmethod(TestSkippingALongRest._note)
+    BAR_MS = TestSkippingALongRest.BAR_MS
+    _screen = TestSkippingALongRest._screen
+
+    def _in_the_outro(self):
+        screen = self._screen([self._note(0.0), self._note(500.0)],
+                              duration_pad_ms=60_000.0)
+        screen._audio_enabled = False
+        screen._playback_ms = 10_000.0
+        return screen
+
+    def test_it_goes_to_the_end(self):
+        screen = self._in_the_outro()
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(
+            screen._timeline.duration_ms)
+
+    def test_it_says_how_much_outro_it_skipped(self):
+        screen = self._in_the_outro()
+        screen._skip_rest()
+        assert "outro" in (screen._status_note_text() or "")
+
+    def test_the_run_is_not_swept_up_as_missed(self):
+        """Nothing is skipped over -- past the last note there is nothing to
+        skip -- so the verdicts behind the playhead stand."""
+        from pickhero.matcher import MatchType, NoteMatcher
+        screen = self._in_the_outro()
+        screen._matcher = NoteMatcher(screen._timeline)
+        for note in screen._timeline.notes:
+            screen._matcher._record_match(note, MatchType.HIT)
+        before = screen._matcher.hits
+        screen._skip_rest()
+        assert screen._matcher.hits == before
+
+    def test_already_at_the_end_says_so_rather_than_seeking(self):
+        screen = self._in_the_outro()
+        screen._playback_ms = screen._timeline.duration_ms
+        seeks = screen._seeks
+        screen._skip_rest()
+        assert screen._seeks == seeks
+        assert "end" in (screen._status_note_text() or "").lower()
+
+    def test_a_loop_outranks_it(self):
+        """Landing outside a loop is undone on the very next frame."""
+        screen = self._in_the_outro()
+        screen._set_loop_start(0.0)
+        screen._set_loop_end(20_000.0)
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(10_000.0)
+        assert "Loop" in (screen._status_note_text() or "")
+
+    def test_the_hud_names_the_key_now_that_it_does_something(self):
+        screen = self._in_the_outro()
+        assert "E" in (screen._rest_hud_text() or "")
+
+    def test_mid_song_with_no_rest_ahead_it_still_refuses(self):
+        """There is music ahead, so the end of the song is not where the
+        player asked to go."""
+        screen = self._screen([self._note(0.0), self._note(30_000.0)])
+        screen._audio_enabled = False
+        screen._playback_ms = 29_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(29_000.0)
 
 
 class TestAPressMustBuySomethingVisible:

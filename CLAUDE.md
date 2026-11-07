@@ -7129,6 +7129,86 @@ Then the pull put it back the slow way. One second is UNDER `SYNC_SNAP_MS` (1.5 
 - **A rewind really does seek the recording**, asserted now rather than reasoned, and the old test that said resuming never seeks says why it
   still holds: its fixture has one note, so there is nothing to rewind into.
 
+## A Transport Key Counted In Notes, Where The Player Counts In Bars
+
+*"Beim pausieren und fortsetzen, springen wir 3 Töne zurück. Wenn dazwischen leere Takte sind, dann macht das keinen Sinn. Spring max. einen
+Takt zurück und wenn es geht mind. 3 Töne. Beim Vorspringen mit e -> Gehe bis auf einen Takt zum nächsten Ton. Beim Vorspringen am Ende vom Song
+mit e -> Spring einfach zum Songende, wenn nichts mehr kommt."*
+
+Three complaints, one cause: **both keys measured a distance in a unit the music does not use.** The pause rewind counted three ONSETS and `E`
+counted three SECONDS, and a bar is what a player counts in -- which is why `LEFT`/`RIGHT` grew `Shift` to snap to a bar line two chapters
+earlier, and why the weakest-section line names bars rather than milliseconds.
+
+### Three onsets back can be two and a half minutes
+
+Measured over all 28 tracks of the six songs to hand, taking every onset in turn as a plausible pause point:
+
+| | |
+|---|---|
+| worst rewind, as shipped | **154.9 s** (Bon Jovi, "Born To Be My Baby", distortion guitar) |
+| worst rewind, capped at a bar | **3.9 s** |
+| median worst per track | 16.1 s -> **2.1 s** |
+| pause points the cap shortens at all | **1276 of 12536 -- 10 %** |
+| pause points it refuses outright | 197 -- 2 % |
+
+**Ninety per cent of pauses are unchanged**, which is the control this rests on: on dense material three onsets are inside the bar anyway, and
+`TestThreeStrokesBack` -- whose fixture is four onsets a bar -- does not move a millisecond. The ten per cent are the pauses that straddle a
+rest, and there the old rule gave back a section the player had not been playing. Giving two and a half minutes back is not giving a passage
+back, it is losing your place.
+
+- **The bar is a CAP and three onsets is the AIM.** The earliest onset still inside the cap wins, so the landing is always ON a note rather
+  than in a hole -- which is the half of the complaint that a plain time floor would not have fixed. One stroke inside the bar is one stroke
+  back, not three.
+- **No stroke in the bar at all means no rewind and no countdown.** That is a pause inside a rest: there is nothing to count into, and a
+  picture standing still for a second with nothing to come in on is the frozen-app look this file has now shipped five times.
+- **The cap is read off the BAR, not from the tempo**, so it follows a time signature change -- 3/4 and 6/8 at one tempo are the same length of
+  time and a different piece of music, and `MeasureInfo` has carried `beats`/`beat_type` since the engraver needed them.
+- **The lead-in may step past the cap.** `PAUSE_REWIND_LEAD_MS` is 250 ms and a quarter of a second is not music; clamped to the cap, an onset
+  sitting exactly on the bar line would be due the instant the countdown ends, which is the thing that constant was measured to prevent. So the
+  cap chooses which onsets are REACHABLE and the hard floor is still only the loop start and zero.
+- **A tab with no measure info rewinds exactly as it always did.** A key that silently does nothing is worse than one that does less -- the same
+  fallback the arrow keys' bar snap has, and the one test in that class which passes on the unfixed code.
+
+### E lands on a bar line, which is a point you can count from
+
+`GAP_LEAD_IN_MS` was 3 s and is now the bar line of the bar BEFORE the next note -- so a note on a bar line gets one whole bar and a note
+mid-bar gets between one and two. **The number it replaces was not wrong, it was unreadable**: three seconds lands mid-bar at a tidy number of
+milliseconds, and there is nothing there to count.
+
+| song | bar | where E lands, before the note |
+|---|---|---|
+| 4 Non Blondes, "What's Up" (65 BPM) | 3.69 s | **3.7-6.9 s** |
+| Thunder, "Love Walked In" (78) | 3.08 s | 3.1-3.8 s |
+| Godsmack, "Awake" (110) | 2.14 s | 2.1-2.2 s |
+| **Kid Rock, "Rock On" (112)** | **1.61 s** | **1.6-2.9 s** |
+| Bon Jovi, "I'd Die For You" (132) | 1.82 s | 1.8-3.4 s |
+
+**The cost is named rather than hidden: on a fast song the lead-in is now about half what it was.** 1.8 s at 130 BPM against the old 3.0, which
+is less time to get the hand to the fret -- bought in exchange for landing somewhere countable. If that turns out to be too tight the fix is one
+line (step back a second bar line while the first is under 3 s), and it is not built because nobody has played it yet.
+
+- **One reader for the whole rule** (`_lead_in_to`), because three things want the answer: where `E` lands, whether a rest is still worth
+  jumping to at all, and whether the HUD should offer the key. The second is not optional -- a bar at 50 BPM is 4.8 s where the constant was 3,
+  so a test that did not move with it would have `E` jumping BACKWARDS. That is asserted directly, at the 16-second position where the old rule
+  still offered a jump to 19 s and the new landing point is 15.
+- **A bar line can fall BEFORE the rest it leads into**, now that the lead-in is longer than a second, so the "skipped N s of rest" figure is
+  floored at zero rather than reporting a negative number of seconds.
+
+### And at the end there was nothing to land in front of
+
+`_build_rests` leaves the outro out on purpose, and says why: *"there is no next note to skip to, so it is announced and never offered as a
+jump."* The announcing was right. **The refusing to MOVE was not** -- 52 s on one song's lead guitar, 37 on its rhythm track, and a picture
+scrolling through nothing looks exactly like a picture that has stopped.
+
+- **`E` seeks to the song's length**, which ends the song: the completion screen, the score, the run banked. Nothing is skipped over, because
+  past the last note there is nothing to skip -- and `seek` carries `matcher.skip_to` for every forward jump anyway, so the question cannot
+  arise.
+- **A loop outranks it**, the same as it outranks a rest jump: landing outside one is undone on the very next frame.
+- **Already at the end says so rather than seeking.** A seek decodes the recording up to that point, and spending that to go where you already
+  are is the cost `MP3_SEEK_SETTLE_S` exists to avoid.
+- **The HUD names the key now that it does something.** *"Nothing left to play — 52 s of song to run — E jumps to the end"*: the line was there
+  and was a dead end, which is the one state this project refuses to leave on screen.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

@@ -529,3 +529,140 @@ class TestTheRecordingIsSilentWhileTheSongStandsStill:
         mp3.sounded_frames = 0
         self._breathe(screen)
         assert mp3.sounded_frames == 0
+
+
+def _song_with_a_rest(bar_ms=BAR_MS, bars=8, played=(0, 1, 6, 7)):
+    """Notes in `played` bars only, so the rest between them is empty.
+
+    The material this is about: a guitar track's inner rests are 4-6 s (part
+    of the music) or 12 s and up (a section it does not play).
+    """
+    notes, measures = [], []
+    for bar in range(bars):
+        measures.append(MeasureInfo(index=bar, start_ms=bar * bar_ms,
+                                    end_ms=(bar + 1) * bar_ms))
+        if bar not in played:
+            continue
+        for beat in range(4):
+            notes.append(NoteEvent(
+                timestamp_ms=bar * bar_ms + beat * (bar_ms / 4.0),
+                duration_ms=bar_ms / 5.0, midi_note=40, string=6,
+                fret=7, measure=bar))
+    return Timeline(notes, SongMetadata(title="t", tempo=120),
+                    measures=measures)
+
+
+def _at(song, ms):
+    screen = PlayingScreen(song, config=Config())
+    screen._audio_enabled = False
+    screen._matcher = NoteMatcher(screen._timeline)
+    screen._playback_ms = ms
+    return screen
+
+
+class TestNeverMoreThanABarBack:
+    """*"Wenn dazwischen leere Takte sind, dann macht das keinen Sinn. Spring
+    max. einen Takt zurueck und wenn es geht mind. 3 Toene."*
+
+    Three onsets back is a distance in NOTES and the player counts in BARS,
+    so on anything with a rest in it the two part company: the third-last
+    onset can be four empty bars away. Every test in this class fails on the
+    code before it -- the control is `TestThreeStrokesBack` above, whose
+    fixture is four onsets a bar and where nothing changes at all.
+    """
+
+    def test_it_does_not_cross_an_empty_bar(self):
+        """Bars 2-5 hold nothing, so the third-last onset is nine seconds
+        back. Giving that back is not giving a passage back."""
+        screen = _at(_song_with_a_rest(), 12_600.0)
+        assert screen._rewind_for_pause() == 12_600.0
+        assert screen._playback_ms == pytest.approx(
+            12_000.0 - PAUSE_REWIND_LEAD_MS)
+
+    def test_a_pause_inside_the_rest_gives_nothing_back(self):
+        """No stroke in the last bar: nothing to count into, nothing to give
+        back. Rewinding here landed in bar 1, five bars earlier."""
+        screen = _at(_song_with_a_rest(), 8_000.0)
+        assert screen._rewind_for_pause() is None
+        assert screen._playback_ms == pytest.approx(8_000.0)
+        assert screen._pause_rewinds == 0
+
+    def test_it_takes_what_the_bar_holds_when_three_do_not_fit(self):
+        """One stroke inside the cap is one stroke back, not three."""
+        screen = _at(_song_with_a_rest(), 12_400.0)
+        assert screen._rewind_for_pause() == 12_400.0
+        assert screen._playback_ms == pytest.approx(
+            12_000.0 - PAUSE_REWIND_LEAD_MS)
+
+    def test_the_cap_is_read_off_the_bar_not_from_the_tempo(self):
+        """So it follows a time signature change. 3/4 and 6/8 at one tempo
+        are the same length of time and a different piece of music."""
+        notes = [NoteEvent(timestamp_ms=t, duration_ms=200.0, midi_note=40,
+                           string=6, fret=7)
+                 for t in (1_000.0, 1_900.0, 3_000.0, 3_500.0)]
+
+        def screen_with(bar_ms):
+            measures = [MeasureInfo(index=i, start_ms=i * bar_ms,
+                                    end_ms=(i + 1) * bar_ms)
+                        for i in range(int(4_000.0 / bar_ms))]
+            song = Timeline(notes, SongMetadata(title="t", tempo=120),
+                            measures=measures)
+            s = _at(song, 3_900.0)
+            s._rewind_for_pause()
+            return s._playback_ms
+
+        assert screen_with(2_000.0) < screen_with(1_000.0), \
+            "the longer bar has to give more back"
+
+    def test_the_lead_in_may_step_past_the_cap(self):
+        """A quarter of a second is not music. Landing ON the onset would
+        have the note due the instant the countdown ends, which is the thing
+        PAUSE_REWIND_LEAD_MS was measured to prevent."""
+        notes = [NoteEvent(timestamp_ms=t, duration_ms=200.0, midi_note=40,
+                           string=6, fret=7)
+                 for t in (0.0, 1_000.0, 2_000.0)]
+        measures = [MeasureInfo(index=0, start_ms=0.0, end_ms=2_000.0),
+                    MeasureInfo(index=1, start_ms=2_000.0, end_ms=4_000.0)]
+        song = Timeline(notes, SongMetadata(title="t", tempo=120),
+                        measures=measures)
+        screen = _at(song, 4_000.0)          # cap is exactly the onset
+        screen._rewind_for_pause()
+        assert screen._playback_ms == pytest.approx(
+            2_000.0 - PAUSE_REWIND_LEAD_MS)
+        assert 2_000.0 - screen._playback_ms >= 150.0, \
+            "no room for the hit window after the countdown"
+
+    def test_a_tab_with_no_bars_rewinds_as_it_always_did(self):
+        """A key that silently does nothing is worse than one that does
+        less, so no measure info means the old rule rather than no rewind."""
+        notes = [NoteEvent(timestamp_ms=t, duration_ms=200.0, midi_note=40,
+                           string=6, fret=7)
+                 for t in (0.0, 4_000.0, 8_000.0, 12_000.0)]
+        song = Timeline(notes, SongMetadata(title="t", tempo=120))
+        screen = _at(song, 12_500.0)
+        assert screen._rewind_for_pause() == 12_500.0
+        assert screen._playback_ms == pytest.approx(
+            4_000.0 - PAUSE_REWIND_LEAD_MS)
+
+    def test_the_space_bar_really_honours_the_cap(self):
+        """What the arithmetic cannot see is whether anything calls it."""
+        screen = _at(_song_with_a_rest(), 0.0)
+        screen.toggle_play()
+        screen._playback_ms = 12_600.0
+        screen._position_chosen = False
+        screen.toggle_play()                      # pause
+        screen.toggle_play()                      # play
+        assert screen._playback_ms == pytest.approx(
+            12_000.0 - PAUSE_REWIND_LEAD_MS)
+        assert screen._breath_s == pytest.approx(PAUSE_COUNT_IN_S)
+
+    def test_and_a_pause_in_the_rest_neither_rewinds_nor_counts_in(self):
+        screen = _at(_song_with_a_rest(), 0.0)
+        screen.toggle_play()
+        screen._playback_ms = 8_000.0
+        screen._position_chosen = False
+        screen.toggle_play()
+        screen.toggle_play()
+        assert screen._playback_ms == pytest.approx(8_000.0)
+        assert screen._breath_s == 0.0, \
+            "a countdown into nothing is a picture standing still for no reason"
