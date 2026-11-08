@@ -7175,17 +7175,27 @@ back, it is losing your place.
 mid-bar gets between one and two. **The number it replaces was not wrong, it was unreadable**: three seconds lands mid-bar at a tidy number of
 milliseconds, and there is nothing there to count.
 
-| song | bar | where E lands, before the note |
-|---|---|---|
-| 4 Non Blondes, "What's Up" (65 BPM) | 3.69 s | **3.7-6.9 s** |
-| Thunder, "Love Walked In" (78) | 3.08 s | 3.1-3.8 s |
-| Godsmack, "Awake" (110) | 2.14 s | 2.1-2.2 s |
-| **Kid Rock, "Rock On" (112)** | **1.61 s** | **1.6-2.9 s** |
-| Bon Jovi, "I'd Die For You" (132) | 1.82 s | 1.8-3.4 s |
+**And the first version made a fast song WORSE, which was named at the time and is now fixed.** One bar at 130 BPM is 1.8 s against the old
+constant's 3.0 -- less time to get the hand to the fret, bought in exchange for landing somewhere countable. Put to the player with that
+number: *"Ja, mach den zweiten Taktstrich bei unter 3 s"*. So where one bar does not clear `GAP_LEAD_IN_MS`, E steps back one more bar line:
 
-**The cost is named rather than hidden: on a fast song the lead-in is now about half what it was.** 1.8 s at 130 BPM against the old 3.0, which
-is less time to get the hand to the fret -- bought in exchange for landing somewhere countable. If that turns out to be too tight the fix is one
-line (step back a second bar line while the first is under 3 s), and it is not built because nobody has played it yet.
+| song | bar | one step | **as it ships** |
+|---|---|---|---|
+| 4 Non Blondes, "What's Up" (65 BPM) | 3.69 s | 3.7-6.9 s | **3.7-6.9 s** |
+| Thunder, "Love Walked In" (78) | 3.08 s | 3.1-3.8 s | **3.1-3.8 s** |
+| Godsmack, "Awake" (110) | 2.14 s | 2.1-2.2 s | **4.3-4.4 s** |
+| **Kid Rock, "Rock On" (112)** | **1.61 s** | **1.6-2.9 s** | **3.2-4.6 s** |
+| Bon Jovi, "I'd Die For You" (132) | 1.82 s | 1.8-3.4 s | **3.2-4.8 s** |
+
+**All 35 long rests across the six songs now clear 3 s, and the two slow songs are bit-for-bit unchanged.** That second half is the control:
+a bar that already clears the floor is never given a second one, so this is a repair of the fast case rather than a re-design.
+
+- **One extra step, never a loop**, and the measurement is why rather than taste: the fastest song to hand has 1.61 s bars and one step
+  reaches 3.2 s, so **nothing on this material needs a third** -- a loop would be fitted against no case at all. And three bars of counting
+  is the player sitting idle rather than reading ahead. A test pins it at a 1000 ms bar, where two bars is STILL under 3 s and it stops
+  anyway.
+- **It is the same one reader**, so the rest-ahead test and the HUD line moved with it for free -- and that is asserted at the new landing
+  point rather than inferred: standing exactly where the key would put you, the line stops offering it and the key stops moving.
 
 - **One reader for the whole rule** (`_lead_in_to`), because three things want the answer: where `E` lands, whether a rest is still worth
   jumping to at all, and whether the HUD should offer the key. The second is not optional -- a bar at 50 BPM is 4.8 s where the constant was 3,

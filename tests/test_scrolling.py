@@ -4201,6 +4201,71 @@ class TestSkippingALongRest:
         assert screen._playback_ms == pytest.approx(16_000.0)
         assert "rest" in (screen._status_note_text() or "").lower()
 
+    def _at_bar(self, bar_ms, notes):
+        """A song whose bars are `bar_ms` long, with the rest list built."""
+        from pickhero.ui.scrolling import PlayingScreen
+        end = max(n.end_ms for n in notes)
+        bars = int(end // bar_ms) + 2
+        song = Timeline(
+            notes, SongMetadata(title="t", tempo=120),
+            measures=[MeasureInfo(index=i, start_ms=i * bar_ms,
+                                  end_ms=(i + 1) * bar_ms)
+                      for i in range(bars)])
+        screen = PlayingScreen(song, config=Config())
+        screen._audio_enabled = False
+        layout = screen._layout(self._MockSurface(1280, 720))
+        screen._last_layout = layout
+        screen._recompute_scroll_speed(layout)
+        return screen
+
+    def test_a_fast_bar_gets_a_second_bar_line(self):
+        """*"Ja, mach den zweiten Taktstrich bei unter 3 s"* -- a bar at
+        130 BPM is 1.8 s, which is less time to reach the fret than the 3 s
+        this rule replaced. Measured on his own songs: every lead-in now
+        clears 3 s, and the two slow ones do not move at all."""
+        from pickhero.ui.scrolling import GAP_LEAD_IN_MS
+        # 1600 ms bars, the fastest in the collection. The note sits on the
+        # bar line at 20 800, so one step is 19 200 and that is only 1.6 s.
+        screen = self._at_bar(1_600.0,
+                              [self._note(0.0), self._note(20_800.0)])
+        screen._playback_ms = 2_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(17_600.0)
+        assert 20_800.0 - screen._playback_ms >= GAP_LEAD_IN_MS
+
+    def test_a_slow_bar_is_left_exactly_where_it_was(self):
+        """The control: one bar already clears 3 s, so nothing is added.
+        This is what makes the change a repair rather than a re-design."""
+        screen = self._at_bar(5_000.0,
+                              [self._note(0.0), self._note(22_000.0)])
+        screen._playback_ms = 2_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(15_000.0)
+
+    def test_it_never_takes_a_THIRD_bar_line(self):
+        """One extra step, never a loop. Three bars of counting is the player
+        sitting idle rather than reading ahead -- and on the material to hand
+        one step is enough, so a loop would be fitted to nothing."""
+        screen = self._at_bar(1_000.0,
+                              [self._note(0.0), self._note(20_000.0)])
+        screen._playback_ms = 2_000.0
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(18_000.0), \
+            "two bars back, even though two bars is still under 3 s"
+
+    def test_the_hud_and_the_key_still_agree_at_the_new_point(self):
+        """One reader: standing where the key would land, the line must stop
+        offering it. A fast song moves that point by a whole bar."""
+        screen = self._at_bar(1_600.0,
+                              [self._note(0.0), self._note(20_800.0)])
+        screen._playback_ms = 17_000.0
+        assert "E" in (screen._rest_hud_text() or "")
+        screen._playback_ms = 17_600.0
+        assert screen._rest_hud_text() is None
+        screen._skip_rest()
+        assert screen._playback_ms == pytest.approx(17_600.0), \
+            "the key moved where the line said there was nothing left"
+
     def test_a_tab_with_no_bars_falls_back_to_the_seconds(self):
         """A key that silently does nothing is worse than one that does
         less, so no measure info keeps the constant it always used."""

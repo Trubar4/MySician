@@ -3947,6 +3947,14 @@ class PlayingScreen:
         not. A note sitting exactly on a bar line therefore gets one whole
         bar; one sitting mid-bar gets between one and two.
 
+        **And one bar line FURTHER where the first does not clear
+        `GAP_LEAD_IN_MS`.** A bar at 130 BPM is 1.8 s, where the constant this
+        replaced was 3 -- less time to get the hand to the fret, which is a
+        real cost and was reported as one. One extra step, never a loop: the
+        fastest song to hand has 1.61 s bars and one step reaches 3.2 s, so
+        nothing on this material needs a third, and three bars of counting is
+        the player sitting idle rather than reading ahead.
+
         `GAP_LEAD_IN_MS` is the fallback for a tab that parsed without
         measure info, because a key that silently does nothing is worse than
         one that does less -- the same fallback the arrow keys' bar snap has.
@@ -3966,7 +3974,10 @@ class PlayingScreen:
         index = bisect.bisect_right(starts, note_ms + BAR_SNAP_MARGIN_MS) - 1
         if index <= 0:
             return 0.0
-        return starts[index - 1]
+        index -= 1
+        if index > 0 and note_ms - starts[index] < GAP_LEAD_IN_MS:
+            index -= 1
+        return starts[index]
 
     def _rest_at(self, ms: float) -> tuple[float, float] | None:
         """The long rest the given moment sits inside, if any."""
