@@ -278,10 +278,60 @@ def _song_plan(song: guitarpro.Song, tempo_map: TempoMap) -> list[PlayedBar]:
     return played_bars([_bar_repeat(h) for h in headers], starts, ends)
 
 
+def _note_or_skip(skipped: list[str], **fields) -> NoteEvent | None:
+    """A NoteEvent, or None with the reason written down.
+
+    A tab is somebody else's file and a reader cannot be complete. GPIF
+    writes a fret of -1 for a note whose fret the transcriber left out; a
+    seven-string tab puts a note on a string this app does not have; a
+    damaged beat can put a pitch outside MIDI's range. NoteEvent refuses all
+    of those on purpose -- that invariant is what caught the -1 -- but one
+    such note used to raise straight out of the loader and take the whole
+    TRACK with it. On the file that prompted this, ten notes of about 3800
+    cost four of the six guitars, and what the player saw was a traceback
+    rather than a song.
+
+    So a note the reader cannot place is skipped and the reason kept, which
+    is the rule `scan_files` already follows for a folder it cannot read: a
+    screen saying "3 notes could not be read" is a screen; a traceback is
+    not. It covers every invariant NoteEvent has and any added later, rather
+    than the one quirk that happened to be reported.
+    """
+    try:
+        return NoteEvent(**fields)
+    except ValueError as exc:
+        skipped.append(str(exc))
+        return None
+
+
+def _distinct_reasons(skipped: Sequence[str],
+                      limit: int = 3) -> tuple[str, ...]:
+    """The reasons, once each, in the order they first came up.
+
+    One quirk in a file is usually the same quirk a few dozen times, so the
+    count is the size of it and the reasons are what it IS. Capped because
+    this goes on a screen and in a run log, and a hundred copies of one
+    sentence says less than three.
+    """
+    seen: list[str] = []
+    for reason in skipped:
+        if reason not in seen:
+            seen.append(reason)
+        if len(seen) == limit:
+            break
+    return tuple(seen)
+
+
 def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap,
-                   plan: Sequence[PlayedBar]) -> list[NoteEvent]:
-    """Extract all playable notes from a track, in playing order."""
+                   plan: Sequence[PlayedBar]) -> tuple[list[NoteEvent],
+                                                       list[str]]:
+    """Extract all playable notes from a track, in playing order.
+
+    Returns the notes and the reasons any note had to be skipped; see
+    `_note_or_skip`.
+    """
     notes = []
+    skipped: list[str] = []
     for bar in plan:
         if bar.written_index >= len(track.measures):
             continue        # a track shorter than the song's bar count
@@ -306,36 +356,37 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap,
                         continue
                     to_next, slide_in, slide_out = _extract_slides(note)
                     effect = getattr(note, "effect", None)
-                    notes.append(
-                        NoteEvent(
-                            timestamp_ms=timestamp_ms,
-                            duration_ms=duration_ms,
-                            midi_note=note.realValue,
-                            string=note.string,
-                            fret=note.value,
-                            measure=bar.play_index,
-                            duration_quarters=(beat.duration.time
-                                               / _GP_QUARTER_TICKS),
-                            bend=_extract_bend(note),
-                            slide_to_next=to_next,
-                            slide_in=slide_in,
-                            slide_out=slide_out,
-                            # GP flags the note the legato STARTS from, the
-                            # same way it flags a shift slide.
-                            hammer_to_next=bool(
-                                getattr(effect, "hammer", False)
-                            ),
-                            # Type 3 is a dead note: kept as an event because
-                            # it is played, flagged because its written fret
-                            # names a hand position, not a pitch.
-                            let_ring=bool(getattr(effect, "letRing", False)),
-                            dead=note.type.value == 3,
-                            palm_mute=bool(
-                                getattr(effect, "palmMute", False)
-                            ),
-                        )
+                    event = _note_or_skip(
+                        skipped,
+                        timestamp_ms=timestamp_ms,
+                        duration_ms=duration_ms,
+                        midi_note=note.realValue,
+                        string=note.string,
+                        fret=note.value,
+                        measure=bar.play_index,
+                        duration_quarters=(beat.duration.time
+                                           / _GP_QUARTER_TICKS),
+                        bend=_extract_bend(note),
+                        slide_to_next=to_next,
+                        slide_in=slide_in,
+                        slide_out=slide_out,
+                        # GP flags the note the legato STARTS from, the
+                        # same way it flags a shift slide.
+                        hammer_to_next=bool(
+                            getattr(effect, "hammer", False)
+                        ),
+                        # Type 3 is a dead note: kept as an event because
+                        # it is played, flagged because its written fret
+                        # names a hand position, not a pitch.
+                        let_ring=bool(getattr(effect, "letRing", False)),
+                        dead=note.type.value == 3,
+                        palm_mute=bool(
+                            getattr(effect, "palmMute", False)
+                        ),
                     )
-    return notes
+                    if event is not None:
+                        notes.append(event)
+    return notes, skipped
 
 
 def _extract_measures(track: guitarpro.Track, tempo_map: TempoMap,
@@ -736,6 +787,35 @@ def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
                     pass
         if fret is None or string_val is None:
             continue
+        # GPIF writes Fret -1 for a note whose fret the transcriber left
+        # out, and the only note that happens on is a MUTED one: an X in
+        # the tab has no number beside it, so there is nothing to write.
+        # Measured on the file that prompted this (Bon Jovi, "My Guitar
+        # Lies Bleeding In My Arms"): all ten of its -1 frets carry
+        # <Muted><Enable/></Muted> and they are every muted note in the
+        # file -- octave shapes with the middle string deadened (10/X/8,
+        # 12/X/10, 14/X/12) and muted scratch strums. No capo anywhere:
+        # CapoFret is 0 on all six staves. Guitar Pro's own Midi field for
+        # each of them is the open string MINUS ONE, because it computes a
+        # pitch mechanically from a fret that means "none" -- which is
+        # nonsense by design, since a muted note has no pitch.
+        #
+        # Zero loses nothing and is better in every reader: the display
+        # already prints "X" for a dead note and never its number, the
+        # fret filter lets it through (an X has no fret that can be out of
+        # reach), MusicXML's <fret> must be non-negative so the engraved
+        # page stays valid, and the guide track sounds the open string
+        # rather than a semitone below it. The control is the 801 muted
+        # notes across the player's six other songs: every one carries a
+        # real fret and not one is negative, so this is a transcriber who
+        # left the number off, not a convention we had never read.
+        #
+        # A negative fret on a note that is NOT muted is deliberately left
+        # alone: that number WOULD be shown, and inventing a 0 for it
+        # would put a wrong fret on screen. `_note_or_skip` then skips it
+        # and says so.
+        if fret < 0 and dead:
+            fret = 0
         notes[nid] = _GpifNote(
             fret=fret,
             string=string_val,
@@ -951,6 +1031,7 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                        [a + b for a, b in zip(bar_start, bar_length)])
 
     note_events: list[NoteEvent] = []
+    skipped: list[str] = []
     measure_infos: list[MeasureInfo] = []
 
     for played in plan:
@@ -987,7 +1068,15 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                         gpif_note = notes_map[nid]
                         fret, gp7_string = gpif_note.fret, gpif_note.string
                         our_string = num_strings - gp7_string
+                        # These two were skipped silently, so a note the
+                        # reader could not place was counted here and not
+                        # there -- the number has to mean one thing. The
+                        # string check stays ahead of the tie branch: a
+                        # seven-string tab must not reach `_extend_tied`
+                        # with a string this app does not have.
                         if not 1 <= our_string <= 6:
+                            skipped.append(
+                                f"string must be 1-6, got {our_string}")
                             continue
                         if gp7_string < len(tuning):
                             midi_note = tuning[gp7_string] + fret
@@ -995,6 +1084,8 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                             midi_note = fret  # fallback
 
                         if not 0 <= midi_note <= 127:
+                            skipped.append(
+                                f"midi_note must be 0-127, got {midi_note}")
                             continue
 
                         if gpif_note.tie_to_previous:
@@ -1002,7 +1093,8 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                                          beat_pos_ms, dur_ms)
                             continue
 
-                        note_events.append(NoteEvent(
+                        event = _note_or_skip(
+                            skipped,
                             timestamp_ms=beat_pos_ms,
                             duration_ms=dur_ms,
                             midi_note=midi_note,
@@ -1018,7 +1110,9 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                             let_ring=gpif_note.let_ring,
                             dead=gpif_note.dead,
                             palm_mute=gpif_note.palm_mute,
-                        ))
+                        )
+                        if event is not None:
+                            note_events.append(event)
 
                     beat_pos_ms += dur_ms
 
@@ -1044,6 +1138,8 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
         tempo=int(initial_bpm),
         tuning=tuning_dict,
         track_index=selected_index,
+        unreadable_notes=len(skipped),
+        unreadable_reasons=_distinct_reasons(skipped),
     )
 
     return Timeline(note_events, metadata, measures=measure_infos)
@@ -1271,7 +1367,7 @@ def load_gp_file(path: str | Path, track_index: int | None = None) -> Timeline:
                 break
 
     plan = _song_plan(song, tempo_map)
-    notes = _extract_notes(track, tempo_map, plan)
+    notes, skipped = _extract_notes(track, tempo_map, plan)
     measures = _extract_measures(track, tempo_map, plan)
 
     metadata = SongMetadata(
@@ -1282,6 +1378,8 @@ def load_gp_file(path: str | Path, track_index: int | None = None) -> Timeline:
         tempo=song.tempo,
         tuning=_extract_tuning(track),
         track_index=selected_index,
+        unreadable_notes=len(skipped),
+        unreadable_reasons=_distinct_reasons(skipped),
     )
 
     return Timeline(notes, metadata, measures=measures)

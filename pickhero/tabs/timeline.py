@@ -112,6 +112,35 @@ class SongMetadata:
     tempo: int = 120
     tuning: dict[int, int] = field(default_factory=dict)
     track_index: int = 0
+    # How many notes the reader could not place, and why. A tab is somebody
+    # else's file and a reader cannot be complete, so this is not an error
+    # state -- it is the one number that tells a song with a quirk in it
+    # apart from a song that was read whole. Carried in the metadata rather
+    # than on the Timeline because `transposed`, `merge_by_bar` and
+    # `simplified` all copy the metadata forward with `replace` and would
+    # each have had to be taught to carry a field of their own.
+    unreadable_notes: int = 0
+    # Distinct reasons, in the order they first came up. A tuple so this
+    # stays as copyable as the rest of the record.
+    unreadable_reasons: tuple[str, ...] = ()
+
+    def unreadable_line(self) -> str:
+        """One sentence about the notes the reader could not place.
+
+        Empty when the song was read whole, so a screen that always had
+        something to say about this -- which is almost every song -- would
+        be saying nothing. The COUNT is the size of it and the REASON is
+        what it is: "3 notes could not be read" sends the next report back
+        here with no more information than the first one had.
+        """
+        if not self.unreadable_notes:
+            return ""
+        n = self.unreadable_notes
+        what = "1 note" if n == 1 else f"{n} notes"
+        if not self.unreadable_reasons:
+            return f"{what} in this tab could not be read"
+        return (f"{what} in this tab could not be read: "
+                + "; ".join(self.unreadable_reasons))
 
 
 class Timeline:

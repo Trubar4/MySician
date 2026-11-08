@@ -7783,6 +7783,15 @@ class PlayingScreen:
         fh.write(f"reached_ms\t{self._playback_ms:.0f}\n")
         fh.write(f"song_ms\t{self._timeline.duration_ms:.0f}\n")
         fh.write(f"played_to_the_end\t{bool(self._song_completed)}\n")
+        # Only where there is something to say. A tab read whole is the
+        # ordinary case, so a line reading 0 on almost every run is the
+        # wallpaper the HUD was cut down to remove -- and the reason goes
+        # beside the count, because the count alone sends the next report
+        # back here knowing no more than the first one did.
+        meta = self._timeline.metadata
+        if meta.unreadable_notes:
+            fh.write(f"unreadable_notes\t{meta.unreadable_notes}"
+                     f"\t{'; '.join(meta.unreadable_reasons)}\n")
         if self._loop_enabled and self._loop_start_ms is not None:
             fh.write(f"loop\t{self._loop_start_ms:.0f}-"
                      f"{'' if self._loop_end_ms is None else f'{self._loop_end_ms:.0f}'}"

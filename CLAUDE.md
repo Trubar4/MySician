@@ -4103,6 +4103,7 @@ pickhero/
 
 ## Testing
 
+- `tests/test_unreadable_notes.py` — the GPIF `-1` fret (a muted string with no number), and that one note the reader cannot place no longer takes the whole track; 19 of its 23 fail on the unfixed code and the four that pass are the controls
 - `tests/test_detector.py` — feed known sine waves to aubio, verify correct note detection
 - `tests/test_tempo_sections.py` — the run split by the speed each stretch was played at, the strip tick, and that the completion screen says it
 - `tests/test_level_report.py` — the verdict on a run's input level, the automatic gate surviving a keypress, and the clock ratio not counting pauses; four of its tests fail on the unfixed code
@@ -7218,6 +7219,75 @@ scrolling through nothing looks exactly like a picture that has stopped.
   are is the cost `MP3_SEEK_SETTLE_S` exists to avoid.
 - **The HUD names the key now that it does something.** *"Nothing left to play — 52 s of song to run — E jumps to the end"*: the line was there
   and was a dead end, which is the one state this project refuses to leave on screen.
+
+## It Was Not A Capodaster, And One Note Took Four Guitars
+
+*"ValueError: fret must be >=0, got-1. Ev. das erste Lied mit Capodaster? Wenn ja, dann muessen wir uns dafuer was ueberlegen."*
+
+The conditional does not fire: **there is no capo in that file.** `CapoFret` is 0 on all six staves, `PartialCapoFret` 0,
+`PartialCapoStringFlags` `000000`. Measured on the upload (Bon Jovi, "My Guitar Lies Bleeding In My Arms"):
+
+| | |
+|---|---|
+| frets written as `-1` | **10** |
+| of those, carrying `<Property name="Muted"><Enable/></Property>` | **10 of 10** |
+| muted notes in the file in total | **10** -- so every one |
+| tracks that would not open | **4 of 6** |
+
+They are **abgedaempfte Saiten**, and the shapes say so outright -- strings 3 and 1 fretted with the one between them damped,
+which is how an octave grip is played:
+
+| bar 5, guitar 1 | string 3 | string 2 | string 1 |
+|---|---|---|---|
+| | 10 | **X** | 8 |
+| | 12 | **X** | 10 |
+| | 14 | **X** | 12 |
+
+plus three-string scratch strums and single muted clicks in bars 20, 24, 30, 87 and 102. GPIF writes `-1` for a fret the
+transcriber left out, and the only note that happens on is an X, because an X has no number beside it. **Guitar Pro's own `Midi`
+field for each of them is the open string MINUS ONE** -- it computes a pitch mechanically from a fret that means "none", which
+is nonsense by design, since a muted note has no pitch.
+
+- **A dead note with no fret becomes fret 0, and loses nothing.** The display already prints `"X"` for a dead note and never its
+  number; the fret filter lets it through (an X has no fret that can be out of reach); MusicXML's `<fret>` must be non-negative,
+  so the engraved page stays valid; and the guide track sounds the open string rather than a semitone below it. Every reader is
+  better off, and none of them was ever going to show the number.
+- **The control is the 801 muted notes across the player's six other songs: every one carries a real fret and not one is
+  negative.** So this is a transcriber who left the number off, not a convention nobody had read -- and clamping a muted note
+  that DOES have a fret would be inventing a hand position.
+- **A negative fret on a note that is NOT muted is deliberately left alone.** That number would be shown, so a 0 invented there
+  would put a wrong fret on screen. No file to hand contains one; what is known is only that the file cannot explain it.
+- **All 34 tracks of the six existing songs load note for note identically**, which is what says this is a repair and not a
+  change.
+
+### One unreadable note is not worth a track, let alone four
+
+The bigger half, and it generalises past this file. `NoteEvent` refuses a negative fret, a pitch outside MIDI and a string this
+app does not have -- correctly: that invariant is what CAUGHT the `-1`. But it raised straight out of the loader, so **ten notes
+of about 3800 cost four of the six guitars, and what the player saw was a traceback instead of a song.** That is the fault
+`scan_files` was fixed for once already: *a folder it cannot read is an empty list and a line saying which folder and why. A
+screen saying "no songs here" is a screen; a traceback is not.* The rule had never reached the note reader.
+
+- **`_note_or_skip` wraps the only `NoteEvent(` construction in the package**, so it is the CLASS that is covered and not the one
+  quirk that happened to be reported: every invariant NoteEvent has, and any added later, is a skipped note rather than a lost
+  track. Both readers go through it -- GP3-5 and GPIF -- and both GPIF walks (the notes and the backing) share
+  `_parse_gpif_notes`, so the `-1` rule reaches them too.
+- **The two skips that were already silent are counted now.** The GPIF reader dropped a note on a string out of range and a pitch
+  out of MIDI without a word, so one kind of unreadable note would have been counted and another not, and the number would have
+  meant neither.
+- **It is said, in the place it can be read.** `SongMetadata.unreadable_line()` is one sentence with the count AND the reason --
+  *"1 note in this tab could not be read: fret must be >= 0, got -1"* -- said when the song opens and written to the run log
+  (`unreadable_notes`). A count on its own sends the next report back here knowing no more than the first one did. **Silent only
+  when there is nothing to say**, which is almost every song: a line reading 0 on every run is the wallpaper the HUD was cut down
+  to remove.
+- **It lives in the METADATA, not on the Timeline**, because `transposed`, `merge_by_bar` and `simplified` all copy the metadata
+  forward with `replace`. A field of its own would have had to be added to each of the three, and the one that was forgotten
+  would quietly report a song as read whole -- the "four readers of one plan" fault, in the one place where being wrong is
+  invisible.
+- **And it found something on a song he has been playing for weeks.** Of his 34 tracks exactly one says anything: "I'd Die For
+  You", track 4 -- an Electric Grand Piano written on a **7-string** staff, whose two notes on the seventh string have been
+  dropped in silence all along. Not a guitar track, so it costs him nothing; it is what the line is for.
+- 19 of the 23 tests fail on the unfixed code. The four that pass are the controls.
 
 ## What NOT To Do
 

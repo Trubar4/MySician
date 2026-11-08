@@ -1000,8 +1000,13 @@ class App:
         )
         self._playing_screen.set_simplify(simple, self._simplify_drops,
                                           written=written)
-        if self._merge_note:
-            self._playing_screen.say(self._merge_note)
+        # Both go on one line rather than one overwriting the other: a
+        # status note expires, so the one that lost would simply never be
+        # seen. Either on its own is the ordinary case.
+        notes = [n for n in (self._merge_note,
+                             timeline.metadata.unreadable_line()) if n]
+        if notes:
+            self._playing_screen.say("  —  ".join(notes))
 
         if resume_at_ms is not None:
             # Clamped, because the new track may be shorter than the old one.
