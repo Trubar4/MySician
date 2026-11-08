@@ -7289,6 +7289,102 @@ screen saying "no songs here" is a screen; a traceback is not.* The rule had nev
   dropped in silence all along. Not a guitar track, so it costs him nothing; it is what the line is for.
 - 19 of the 23 tests fail on the unfixed code. The four that pass are the controls.
 
+## The Power Chords Read At 97 %, And All Of It Rests On One Rule
+
+*"Das ist noch meine Aufnahme mit Powerchords fuer dich zum testen."* The recording every chord chapter in this file has asked for and
+none had: 67.2 s of Marilyn Manson, "Sweet Dreams", through the Focusrite at DirectSound index 8, 0 dropped blocks, covering song
+**125.7-192.5 s** -- 247 written notes, of which **53 are three-string power chords**. The run it came from is clean on every axis that
+could make it unreadable: `level_verdict fine` (-10.6 dB loudest, -25.6 median, room -88.3), `dropped_buffers 0`,
+`strike_delay_over_budget_percent 0`, `clock_ratio 1.0000`.
+
+**The detector reads them, and the complaint's first half is not what happens.** Scored here through `take_harness` and the real matcher,
+and by the app's own log on the same run:
+
+| | this scoring | the app's own log |
+|---|---|---|
+| chords of 3 | **154 / 159 -- 97 %** | `chord_of_3 286/294 -- 97 %` |
+| single notes | 70 / 88 -- 80 % | `chord_of_1 317/364 -- 87 %` |
+| everything reached | 224 / 247 -- 91 % | 603 of 658 -- 92 % |
+
+**The complaint's SECOND half is the real finding, and it is now measured rather than feared.** *"...und alles wird gruen."* Of the 154
+green chord notes, **44 were heard as themselves and 110 were credited because the strum was proven** -- which is one string of each
+power chord heard and two taken on trust. And switching the rules off one at a time says which one carries it:
+
+| | singles | chords of 3 | strings taken back |
+|---|---|---|---|
+| as shipped | 70/88 | **154/159** | 2 |
+| no unpitched chord credit | 70/88 | 150/159 | 1 |
+| no subharmonic rescue | 70/88 | 150/159 | 1 |
+| no chord verifier | 70/88 | 156/159 | 0 |
+| no chord PARTIAL credit (the LAXER branch) | 70/88 | 154/159 | 2 |
+| **no subharmonic STRUM credit** | 70/88 | **83/159** | 0 |
+
+**One rule is the whole of it**: a subharmonic reading proves a strum, so the written chord is credited (`matcher.py`, the `strummed`
+branch). Without it the power chords score **52 %** instead of 97. Everything else moves the number by four notes or fewer, and the
+singles are **70/88 in all seven conditions** -- the control that says the measurement is clean, since none of these rules touches a
+single note.
+
+- **`chord_partial_credit=False` is the MORE lenient branch**, which is why it changes nothing: its `else` marks every sibling anyway.
+  A switch read by its name rather than by its code.
+- **The verifier COSTS two notes here and that is the point of it.** 76 windows judged against **462 dropped short**, so it is present on
+  14 % of the strikes -- *"not wrong, absent"*, as the chorus chapter already measured.
+- **This cannot be tightened on this material, by construction.** A power chord is root, fifth and octave; the fifth and the octave are
+  partials of the root, so `chord_verify` can never confirm them -- which this file has said since the chord verification was fitted. The
+  110 credited notes are credited on no evidence about those strings, and the only thing that can convict them is a wrong ROOT, which
+  sounds a different pitch and convicts normally.
+
+### The Scorpions Chapter's Open Question, On A Second Song
+
+That chapter measured chord strikes landing 50-70 ms ahead of single notes and said in as many words that *"whether a strum's onset
+genuinely leads the beat, or whether this is one take of one player, needs more than one song."* **This is the second song and it
+replicates:**
+
+| | n | strike against the written note |
+|---|---|---|
+| single notes, credited | 322 | **+65 ms** |
+| of those, measurable by `K` | **250** | +64 |
+| chords, credited | 85 | **+14 ms** |
+| of those, measurable by `K` | **1** | -- |
+
+**Chords lead singles by 51 ms**, where Scorpions read ~70. The absolute offset is the player and the song -- here both populations are
+LATE, there both were early -- and the 50-70 ms gap between them is the thing that reproduces.
+
+- **And the matcher's own view understates it.** Measured against each strike's NEAREST written onset, with the matcher taking no part,
+  the lead is **100 ms** (chords -77, singles +22): the candidate search absorbs about half of it by crediting a chord strike to a
+  neighbouring onset.
+- **`K` still cannot see any of it: 84 of 85 chord strikes are flagged `subharm`**, and `_times_its_own_strike` rightly refuses a strike
+  that did not sound the note's own pitch. So the offset is fitted on 250 single notes and the chords sit 51 ms away from it, invisible to
+  the one key that sets an offset. The hole that chapter named is now confirmed on a second song.
+- **What he pressed is what the chapter told him to press.** At his `hit_window_ms 200`, **0 of 85** chord strikes fall outside; at the
+  150 ms default, **5 of 85** would. Raising the window is the whole reason this take scores 97 % where Scorpions scored 50.
+- **Nothing is built from it, and the mechanism is NOT established.** Whether a strum's onset leads mechanically or the player anticipates
+  a chord cannot be told apart from two takes. A measurement of the energy rise either side of each onset was made and **thrown away: its
+  control came back at 114 ms for a single picked note**, which is impossible, so it was measuring itself and not the strum. Sixth time
+  that tell has saved a wrong conclusion here.
+
+### Two controls, both of which hold
+
+- **Last session's `song_at` fix is worth nine points on this take.** It carries **100 marks**, because the run holds four anchors and 24
+  seeks; scored against the single `start_song_ms` an older manifest would have carried, the same audio reads **82 %** where the marks give
+  **91 %**.
+- **A 55-second disagreement in the mapping is faithful rather than broken.** The take's first mark is -21922 ms where the body of it runs
+  at -78907: he pressed `Shift+W` during a long PAUSE, where the ring counter runs on and `_playback_ms` does not, so the matcher's offset
+  was stale by the length of the pause until the resume re-anchored it 1.25 s later. The mapping records exactly that, strikes during a
+  pause are drained before they can be placed, and nothing in those 1.25 s was credited. **No code was changed for it**, because the
+  recorder is right: the alternative -- seeding from the two clocks instead of from the matcher -- is the 276 ms error last session's
+  chapter exists to document.
+
+### What this recording cannot say, and the one that would
+
+**It holds no deliberate error.** `intentional_error` is empty and `technique` is `free`, so every chord in it was played correctly --
+which measures the leniency and cannot measure the conviction. `check_chord_credit.py`'s whole safety argument is its error takes, and it
+has none on power-chord material: *"every chord constant in this file was fitted against takes... and the honest next step is one on a song
+where the power chords are."* This is half of that step.
+
+The other half is **the same sixty seconds played one fret wrong** -- `Shift+W`, same song, same section, deliberately mis-fretting the
+root of each power chord. That is the take that would say whether the 110 credited notes can be taken back, and it is the only thing that
+would license moving the credit in either direction.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
