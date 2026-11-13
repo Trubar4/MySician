@@ -4114,6 +4114,7 @@ pickhero/
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
+- `tests/test_power_chord_test.py` — the power-chord test tab: its shape, that every strike is attributable, and that the dense blocks really lose their window at the default tempo. `test_at_a_slow_tempo_nothing_is_dense` is the control, without which the density assertions pass on any file at all
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
 - `tests/test_tab_view.py` — the engraved page: where its rows of music are (read off verovio's own system groups, not guessed
   from note heights), and that the playhead never walks backwards inside one row; six of its tests fail on the unfixed code
@@ -7427,9 +7428,54 @@ So the uncovered case is not "power chords" -- it is **a wrong power chord where
 the strikes in a real metal song and is exactly where the 110 credited-on-trust notes live. An isolated error take cannot reach it,
 because an isolated strike always has a window.
 
-The take that would is **the same material played one fret wrong**, dense enough that the windows are dropped. On this song that is the
-same sixty seconds; on a test file written for the question it is a block of eighths. That is the only thing that would license moving the
-credit in either direction.
+The take that would is **the same material played one fret wrong**, dense enough that the windows are dropped. That is the only thing that
+would license moving the credit in either direction.
+
+### The Instrument For It Was Nearly Already There
+
+*"Ich wuerde lieber mit einem Testfile ueben. Finde die gleiche Stelle nicht gut. Koennen wir eines davon nutzen?"* Right on both counts, and
+the second is not just comfort: two takes of different bars are not a comparison, so "find the same sixty seconds again" is a confound in the
+measurement rather than a chore beside it.
+
+**And `timing_test_100bpm.gp5` already has power chords -- two blocks of them, "Quarter-note power chords" and "Eighth-note power chords - the
+metal case".** Recommending a new file without reading the old one would have been building what already existed. What it gives, measured by
+regenerating it at three tempos and reading the gaps off the written tab:
+
+| tempo | eighth gap | windows that arrive |
+|---|---|---|
+| **100 BPM** | 300 ms | **16 of 16** |
+| 120 BPM | 250 ms | 10 of 16 |
+| 150 BPM | 200 ms | 10 of 16 |
+
+A window needs a gap over **255 ms** (`MIN_WINDOW_MS + SKIP_MS + NEXT_STRIKE_GUARD_MS`), so 120 BPM is already the knee and the shipped file
+at 100 is **entirely the covered case**. Past it the dense case appears and is **6 chord strikes, 12 notes** -- a measurement inside its own
+noise -- and its shapes are two-string, which is what the four error takes already hold.
+
+So `tools/make_power_chord_test.py`, and every decision in it is one the measurement needs rather than a preference:
+
+- **Three strings, root + fifth + OCTAVE.** The two-string shape is covered; the player's own song writes three, and the octave is a partial
+  of the root exactly as the fifth is, so it is credited on the same trust and has never been asked about.
+- **Standard tuning**, so nothing is retuned between the two takes, and the whole shape slides: one fret higher moves the **root**, which is
+  the only string a wrong power chord can be convicted on.
+- **Four densities, and the file says which is which.** 6 isolated chords (gap 1714 ms), 8 quarters (429), 32 eighths (214) and 32 palm-muted
+  eighths (214) -- **15 chords the verifier reaches, 63 it does not**, printed by the tool from the file it has just written. The isolated
+  block is the control INSIDE the file: whatever the dense blocks do, a wrong chord has to be convicted where the window arrives.
+- **78 chords and 234 notes in 29 s**, against the 53 chords and 159 notes of the song take, so the dense blocks alone carry more than the
+  recording this came from.
+- **Nothing above the 7th fret**, which is the timing test's own scar: the fret filter is a range the player can set, and a diagnostic whose
+  notes it removes measures the filter.
+- **One running root cycle across every block, not one per block.** Restarting it at a boundary put the same root **428 ms** either side of the
+  join, and a strike is only counted where exactly one tab note can explain it -- so that was two notes nobody could measure. Found by the
+  test, not by reading the code.
+- **The report is read off the written file through the app's own loader.** The first version took each strike's own note length for the gap to
+  the next one, which is true of a run of eighths and wrong by a factor of four for an isolated chord followed by rests.
+- **The tab is COMMITTED**, unlike the other three generators' output, and pinned byte-for-byte to its generator by a test. `tools/` does not
+  exist inside the EXE, and this project has paid three times for a thing reachable only from a shell not existing on the machine that needs
+  it most.
+
+**What it still cannot answer, said before any number comes out of it.** It is a test file, not a song: three strings on a clean
+standard-tuned guitar is not drop C through a high-gain amp. It answers whether a wrong power chord is still convicted where the verifier
+gets no window. It does not answer whether the player's own song scores honestly, and a figure from it must not be quoted as if it did.
 
 ## What NOT To Do
 
