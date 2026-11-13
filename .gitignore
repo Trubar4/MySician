@@ -57,6 +57,9 @@ songs/*.wav
 songs/*.m4a
 songs/*.flac
 !songs/.gitkeep
+# ...but the generated diagnostic tabs are fixtures rather than
+# somebody's music, and tools/ does not exist inside the EXE.
+!songs/power_chord_test_*.gp5
 
 # Temp files
 tmp/
