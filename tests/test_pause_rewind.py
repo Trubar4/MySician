@@ -23,6 +23,8 @@ import time
 import pygame
 import pytest
 
+from pickhero.audio.detector import DetectedNote
+from pickhero.audio.input import TimestampedNote
 from pickhero.config import Config
 from pickhero.matcher import MatchType, NoteMatcher
 from pickhero.tabs.timeline import MeasureInfo, NoteEvent, SongMetadata, Timeline
@@ -135,12 +137,17 @@ class TestThreeStrokesBack:
         assert screen._rewind_for_pause() is None
         assert screen._playback_ms == 4000.0
 
-    def test_and_the_pause_after_that_one_does_rewind(self):
+    def test_and_a_resume_does_not_spend_it(self):
+        """Inverted deliberately. This asserted that the SECOND call rewinds
+        -- the flag spent by one resume -- which is the rule the player
+        overturned: *"ausser ich haette dazwischen Noten gespielt."* A
+        resume is not playing, so with nothing struck in between the spot
+        they chose is still theirs."""
         screen = _screen()
         screen.seek(4000.0)
         assert screen._rewind_for_pause() is None
-        assert screen._rewind_for_pause() == 4000.0, \
-            "the flag outlived the resume it was for"
+        assert screen._rewind_for_pause() is None
+        assert screen._playback_ms == 4000.0
 
     def test_it_never_leaves_a_live_loop(self):
         screen = _screen()
@@ -347,12 +354,16 @@ class TestTheSpaceBarReallyDoesIt:
         assert screen._breath_s == 0.0
 
 
-class TestTheChosenSpotDoesNotOutliveItsReason:
-    """An arrow key while PLAYING is not a spot the player is standing on.
+class TestWithAudioOffTheClockAnswers:
+    """With nothing listening, the song running on is all there is to go by.
 
-    The flag exists for the other case -- a passage landed paused, where the
-    next SPACE must not rewind out of it. Left standing it switched the
-    rewind off for the rest of the song after any seek.
+    These three pinned the rule for every case when it shipped, and they are
+    the fallback now: a strike is what spends the flag, and with audio off no
+    strike can ever arrive. Left as "never spent" the rewind would be switched
+    off for the rest of the song by one arrow key -- which is the fault the
+    clearing was written for, and it is still real where nothing is heard.
+    `_screen` disables audio, so these read the fallback and not the rule;
+    `TestItWaitsForANotePlayed` is the rule.
     """
 
     def test_a_seek_while_playing_is_spent_by_the_song_running_on(self):
@@ -666,3 +677,142 @@ class TestNeverMoreThanABarBack:
         assert screen._playback_ms == pytest.approx(8_000.0)
         assert screen._breath_s == 0.0, \
             "a countdown into nothing is a picture standing still for no reason"
+
+
+class _Capture:
+    """A capture that hears whatever the test puts in it, once."""
+
+    def __init__(self):
+        self.pending: list[TimestampedNote] = []
+        self.heard = 0.0
+
+    def elapsed_ms(self):
+        return self.heard
+
+    def get_notes(self):
+        notes, self.pending = self.pending, []
+        return notes
+
+    def get_strike_windows(self):
+        return []
+
+    def get_signal_db(self):
+        return -120.0
+
+    def get_tuner_data(self, raw=False):
+        return (0.0, 0.0)
+
+    def is_running(self):
+        return True
+
+    def stop(self):
+        pass
+
+
+def _strike(at_ms, onset=True):
+    return TimestampedNote(
+        note=DetectedNote(midi_note=40, frequency=82.4, confidence=1.0,
+                          name="E2", is_onset=onset),
+        timestamp_ms=at_ms)
+
+
+class TestItWaitsForANotePlayed:
+    """*"Wenn ich mit Maus oder Pfeiltasten wohin gefahren bin, dann darf die
+    Pause keinen Sprung ausloesen, ausser ich haette dazwischen Noten
+    gespielt."*
+
+    The flag used to be spent by the song RUNNING ON, which is one frame
+    after an arrow key -- so seeking while playing gave no protection at all
+    and the report is exactly what follows: spool, press SPACE twice, and the
+    song jumps back off the spot that was just chosen. Playing on is not
+    evidence that anything was played; a strike is.
+    """
+
+    def _playing(self):
+        screen = _screen()
+        screen._audio_enabled = True
+        screen._audio_capture = _Capture()
+        screen.toggle_play()
+        screen._position_chosen = False
+        return screen
+
+    def _frames(self, screen, n=3):
+        for _ in range(n):
+            screen._last_tick = time.perf_counter() - 0.05
+            screen.update()
+
+    def test_the_song_running_on_does_not_spend_it(self):
+        screen = self._playing()
+        screen.seek(3000.0)
+        self._frames(screen)
+        assert screen._position_chosen
+
+    def test_so_pressing_pause_twice_does_not_jump_off_the_spot(self):
+        screen = self._playing()
+        screen.seek(3000.0)
+        self._frames(screen)
+        at = screen._playback_ms
+        screen.toggle_play()                   # pause
+        screen.toggle_play()                   # play
+        assert screen._playback_ms == at
+        assert screen._breath_s == 0.0
+
+    def test_a_strike_spends_it(self):
+        screen = self._playing()
+        screen.seek(3000.0)
+        self._frames(screen, 1)
+        assert screen._position_chosen
+        screen._audio_capture.pending = [_strike(screen._playback_ms)]
+        self._frames(screen, 1)
+        assert not screen._position_chosen
+
+    def test_and_then_the_pause_does_give_the_strokes_back(self):
+        screen = self._playing()
+        screen.seek(3000.0)
+        self._frames(screen, 1)
+        screen._audio_capture.pending = [_strike(screen._playback_ms)]
+        self._frames(screen)
+        at = screen._playback_ms
+        screen.toggle_play()
+        screen.toggle_play()
+        assert screen._playback_ms < at
+        assert screen._breath_s == pytest.approx(PAUSE_COUNT_IN_S)
+
+    def test_a_reading_that_is_not_a_strike_is_not_playing(self):
+        """The contour readings arrive on the same queue every ~11.6 ms.
+
+        Queued one frame on: the anchor armed by the seek throws the queue
+        away on the very next frame, deliberately, so a strike put there
+        would prove nothing either way.
+        """
+        screen = self._playing()
+        screen.seek(3000.0)
+        self._frames(screen, 1)
+        screen._audio_capture.pending = [_strike(screen._playback_ms,
+                                                 onset=False)]
+        self._frames(screen)
+        assert screen._position_chosen
+        assert screen._session_strikes == 0
+
+    def test_a_resume_is_not_playing_either(self):
+        """Seek, resume, play nothing, pause, resume: still their spot."""
+        screen = self._playing()
+        screen.seek(3000.0)
+        screen.toggle_play()                   # pause
+        screen.toggle_play()                   # play
+        self._frames(screen)
+        at = screen._playback_ms
+        screen.toggle_play()
+        screen.toggle_play()
+        assert screen._playback_ms == at
+
+    def test_the_mouse_is_the_same_key(self):
+        """A click on the strip is a seek, so it is covered by being one."""
+        screen = self._playing()
+        self._frames(screen)
+        screen.seek(5000.0)
+        self._frames(screen)
+        at = screen._playback_ms
+        screen.toggle_play()
+        screen.toggle_play()
+        assert screen._playback_ms == at

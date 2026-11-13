@@ -1210,8 +1210,9 @@ class PlayingScreen:
         #: Real seconds left of the drill's breath at the top of a passage.
         #: Zero when nothing is being held.
         self._breath_s: float = 0.0
-        #: Did a seek choose the current position? Then the next resume does
-        #: not rewind -- see `_rewind_for_pause`.
+        #: Did a seek choose the current position, with nothing played
+        #: since? Then a pause does not rewind off it -- see
+        #: `_rewind_for_pause`. Set by `seek`, spent by a strike.
         self._position_chosen: bool = False
         #: How many times the pause rewind fired, for the run log.
         self._pause_rewinds: int = 0
@@ -1771,9 +1772,11 @@ class PlayingScreen:
         was = self._playback_ms
         self._playback_ms = max(0.0, min(ms, self._timeline.duration_ms))
         # The player picked this spot, so the pause rewind must not move them
-        # off it. `take_passage` lands a marked passage with the song paused
-        # at the loop start, and rewinding three onsets out of it on the next
-        # SPACE would be a key fighting the one that was just pressed.
+        # off it until they have PLAYED something here. `take_passage` lands a
+        # marked passage with the song paused at the loop start, and rewinding
+        # three onsets out of it on the next SPACE would be a key fighting the
+        # one that was just pressed; and spooling with an arrow key while the
+        # song runs is the same thing a frame later.
         self._position_chosen = True
         # Spooling FORWARD is not playing badly. The notes it jumps over were
         # never in front of the player, so they stay unreached rather than
@@ -2208,12 +2211,18 @@ class PlayingScreen:
             if raw_elapsed > MAX_FRAME_STALL_S:
                 self._clock_stalls += 1
             self._playback_ms += real_elapsed * 1000.0 * self._tempo_factor
-            # The song has run on from wherever a seek put it, so the spot is
-            # no longer one the player is standing on -- and the next pause
-            # may rewind again. Without this the flag outlived its reason: an
-            # arrow key while PLAYING would switch the rewind off for the rest
-            # of the song.
-            self._position_chosen = False
+            # Playing ON is not evidence that anything was PLAYED, and this
+            # line used to be the whole of it: one frame after an arrow key
+            # the flag was gone, so seeking while the song ran gave no
+            # protection at all and the next pause jumped back off the spot
+            # the player had just chosen. The flag means "chose this spot and
+            # has not played since", and only a STRIKE spends it -- see where
+            # `_session_strikes` is counted. With audio off nothing can ever
+            # say whether a note was played, so the clock answers there,
+            # exactly as it did before; otherwise one arrow key really would
+            # switch the rewind off for the rest of the song.
+            if not self._audio_enabled:
+                self._position_chosen = False
             # REAL seconds, not song time: at 70 % speed the song is shorter
             # than the time you spent on it, and it is the time you spent that
             # a practice diary is about.
@@ -2280,7 +2289,16 @@ class PlayingScreen:
             # would claim the same millisecond.
             self._matcher.record_timing_samples = not self._wait_mode_frozen
             self._matcher.record_contour = not self._wait_mode_frozen
-            self._session_strikes += sum(1 for d in detected if d.note.is_onset)
+            struck = sum(1 for d in detected if d.note.is_onset)
+            self._session_strikes += struck
+            if struck:
+                # Something was PLAYED since the spot was chosen, so it is no
+                # longer a spot the player is merely standing on and the next
+                # pause may give the last few strokes back. The one thing that
+                # spends the flag: *"wenn ich mit Maus oder Pfeiltasten wohin
+                # gefahren bin, dann darf die Pause keinen Sprung ausloesen,
+                # ausser ich haette dazwischen Noten gespielt."*
+                self._position_chosen = False
             # WHERE the microphone heard something, in song time. A count
             # cannot say which half of a song was played, and that is the
             # question: "habe nur die 2. Haelfte gespielt, kann ich dann auch
@@ -5877,7 +5895,8 @@ class PlayingScreen:
         most of the reasons:
 
         * the count-in is running, so there is no run to rewind into;
-        * a seek chose this spot, and a key must not undo the key before it;
+        * a seek chose this spot and nothing has been played since, so a
+          key must not undo the key before it;
         * there are not that many onsets behind the playhead yet;
         * the last bar holds no stroke at all -- a pause inside a rest, where
           there is nothing to count into and nothing to give back;
@@ -5900,8 +5919,10 @@ class PlayingScreen:
         was = self._playback_ms
         if was <= 0.0:
             return None
+        # Not spent here. A resume is not playing: seek, resume, play
+        # nothing, pause, resume -- and the player still has not left the
+        # spot they chose, so there is nothing to give back.
         if self._position_chosen:
-            self._position_chosen = False
             return None
         onsets = sorted({n.timestamp_ms for n in self._timeline.notes
                          if n.timestamp_ms < was

@@ -7083,7 +7083,7 @@ recovery given a mechanism instead of being left to chance.
   quietly stop a drill from ever scoring a pass worse than the one before it — and `drill.count` reads exactly those verdicts. A plain
   `forget_from` (a loop turn, a tempo change) clears any floor it finds, so the two cannot leak into each other.
 - **A position the player CHOSE is left alone.** `take_passage` lands a marked passage paused at the loop start, so rewinding three strokes out
-  of it on the next SPACE would be one key undoing the key before it. `seek` sets `_position_chosen` and the next resume spends it. Same for the
+  of it on the next SPACE would be one key undoing the key before it. `seek` sets `_position_chosen`, and a STRIKE spends it — see the section below. Same for the
   count-in, for a song with fewer than three strokes behind the playhead, and for a live loop whose start is already past the target — there the
   loop would drag it back on the next frame anyway, which is a key that looks broken.
 - **The verdict it REPORTS is the one it recorded.** `_mark_missed_notes` proposed MISS and appended a `MatchResult` saying MISS; with a floor
@@ -7097,6 +7097,40 @@ recovery given a mechanism instead of being left to chance.
   pause rewind would have stood the picture still for a second with **nothing on screen saying why** — which is what a frozen app looks like, and
   the fifth time in this file. It is its own line when there is no loop to hang it off, and a test renders the frame with and without the hold
   and requires them to differ.
+
+### The Chosen Spot Was Spent By The Clock, One Frame After The Arrow Key
+
+*"Wenn ich mit den Pfeiltasten wohin fahre im Song und dann 2x hintereinander Pause klicke, dann springt es automatisch weiter zurueck. Wenn
+ich mit Maus oder Pfeiltasten wohin gefahren bin, dann darf die Pause keinen Sprung ausloesen, ausser ich haette dazwischen Noten gespielt."*
+
+**The protection existed and lasted one frame.** `seek` sets `_position_chosen` and one line in the clock advance cleared it again as soon as
+the song had run on — with a comment giving the reason, which was a real one: *"an arrow key while PLAYING would switch the rewind off for the
+rest of the song."* True, and it made the flag worth nothing in the commonest case there is:
+
+| | |
+|---|---|
+| arrow key, or a click on the strip | `_position_chosen = True` |
+| the next frame, 17 ms later | `False` |
+| SPACE, SPACE | rewinds off the spot that was just chosen |
+
+- **The second half of his sentence is the better rule, and it is his: playing ON is not evidence that anything was PLAYED.** The flag means
+  "chose this spot and has not played since", so the thing that spends it is a **strike** — the microphone heard a stroke, which is the same
+  signal `played.py` already uses for which bars were played. One line, where `_session_strikes` is counted.
+- **A resume is not playing either**, so `_rewind_for_pause` no longer spends it: seek, resume, play nothing, pause, resume — and the player
+  has still not left the spot they chose. One owner clears the flag instead of two.
+- **With audio off the clock still answers, exactly as before.** Nothing can ever say whether a note was played there, and left unspent one
+  arrow key really would switch the rewind off for the rest of the song — which is the fault the clearing was written for, and it is still
+  real where nothing is heard. Two states, no new constant.
+- **The mouse needed nothing.** A click or a right-drag on the strip goes through `seek`, so it is covered by being a seek — the one door
+  this already had.
+- **A test had to be inverted**, which is how a rule change shows up as work rather than as a surprise months later:
+  `test_and_the_pause_after_that_one_does_rewind` asserted that the second call rewinds, i.e. the flag spent by one resume. It is
+  `test_and_a_resume_does_not_spend_it` now.
+- **And two of my own new fixtures were vacuous, for a reason worth recording.** `_apply_audio_anchor` **drains both audio queues** on the
+  frame after a resume or a seek, deliberately — strikes stamped while the clocks were disagreeing belong to no moment in the song. A test
+  that queues its strike into that frame proves nothing either way, and one of the two was the control that a contour reading is not a
+  strike. Seven of the eight tests fail on the unfixed code; the eighth is the control that the rewind still works once something has been
+  played.
 
 **What this does NOT do, said out loud because the temptation is obvious:** it does not fix the ±150 ms the chapter above measured. It gives him
 a clean entry after a pause and nothing else; the wander within a passage is still unexplained, and whether it is his timing or a sync map with
@@ -7377,13 +7411,25 @@ LATE, there both were early -- and the 50-70 ms gap between them is the thing th
 ### What this recording cannot say, and the one that would
 
 **It holds no deliberate error.** `intentional_error` is empty and `technique` is `free`, so every chord in it was played correctly --
-which measures the leniency and cannot measure the conviction. `check_chord_credit.py`'s whole safety argument is its error takes, and it
-has none on power-chord material: *"every chord constant in this file was fitted against takes... and the honest next step is one on a song
-where the power chords are."* This is half of that step.
+which measures the leniency and cannot measure the conviction.
 
-The other half is **the same sixty seconds played one fret wrong** -- `Shift+W`, same song, same section, deliberately mis-fretting the
-root of each power chord. That is the take that would say whether the 110 credited notes can be taken back, and it is the only thing that
-would license moving the credit in either direction.
+**And the first version of this section overstated the gap, which has to be corrected rather than quietly rewritten.** It said
+`check_chord_credit.py` "has none on power-chord material". It has **four**: `21_E5_sharp`, `22_E5_flat`, `25_G5_sharp` and
+`28_E5_palm_sharp`, every one of them a deliberate one-fret error, and all four still caught. What they are is the narrower statement:
+
+| | the four error takes | this recording |
+|---|---|---|
+| strings in the shape | **2** (root and fifth) | **3** (root, fifth, octave) |
+| spacing | isolated, long gaps | a dense song |
+| verification windows | one per strike | **76 judged, 462 dropped short** |
+
+So the uncovered case is not "power chords" -- it is **a wrong power chord where the verifier never gets its window**, which is 86 % of
+the strikes in a real metal song and is exactly where the 110 credited-on-trust notes live. An isolated error take cannot reach it,
+because an isolated strike always has a window.
+
+The take that would is **the same material played one fret wrong**, dense enough that the windows are dropped. On this song that is the
+same sixty seconds; on a test file written for the question it is a block of eighths. That is the only thing that would license moving the
+credit in either direction.
 
 ## What NOT To Do
 
