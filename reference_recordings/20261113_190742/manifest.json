@@ -1,0 +1,44 @@
+{
+  "created": "2026-11-13T19:07:42",
+  "samplerate": 44100,
+  "channels": 1,
+  "device": "Analogue 1 + 2 (Focusrite USB A — MME, index 2, 2 of 2 channel(s) at 44100 Hz",
+  "tuning_offset_semitones": 0,
+  "drop_semitones": 0,
+  "recorded_in_app": true,
+  "takes": [
+    {
+      "id": "play_along",
+      "block": 99,
+      "title": "Durchgespielt: power_chord_test_140bpm_up1",
+      "file": "play_along.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [],
+      "expected_midi": [],
+      "song": "power_chord_test_140bpm_up1",
+      "tempo_percent": 100,
+      "seconds": 30.69,
+      "start_sample": 2099712,
+      "start_song_ms": 272.7,
+      "song_at": [
+        [
+          0,
+          -1091.0
+        ],
+        [
+          79360,
+          -49377.9
+        ],
+        [
+          245760,
+          -49398.0
+        ]
+      ],
+      "transpose": 0,
+      "tuning": "Standard",
+      "dropped_blocks": 0,
+      "recorded_in_app": true
+    }
+  ]
+}

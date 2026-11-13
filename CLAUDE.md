@@ -4114,7 +4114,7 @@ pickhero/
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
-- `tools/check_power_chord_credit.py` — the conviction rate on dense power chords: a correct take scored against the tab a semitone higher, per block, with the isolated block as the control. Exits non-zero if the correct score drops or the gap to the wrong reading shrinks
+- `tools/check_power_chord_credit.py` — the conviction rate on dense power chords: a take scored against the tab a semitone away from the one it was played from, per block, with the isolated block as the control and both directions measured rather than one inferred. Exits non-zero if the score against its own tab drops or the gap to the wrong reading shrinks
 - `tests/test_power_chord_test.py` — the power-chord test tab: its shape, one shape a bar (what makes it playable, and the premise that every repeat asks the verifier the same question), that a shape CHANGE is still attributable, and that the dense blocks really lose their window at the default tempo. `test_at_a_slow_tempo_nothing_is_dense` and `test_and_a_bar_really_does_repeat_it` are the controls, without which the density and the repeat assertions pass on any file at all
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
 - `tests/test_tab_view.py` — the engraved page: where its rows of music are (read off verovio's own system groups, not guessed
@@ -7559,15 +7559,44 @@ control in the same file.
   anything -- he was not yet playing. Its mapping carries four marks with a 10-second jump, which is the pause case the
   recorder is built for, and the rest of the take scores 88.9 %, so the mapping is not what is wrong there. **The clean take
   is 18:40:13 and the figures above are read off it.**
-- **What is NOT established is the DIRECTION.** Here the played note is a semitone BELOW the written one; a real error take is
-  a semitone above, and the partials are not provably symmetric about the written pitch. **One take of
-  `power_chord_test_140bpm_up1.gp5` answers that and nothing else** -- which is a single recording rather than the session the
-  chapter above asked for.
+- **The DIRECTION was the one thing this could not settle, and the next take settled it** -- see below.
 - **And it is still a test file**: three strings, clean, standard tuning, 140 BPM. It answers whether a wrong power chord is
   convicted where the verifier gets no window. It does not say what his own song scores.
 - **The check pins the trade from both sides.** `MIN_CORRECT` (85 %) fails if the credit is tightened until correct takes
   suffer; `MIN_GAP` (45 points) fails if it is loosened until a semitone wrong is credited more than it is today. Both are a
   record of 2026-11-13 with margin, named as such rather than dressed up as fitted bounds.
+
+### The Error Direction Reads The Same, And One Block Does Not
+
+*"Hier der andere Take."* `20261113_190742`, 30.7 s, `song: power_chord_test_140bpm_up1` -- **the real error take**: he played the
+copy a fret higher, so read against the UNMOVED tab the played note sits a semitone ABOVE the written one, which is the direction
+a mis-fretted hand actually produces. The chapter above could only measure the swap.
+
+| | played a semitone BELOW (swapped, 18:40:13) | **played a semitone ABOVE (real, 19:07:42)** |
+|---|---|---|
+| green against the tab a semitone away | 34.6 % | **30.3 %** |
+| of that green, credited to a strum | 81 of 81 | **70 of 71** |
+| with `_unpitched_chord_credit` off | 0.0 % | **2.1 %** |
+| green against the tab it WAS played from | 96.2 % | **91.9 %** |
+
+**Four points apart, and the credit is the whole of it in both directions.** So the 35 % false green is a property of the rule and
+not of which way the hand slipped, and the asymmetry the chapter above worried about -- that the partials are not provably
+symmetric about the written pitch -- does not show up at this size. The 91.9 % is the control: he played the up1 copy cleanly, so
+the take is sound and the 30.3 % is the leniency rather than the playing.
+
+- **The tool reads which tab was played off the manifest** (`tabs_for`) instead of skipping anything that is not the correct copy,
+  so an error take is scored against the tab it was NOT played from and both directions go through one implementation. It prints
+  which direction it measured, because two takes that differ only in that are worth nothing if neither says which was which.
+- **The quarters convict identically in all three takes -- 12.5 %** -- and that is the block whose 429 ms gap clears the window
+  floor. The eighths, at 214 ms, read 46.9 / 53.1 / 49.0 %. Three takes, one answer each way: the window is what decides, not the
+  direction.
+- **One block disagrees and it is NOT explained.** The palm-muted eighths convict far better in the error direction: **9.4 %
+  against 25.0 % and 27.1 %** on the same 214 ms gap. That is 15 points on one take per direction, which is one reading of each
+  and therefore not a finding by this file's own rule -- it is written down so it is not rediscovered, and because a mechanism
+  would have to be measured rather than reasoned (a muted string has fewer partials to argue about, and whether that favours one
+  direction is exactly the kind of thing a plausible story gets wrong).
+- **It is still a test file.** Three strings, clean, standard tuning, 140 BPM. What the three takes now establish is the shape of
+  the trade and that the direction does not move it; what his own drop-tuned high-gain song scores is a different measurement.
 
 ### A Rule Carried In From The Timing Test Made The File Unplayable
 

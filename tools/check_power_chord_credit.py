@@ -12,10 +12,13 @@ same one-semitone discrepancy as scoring a wrong take against the correct
 tab: either way what was played and what the tab writes are one fret apart.
 So the measurement comes out of the same recording, twice.
 
-What that does NOT settle is the DIRECTION. Here the played note is a
-semitone BELOW the written one; a real error take is a semitone above, and
-the partials are not provably symmetric about the written pitch. One take of
-`power_chord_test_140bpm_up1.gp5` would answer that and nothing else.
+**Either tab may be the one that was played**, and the manifest says which,
+so a real error take is read the same way round: score it against the tab it
+was NOT played from and the discrepancy is again one fret. Swapped, the
+played note is a semitone BELOW the written one; a take of the up1 copy puts
+it ABOVE, which is the direction a mis-fretted hand really produces -- and
+the partials are not provably symmetric about the written pitch, so both are
+measured rather than one inferred from the other.
 
 Usage:
 
@@ -50,14 +53,16 @@ SONGS = REPO / "songs"
 DEFAULT_DIRS = [
     REPO / "reference_recordings" / "20261113_184013",
     REPO / "reference_recordings" / "20261113_183934",
+    REPO / "reference_recordings" / "20261113_190742",
 ]
 
 RIGHT = "power_chord_test_140bpm.gp5"
 WRONG = "power_chord_test_140bpm_up1.gp5"
 
 # A record of what was measured on 2026-11-13, with margin -- not a fitted
-# bound. The takes read 96.2 % and 88.9 % green against the correct tab, and
-# 34.6 % and 35.5 % against the tab a semitone higher.
+# bound. The three takes read 96.2 %, 88.9 % and 91.9 % green against the tab
+# they were played from, and 34.6 %, 35.5 % and 30.3 % against the tab a
+# semitone away. The last of those is the up1 copy, i.e. the error direction.
 MIN_CORRECT = 85.0
 MIN_GAP = 45.0
 
@@ -129,27 +134,44 @@ def percent(green, yellow, red):
     return 100.0 * green / total if total else 0.0
 
 
+def tabs_for(take):
+    """(as played, a semitone away, what that direction is) off the manifest.
+
+    Either copy may be the one that was played. A take of the up1 copy is
+    the error direction: read against the UNMOVED tab, what was played sits
+    a semitone ABOVE what is written, which is what a mis-fretted hand does.
+    """
+    song = take.get("song")
+    if song == Path(RIGHT).stem:
+        return RIGHT, WRONG, "the played note a semitone BELOW the written one"
+    if song == Path(WRONG).stem:
+        return WRONG, RIGHT, "the played note a semitone ABOVE the written one"
+    return None, None, None
+
+
 def check(directory):
     """One take, against both tabs. True when the trade still holds."""
     manifest = json.loads((Path(directory) / "manifest.json").read_text())
     take = manifest["takes"][0]
     rate = int(manifest["samplerate"])
     wav = Path(directory) / take["file"]
-    if take.get("song") != Path(RIGHT).stem:
+    played, away, direction = tabs_for(take)
+    if played is None:
         print(f"  {directory.name}: recorded against {take.get('song')!r}, "
-              f"not {Path(RIGHT).stem!r} -- skipped")
+              f"which is neither test tab -- skipped")
         return True
 
-    right = score(wav, take, rate, SONGS / RIGHT)
-    wrong = score(wav, take, rate, SONGS / WRONG)
-    bare = score(wav, take, rate, SONGS / WRONG, strum=False)
+    right = score(wav, take, rate, SONGS / played)
+    wrong = score(wav, take, rate, SONGS / away)
+    bare = score(wav, take, rate, SONGS / away, strum=False)
     if right is None or wrong is None or bare is None:
         print(f"  {directory.name}: the manifest carries no mapping -- skipped")
         return True
 
     print(f"\n{directory.name}   {take['seconds']:.1f} s, "
           f"{right[3]} strikes, {right[2]} windows of them judged")
-    print(f"  {'block':26s} {'correct tab':>14s}   "
+    print(f"  played {played}, so a semitone wrong is {direction}")
+    print(f"  {'block':26s} {'as played':>14s}   "
           f"{'a semitone wrong':>34s}")
     for label, bars in blocks():
         rg, ry, rr = totals(right[0], bars)
@@ -164,16 +186,17 @@ def check(directory):
     gap = r_pct - w_pct
     print(f"  {'whole take':26s}  green     {r_pct:5.1f}%"
           f"   green     {w_pct:5.1f}%   gap {gap:5.1f} points")
-    print(f"  of the correct take's green, {right[1]} notes rest on a strum "
-          f"being heard rather than the note")
+    print(f"  of the green it earns as played, {right[1]} notes rest on a "
+          f"strum being heard rather than the note")
     print(f"  with the strum credit OFF, the wrong reading keeps "
-          f"{b_pct:.1f}% green and the correct one "
-          f"{percent(*totals(score(wav, take, rate, SONGS / RIGHT, strum=False)[0])):.1f}%")
+          f"{b_pct:.1f}% green and the right one "
+          f"{percent(*totals(score(wav, take, rate, SONGS / played, strum=False)[0])):.1f}%")
 
     ok = True
     if r_pct < MIN_CORRECT:
-        print(f"  FAIL: a correct take reads {r_pct:.1f}% green, "
-              f"under the {MIN_CORRECT:.0f}% this was measured at")
+        print(f"  FAIL: a take read against the tab it was played from is "
+              f"{r_pct:.1f}% green, under the {MIN_CORRECT:.0f}% this was "
+              f"measured at")
         ok = False
     if gap < MIN_GAP:
         print(f"  FAIL: the gap is {gap:.1f} points, under {MIN_GAP:.0f} -- "
