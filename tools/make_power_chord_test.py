@@ -37,10 +37,37 @@ can set, and a diagnostic whose notes the filter silently removes measures
 the filter instead of the chords; the first run of the timing test lost a
 sixth of its notes exactly that way.
 
-The roots cycle E A C G D B, and that order is not decoration: a strike is
-only attributable where exactly ONE tab note can explain it, so neighbouring
-roots are at least three semitones apart, and a root does not come round
-again inside half a second at any tempo this file is meant for.
+The roots cycle E A C G D B, and that order is what makes a shape CHANGE
+attributable: consecutive distinct roots are at least three semitones apart,
+so a strike landing near a bar line can only explain one of the two shapes
+either side of it.
+
+## One shape per bar
+
+Inside a bar the shape repeats -- 8 strikes at eighths, 4 at quarters -- and
+that is both what a riff is and what makes this file playable at the tempo
+that makes it the uncovered case. The player said so after trying the first
+version: a chord that changes every 214 ms is not a thing anyone plays, and
+a real riff is about five strikes of one shape before it moves.
+
+The first version changed shape on every strike because it carried the
+TIMING test's rule across: no repeat of a pitch inside half a second, since
+there is otherwise no telling "late against this one" from "early against
+the next". That rule belongs where it came from and not here. This file
+measures CONVICTION, and every repeat of a shape has the identical expected
+pitches -- so whichever repeat a strike is credited to, the verifier reads
+the same audio and asks the same question of the same three strings.
+
+Confirmed in the code rather than assumed: the refusal is `_unambiguous`,
+which is reached only from `_record_timing_sample`. The scoring search takes
+the nearest pitch and refuses nothing on a tie, and the chord credit does not
+look at pitch at all. The timing report could not read this material in any
+case -- a strummed power chord comes back subharmonic, so nothing within a
+semitone of any written note is ever found.
+
+What is genuinely given up is per-strike attribution inside a bar. Since a
+bar now holds one shape, the per-SHAPE breakdown the comparison wants is
+intact, and the bar is the unit the run log already reports in.
 """
 
 import argparse
@@ -96,15 +123,16 @@ def _sections(bars_dense: int, offset: int = 0):
     muted = [shape(r, palm_mute()) for r in roots]
 
     # ONE running cycle across every block that follows, not one per block.
-    # Restarting it at a boundary put the same root 428 ms either side of the
-    # join -- and a strike is only counted where exactly one tab note can
-    # explain it, so that is two notes nobody can measure.
+    # Restarting it at a boundary put the same root either side of the join,
+    # and a shape CHANGE has to be attributable even where the repeats inside
+    # a bar deliberately are not.
     at = [0]
 
-    def cycle(source, n):
-        taken = [source[(at[0] + i) % len(source)] for i in range(n)]
-        at[0] += n
-        return taken
+    def bar(source, strikes):
+        """One shape, struck `strikes` times -- which is what a riff is."""
+        chord = source[at[0] % len(source)]
+        at[0] += 1
+        return [chord] * strikes
 
     # One chord on beat 1, then three beats of silence. The verifier always
     # reaches these, so they are the control: whatever the dense blocks do,
@@ -112,17 +140,17 @@ def _sections(bars_dense: int, offset: int = 0):
     isolated = [[(QUARTER, c), (QUARTER, REST), (QUARTER, REST),
                  (QUARTER, REST)] for c in chords]
 
-    quarter_bars = [[(QUARTER, c) for c in cycle(chords, 4)]
+    quarter_bars = [[(QUARTER, c) for c in bar(chords, 4)]
                     for _ in range(2)]
-    eighth_bars = [[(EIGHTH, c) for c in cycle(chords, 8)]
+    eighth_bars = [[(EIGHTH, c) for c in bar(chords, 8)]
                    for _ in range(bars_dense)]
-    muted_bars = [[(EIGHTH, c) for c in cycle(muted, 8)]
+    muted_bars = [[(EIGHTH, c) for c in bar(muted, 8)]
                   for _ in range(bars_dense)]
 
     return [
         ("Count-in", [[(QUARTER, REST)] * 4]),
         ("Isolated power chords - the verifier always reaches these", isolated),
-        ("Quarter-note power chords", quarter_bars),
+        ("Quarter-note power chords - one shape a bar", quarter_bars),
         ("Eighth-note power chords - the case no take covers", eighth_bars),
         ("Palm-muted eighths - the same case, choked", muted_bars),
     ]
@@ -168,15 +196,16 @@ def _report(sections, path):
         times = [t for t in onsets
                  if strings[t] and section_of(_bar_of(timeline, t)) == label]
         if not times:
-            lines.append(f"  {len(bars):2d} bars  {'':3s}  {'':25s}  {label}")
+            lines.append(f"  {len(bars):2d} bars  {'':3s}  {'':31s}  {label}")
             continue
         worst = min(gap[t] for t in times)
         reached = sum(1 for t in times if gap[t] > WINDOW_NEEDS_MS)
         strikes_total += len(times)
         reached_total += reached
         shown = "inf" if worst == float("inf") else f"{worst:4.0f} ms"
+        per_bar = f"{len(times) // len(bars)}/bar"
         lines.append(
-            f"  {len(bars):2d} bars  {len(times):3d} chords  "
+            f"  {len(bars):2d} bars  {len(times):3d} chords {per_bar:>6s}  "
             f"tightest gap {shown:>7s}  "
             f"{reached:2d} windows arrive, {len(times) - reached:2d} dropped"
             f"   {label}")

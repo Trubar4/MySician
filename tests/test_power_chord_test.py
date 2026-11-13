@@ -50,6 +50,17 @@ def _written(tool, tmp_path, tempo=140, bars=4, offset=0):
     return load_gp_file(out, track_index=0)
 
 
+def _bars(timeline):
+    """{bar index: [shape, ...] in time order}, a shape being (string, fret)."""
+    out = {}
+    for at, notes, _ in _strikes(timeline):
+        bar = next(m.index for m in timeline.measures
+                   if m.start_ms <= at < m.end_ms)
+        out.setdefault(bar, []).append(
+            tuple((n.string, n.fret) for n in notes))
+    return out
+
+
 def _strikes(timeline):
     """(time, notes low string first, gap to the next strike)."""
     times = sorted({n.timestamp_ms for n in timeline.notes})
@@ -99,23 +110,76 @@ class TestTheShape:
         assert _written(tool, tmp_path).metadata.unreadable_notes == 0
 
 
-class TestEveryStrikeIsAttributable:
-    def test_neighbouring_roots_are_three_semitones_apart(self, tool,
-                                                          tmp_path):
-        """A strike is only counted where exactly ONE tab note explains it."""
+class TestOneShapePerBar:
+    """What makes it playable, and what makes the repeats harmless.
+
+    The first version changed shape on every strike, which at 140 BPM is a
+    chord every 214 ms and is not a thing anyone plays. It did that because
+    it carried the timing test's rule -- no repeat of a pitch inside half a
+    second -- into a file that measures conviction, where every repeat of a
+    shape has the identical expected pitches and the verifier therefore asks
+    the same question of the same audio whichever repeat a strike lands on.
+
+    So the attributability that is kept is the one the measurement needs: a
+    shape CHANGE must be attributable, and inside a bar the repeat is
+    deliberate.
+    """
+
+    def test_every_bar_holds_exactly_one_shape(self, tool, tmp_path):
+        for bar, shapes in _bars(_written(tool, tmp_path)).items():
+            assert len(set(shapes)) == 1, f"bar {bar}: {len(set(shapes))}"
+
+    def test_and_a_bar_really_does_repeat_it(self, tool, tmp_path):
+        """The control. One shape a bar says nothing if a bar is one strike."""
+        per_bar = [len(v) for v in _bars(_written(tool, tmp_path)).values()]
+        assert max(per_bar) == 8
+
+    def test_a_shape_is_struck_four_times_at_least_before_it_changes(
+            self, tool, tmp_path):
+        """The player's own number: about five of one chord, then move.
+
+        Measured where it matters -- a block whose strikes are closer
+        together than a verification window needs, which is the material he
+        could not play.
+        """
+        runs, last = [], None
+        for _, notes, gap in _strikes(_written(tool, tmp_path)):
+            shape = tuple((n.string, n.fret) for n in notes)
+            if shape == last:
+                runs[-1][0] += 1
+            else:
+                runs.append([1, gap])
+            last = shape
+        dense = [n for n, gap in runs if gap <= NEEDS_MS]
+        assert dense, "no dense run at all -- the control has stopped working"
+        assert min(dense) >= 4
+
+    def test_consecutive_distinct_roots_are_three_semitones_apart(
+            self, tool, tmp_path):
+        """A shape CHANGE can only ever explain one of the two either side."""
         roots = [notes[0].midi_note
                  for _, notes, _ in _strikes(_written(tool, tmp_path))]
-        assert min(abs(a - b) for a, b in zip(roots, roots[1:])) >= 3
+        changes = [abs(a - b) for a, b in zip(roots, roots[1:]) if a != b]
+        assert len(changes) >= 10
+        assert min(changes) >= 3
 
-    def test_a_root_does_not_come_round_inside_half_a_second(self, tool,
+    def test_every_repeat_asks_the_verifier_the_same_question(self, tool,
                                                              tmp_path):
-        strikes = _strikes(_written(tool, tmp_path))
-        last = {}
-        for at, notes, _ in strikes:
-            root = notes[0].midi_note
-            if root in last:
-                assert at - last[root] > 500.0
-            last[root] = at
+        """The premise the whole argument rests on, asserted directly.
+
+        The verifier takes the expected PITCHES and the audio window. Equal
+        pitches within a bar is what makes it indifferent to which repeat a
+        strike was credited to.
+        """
+        timeline = _written(tool, tmp_path)
+        per_bar = {}
+        for at, notes, _ in _strikes(timeline):
+            bar = next(m.index for m in timeline.measures
+                       if m.start_ms <= at < m.end_ms)
+            per_bar.setdefault(bar, []).append(
+                tuple(n.midi_note for n in notes))
+        for bar, pitches in per_bar.items():
+            assert len(set(pitches)) == 1, f"bar {bar}: {set(pitches)}"
 
 
 class TestTheDensityIsTheWholePoint:
@@ -228,11 +292,13 @@ class TestTheWrongCopy:
             root = notes[0].midi_note
             assert [n.midi_note - root for n in notes] == [0, 7, 12]
 
-    def test_its_strikes_are_attributable_too(self, tool, tmp_path):
-        roots = [notes[0].midi_note
-                 for _, notes, _ in _strikes(_written(tool, tmp_path,
-                                                      offset=1))]
-        assert min(abs(a - b) for a, b in zip(roots, roots[1:])) >= 3
+    def test_its_shape_changes_are_attributable_too(self, tool, tmp_path):
+        wrong = _written(tool, tmp_path, offset=1)
+        for bar, shapes in _bars(wrong).items():
+            assert len(set(shapes)) == 1, f"bar {bar}: {len(set(shapes))}"
+        roots = [notes[0].midi_note for _, notes, _ in _strikes(wrong)]
+        changes = [abs(a - b) for a, b in zip(roots, roots[1:]) if a != b]
+        assert min(changes) >= 3
 
     def test_it_is_just_as_dense(self, tool, tmp_path):
         """The whole question is the dense case, so the copy that asks it has

@@ -4114,7 +4114,7 @@ pickhero/
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
-- `tests/test_power_chord_test.py` — the power-chord test tab: its shape, that every strike is attributable, and that the dense blocks really lose their window at the default tempo. `test_at_a_slow_tempo_nothing_is_dense` is the control, without which the density assertions pass on any file at all
+- `tests/test_power_chord_test.py` — the power-chord test tab: its shape, one shape a bar (what makes it playable, and the premise that every repeat asks the verifier the same question), that a shape CHANGE is still attributable, and that the dense blocks really lose their window at the default tempo. `test_at_a_slow_tempo_nothing_is_dense` and `test_and_a_bar_really_does_repeat_it` are the controls, without which the density and the repeat assertions pass on any file at all
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
 - `tests/test_tab_view.py` — the engraved page: where its rows of music are (read off verovio's own system groups, not guessed
   from note heights), and that the playhead never walks backwards inside one row; six of its tests fail on the unfixed code
@@ -7464,9 +7464,8 @@ So `tools/make_power_chord_test.py`, and every decision in it is one the measure
   recording this came from.
 - **Nothing above the 7th fret**, which is the timing test's own scar: the fret filter is a range the player can set, and a diagnostic whose
   notes it removes measures the filter.
-- **One running root cycle across every block, not one per block.** Restarting it at a boundary put the same root **428 ms** either side of the
-  join, and a strike is only counted where exactly one tab note can explain it -- so that was two notes nobody could measure. Found by the
-  test, not by reading the code.
+- **One running root cycle across every block, not one per block.** Restarting it at a boundary put the same root either side of the join, and
+  a shape CHANGE has to be attributable even where the repeats inside a bar deliberately are not. Found by the test, not by reading the code.
 - **No root above the 4th fret**, so the wrong copy below still keeps its octave at or under the 7th. `note_filter` is handed to the MATCHER
   (`self._matcher.note_filter = self._note_passes_filter`), not only to the drawing, so a fret a player's filter hides is a note that is never
   scored -- and the wrong copy has to live under the same ceiling as the right one or the comparison loses notes on one side only.
@@ -7499,8 +7498,7 @@ is the shape `check_chord_credit.py` has always had (`take played`, `take whose 
 - **UP, and down is refused rather than clamped.** The lowest root is fret 0, so a copy a fret flat cannot exist -- and silently clamping it to
   0 would write the RIGHT tab under a name saying it is the wrong one, which is the worst outcome available here.
 - **The roots moved to make room for it**: nothing above the 4th fret, pitches 40 43 46 49 45 48, so one fret up still keeps the octave at or
-  under the 7th. Same guarantee as before -- neighbours at least 3 semitones apart, no root recurring inside **1286 ms** -- and it holds on
-  both copies.
+  under the 7th. Every shape change at least 3 semitones, on both copies.
 - **`--offset 0` is byte-identical to the file with no flag at all**, or the flag would be a second way of writing one tab.
 - **Both tabs are committed and both are pinned byte-for-byte to the generator.** Two files that have to differ by exactly one semitone are
   two files nobody should be regenerating by hand on the machine that plays them.
@@ -7512,6 +7510,42 @@ not his song.
 **What it still cannot answer, said before any number comes out of it.** It is a test file, not a song: three strings on a clean
 standard-tuned guitar is not drop C through a high-gain amp. It answers whether a wrong power chord is still convicted where the verifier
 gets no window. It does not answer whether the player's own song scores honestly, and a figure from it must not be quoted as if it did.
+
+### A Rule Carried In From The Timing Test Made The File Unplayable
+
+*"Powerchords mit so schnellen Wechseln sind fuer mich nicht spielbar. Normalerweise ist es eher 5x der gleiche Chord bevor gewechselt wird.
+Brauche 2 einfachere Files."*
+
+**He is right and it is my rule, imported from a file that measures something else.** The generator changed shape on EVERY strike -- at 140 BPM
+a different grip every **214 ms**, 32 times in a row -- because it carried over the timing test's constraint: no repeat of a pitch inside half a
+second, since there is otherwise no telling "late against this one" from "early against the next". That belongs in `make_timing_test.py`, whose
+whole subject is when a strike arrived. **This file measures CONVICTION**, and there the constraint buys nothing and costs the one thing the file
+needs, which is somebody willing to play it twice.
+
+- **Every repeat of a shape has the identical expected pitches**, so whichever repeat a strike is credited to, the verifier reads the same audio
+  and asks the same question of the same three strings. Asserted directly rather than reasoned about
+  (`test_every_repeat_asks_the_verifier_the_same_question`), because it is the premise the whole argument rests on.
+- **Confirmed in the code rather than assumed, and that was the one thing worth checking first.** If the scoring path refused a strike that two
+  identical pending notes equally explain, eight identical chords 214 ms apart would break the file completely. It does not: the refusal is
+  `_unambiguous`, reached only from `_record_timing_sample`, and the scoring search takes the nearest pitch and refuses nothing on a tie
+  (`matcher.py`, `best_dist`). `_unpitched_chord_credit` does not look at pitch at all.
+- **And the timing report could not read this material in any case.** A strummed power chord comes back subharmonic, so
+  `_record_timing_sample` finds nothing within a semitone of any written note and returns before `_unambiguous` is reached -- which is the hole
+  the Scorpions and Manson chapters both measured. The constraint was protecting a reading that does not exist here.
+- **One shape per bar**: 8 strikes at eighths, 4 at quarters, 1 in the isolated block. That brackets his "about five" from above, and it makes
+  the BAR the unit -- which is the unit the run log already carries a column for, so the per-SHAPE breakdown the comparison wants reads straight
+  off it.
+- **What is given up is per-strike attribution INSIDE a bar**, and nothing else. For "how many of 234 notes went green" that costs nothing; for
+  "which shape was convicted" the bar answers it, because a bar is one shape.
+- **The density is untouched**, which is what makes this a repair rather than a redesign: window trimming depends on the GAP and not on the
+  pitch. Both copies come out at the same 78 chords, 234 notes, 29 s and the same four gaps -- **15 chords the verifier reaches, 63 it does
+  not** -- bit-for-bit the same report as before.
+- **The change between bars still clears 3 semitones**, all 15 of them, so a strike landing near a bar line can still only explain one of the
+  two shapes either side of it. That is the half of the old rule the measurement really needs.
+- **140 BPM stays.** He named the CHANGES as the problem, not the picking rate -- and the tempo is the whole reason the windows are dropped, so
+  slowing it down would have answered the complaint by deleting the measurement.
+- **Four of the six new tests fail on the old generator**, and the two that pass are the controls: a bar really holding 8 strikes, and the 3
+  semitones, both of which the old file satisfied as well.
 
 ## What NOT To Do
 
