@@ -4114,6 +4114,7 @@ pickhero/
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
+- `tools/check_power_chord_credit.py` — the conviction rate on dense power chords: a correct take scored against the tab a semitone higher, per block, with the isolated block as the control. Exits non-zero if the correct score drops or the gap to the wrong reading shrinks
 - `tests/test_power_chord_test.py` — the power-chord test tab: its shape, one shape a bar (what makes it playable, and the premise that every repeat asks the verifier the same question), that a shape CHANGE is still attributable, and that the dense blocks really lose their window at the default tempo. `test_at_a_slow_tempo_nothing_is_dense` and `test_and_a_bar_really_does_repeat_it` are the controls, without which the density and the repeat assertions pass on any file at all
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
 - `tests/test_tab_view.py` — the engraved page: where its rows of music are (read off verovio's own system groups, not guessed
@@ -7510,6 +7511,63 @@ not his song.
 **What it still cannot answer, said before any number comes out of it.** It is a test file, not a song: three strings on a clean
 standard-tuned guitar is not drop C through a high-gain amp. It answers whether a wrong power chord is still convicted where the verifier
 gets no window. It does not answer whether the player's own song scores honestly, and a figure from it must not be quoted as if it did.
+
+### The Wrong Take Was Never Needed, And The Answer Is 35 % False Green
+
+*"Pruefe selbst."* Two takes arrived (2026-11-13, 18:39:34 and 18:40:13, Focusrite at MME index 2, 0 dropped blocks,
+`reference_recordings/20261113_18*`) and **both manifests say `song: power_chord_test_140bpm`** -- so both are the CORRECT tab,
+played correctly. Neither is the up1 copy, which is of a piece with his not finding that file: `pickhero.spec` does not pack
+`songs/`, so no test tab travels with the EXE.
+
+**And the wrong take turned out to be unnecessary, which is the finding that made this cheap.** Scoring a CORRECT take against
+the tab a semitone HIGHER is the same one-semitone discrepancy as scoring a wrong take against the correct tab -- either way
+what was played and what the tab writes are one fret apart. So the measurement comes out of the recording already in hand,
+twice, and `tools/check_power_chord_credit.py` is that:
+
+| | correct tab | the tab a semitone higher |
+|---|---|---|
+| 18:40:13 | **96.2 % green** (0 yellow, 9 red) | **34.6 % green**, 121 yellow, 32 red |
+| 18:39:34 | 88.9 % | 35.5 % |
+
+**A third of a semitone-wrong power chord still goes green, and every one of those notes is strum credit** -- 81 of 81 and 83
+of 83 come back `unreliable() == "strum"`, so not one was heard as itself. That is the hole the chord-credit chapters named and
+could not size: *"the 110 credited notes are credited on no evidence about those strings."* Here it is 35 points of the score.
+
+**Switching `_unpitched_chord_credit` off takes the wrong reading to 0.0 % and 0.4 % green**, and costs the correct take 3.5
+and 9.4 points. So the whole leniency is that one rule, and the trade now has both its numbers: **about 4 to 9 points of real
+credit buys 35 points of false credit.** It is NOT a licence to switch it off -- the rule was fitted against the isolated
+reference takes, where it took a correct E5 from 8/10 to 10/10, and this is one test file in standard tuning.
+
+**Per block, the verifier behaves exactly as designed, and the window is the whole of it** (18:40:13):
+
+| block | gap to the next strike | correct | a semitone wrong |
+|---|---|---|---|
+| isolated | 1714 ms | 94.4 % | 50.0 % |
+| **quarters** | **429 ms** | 100.0 % | **12.5 %** |
+| **eighths** | **214 ms** | 97.9 % | **46.9 %** |
+| palm-muted eighths | 214 ms | 93.8 % | 25.0 % |
+
+**At 429 ms a wrong chord is convicted (12.5 % green); at 214 ms it is not (46.9 %)** -- and 429 ms is the one dense block
+whose gap clears the 255 ms a window needs. 24 of 112 strikes were judged. That is the uncovered case, measured, with the
+control in the same file.
+
+- **The isolated block is the control and it reads 50 %, not 0.** An isolated three-string strum goes pitchless often enough
+  that about half of them take the whole written chord green whatever was fretted, and the window arriving does not undo it:
+  the verifier took back 24 strings of 234 on the wrong tab against **1** on the correct one. So it convicts where it looks
+  and is not convicting the innocent -- it simply does not look at two thirds of the strikes.
+- **Take 18:39:34's isolated block reads 16.7 % on the CORRECT tab** (3 of 18), so that block of that take is not evidence of
+  anything -- he was not yet playing. Its mapping carries four marks with a 10-second jump, which is the pause case the
+  recorder is built for, and the rest of the take scores 88.9 %, so the mapping is not what is wrong there. **The clean take
+  is 18:40:13 and the figures above are read off it.**
+- **What is NOT established is the DIRECTION.** Here the played note is a semitone BELOW the written one; a real error take is
+  a semitone above, and the partials are not provably symmetric about the written pitch. **One take of
+  `power_chord_test_140bpm_up1.gp5` answers that and nothing else** -- which is a single recording rather than the session the
+  chapter above asked for.
+- **And it is still a test file**: three strings, clean, standard tuning, 140 BPM. It answers whether a wrong power chord is
+  convicted where the verifier gets no window. It does not say what his own song scores.
+- **The check pins the trade from both sides.** `MIN_CORRECT` (85 %) fails if the credit is tightened until correct takes
+  suffer; `MIN_GAP` (45 points) fails if it is loosened until a semitone wrong is credited more than it is today. Both are a
+  record of 2026-11-13 with margin, named as such rather than dressed up as fitted bounds.
 
 ### A Rule Carried In From The Timing Test Made The File Unplayable
 
