@@ -63,7 +63,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # (root string, root fret). A root on string 6 puts its fifth and octave on
 # 5 and 4; a root on string 5 puts them on 4 and 3. Both at root + 2 frets,
 # which is the shape every guitarist already has under their hand.
-ROOTS = [(6, 0), (6, 5), (5, 3), (6, 3), (5, 5), (5, 2)]
+#
+# No root above the 4th fret, so that --offset 1 still keeps the octave at or
+# under the 7th: `note_filter` reaches the MATCHER, not only the drawing, so a
+# fret a player's filter hides is a note that is never scored, and the wrong
+# copy has to live under the same ceiling as the right one.
+ROOTS = [(6, 0), (6, 3), (5, 1), (5, 4), (5, 0), (5, 3)]
 
 # A window needs a gap wider than this to survive `_limit_pending_windows`.
 WINDOW_NEEDS_MS = MIN_WINDOW_MS + SKIP_MS + NEXT_STRIKE_GUARD_MS
@@ -77,10 +82,18 @@ def shape(root, *effects):
             (string - 2, fret + 2) + effects]
 
 
-def _sections(bars_dense: int):
-    """(label, bars) where a bar is a list of (duration, notes) in 4/4."""
-    chords = [shape(r) for r in ROOTS]
-    muted = [shape(r, palm_mute()) for r in ROOTS]
+def _sections(bars_dense: int, offset: int = 0):
+    """(label, bars) where a bar is a list of (duration, notes) in 4/4.
+
+    `offset` moves every shape that many frets up and changes NOTHING else --
+    same strings, same bars, same durations, same tempo. That is what lets one
+    take of the moved copy be scored against the unmoved tab: song time is the
+    same millisecond in both, so no re-alignment is wanted and the only
+    difference reaching the verifier is the pitch.
+    """
+    roots = [(s, f + offset) for s, f in ROOTS]
+    chords = [shape(r) for r in roots]
+    muted = [shape(r, palm_mute()) for r in roots]
 
     # ONE running cycle across every block that follows, not one per block.
     # Restarting it at a boundary put the same root 428 ms either side of the
@@ -185,14 +198,25 @@ def main():
                          "214 ms and the window is dropped)")
     ap.add_argument("--bars", type=int, default=4,
                     help="bars in each dense block (default 4 = 32 chords)")
+    ap.add_argument("--offset", type=int, default=0,
+                    help="move every shape this many frets up (default 0; "
+                         "1 writes the deliberately wrong copy)")
     ap.add_argument("--out", default=None, help="output .gp5 path")
     args = ap.parse_args()
 
-    sections = _sections(args.bars)
-    song = build_song(f"Power Chord Test {args.tempo} BPM", args.tempo,
-                      sections)
+    if args.offset < 0:
+        print("--offset cannot be negative: the lowest root is fret 0, "
+              "so the wrong copy has to go UP.")
+        return 2
+    sections = _sections(args.bars, args.offset)
+    title = f"Power Chord Test {args.tempo} BPM"
+    suffix = ""
+    if args.offset:
+        title += f" +{args.offset} fret"
+        suffix = f"_up{args.offset}"
+    song = build_song(title, args.tempo, sections)
     out = Path(args.out) if args.out else (
-        REPO_ROOT / "songs" / f"power_chord_test_{args.tempo}bpm.gp5"
+        REPO_ROOT / "songs" / f"power_chord_test_{args.tempo}bpm{suffix}.gp5"
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     write(song, out)
@@ -210,8 +234,15 @@ def main():
     if not strikes - reached:
         print("  Nothing here is dense enough to be the uncovered case -- "
               "raise --tempo.")
-    print("\nRecord it twice with Shift+W: once correctly, once with every")
-    print("shape one fret higher. Do not change the tab.")
+    if args.offset:
+        print(f"\nThis is the WRONG copy, every shape {args.offset} fret(s)"
+              " up. Play it as")
+        print("written and correct nothing: it is scored against the "
+              "unmoved tab,")
+        print("which is what asks whether a wrong root is still convicted.")
+    else:
+        print("\nPlay this one as written. The wrong copy is the same file")
+        print("with --offset 1, and both takes are scored against THIS tab.")
     return 0
 
 

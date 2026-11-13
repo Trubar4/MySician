@@ -7467,11 +7467,47 @@ So `tools/make_power_chord_test.py`, and every decision in it is one the measure
 - **One running root cycle across every block, not one per block.** Restarting it at a boundary put the same root **428 ms** either side of the
   join, and a strike is only counted where exactly one tab note can explain it -- so that was two notes nobody could measure. Found by the
   test, not by reading the code.
+- **No root above the 4th fret**, so the wrong copy below still keeps its octave at or under the 7th. `note_filter` is handed to the MATCHER
+  (`self._matcher.note_filter = self._note_passes_filter`), not only to the drawing, so a fret a player's filter hides is a note that is never
+  scored -- and the wrong copy has to live under the same ceiling as the right one or the comparison loses notes on one side only.
 - **The report is read off the written file through the app's own loader.** The first version took each strike's own note length for the gap to
   the next one, which is true of a run of eighths and wrong by a factor of four for an isolated chord followed by rests.
 - **The tab is COMMITTED**, unlike the other three generators' output, and pinned byte-for-byte to its generator by a test. `tools/` does not
   exist inside the EXE, and this project has paid three times for a thing reachable only from a shell not existing on the machine that needs
   it most.
+
+### The Wrong Copy Is A Second FILE, And That Is Better Than A Deliberate Error
+
+*"Kannst du nicht ein 2. File machen mit dem Bund hoeher, damit ich es nicht selbst beim Spiel korrigieren muss und du vergleichst halt beide
+mit dem gleichen GP?"*
+
+**He asked for it to be easier and it is also more honest, which is why it replaces what I had asked him to do.** A deliberately mis-fretted
+take is a hand fighting its own habit: it hesitates, it catches a neighbouring string, it is simply played worse. A chord convicted for being
+sloppy says nothing about whether a SEMITONE is convicted, and that is the only question this file exists to ask. Read from a tab, the wrong
+copy is played cleanly and the one thing reaching the verifier is the pitch.
+
+So `--offset 1` writes `power_chord_test_140bpm_up1.gp5` beside the original, and **both takes are scored against the UNMOVED tab** -- which
+is the shape `check_chord_credit.py` has always had (`take played`, `take whose shape the TAB writes`) and the rule this file already states:
+*for an error take the tab must be the CORRECT shape.*
+
+- **It moves the frets and nothing else, and that is asserted rather than intended.** Verified through the real loader: 234 notes both,
+  identical timestamps, strings, durations and mute flags, `duration_ms` equal to the millisecond, and every pitch **exactly +1**. That is
+  what lets one take's strikes be read against the other's tab with no re-alignment -- song time is the same moment in both files. A copy that
+  moved the rhythm by a millisecond would have the comparison measuring the alignment instead.
+- **A uniform shift keeps every interval**, so the wrong copy is still root + fifth + octave and not some other shape. Asserted, because a
+  shift that broke the shape would be asking a different question.
+- **UP, and down is refused rather than clamped.** The lowest root is fret 0, so a copy a fret flat cannot exist -- and silently clamping it to
+  0 would write the RIGHT tab under a name saying it is the wrong one, which is the worst outcome available here.
+- **The roots moved to make room for it**: nothing above the 4th fret, pitches 40 43 46 49 45 48, so one fret up still keeps the octave at or
+  under the 7th. Same guarantee as before -- neighbours at least 3 semitones apart, no root recurring inside **1286 ms** -- and it holds on
+  both copies.
+- **`--offset 0` is byte-identical to the file with no flag at all**, or the flag would be a second way of writing one tab.
+- **Both tabs are committed and both are pinned byte-for-byte to the generator.** Two files that have to differ by exactly one semitone are
+  two files nobody should be regenerating by hand on the machine that plays them.
+
+**What I will be able to say when the two takes arrive, and what I will not.** The difference between the two scores IS the conviction rate,
+per block, with the isolated block as the control inside each file. What it still cannot answer is the sentence above: it is a test file and
+not his song.
 
 **What it still cannot answer, said before any number comes out of it.** It is a test file, not a song: three strings on a clean
 standard-tuned guitar is not drop C through a high-gain amp. It answers whether a wrong power chord is still convicted where the verifier

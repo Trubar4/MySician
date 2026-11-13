@@ -41,10 +41,11 @@ def tool():
     return _tool()
 
 
-def _written(tool, tmp_path, tempo=140, bars=4):
-    out = tmp_path / f"pc{tempo}.gp5"
+def _written(tool, tmp_path, tempo=140, bars=4, offset=0):
+    out = tmp_path / f"pc{tempo}_{offset}.gp5"
     sys.argv = ["make_power_chord_test.py", "--tempo", str(tempo),
-                "--bars", str(bars), "--out", str(out)]
+                "--bars", str(bars), "--offset", str(offset),
+                "--out", str(out)]
     assert tool.main() == 0
     return load_gp_file(out, track_index=0)
 
@@ -81,8 +82,13 @@ class TestTheShape:
                                                  notes[0].string - 2]
 
     def test_nothing_the_fret_filter_can_eat(self, tool, tmp_path):
-        """A diagnostic whose notes a filter removes measures the filter."""
-        assert max(n.fret for n in _written(tool, tmp_path).notes) <= 7
+        """A diagnostic whose notes a filter removes measures the filter --
+        and `note_filter` reaches the MATCHER, so such a note is not merely
+        hidden, it is never scored. Both copies, because the wrong one has to
+        live under the same ceiling as the right one."""
+        for offset in (0, 1):
+            timeline = _written(tool, tmp_path, offset=offset)
+            assert max(n.fret for n in timeline.notes) <= 7
 
     def test_standard_tuning_so_nothing_is_retuned(self, tool, tmp_path):
         timeline = _written(tool, tmp_path)
@@ -172,3 +178,94 @@ class TestTheCommittedFileIsTheOneTheToolWrites:
         sys.argv = ["make_power_chord_test.py", "--out", str(out)]
         assert tool.main() == 0
         assert out.read_bytes() == self.COMMITTED.read_bytes()
+
+
+class TestTheWrongCopy:
+    """*"Kannst du nicht ein 2. File machen mit dem Bund hoeher, damit ich es
+    nicht selbst beim Spiel korrigieren muss und du vergleichst halt beide mit
+    dem gleichen GP?"*
+
+    One fret up, nothing else, and both takes scored against the UNMOVED tab.
+    That is better than a deliberately mis-fretted take rather than merely
+    easier: a hand fighting its own habit plays less cleanly, and a chord
+    convicted for being sloppy says nothing about whether a semitone is
+    convicted. Here the only difference reaching the verifier is the pitch.
+
+    Which is a property to assert and not a hope -- if the copy moved the
+    rhythm, the strings or the durations by so much as a millisecond, song
+    time would stop meaning the same moment in both and the comparison would
+    be measuring the alignment instead.
+    """
+
+    def _pair(self, tool, tmp_path):
+        return (_written(tool, tmp_path, offset=0),
+                _written(tool, tmp_path, offset=1))
+
+    def test_only_the_pitch_moves(self, tool, tmp_path):
+        right, wrong = self._pair(tool, tmp_path)
+        key = lambda tl: [(n.timestamp_ms, n.string, n.duration_ms,
+                           n.palm_mute, n.dead) for n in tl.notes]
+        assert key(right) == key(wrong)
+
+    def test_and_it_moves_by_exactly_one_semitone(self, tool, tmp_path):
+        right, wrong = self._pair(tool, tmp_path)
+        assert {b.midi_note - a.midi_note
+                for a, b in zip(right.notes, wrong.notes)} == {1}
+        assert {b.fret - a.fret
+                for a, b in zip(right.notes, wrong.notes)} == {1}
+
+    def test_the_song_is_the_same_length(self, tool, tmp_path):
+        """Song time has to be the same millisecond in both, or the strikes
+        of one take cannot be read against the other's tab."""
+        right, wrong = self._pair(tool, tmp_path)
+        assert right.duration_ms == wrong.duration_ms
+        assert len(right.measures) == len(wrong.measures)
+
+    def test_it_is_still_a_power_chord(self, tool, tmp_path):
+        """A uniform shift keeps every interval, so the wrong copy is a wrong
+        power chord and not some other shape."""
+        for _, notes, _ in _strikes(_written(tool, tmp_path, offset=1)):
+            root = notes[0].midi_note
+            assert [n.midi_note - root for n in notes] == [0, 7, 12]
+
+    def test_its_strikes_are_attributable_too(self, tool, tmp_path):
+        roots = [notes[0].midi_note
+                 for _, notes, _ in _strikes(_written(tool, tmp_path,
+                                                      offset=1))]
+        assert min(abs(a - b) for a, b in zip(roots, roots[1:])) >= 3
+
+    def test_it_is_just_as_dense(self, tool, tmp_path):
+        """The whole question is the dense case, so the copy that asks it has
+        to lose its windows exactly where the other one does."""
+        right, wrong = self._pair(tool, tmp_path)
+        assert ([s[2] for s in _strikes(right)]
+                == [s[2] for s in _strikes(wrong)])
+        dropped = [s for s in _strikes(wrong) if s[2] <= NEEDS_MS]
+        assert len(dropped) > len(_strikes(wrong)) / 2
+
+    def test_offset_zero_is_the_file_itself(self, tool, tmp_path):
+        """Or the flag would be a second way of writing the same tab."""
+        out = tmp_path / "explicit.gp5"
+        sys.argv = ["make_power_chord_test.py", "--offset", "0",
+                    "--out", str(out)]
+        assert tool.main() == 0
+        assert (out.read_bytes()
+                == (ROOT / "songs" / "power_chord_test_140bpm.gp5").read_bytes())
+
+    def test_down_is_refused_rather_than_clamped(self, tool, tmp_path):
+        """The lowest root is fret 0, so a copy a fret FLAT cannot exist --
+        and silently clamping it to 0 would write the right tab under a name
+        that says it is the wrong one."""
+        sys.argv = ["make_power_chord_test.py", "--offset", "-1",
+                    "--out", str(tmp_path / "nope.gp5")]
+        assert tool.main() == 2
+        assert not (tmp_path / "nope.gp5").exists()
+
+    def test_the_committed_copy_is_what_the_tool_writes(self, tool, tmp_path):
+        out = tmp_path / "fresh_up1.gp5"
+        sys.argv = ["make_power_chord_test.py", "--offset", "1",
+                    "--out", str(out)]
+        assert tool.main() == 0
+        committed = ROOT / "songs" / "power_chord_test_140bpm_up1.gp5"
+        assert committed.exists()
+        assert out.read_bytes() == committed.read_bytes()
