@@ -7675,8 +7675,16 @@ handles it: 4 sections, 3 breaks, 20 points.
   constant offset: windows agreeing on a single offset **47 of 95 -> 54 of 93**, median lag -2.40 s either side of the cut, MAD 0.05 s.
 - **Where you cut makes no measurable difference** (52-54 at every position from 5:15 to 7:03), which is the vamp's own missing landmarks
   showing up a second time. So the app can say the eight bars are there and can never say which eight.
-- **Songsterr says the same from the other side**: 26 of their 30 maps carry **233 points** and the tab has **241 bars**. Their 241-point
-  maps are the 233-point map with 8 bars appended, identical for the first 233 to the decimal.
+- **Songsterr says the same from the other side, and reading it properly overturns what this chapter first claimed.** Their thirty maps
+  split **27 at 233 points and 3 at 241** -- and the ONE marked `feature: null`, which is the recording the tab was written FROM, carries
+  **241, matching the tab's 241 bars exactly**, running to 586.3 s. So the tab is not the odd one out: the 233-point maps are the backing
+  tracks and the alternative uploads, which really are missing those eight bars. **The player's own MP3 is one of those**, by arithmetic --
+  it has 11.3 s less music than the tab, and the tab agrees with the main map. The first version of this said "26 of their 30 maps carry 233
+  points and the tab has 241 bars", which took the majority for the truth and had the fault the wrong way round.
+- **Which is also why Songsterr's own player never shows this problem**: it plays the video its map was made for, so there is no constant to
+  find and no missing section to bridge. `https://youtu.be/Q-UWZg1d6BU` is that video here, its id has been in the cached bar map since the
+  download screen first wrote one, and **`video_id_of` is read once inside the fit and shown to nobody**. Naming it is the cheapest fix this
+  song has -- the matching audio makes the whole problem disappear, where no algorithm can.
 
 ### Four maps, scored on windows that can judge them
 
