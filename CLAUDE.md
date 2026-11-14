@@ -8068,6 +8068,81 @@ are written down.
   been confused**, after the sync panel had to rename its line to `Your playing: +0 ms (K)` for the same reason -- so the
   separation on screen is still not doing its job.
 
+## Play Along With A Click, And The Offset Sets Itself
+
+*"Timing offset Settings: Warum machen wir dafuer nicht einen konfig Button. Ich spiele Noten, wenn ich sie sehe und du
+machst den Wert selbst."*
+
+The second half is the feature and the first half had to be corrected before anything was built: **reacting to something
+you SEE takes 150-250 ms.** A wizard that showed a note and timed the answer would fit the offset to his reaction time and
+land further out than the whole hit window it exists to centre -- so the number would be wrong by more than the thing it
+was setting. Playing ALONG with a steady pulse is anticipatory and lands within tens of milliseconds, which is why every
+DAW's latency calibration works that way. So `O` -> **Timing offset** -> ENTER plays a click and he plays with it.
+
+He had just spent an evening finding -200 ms by hand, on a song where the SCORE cannot find it: one strike credits a whole
+written chord, so with chords 134 ms apart there is always a chord near enough at any offset, and sweeping +/-300 ms moves
+the percentage by 11 points. That is the chapter above, and it is the argument for a wizard rather than a sweep.
+
+- **Nothing in it judges its own measurement.** A click is one note per beat, which is a `Timeline`; the real `NoteMatcher`
+  scores it and `timing_report` already decides whether a median is an effect or a coincidence, whether the spread is
+  latency or the playing, and whether one offset could fix it at all. `K` reads that same verdict. A second rule here could
+  only produce the two disagreeing -- which this project has already paid for, in the days when `K` applied a looser test
+  than the report and set an offset out of noise.
+- **It stores nothing unless the verdict is `latency` or `mixed`.** `scatter` is the playing and `per_string` is the
+  detector, and no global offset touches either; a wizard that always produced a number would be a wizard that produces one
+  from noise.
+- **80 BPM, and the tempo is a CONSTRAINT rather than comfort.** Every click is the same pitch, and the matcher refuses a
+  strike that two written notes explain equally well (`_unambiguous`) -- so the beat has to be longer than the window the
+  candidate search looks in, `LATENCY_SEARCH_MS` (500) behind plus the hit window ahead. At 80 BPM that is **750 ms against
+  650**, or 700 at the 200 ms window he actually runs. `spacing_clears_search` asserts it, and the control in the same class
+  shows 120 BPM really would break it.
+- **Four lead-in clicks are not scored**, so finding the beat is not measured as playing badly. Sixteen are, which is twelve
+  seconds -- short enough to do twice, and twice the eight samples the report needs before it says anything.
+- **The string is the one the detector can READ, and that is measured.** `yinfast` returns a THIRD of the open low E's pitch
+  on **301 of 301** confident readings of the tuner's own reference takes, and a folded reading is a subharmonic that
+  `_times_its_own_strike` rightly refuses -- so a wizard on the low E would collect nothing while looking like a broken
+  detector. `STRING_PREFERENCE` is D, G, A, B, E, e, read off the same takes (D and G read 76 % and 71 % of their frames
+  against the high e's 13 %), and nothing under A2. `1`-`6` override it, because the player is the one holding the guitar.
+- **Every click note is plain**, asserted rather than intended: a dead, bent, slid or hammered note is refused by
+  `_times_its_own_strike`, so a click tab carrying one would silently measure fewer samples than it played.
+
+**And the one thing the screen does of its own is score the times the clicks REALLY went out**, because a click is fired by
+the frame loop and goes out when a frame gets round to it. How much that is worth was measured rather than assumed, and
+most of it is nothing:
+
+| what the frame loop did | median, scored against the beats they were DUE on |
+|---|---|
+| every frame 16 ms late | +15.3 ms |
+| one stalled frame of 200 ms | +7.3 |
+| three stalls of 120 ms | +8.2 |
+| **ragged, 0-100 ms throughout** | **+50.5 -- verdict `latency`** |
+
+`FINE_MS` is 20, so the median absorbs the first three and the wizard would store nothing either way. What it does not
+absorb is a frame loop that is ragged all the way through: that reads as **a whole offset of pure measurement artefact**,
+stored and then shifting every strike in every song. On the player's own machines `frames_uneven_percent` is 6-18 % over a
+2-3 ms band, so **this buys him nothing today** -- it is there because a worker thread really can make the loop ragged (the
+sync measurement already costs 130 dropped buffers), and because the fire times cost one line.
+
+- **The first version of that test was vacuous and the control is what caught it.** It used a uniform 16 ms lateness, which
+  sits under `FINE_MS`, so it passed on an implementation that scored the nominal beats. **Eighth time in this file that a
+  control could not contain the thing it was controlling for**, and the only reason it was found is that breaking the code
+  on purpose was the next step rather than an afterthought.
+- **The mixer's own buffer is NAMED and never subtracted** (`output.buffer_latency_ms()`, 46 ms at 2048 frames). It is the
+  one part of the output path that is known; the driver and the OS mixer add more and nothing here can see it. Subtracting
+  an unmeasured path would be a guess with a decimal point on it -- and the value is right as it stands, because what he
+  calibrated is playing along to something heard through this mixer, which is the case it will be used in.
+- **ENTER opens it and LEFT/RIGHT still set it by hand**, on the one row, because `opens` wins on ENTER alone. A setting
+  whose only route is a wizard is a setting nobody can nudge by 10 ms.
+- **The click is built, not shipped**: a 25 ms decaying 1800 Hz burst is four lines of arithmetic, where a `.wav` is one
+  more thing `pickhero.spec` has to carry and one more thing to be absent inside the EXE. Its decay matters -- a
+  rectangular burst clicks at BOTH ends, and a click with two moments has none.
+- **A device that will not open says so and does not raise.** The rule `scan_files` and `describe_tab` already follow: a
+  screen saying what went wrong is a screen, and a traceback is not.
+- **And `output.py` has no module-level `import pygame`**, which the first version of `click_sound()` assumed it did. A bare
+  `except Exception` swallowed the `NameError` and the wizard had a click that was silently `None` on a machine whose mixer
+  opened fine. The excepts are narrowed to `pygame.error` and friends now, with the reason written beside them: an except
+  for the DEVICE must not be wide enough to hide a mistake in the code.
+
 ## One Line Fitted Through A Staircase
 
 *"Ja, zieh check_song_sync.py nach."* It fitted a single robust line to the whole song and reported the slope, so Dry

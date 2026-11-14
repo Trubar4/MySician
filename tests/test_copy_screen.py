@@ -26,18 +26,17 @@ def _app(tmp_path, state="menu"):
     from pickhero.ui.menu import MenuScreen
     config = Config()
     config.songs_dir = str(tmp_path)
-    app = App.__new__(App)
-    app._config = config
+    # The REAL constructor. It takes a config and sets fields -- no display
+    # and no song scan, both of which happen in `run()` -- so there is no
+    # reason to build this by hand. The first version used `App.__new__` and
+    # listed the screens it wanted, which meant every field added to the App
+    # afterwards broke this file: a fixture that cannot reach the app's own
+    # state is a test of something else, and `tests/test_tuner.py` has
+    # already been fixed for exactly this.
+    app = App(config)
     app._menu = MenuScreen(tmp_path, config=config)
     app._download_menu = DownloadMenuScreen(tmp_path, config=config)
-    app._playing_screen = None
-    app._device_menu = None
-    app._calibration_menu = None
-    app._tuner_menu = None
-    app._settings_menu = None
     app._state = state
-    app._quit_armed = False
-    app._held = set()
     app._running = True
     return app
 

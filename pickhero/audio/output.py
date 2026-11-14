@@ -118,3 +118,81 @@ def describe() -> str:
     asked = "" if rate == RATE else f" (asked {RATE})"
     return (f"{rate} Hz{asked}, {abs(fmt)}-bit, {channels} ch, "
             f"{BUFFER} frame buffer ({1000 * BUFFER / rate:.0f} ms)")
+
+
+#: How long a click lasts. Short enough to be a point in time rather than a
+#: sound with a shape -- a long click has no single moment to play ON.
+CLICK_MS = 25.0
+
+#: Its pitch. High enough to cut through a guitar without being in the way
+#: of it, and the detector never hears it: the click goes OUT.
+CLICK_HZ = 1800.0
+
+_click_sound = None
+
+
+def buffer_latency_ms() -> float:
+    """What the mixer's own buffer costs on the way OUT, in milliseconds.
+
+    The one part of the output path that is KNOWN. The driver and the OS mixer
+    add more and nothing here can see it, so this is a floor and the latency
+    wizard says it as one -- naming a floor is honest where subtracting an
+    unmeasured number is a guess with a decimal point on it.
+    """
+    import pygame
+    try:
+        init = pygame.mixer.get_init()
+    except pygame.error:
+        init = None
+    rate = int(init[0]) if init else RATE
+    return 1000.0 * BUFFER / float(rate or RATE)
+
+
+def click_sound():
+    """A metronome click, built once. None if the mixer will not open.
+
+    Built rather than shipped as a file: a 25 ms burst is four lines of
+    arithmetic, and a .wav in the package is one more thing `pickhero.spec`
+    has to carry and one more thing to be absent inside the EXE.
+    """
+    global _click_sound
+    if _click_sound is not None:
+        return _click_sound
+    if not ensure_mixer():
+        return None
+    # Imported HERE because this module has no module-level pygame -- and
+    # the first version of this function assumed it did. A bare
+    # `except Exception` then swallowed the NameError and the wizard had a
+    # click that was silently None on a machine whose mixer opened fine.
+    # The except below is for the DEVICE, so it must not be wide enough to
+    # hide a mistake like that one.
+    import pygame
+    import pygame.sndarray
+    try:
+        import numpy as np
+
+        init = pygame.mixer.get_init()
+        rate = int(init[0]) if init else RATE
+        channels = int(init[2]) if init else CHANNELS
+        n = max(1, int(rate * CLICK_MS / 1000.0))
+        t = np.arange(n, dtype=np.float32) / float(rate)
+        # A fast exponential decay, so the attack is the moment and the tail
+        # is not. A plain rectangular burst clicks at BOTH ends.
+        wave = (np.sin(2.0 * np.pi * CLICK_HZ * t)
+                * np.exp(-t * 1000.0 / (CLICK_MS * 0.35)))
+        samples = (wave * 0.45 * 32767.0).astype(np.int16)
+        if channels > 1:
+            samples = np.repeat(samples[:, None], channels, axis=1)
+        _click_sound = pygame.sndarray.make_sound(np.ascontiguousarray(samples))
+        return _click_sound
+    except (pygame.error, ImportError, ValueError):
+        # A wizard that cannot click is a wizard that says so, not one that
+        # takes the app down -- the rule `scan_files` and `describe_tab`
+        # already follow. NARROW on purpose: see above.
+        return None
+
+
+def forget_click() -> None:
+    """Drop the built click. A Sound does not survive `pygame.quit()`."""
+    global _click_sound
+    _click_sound = None

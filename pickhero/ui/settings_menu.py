@@ -267,9 +267,11 @@ class SettingsMenuScreen:
                     is_default=lambda: c.timing_window_ms == default.timing_window_ms),
             Setting("latency", "Timing offset",
                     lambda: f"{c.audio_latency_offset_ms:+.0f} ms", adjust_latency,
-                    note="Shifts every strike against the notes. K measures "
-                         "this for you while playing — set by hand only if "
-                         "you know why.",
+                    opens="latency",
+                    note="Shifts every strike against the notes. ENTER plays "
+                         "a click and measures it from how you play along; "
+                         "K does the same inside a song. Left/right sets it "
+                         "by hand.",
                     is_default=lambda: c.audio_latency_offset_ms == 0.0),
             Setting("fret", "Fret limit", lambda: f"up to fret {c.max_fret}",
                     adjust_fret,

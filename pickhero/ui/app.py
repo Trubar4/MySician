@@ -18,6 +18,7 @@ from pickhero.tabs.loader import extract_backing_track, load_gp_file
 from pickhero.ui import clickable
 from pickhero.ui.colors import set_theme
 from pickhero.ui.calibration_menu import CalibrationMenuScreen
+from pickhero.ui.latency_menu import LatencyMenuScreen
 from pickhero.ui.scrolling import shift_held
 from pickhero.ui.tuner_menu import TunerMenuScreen
 from pickhero.ui.device_menu import DeviceMenuScreen
@@ -86,6 +87,7 @@ class App:
         self._device_menu: DeviceMenuScreen | None = None
         self._download_menu: DownloadMenuScreen | None = None
         self._calibration_menu: CalibrationMenuScreen | None = None
+        self._latency_menu: LatencyMenuScreen | None = None
         self._tuner_menu: TunerMenuScreen | None = None
         self._settings_menu: SettingsMenuScreen | None = None
         # Where ESC goes from the device and calibration screens. They are
@@ -392,6 +394,8 @@ class App:
             self._handle_download_event(event)
         elif self._state == "calibration":
             self._handle_calibration_event(event)
+        elif self._state == "latency":
+            self._handle_latency_event(event)
         elif self._state == "tuner":
             self._handle_tuner_event(event)
         elif self._state == "settings":
@@ -431,6 +435,7 @@ class App:
             "device": self._device_menu,
             "download": self._download_menu,
             "calibration": self._calibration_menu,
+            "latency": self._latency_menu,
             "tuner": self._tuner_menu,
             "settings": self._settings_menu,
         }.get(self._state)
@@ -623,6 +628,27 @@ class App:
         self._return_to = came_from
         self._state = "calibration"
 
+    def _open_latency(self, came_from: str) -> None:
+        """The latency wizard, on the tuning of the song under the cursor.
+
+        The same reason the tuner opens that way: the list already shows the
+        tuning on every row, so asking the player to dial it in again is
+        asking for something the app has. It decides WHICH string to ask for
+        -- never the low E, which `yinfast` folds to a third of its pitch.
+        """
+        from pickhero.audio.note_utils import tuning_for_notes
+        letters, _song = self._menu.selected_tuning() if self._menu else ("", "")
+        self._latency_menu = LatencyMenuScreen(
+            self._config, tuning_for_notes(letters))
+        self._return_to = came_from
+        self._state = "latency"
+
+    def _handle_latency_event(self, event: pygame.event.Event) -> None:
+        result = self._latency_menu.handle_event(event)
+        if result == "back":
+            self._latency_menu = None
+            self._state = self._return_to or "menu"
+
     def _handle_settings_event(self, event: pygame.event.Event) -> None:
         result = self._settings_menu.handle_event(event)
         if result == "back":
@@ -636,6 +662,8 @@ class App:
             self._open_device_menu("settings")
         elif result == "calibration":
             self._open_calibration("settings")
+        elif result == "latency":
+            self._open_latency("settings")
         elif result == "songs":
             self._choose_songs_folder()
 
@@ -1024,6 +1052,8 @@ class App:
             self._playing_screen.update()
         elif self._state == "calibration" and self._calibration_menu is not None:
             self._calibration_menu.update()
+        elif self._state == "latency" and self._latency_menu is not None:
+            self._latency_menu.update()
         elif self._state == "tuner" and self._tuner_menu is not None:
             self._tuner_menu.update()
 
@@ -1039,6 +1069,8 @@ class App:
             self._download_menu.render(surface)
         elif self._state == "calibration" and self._calibration_menu is not None:
             self._calibration_menu.render(surface)
+        elif self._state == "latency" and self._latency_menu is not None:
+            self._latency_menu.render(surface)
         elif self._state == "tuner" and self._tuner_menu is not None:
             self._tuner_menu.render(surface)
         elif self._state == "settings" and self._settings_menu is not None:
