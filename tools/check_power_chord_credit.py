@@ -24,6 +24,9 @@ Usage:
 
     python tools/check_power_chord_credit.py
     python tools/check_power_chord_credit.py --dir reference_recordings/20261113_184013
+    python tools/check_power_chord_credit.py --dir <take> \
+        --right "Godsmack - Awake bars 103-116.gp5" \
+        --wrong "Godsmack - Awake bars 103-116 up1.gp5"
 
 Exits non-zero when either half of the trade moves: a correct take must stay
 above MIN_CORRECT green, and the gap to the semitone-wrong reading must stay
@@ -58,6 +61,10 @@ DEFAULT_DIRS = [
 
 RIGHT = "power_chord_test_140bpm.gp5"
 WRONG = "power_chord_test_140bpm_up1.gp5"
+# Any pair cut by tools/cut_passage.py works the same way, so the pair is an
+# option rather than a constant: a passage out of a real Drop C song through a
+# high-gain amp is the one variable the test file cannot carry, and that is
+# what the whole measurement is still missing.
 
 # A record of what was measured on 2026-11-13, with margin -- not a fitted
 # bound. The three takes read 96.2 %, 88.9 % and 91.9 % green against the tab
@@ -72,8 +79,16 @@ TIMING_WINDOW_MS = 200.0
 LATE_WINDOW_MS = 300.0
 
 
-def blocks():
-    """(label, bar range) read off the generator, not written down twice."""
+def blocks(right=RIGHT):
+    """(label, bar range) read off the generator, not written down twice.
+
+    Only the power-chord test has blocks: it was BUILT with four densities so
+    the window floor could be crossed inside one file. A passage cut out of a
+    song has one density, whatever it is, so there is nothing to split and the
+    whole take is the one row -- which is honest rather than a limitation.
+    """
+    if Path(right).name not in (RIGHT, WRONG):
+        return []
     out, at = [], 0
     for label, bars in gen._sections(4, 0):
         if not label.startswith("Count-in"):
@@ -134,7 +149,7 @@ def percent(green, yellow, red):
     return 100.0 * green / total if total else 0.0
 
 
-def tabs_for(take):
+def tabs_for(take, right=RIGHT, wrong=WRONG):
     """(as played, a semitone away, what that direction is) off the manifest.
 
     Either copy may be the one that was played. A take of the up1 copy is
@@ -142,28 +157,30 @@ def tabs_for(take):
     a semitone ABOVE what is written, which is what a mis-fretted hand does.
     """
     song = take.get("song")
-    if song == Path(RIGHT).stem:
-        return RIGHT, WRONG, "the played note a semitone BELOW the written one"
-    if song == Path(WRONG).stem:
-        return WRONG, RIGHT, "the played note a semitone ABOVE the written one"
+    if song == Path(right).stem:
+        return right, wrong, "the played note a semitone BELOW the written one"
+    if song == Path(wrong).stem:
+        return wrong, right, "the played note a semitone ABOVE the written one"
     return None, None, None
 
 
-def check(directory):
+def check(directory, right=RIGHT, wrong=WRONG):
     """One take, against both tabs. True when the trade still holds."""
     manifest = json.loads((Path(directory) / "manifest.json").read_text())
     take = manifest["takes"][0]
     rate = int(manifest["samplerate"])
     wav = Path(directory) / take["file"]
-    played, away, direction = tabs_for(take)
+    played, away, direction = tabs_for(take, right, wrong)
     if played is None:
         print(f"  {directory.name}: recorded against {take.get('song')!r}, "
               f"which is neither test tab -- skipped")
         return True
 
-    right = score(wav, take, rate, SONGS / played)
-    wrong = score(wav, take, rate, SONGS / away)
-    bare = score(wav, take, rate, SONGS / away, strum=False)
+    played_tab = SONGS / played if not Path(played).is_absolute() else Path(played)
+    away_tab = SONGS / away if not Path(away).is_absolute() else Path(away)
+    right = score(wav, take, rate, played_tab)
+    wrong = score(wav, take, rate, away_tab)
+    bare = score(wav, take, rate, away_tab, strum=False)
     if right is None or wrong is None or bare is None:
         print(f"  {directory.name}: the manifest carries no mapping -- skipped")
         return True
@@ -173,7 +190,7 @@ def check(directory):
     print(f"  played {played}, so a semitone wrong is {direction}")
     print(f"  {'block':26s} {'as played':>14s}   "
           f"{'a semitone wrong':>34s}")
-    for label, bars in blocks():
+    for label, bars in blocks(played):
         rg, ry, rr = totals(right[0], bars)
         wg, wy, wr = totals(wrong[0], bars)
         print(f"  {label:26s}  green {rg:3d} {percent(rg, ry, rr):5.1f}%"
@@ -190,7 +207,7 @@ def check(directory):
           f"strum being heard rather than the note")
     print(f"  with the strum credit OFF, the wrong reading keeps "
           f"{b_pct:.1f}% green and the right one "
-          f"{percent(*totals(score(wav, take, rate, SONGS / played, strum=False)[0])):.1f}%")
+          f"{percent(*totals(score(wav, take, rate, played_tab, strum=False)[0])):.1f}%")
 
     ok = True
     if r_pct < MIN_CORRECT:
@@ -209,6 +226,10 @@ def main():
     ap = argparse.ArgumentParser(description="Power-chord conviction check.")
     ap.add_argument("--dir", action="append", default=None,
                     help="a take folder (repeatable)")
+    ap.add_argument("--right", default=RIGHT,
+                    help="the tab as written (default: the power-chord test)")
+    ap.add_argument("--wrong", default=WRONG,
+                    help="its copy a semitone higher")
     args = ap.parse_args()
     dirs = [Path(d) for d in args.dir] if args.dir else DEFAULT_DIRS
     ok = True
@@ -216,7 +237,7 @@ def main():
         if not (directory / "manifest.json").exists():
             print(f"  {directory}: no manifest -- skipped")
             continue
-        ok = check(directory) and ok
+        ok = check(directory, args.right, args.wrong) and ok
     print("\nOK" if ok else "\nFAILED")
     return 0 if ok else 1
 

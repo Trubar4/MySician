@@ -84,15 +84,23 @@ def dead():
     return ("dead", True)
 
 
-def beat(voice, duration_value: int, notes):
+def beat(voice, duration_value, notes):
     """One beat. `notes` is a list of (string, fret); empty means a rest.
 
     A note may carry techniques as (string, fret, effect, ...), where each
     effect comes from `bend()`, `slide()`, `legato()`, `palm_mute()` or
     `dead()`.
+
+    `duration_value` is a GP duration (1 whole, 4 quarter, 16 sixteenth), or
+    `(value, dotted)` for a dotted one. A passage cut out of a real tab needs
+    the dot: three quarters of a beat is how a chug riff is written, and
+    writing it as a sixteenth plus a rest would move every onset after it.
     """
     b = gp.Beat(voice=voice)
-    b.duration = gp.Duration(duration_value)
+    value, dotted = (duration_value if isinstance(duration_value, tuple)
+                     else (duration_value, False))
+    b.duration = gp.Duration(value)
+    b.duration.isDotted = bool(dotted)
     b.notes = []
     for spec in notes:
         string, fret, effects = spec[0], spec[1], spec[2:]
@@ -119,11 +127,17 @@ def beat(voice, duration_value: int, notes):
     return b
 
 
-def guitar_track(song: gp.Song, sections, name: str = "Play this") -> gp.Track:
+def guitar_track(song: gp.Song, sections, name: str = "Play this",
+                 tuning: list[int] | None = None) -> gp.Track:
     """Build the part to practise, and the measure headers the song hangs off.
 
     `sections` is a list of (label, bars); a bar is a list of
     (duration, notes) filling exactly 4/4.
+
+    `tuning` is string 1 (high) first, as GP numbers them. It has to be a
+    parameter rather than the module constant: a passage cut out of a Drop C
+    song and written in standard tuning is the same fret numbers playing
+    different music, which is the one thing a cut must not do.
     """
     track = gp.Track(song=song)
     track.number = 1
@@ -131,7 +145,8 @@ def guitar_track(song: gp.Song, sections, name: str = "Play this") -> gp.Track:
     track.fretCount = 24
     track.channel.instrument = 30  # distortion guitar
     track.strings = [
-        gp.GuitarString(number=i + 1, value=v) for i, v in enumerate(TUNING)
+        gp.GuitarString(number=i + 1, value=v)
+        for i, v in enumerate(tuning or TUNING)
     ]
     track.measures = []
 
@@ -192,7 +207,8 @@ def click_track(song: gp.Song, guitar: gp.Track, number: int = 2) -> gp.Track:
     return track
 
 
-def build_song(title: str, tempo: int, sections, track_name="Play this") -> gp.Song:
+def build_song(title: str, tempo: int, sections, track_name="Play this",
+               tuning: list[int] | None = None) -> gp.Song:
     """A two-track song: the part to practise plus its click."""
     song = gp.Song()
     song.title = title
@@ -203,7 +219,7 @@ def build_song(title: str, tempo: int, sections, track_name="Play this") -> gp.S
     song.measureHeaders = []
     song.tracks = []
 
-    guitar = guitar_track(song, sections, name=track_name)
+    guitar = guitar_track(song, sections, name=track_name, tuning=tuning)
     song.tracks.append(guitar)
     song.tracks.append(click_track(song, guitar))
     return song

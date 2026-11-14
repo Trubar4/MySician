@@ -4114,7 +4114,8 @@ pickhero/
 - `tests/test_loader.py` — load a reference GP5 file, verify extracted notes match expected
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
-- `tools/check_power_chord_credit.py` — the conviction rate on dense power chords: a take scored against the tab a semitone away from the one it was played from, per block, with the isolated block as the control and both directions measured rather than one inferred. Exits non-zero if the score against its own tab drops or the gap to the wrong reading shrinks
+- `tools/check_power_chord_credit.py` — the conviction rate on dense power chords: a take scored against the tab a semitone away from the one it was played from, per block, with the isolated block as the control and both directions measured rather than one inferred. Exits non-zero if the score against its own tab drops or the gap to the wrong reading shrinks. `--right`/`--wrong` point it at any pair `tools/cut_passage.py` wrote
+- `tests/test_cut_passage.py` — cutting a passage out of a real tab: that nothing moved, that a dotted value survives, that the `--offset` copy differs by exactly one semitone and by nothing else, and that the TUNING is not moved with the frets. Four of its fifteen fail on the first version of the tool, which moved both
 - `tests/test_power_chord_test.py` — the power-chord test tab: its shape, one shape a bar (what makes it playable, and the premise that every repeat asks the verifier the same question), that a shape CHANGE is still attributable, and that the dense blocks really lose their window at the default tempo. `test_at_a_slow_tempo_nothing_is_dense` and `test_and_a_bar_really_does_repeat_it` are the controls, without which the density and the repeat assertions pass on any file at all
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
 - `tests/test_tab_view.py` — the engraved page: where its rows of music are (read off verovio's own system groups, not guessed
@@ -7633,6 +7634,122 @@ needs, which is somebody willing to play it twice.
   slowing it down would have answered the complaint by deleting the measurement.
 - **Four of the six new tests fail on the old generator**, and the two that pass are the controls: a bar really holding 8 strikes, and the 3
   semitones, both of which the old file satisfied as well.
+
+## Dry County Is Not A Sync Problem, And The DTW Lost
+
+*"Kannst du Songs besser syncen als die Tools die wir haben und die Songsterr-Map, wenn ich dir Song, Map und MP3 gebe? Aktuelle
+Sync-Mlgk versagen."* Measured four ways on his own three files, and the answer to the headline question is **no**.
+
+**The raw drift curve is not a drift at all, it is PLATEAUS** -- 95 windows, unfiltered:
+
+| stretch | offset | windows | margin |
+|---|---|---|---|
+| 0:12-5:11 | **-2.40 s, flat** | 48 | 0.05-0.27 |
+| 7:05-7:53 | **-13.67 s** | 9 | 0.06-0.23 |
+| 8:23-8:35 | -14.29 s | 3 | |
+| 8:41-9:05 | -16.21 s | 5 | |
+
+The steps are **11.3 s and 12.0 s**, which at 160 BPM in 4/4 is 8 bars. `check_song_sync.py` fits one line through all of it and reports
+**-2.65 % drift**, which is an artefact of fitting a line to a staircase -- the same shape as Godsmack, and the sections machinery already
+handles it: 4 sections, 3 breaks, 20 points.
+
+**What it cannot handle is the 108 seconds between the first two plateaus, and that stretch has no answer to find.** Every tab window from
+5:17 to 5:47 matches the SAME place in the recording:
+
+| tab window | lag | so the recording is at |
+|---|---|---|
+| 317.5 | -3.4 | **314.1** |
+| 323.5 | -9.4 | **314.1** |
+| 329.5 | -15.4 | **314.1** |
+| 335.5 | -21.5 | **314.0** |
+| 341.5 | -27.4 | **314.1** |
+| 347.5 | -33.4 | **314.1** |
+
+- **It is not a tempo error.** Reading the stretch with a 10, 6 and 4 s window -- short enough that a 10 % rate error cannot smear it --
+  gives fitted slopes of 0.895, 0.975 and 1.236. A real rate is one number; three answers mean the readings are wrong matches.
+- **It is not a missing section either.** Searching the WHOLE recording for each tab window, with no +/-40 s band, the best match anywhere
+  in the file scores **0.18-0.27 with the runner-up 0.01 behind**, against 0.43 against 0.34 at 3:00. **The music there has no landmarks**:
+  it is the long instrumental, a vamp over one chord, and chroma over a 20 s window of a vamp is the same everywhere in the vamp.
+- **What IS established is the size of it.** Tab 311.5 s maps to recording 309.1, and tab 425.3 to recording 411.6: the tab writes 113.8 s
+  where the recording plays 102.5 -- **11.3 s, or 8 bars at 160 BPM.** Cut 11.3 s out of the vamp and the whole ten minutes reads at ONE
+  constant offset: windows agreeing on a single offset **47 of 95 -> 54 of 93**, median lag -2.40 s either side of the cut, MAD 0.05 s.
+- **Where you cut makes no measurable difference** (52-54 at every position from 5:15 to 7:03), which is the vamp's own missing landmarks
+  showing up a second time. So the app can say the eight bars are there and can never say which eight.
+- **Songsterr says the same from the other side**: 26 of their 30 maps carry **233 points** and the tab has **241 bars**. Their 241-point
+  maps are the 233-point map with 8 bars appended, identical for the first 233 to the decimal.
+
+### Four maps, scored on windows that can judge them
+
+The truth is local consensus -- a reading no further than 1 s from the median of its own nine-window neighbourhood -- because a window that
+passed `MIN_MARGIN` can still have matched the wrong chorus, and **five of this song's did**, at -33, -9.6, +30, +27 and +28 s. A truth taken
+from the listening's own kept rows would not be independent of the thing being scored.
+
+| | median | 90th percentile |
+|---|---|---|
+| one offset | 45 ms | 11 883 ms |
+| **the listening, held out** (fitted on the even windows) | **15 ms** | **634 ms** |
+| the listening, in-sample | 5 ms | 21 ms |
+| Songsterr's bar map, 130 points | 166 ms | 622 ms |
+| **DTW, monotone, the whole song** | **97 ms** | 738 ms |
+
+**The DTW is the thing this file has named "the next piece of work" for months, and on this song it is six times worse than what ships.**
+It is not a failed implementation: banded to +/-40 s with (1,1), (1,2) and (2,1) steps it runs the whole song in **1.5 s** and lands all
+three plateaus correctly (+2.4 / +13.7 / +16.2), ramping monotonically through the vamp. Our own windowed search simply reads the readable
+stretches more precisely, and no monotone path can invent an answer where the chroma has none. **So it is not being built**, and the
+"what this is not" section above is answered rather than still open.
+
+- **Two steps that advance the tab, never the textbook (0,1).** That move makes each cell depend on its neighbour in the SAME row, which is
+  21.6 million Python iterations here; with every step advancing the tab the whole row is one vectorised minimum. The first version had the
+  (0,1) move and a wrong backtrack: 10.8 s and 7798 pairs for 12559 tab frames.
+- **The scratch implementation is not committed.** It measures worse than what ships, so shipping it would be adding a second answer to one
+  question for a loss -- and the measurement is what this chapter is.
+
+**And merged tracks (`M`) do not make syncing harder**, which was the third question: both paths read the FILE, not the played track
+(`chroma_of_tab_file` walks every pitched track, the Songsterr path uses `_whole_song_timeline()`), the points live under `song_key` which is
+the tab's stem, and `merge_by_bar` takes the bar grid, the tempo and the length from the primary. Nothing a merge changes is an input to
+either measurement.
+
+## A Passage Is A File, Or It Is A Confound
+
+*"Nimm einen der geteilten Songs mit Drop C, such die richtige Stelle, transponiere sie up+1 oder original und dann spiele ich sie beide
+durch."* The chord-credit chapters end on exactly this gap, in their own words: *"it is still a test file, not a song: three strings on a
+clean standard-tuned guitar is not drop C through a high-gain amp."*
+
+`tools/cut_passage.py` cuts a stretch of a real tab into its own GP5, and `--offset 1` writes the copy a fret higher. The passage chosen
+is **Godsmack, "Awake", bars 103-116** -- the only Drop C song in `songs/`, and that passage is the uncovered case outright:
+
+| | |
+|---|---|
+| tuning | **Drop C** (C G C F A D), the player's own |
+| shape | **three-string power chords on strings 6/5/4** -- root, fifth, octave, the same shape as the test file |
+| frets | 0, 1 and 5 -- three grips, so `--offset 1` gives 1, 2 and 6 and everything stays reachable |
+| 138 strokes, all of them chords, 414 notes in 32.1 s | 297 of the notes palm-muted |
+| gaps 134-536 ms | **81 of 137 windows dropped** (a window needs 255 ms) |
+
+**It writes what the tab WROTE, and refuses rather than guesses.** `duration_quarters` is the note value; the passage's are 0.25, 0.5, 0.75
+and 1.0 quarters and **every onset sits exactly on a sixteenth** (worst distance 0.0000), which is checked before anything is written. A
+passage off the grid, bars of two lengths (one tempo is written, so a tempo change has to be the cut), or two notes of one stroke on one
+string -- which GP5's played-strings byte cannot express, and which is the fault `retune.py` paid for with a file that would not open -- are
+all refused with the reason.
+
+- **The dotted eighth is why `gp_builder.beat` learned the dot.** Three quarters of a beat is how a chug riff is written, and writing it as
+  a sixteenth plus a rest moves every onset after it.
+- **And `guitar_track` learned a tuning**, because a Drop C passage written in standard tuning is the same fret numbers playing different
+  music -- the one thing a cut must not do.
+- **The offset moves the FRETS and not the tuning, which was a real bug in the first version.** A tuning moved with them puts the copy TWO
+  semitones up while every fret still reads one higher, and a check that compares frets cannot see it. The verification compares **pitches**,
+  and three of the tests fail on that version.
+- **Verified through the real loader before the tool exits**: 414 notes both, identical timestamps, strings, durations and mute flags, and
+  every pitch **exactly +1** -- 0 notes differing by anything else. That is what lets one take's strikes be read against the other's tab with
+  no re-alignment, since song time is the same moment in both files.
+- **Both cuts are committed and pinned byte-for-byte to the generator**, for the reason the power-chord pair is: `tools/` is absent from the
+  EXE, so the file has to arrive with a `git pull`.
+- **`check_power_chord_credit.py` takes the pair as `--right`/`--wrong`** rather than a second copy of itself. The per-block breakdown is
+  skipped for a cut passage and says so by leaving the rows out: the test file was BUILT with four densities to cross the window floor
+  inside one file, where a passage out of a song has one density, whatever it happens to be.
+
+**What this still cannot answer until the takes arrive**, said before any number: whether the 30-35 % false green the test file measures
+holds on real material. That is the whole point of the passage, and it is a measurement rather than a prediction.
 
 ## What NOT To Do
 
