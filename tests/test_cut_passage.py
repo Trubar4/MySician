@@ -224,46 +224,68 @@ class TestWhatItRefuses:
             tool.main()
 
 
-class TestTheCommittedPairIsWhatTheToolWrites:
-    """Both cuts are checked in, for the reason the power-chord test is:
-    `tools/` is absent from the EXE, so the file has to arrive with a pull.
+class TestThePassageThisWasBuiltFor:
+    """Godsmack bars 103-116, if that tab is on this machine.
+
+    The cut is NOT committed and must not be: `.gitignore` keeps every
+    `songs/*.gp` out because they are somebody's music, and the one exception
+    it grants is for the generated diagnostic tabs, which this is not -- it is
+    fourteen bars of a real transcription. So the player regenerates it from
+    his own file with one command, and the suite skips rather than failing on
+    a clone that has no Godsmack.
     """
 
-    PASSAGE = ("songs/Godsmack - Awake.gp", "103-116")
-    RIGHT = ROOT / "songs" / "Godsmack - Awake bars 103-116.gp5"
-    WRONG = ROOT / "songs" / "Godsmack - Awake bars 103-116 up1.gp5"
+    SOURCE = ROOT / "songs" / "Godsmack - Awake.gp"
+    BARS = "103-116"
 
-    def test_they_are_there(self):
-        assert self.RIGHT.exists()
-        assert self.WRONG.exists()
+    @pytest.fixture
+    def cuts(self, tool, tmp_path):
+        if not self.SOURCE.exists():
+            pytest.skip("the source tab is not on this machine")
+        made = {}
+        for offset in (0, 1):
+            out = tmp_path / f"cut{offset}.gp5"
+            sys.argv = ["cut_passage.py", str(self.SOURCE), "--bars",
+                        self.BARS, "--offset", str(offset), "--out", str(out)]
+            assert tool.main() == 0
+            made[offset] = out
+        return made
 
-    @pytest.mark.parametrize("offset", [0, 1])
-    def test_byte_for_byte(self, tool, tmp_path, offset):
-        out = tmp_path / "fresh.gp5"
-        sys.argv = ["cut_passage.py", str(ROOT / self.PASSAGE[0]),
-                    "--bars", self.PASSAGE[1], "--offset", str(offset),
-                    "--out", str(out)]
-        assert tool.main() == 0
-        want = self.WRONG if offset else self.RIGHT
-        assert out.read_bytes() == want.read_bytes()
-
-    def test_it_is_the_uncovered_case(self, tool):
+    def test_it_is_the_uncovered_case(self, cuts):
         """Dense enough that most strikes get no verification window, which
         is the whole reason this passage was chosen over an isolated one."""
         from pickhero.audio.chord_verify import (
             MIN_WINDOW_MS, NEXT_STRIKE_GUARD_MS, SKIP_MS)
         floor = MIN_WINDOW_MS + SKIP_MS + NEXT_STRIKE_GUARD_MS
-        cut, notes = notes_of(self.RIGHT)
+        cut, notes = notes_of(cuts[0])
         at = sorted({round(n.timestamp_ms, 1) for n in notes})
         gaps = [b - a for a, b in zip(at, at[1:])]
         dropped = sum(1 for g in gaps if g < floor)
         assert dropped > len(gaps) / 2, f"{dropped} of {len(gaps)}"
 
-    def test_and_it_is_three_string_power_chords_in_drop_c(self, tool):
-        cut, notes = notes_of(self.RIGHT)
-        assert cut.metadata.tuning[6] == 36
+    def test_and_it_is_three_string_power_chords_in_drop_c(self, cuts):
+        cut, notes = notes_of(cuts[0])
+        assert cut.metadata.tuning[6] == 36        # C2, not E2
         strokes = {}
         for n in notes:
             strokes.setdefault(round(n.timestamp_ms, 1), []).append(n)
         sizes = {len(v) for v in strokes.values()}
         assert sizes == {3}, sizes
+
+    def test_the_copy_is_one_semitone_up_and_nothing_else(self, cuts):
+        a, an = notes_of(cuts[0])
+        b, bn = notes_of(cuts[1])
+        assert len(an) == len(bn)
+        assert a.metadata.tuning == b.metadata.tuning
+        for x, y in zip(an, bn):
+            assert y.midi_note == x.midi_note + 1
+            assert y.fret == x.fret + 1
+            assert x.timestamp_ms == y.timestamp_ms
+            assert x.palm_mute == y.palm_mute
+
+    def test_every_fret_stays_reachable_in_the_copy(self, cuts):
+        """The whole shape slides, so the copy must not run off the neck --
+        and nothing above the 7th fret keeps it under any fret filter the
+        player has set, which `note_filter` applies to the MATCHER as well."""
+        b, bn = notes_of(cuts[1])
+        assert max(n.fret for n in bn) <= 7

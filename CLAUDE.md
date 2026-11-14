@@ -4115,7 +4115,7 @@ pickhero/
 - `tests/test_timeline.py` — verify timeline tick advancement, note activation windows
 - `tests/test_downloader.py` — Songsterr search/download with mocked urllib responses
 - `tools/check_power_chord_credit.py` — the conviction rate on dense power chords: a take scored against the tab a semitone away from the one it was played from, per block, with the isolated block as the control and both directions measured rather than one inferred. Exits non-zero if the score against its own tab drops or the gap to the wrong reading shrinks. `--right`/`--wrong` point it at any pair `tools/cut_passage.py` wrote
-- `tests/test_cut_passage.py` — cutting a passage out of a real tab: that nothing moved, that a dotted value survives, that the `--offset` copy differs by exactly one semitone and by nothing else, and that the TUNING is not moved with the frets. Four of its fifteen fail on the first version of the tool, which moved both
+- `tests/test_cut_passage.py` — cutting a passage out of a real tab: that nothing moved, that a dotted value survives, that the `--offset` copy differs by exactly one semitone and by nothing else, and that the TUNING is not moved with the frets. Four of its tests fail on the first version of the tool, which moved both; its fixture builds its own Drop C source, and the class about the player's own Godsmack passage skips where that tab is not on the machine
 - `tests/test_power_chord_test.py` — the power-chord test tab: its shape, one shape a bar (what makes it playable, and the premise that every repeat asks the verifier the same question), that a shape CHANGE is still attributable, and that the dense blocks really lose their window at the default tempo. `test_at_a_slow_tempo_nothing_is_dense` and `test_and_a_bar_really_does_repeat_it` are the controls, without which the density and the repeat assertions pass on any file at all
 - `tests/test_strip.py` — the bottom strip: the arithmetic without a screen, and that the mouse really reaches it
 - `tests/test_tab_view.py` — the engraved page: where its rows of music are (read off verovio's own system groups, not guessed
@@ -7742,8 +7742,12 @@ all refused with the reason.
 - **Verified through the real loader before the tool exits**: 414 notes both, identical timestamps, strings, durations and mute flags, and
   every pitch **exactly +1** -- 0 notes differing by anything else. That is what lets one take's strikes be read against the other's tab with
   no re-alignment, since song time is the same moment in both files.
-- **Both cuts are committed and pinned byte-for-byte to the generator**, for the reason the power-chord pair is: `tools/` is absent from the
-  EXE, so the file has to arrive with a `git pull`.
+- **Neither cut is committed, and that is a correction git made rather than a decision.** `.gitignore` keeps every `songs/*.gp` out because
+  they are somebody's music, and the one exception it grants is `power_chord_test_*.gp5` with the reason written beside it: *"the generated
+  diagnostic tabs are fixtures rather than somebody's music"*. Fourteen bars of a real Godsmack transcription are not that. So the pair is
+  regenerated with one command on the machine that has the song, and `TestThePassageThisWasBuiltFor` **skips** rather than failing on a clone
+  that has no Godsmack -- which it would have done in CI, since the SOURCE tab is ignored too. There is no byte-pinning for the same reason:
+  the properties are asserted instead.
 - **`check_power_chord_credit.py` takes the pair as `--right`/`--wrong`** rather than a second copy of itself. The per-block breakdown is
   skipped for a cut passage and says so by leaving the rows out: the test file was BUILT with four densities to cross the window floor
   inside one file, where a passage out of a song has one density, whatever it happens to be.
