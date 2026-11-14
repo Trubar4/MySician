@@ -249,8 +249,22 @@ def verdict_text(report: dict | None, applied: float | None,
                 "The strings disagree with each other, which one offset "
                 "cannot fix either.",
                 "Nothing was stored."]
+        # Two different reasons to store nothing, and they tell the player
+        # to do opposite things. "Inside its own noise" means measure again
+        # -- more samples would resolve it. "Under the floor" means you are
+        # done, and measuring again can only waste a minute. The screen said
+        # the first for both, on a reading that was the second: 25 notes,
+        # median -18 ms, spread +/-23, so the noise bound is 17 ms and the
+        # 20 ms floor is what refused it.
+        from pickhero.matcher import FINE_MS
+        if abs(median) <= FINE_MS:
+            return head + lines_after + [
+                f"Under {FINE_MS:.0f} ms is not worth chasing -- it is "
+                f"inside what a strum spans.",
+                "Nothing was stored, and nothing needs to be."]
         return head + lines_after + [
             "The median is inside its own noise, so it is not an effect.",
+            "Measuring again with a steadier hand would settle it.",
             "Nothing was stored."]
     out = head + lines_after + [f"Offset set to {applied:+.0f} ms."]
     if output_latency_ms > 0:

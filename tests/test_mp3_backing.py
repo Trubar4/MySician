@@ -23,6 +23,19 @@ from pickhero.config import Config
 from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
 from pickhero.ui import scrolling
 from pickhero.ui.scrolling import _get_font
+
+
+def _break(at_s, jump_s, bars=4.0, gap_s=6.0):
+    """A real `autosync.Break`, never a stand-in for one.
+
+    The report's shape is what the app reads, so a fixture that invented its
+    own tuple would go on passing after the real one changed -- which is how
+    four tests here went green on a report nothing produced any more.
+    """
+    from pickhero.audio import autosync
+    bar_s = None if bars is None else abs(jump_s) / bars
+    return autosync.Break(at_s=at_s, before_s=at_s - gap_s, jump_s=jump_s,
+                          bars=bars, bar_s=bar_s)
 from pickhero.ui.scrolling import PlayingScreen
 
 
@@ -1086,17 +1099,22 @@ class TestAutoSyncInsideTheApp:
 
     def test_and_where_the_two_part_company_is_named(self, tmp_path,
                                                      monkeypatch):
-        """"29 of 47 windows" is a number nobody can act on. A time is a
-        place to put a point."""
+        """"29 of 47 windows" is a number nobody can act on.
+
+        Said in BARS, with both causes and the link -- see `_break_lines`.
+        The old line said seconds and "check those places by ear", which
+        points at a sync point for a thing no sync point can bridge.
+        """
         points = [(0.0, -260.0), (60_000.0, -300.0)]
         self._found(monkeypatch, points, windows=47, usable=29,
-                    breaks=[(89.0, -8.8), (179.0, -4.2)])
+                    breaks=[_break(89.0, -8.8, bars=4.4)])
         screen = self._screen(tmp_path, monkeypatch)
         screen._start_auto_sync()
         self._run(screen)
         panel = " ".join(screen._sync_lines)
-        assert "part company" in panel
-        assert "1:29" in panel and "-8.8" in panel
+        assert "1:29" in panel and "4.4 bars" in panel
+        assert "different edit" in panel and "wrong repeat" in panel, \
+            "naming one cause sends him to replace a recording that is fine"
 
     def test_a_song_that_reads_cleanly_says_nothing_about_breaks(
             self, tmp_path, monkeypatch):
@@ -1105,7 +1123,8 @@ class TestAutoSyncInsideTheApp:
         screen = self._screen(tmp_path, monkeypatch)
         screen._start_auto_sync()
         self._run(screen)
-        assert "part company" not in " ".join(screen._sync_lines)
+        panel = " ".join(screen._sync_lines)
+        assert "bars" not in panel and "readable between" not in panel
 
     def test_a_recording_it_cannot_read_says_so(self, tmp_path, monkeypatch):
         self._found(monkeypatch, [], windows=30, usable=1)
@@ -1983,3 +2002,121 @@ class TestNoPathThatWritesTheSyncLeavesANudgeStanding:
         screen = self._screen(tmp_path, monkeypatch)
         screen._forget_sync_for_new_recording()
         assert screen._mp3_offset() == 0.0
+
+
+class TestWhatABreakIsSaidToBe(TestAutoSyncInsideTheApp):
+    """"Würde mir die App auch sagen, dass ich eine andere Audioquelle
+    brauche?"
+
+    It said a time and "check those places by ear", which points at a sync
+    point -- and `SyncMap` clamps a segment's slope, so a ten-second step
+    over a six-second gap is spread across the music rather than expressed.
+    No amount of ear fixes it.
+
+    And without a LINK there is nothing to do about it either: "ohne Link
+    habe ich keine Lösung." Songsterr's points were timed against one
+    particular upload, which is why their own player never shows this, and
+    that video's id has been in the map cached beside the tab all along.
+    """
+
+    def _panel(self, tmp_path, monkeypatch, breaks, **kw):
+        points = [(0.0, -260.0), (60_000.0, -300.0)]
+        self._found(monkeypatch, points, windows=47, usable=29,
+                    breaks=breaks, **kw)
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._start_auto_sync()
+        self._run(screen)
+        return " ".join(screen._sync_lines)
+
+    def test_it_is_said_in_bars(self, tmp_path, monkeypatch):
+        """Seconds are a number; bars are the unit the difference comes in."""
+        panel = self._panel(tmp_path, monkeypatch,
+                            [_break(89.0, -8.8, bars=4.4)])
+        assert "4.4 bars" in panel
+
+    def test_and_names_which_side_has_the_music(self, tmp_path, monkeypatch):
+        mine = self._panel(tmp_path, monkeypatch,
+                           [_break(89.0, -8.8, bars=4.4)])
+        theirs = self._panel(tmp_path, monkeypatch,
+                             [_break(89.0, +8.8, bars=4.4)])
+        assert "the tab has 4.4 bars this recording has not" in mine
+        assert "this recording has 4.4 bars the tab has not" in theirs
+
+    def test_under_a_bar_is_not_said_at_all(self, tmp_path, monkeypatch):
+        """Music cannot be missing by two thirds of a bar."""
+        panel = self._panel(tmp_path, monkeypatch,
+                            [_break(89.0, -1.0, bars=0.7)])
+        assert "bars" not in panel
+
+    def test_a_jump_across_a_hole_is_not_called_music(self, tmp_path,
+                                                      monkeypatch):
+        """Dry County. It is `unknown rate x gap`, and saying otherwise sent
+        the player to replace a recording that was never wrong."""
+        panel = self._panel(tmp_path, monkeypatch,
+                            [_break(435.0, -10.3, bars=6.9, gap_s=108.0)])
+        assert "bars" not in panel
+        assert "nothing is readable between" in panel
+        assert "10.3 s" in panel
+
+    def test_both_causes_are_named(self, tmp_path, monkeypatch):
+        """Nothing in the lag curve tells a different edit from a window
+        that matched the wrong repeat. Godsmack's 3.9 bars and Dry County's
+        are the same shape."""
+        panel = self._panel(tmp_path, monkeypatch,
+                            [_break(89.0, -8.8, bars=4.4)])
+        assert "different edit" in panel and "wrong repeat" in panel
+
+    def test_the_link_is_given_where_there_is_one(self, tmp_path,
+                                                  monkeypatch):
+        import json
+        from pickhero.tabs import songsterr
+        tab = tmp_path / "song.gp5"
+        tab.write_bytes(b"x")
+        (tmp_path / "song.songsterr.json").write_text(json.dumps({
+            "songId": 1, "revisionId": 2, "title": "t", "artist": "a",
+            "entries": [{"videoId": "Q-UWZg1d6BU", "feature": None,
+                         "points": [0.0, 3.0, 6.0]}]}))
+        assert songsterr.video_url_for(tab) == "youtu.be/Q-UWZg1d6BU"
+
+    def test_and_names_the_key_that_gets_one_where_there_is_not(
+            self, tmp_path, monkeypatch):
+        panel = self._panel(tmp_path, monkeypatch,
+                            [_break(89.0, -8.8, bars=4.4)])
+        assert "Ctrl+U" in panel, "a line with nothing to act on"
+
+    def test_the_hud_says_it_without_opening_the_panel(self, tmp_path,
+                                                       monkeypatch):
+        """`_sync_lines` is drawn by S and by nothing else, so a player who
+        never presses it is never told. The fifth time in this project that
+        a feature could not be seen working."""
+        points = [(0.0, -260.0), (60_000.0, -300.0)]
+        self._found(monkeypatch, points, windows=47, usable=29,
+                    breaks=[_break(89.0, -8.8, bars=4.4)])
+        screen = self._screen(tmp_path, monkeypatch)
+        said = []
+        screen._say = said.append
+        screen._start_auto_sync()
+        self._run(screen)
+        assert said and "4.4 bars" in said[0] and "1:29" in said[0]
+
+    def test_and_says_the_hole_too(self, tmp_path, monkeypatch):
+        """The commoner case, and the one the player actually met."""
+        points = [(0.0, -260.0), (60_000.0, -300.0)]
+        self._found(monkeypatch, points, windows=47, usable=29,
+                    breaks=[_break(435.0, -10.3, bars=6.9, gap_s=108.0)])
+        screen = self._screen(tmp_path, monkeypatch)
+        said = []
+        screen._say = said.append
+        screen._start_auto_sync()
+        self._run(screen)
+        assert said and "10.3 s" in said[0]
+
+    def test_a_clean_song_says_nothing_at_all(self, tmp_path, monkeypatch):
+        points = [(0.0, -260.0), (60_000.0, -300.0)]
+        self._found(monkeypatch, points, windows=42, usable=32)
+        screen = self._screen(tmp_path, monkeypatch)
+        said = []
+        screen._say = said.append
+        screen._start_auto_sync()
+        self._run(screen)
+        assert not said

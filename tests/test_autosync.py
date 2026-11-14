@@ -409,7 +409,8 @@ class TestSayingWhatCouldNotBeRead:
         report = autosync.read_report(
             self._rows(240, lambda t: 0.0 if t < 120 else 10.0))
         assert report["readable"]
-        assert [at for at, _ in report["breaks"]] == [120.0]
+        assert [b.at_s for b in report["breaks"]] == [
+            120.0 + autosync.WINDOW_S / 2]
 
     def test_noise_is_not_readable_at_any_count(self):
         """What's Up: four chords for four minutes, windows matching +9.9,
@@ -493,17 +494,21 @@ class TestTheBreaksAreTheOnesTheMapHas:
     def test_but_a_real_step_still_is(self):
         rows = [(float(t), 0.0 if t < 120 else 10.0, 0.05)
                 for t in range(0, 240, 6)]
-        assert [at for at, _ in autosync.read_report(rows)["breaks"]] == [120.0]
+        breaks = autosync.read_report(rows)["breaks"]
+        # The window CENTRE, which is what a stored point carries and what
+        # the player reads off his transport. The old UI line printed the
+        # window's START and was ten seconds early on every break it named.
+        assert [b.at_s for b in breaks] == [120.0 + autosync.WINDOW_S / 2]
 
     def test_every_reported_break_is_in_the_stored_points(self):
         rows = [(float(t), 0.0 if t < 120 else 10.0, 0.05)
                 for t in range(0, 240, 6)]
         report = autosync.read_report(rows)
         points = autosync.points_from_rows(rows)
-        for at, by in report["breaks"]:
+        for b in report["breaks"]:
             near = [offset for song_ms, offset in points
-                    if abs(song_ms / 1000.0 - (at + autosync.WINDOW_S / 2)) < 10]
-            assert near, f"the map has nothing at {at}"
+                    if abs(song_ms / 1000.0 - b.at_s) < 10]
+            assert near, f"the map has nothing at {b.at_s}"
 
 
 class TestATabWrittenAtTheWrongTempo:
@@ -697,3 +702,116 @@ class TestTheLagSweepWithoutThePythonLoop:
         autosync.drift_curve(tab, rec, fps)
         mine = time.perf_counter() - t0
         assert mine * 5 < loop, f"{loop:.2f} s against {mine:.2f} s"
+
+
+class TestABreakIsOnlyMusicWhenNothingElseExplainsIt:
+    """A jump across an unreadable stretch is `unknown rate x gap`.
+
+    Dry County is the case, and it was nearly shipped as the opposite. The
+    listening reports 10.3 s between 5:27 and 7:15 with 108 seconds of
+    unreadable vamp in between, and that went into this project's notes --
+    and was told to the player -- as eight bars his recording has not got.
+
+    Songsterr's own map for the same tab refutes it: 241 points against 241
+    bars, biggest single-bar step 1.50 s where a missing eight bars would be
+    24, and the whole 16.6 s is accumulated tempo at 6.6 % across that vamp
+    against the 5 % the drift model allows. His recording was never wrong.
+    """
+
+    def _rows(self, lag_at, seconds=300, margin=0.05, skip=()):
+        return [(float(t), lag_at(t), margin)
+                for t in range(0, seconds, 6) if t not in skip]
+
+    def _tab(self, bar_s=3.0, bars=120):
+        from pickhero.tabs.timeline import NoteEvent, MeasureInfo, Timeline
+        notes = [NoteEvent(timestamp_ms=i * bar_s * 1000, duration_ms=200.0,
+                           midi_note=40, string=6, fret=0, measure=i)
+                 for i in range(bars)]
+        measures = [MeasureInfo(index=i, start_ms=i * bar_s * 1000,
+                                end_ms=(i + 1) * bar_s * 1000)
+                    for i in range(bars)]
+        return Timeline(notes, measures=measures)
+
+    def test_a_step_between_neighbours_is_music(self):
+        rows = self._rows(lambda t: 0.0 if t < 120 else 9.0)
+        breaks = autosync.read_report(rows, self._tab())["breaks"]
+        assert [round(b.bars, 1) for b in breaks] == [3.0]
+        assert breaks[0].real and breaks[0].localised
+
+    def test_the_same_step_across_a_hole_is_not(self):
+        """Identical jump, identical bars -- and nothing was readable for a
+        hundred seconds either side, so nobody knows what the rate was."""
+        # The hole sits BETWEEN the two lag values, which is the whole
+        # case: the last reading before the step and the first after
+        # it are 108 s apart.
+        skip = tuple(range(120, 222, 6))
+        rows = self._rows(lambda t: 0.0 if t < 120 else 9.0, skip=skip)
+        breaks = autosync.read_report(rows, self._tab())["breaks"]
+        assert len(breaks) == 1
+        assert round(breaks[0].bars, 1) == 3.0, "it is still measured"
+        assert not breaks[0].localised and not breaks[0].real
+
+    def test_under_one_bar_is_a_reading_at_a_section_edge(self):
+        """Music cannot be missing by two thirds of a bar. Dry County's two
+        small steps are 0.69 and 0.63 bars."""
+        rows = self._rows(lambda t: 0.0 if t < 120 else 2.0)
+        breaks = autosync.read_report(rows, self._tab())["breaks"]
+        assert breaks and breaks[0].localised
+        assert round(breaks[0].bars, 2) == 0.67 and not breaks[0].real
+
+    def test_a_tab_with_no_bar_grid_says_so_rather_than_counting(self):
+        """None is not zero. Collapsing them would hide a real break."""
+        rows = self._rows(lambda t: 0.0 if t < 120 else 9.0)
+        breaks = autosync.read_report(rows)["breaks"]
+        assert breaks and breaks[0].bars is None and not breaks[0].real
+
+    def test_the_bar_is_read_where_the_break_is(self):
+        """A tempo change must not make the count describe another part of
+        the song: the same 9 s is 3 bars at 3 s and 6 at 1.5."""
+        rows = self._rows(lambda t: 0.0 if t < 120 else 9.0)
+        fast = autosync.read_report(rows, self._tab(bar_s=1.5))["breaks"]
+        assert round(fast[0].bars, 1) == 6.0
+
+    def test_which_side_has_the_music_is_the_sign(self):
+        rows = self._rows(lambda t: 0.0 if t < 120 else -9.0)
+        breaks = autosync.read_report(rows, self._tab())["breaks"]
+        assert breaks[0].jump_s < 0 and round(breaks[0].bars, 1) == 3.0
+
+
+class TestTheBarMapPathNamesBreaksToo:
+    """It had none at all, which made it the one place a recording missing
+    eight bars was never named: it read "69 of 92 windows agree to 200 ms"
+    and stored a map walking 16.6 s.
+
+    Read off `usable_rows`, NOT off the windows that agreed with the
+    constant -- those are the ones a break has already been removed from.
+    """
+
+    def test_the_fit_reports_them(self):
+        from pickhero.tabs.timeline import NoteEvent, MeasureInfo, Timeline
+        bars, bar_s = 60, 3.0
+        notes = [NoteEvent(timestamp_ms=i * bar_s * 1000, duration_ms=200.0,
+                           midi_note=40, string=6, fret=0, measure=i)
+                 for i in range(bars)]
+        measures = [MeasureInfo(index=i, start_ms=i * bar_s * 1000,
+                                end_ms=(i + 1) * bar_s * 1000)
+                    for i in range(bars)]
+        timeline = Timeline(notes, measures=measures)
+        rows = [(float(t), 0.0 if t < 90 else 9.0, 0.05)
+                for t in range(0, 180, 6)]
+        report = autosync._fit_one(
+            {"windows": 0, "usable": 0, "share": 0.0, "ambiguous": 0,
+             "breaks": [], "readable": False, "spikes": 0, "covered": None,
+             "song_s": 0.0, "points": [], "bars": 0},
+            [m.start_ms for m in measures],
+            [i * bar_s for i in range(bars)], rows, 25.0, timeline)
+        assert [round(b.bars, 1) for b in report["breaks"]] == [3.0]
+
+    def test_and_none_where_the_curve_is_flat(self):
+        rows = [(float(t), 0.02, 0.05) for t in range(0, 180, 6)]
+        report = autosync._fit_one(
+            {"windows": 0, "usable": 0, "share": 0.0, "ambiguous": 0,
+             "breaks": [], "readable": False, "spikes": 0, "covered": None,
+             "song_s": 0.0, "points": [], "bars": 0},
+            [0.0, 1000.0], [0.0, 1.0], rows, 25.0, None)
+        assert report["breaks"] == []

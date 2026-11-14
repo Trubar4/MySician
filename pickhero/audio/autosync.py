@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, NamedTuple, Sequence
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
@@ -138,6 +138,21 @@ MAX_LENGTH_MISMATCH = 0.10
 # median against the player's Thunder recording -- and far narrower than a
 # wrong chorus, which is tens of seconds.
 BAR_MAP_AGREE_S = 3.0
+# How big a break has to be before it is music one of them has not got.
+#
+# NOT fitted -- reasoned, and it is the one threshold here that needs no
+# recording to justify: music cannot be missing by two thirds of a bar. What
+# a tab holds and a recording does not is a WHOLE number of bars, so anything
+# under one is the break test firing on a reading at a section edge, and
+# "0.7 bars are missing" sends the player looking for something that is not
+# there.
+#
+# Measured on the player's own Dry County, where it separates the two cleanly:
+# 5:21 is 0.69 bars, 8:45 is 0.63, and the one that matters -- 5:27 to 7:15 --
+# is 6.88. The five other songs with a recording on this machine report no
+# break at all, and Godsmack reports three of 3.9 to 6.0 bars, which is the
+# case the WORDING has to cover rather than the threshold (see `Break.real`).
+MIN_BREAK_BARS = 1.0
 
 
 def decode(path: str | Path, samplerate: int = 44100) -> tuple[np.ndarray, int]:
@@ -475,6 +490,116 @@ def breaks_in(kept: Sequence[tuple[float, float]]
     return out
 
 
+class Break(NamedTuple):
+    """One place the tab and the recording stop being the same music.
+
+    `breaks_in` names the reading AFTER a break, which is all the MAP needs.
+    Saying it to a player needs three more things, and each of them is the
+    difference between a number and something to act on:
+
+    - the reading BEFORE it, because the two together are how wide the
+      uncertainty is -- a jump localised to two minutes is not a place
+      anybody can put a sync point;
+    - the size in BARS, because what a tab holds and a recording does not is
+      a whole number of them;
+    - which side has the music, which is the sign.
+    """
+
+    at_s: float          #: the first reading after the break, window centre
+    before_s: float      #: the last reading before it, window centre
+    jump_s: float        #: negative: the recording has less music here
+    bars: float | None   #: how many of the tab's own bars that is
+    bar_s: float | None  #: the length of one bar there
+
+    @property
+    def real(self) -> bool:
+        """Whether this is music one of them has not got.
+
+        TWO conditions, and the second was learnt the expensive way.
+
+        A bar or more, because music cannot be missing by two thirds of one.
+
+        And LOCALISED, because a jump measured across a stretch where nothing
+        is readable is `unknown rate x gap` and proves nothing whatsoever.
+        Dry County is the case: the listening reports 10.3 s between 5:27 and
+        7:15 with 108 seconds of unreadable vamp in between, and that was
+        written up -- in this project's own notes, and told to the player --
+        as eight bars his recording has not got. Songsterr's own 241-point
+        map for the same tab refutes it outright: 241 points against 241
+        bars, and the BIGGEST single-bar step in it is 1.50 s where a missing
+        eight bars would be 24. The whole 16.6 s is accumulated tempo, 6.6 %
+        across that vamp against the 5 % the drift model allows -- just
+        outside the bound, so `breaks_in` calls it a break.
+        Over a gap of `2 x STEP_S` the fastest allowed drift moves the
+        readings 0.6 s, which no bar of any real song is shorter than, so a
+        break of one bar over that gap cannot be drift. Over a longer gap
+        nobody knows what the rate was, and this refuses to guess.
+
+        It still does NOT mean "the recording is a different edit". A tab
+        whose riffs recur produces the same shape when a window matches the
+        wrong repeat -- Godsmack's 3.9 bars at 3:58 is formally
+        indistinguishable from 3.9 bars his rip has not got. Nothing in the
+        lag curve tells those apart, so what is SAID has to name both.
+        """
+        return (self.bars is not None and self.bars >= MIN_BREAK_BARS
+                and self.localised)
+
+    @property
+    def localised(self) -> bool:
+        """Whether the two readings are neighbours.
+
+        False when no window between them is readable -- Dry County's 108
+        seconds of vamp with no landmarks. Then the jump is whatever the
+        drift did across it, and `real` refuses to call it music. See there.
+        """
+        return self.at_s - self.before_s <= 2 * STEP_S + 1e-6
+
+
+def bars_worth(timeline: Timeline, when_s: float,
+               seconds: float) -> tuple[float, float] | None:
+    """(bars, the length of one bar there) that much time is worth.
+
+    The bar at that moment rather than an average, so a tempo change does not
+    make the count describe a different part of the song. None where the tab
+    has no bar grid at all, which is a reading the caller must not invent.
+    """
+    at = when_s * 1000.0
+    lengths = [m.end_ms - m.start_ms for m in timeline.measures
+               if m.end_ms > m.start_ms]
+    if not lengths:
+        return None
+    here = [m.end_ms - m.start_ms for m in timeline.measures
+            if m.start_ms <= at < m.end_ms and m.end_ms > m.start_ms]
+    bar_ms = here[0] if here else float(np.median(lengths))
+    return seconds * 1000.0 / bar_ms, bar_ms / 1000.0
+
+
+def described_breaks(kept: Sequence[tuple[float, float]],
+                     timeline: Timeline | None) -> list[Break]:
+    """Every break with the span and the bar count the report needs.
+
+    Positions are window CENTRES, which is what a stored point carries and
+    what the player reads off his own transport.
+
+    Without a bar grid the breaks are still returned, with `bars` as None.
+    "I cannot count this in bars" and "there is no break here" are different
+    answers, and collapsing them would hide a real one.
+    """
+    at_break = dict(breaks_in(kept))
+    half = WINDOW_S / 2.0
+    out: list[Break] = []
+    for (before, _), (after, _) in zip(kept, kept[1:]):
+        if after not in at_break:
+            continue
+        jump = at_break[after]
+        worth = (bars_worth(timeline, before + half, abs(jump))
+                 if timeline is not None else None)
+        bars, bar_s = worth if worth is not None else (None, None)
+        out.append(Break(at_s=after + half, before_s=before + half,
+                         jump_s=jump, bars=bars, bar_s=bar_s))
+    return out
+
+
 def sections(kept: Sequence[tuple[float, float]]
              ) -> list[list[tuple[float, float]]]:
     """The readings split where they jump, longest run first in time order."""
@@ -565,7 +690,8 @@ def usable_rows(rows: Iterable[tuple[float, float, float]]
     return out
 
 
-def read_report(rows: Sequence[tuple[float, float, float]]) -> dict:
+def read_report(rows: Sequence[tuple[float, float, float]],
+                timeline: Timeline | None = None) -> dict:
     """What the listening could and could not read, as numbers.
 
     Separate from the points because the app has to be able to SAY what
@@ -591,7 +717,7 @@ def read_report(rows: Sequence[tuple[float, float, float]]) -> dict:
         # and the rest at -23.5 s -- and comparing raw endpoints then reported
         # a 24.9 s break that the stored points do not have. A break the map
         # does not contain is a line that lies.
-        "breaks": breaks_in(kept),
+        "breaks": described_breaks(kept, timeline),
         "sections": len(parts),
         "sections_used": len(used),
         "unreadable": dropped,
@@ -896,13 +1022,15 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
             (lambda f, d=done, k=n: progress(0.5 + 0.5 * (d + f) / k,
                                              f"comparing map {d + 1} of {k}"))
             if progress else None)
-        found = _fit_one(report, bar_starts, bar_times, rows, tolerance_ms)
+        found = _fit_one(report, bar_starts, bar_times, rows,
+                         tolerance_ms, timeline)
         if found["share"] > best["share"]:
             best = found
     return best
 
 
-def _fit_one(base: dict, bar_starts, bar_times, rows, tolerance_ms) -> dict:
+def _fit_one(base: dict, bar_starts, bar_times, rows, tolerance_ms,
+             timeline: Timeline | None = None) -> dict:
     """One candidate map measured against the recording."""
     report = dict(base)
     report["bars"] = len(bar_times)
@@ -920,6 +1048,17 @@ def _fit_one(base: dict, bar_starts, bar_times, rows, tolerance_ms) -> dict:
               if abs(lag - constant) <= BAR_MAP_AGREE_S]
     report["usable"] = len(agreed)
     report["share"] = len(agreed) / max(1, len(rows))
+    # Read off the SAME filter the listening uses, not off `agreed`. A map
+    # judged by one constant throws away every window past a break -- they
+    # are more than BAR_MAP_AGREE_S from the median, which is what makes
+    # them a break -- so asking `agreed` about breaks is asking a list the
+    # breaks have already been removed from. Measured on Dry County: zero
+    # breaks from `agreed`, the real 6.9-bar one from `usable_rows`.
+    #
+    # This path had NO break detection at all, which made it the one place a
+    # recording missing eight bars was never named: it read "69 of 92
+    # windows agree to 200 ms" and stored a map walking 16.6 s.
+    report["breaks"] = described_breaks(usable_rows(rows), timeline)
     report["constant_s"] = constant
     report["scatter_ms"] = (
         1000.0 * float(np.median([abs(lag - constant) for _, lag in agreed]))
@@ -1031,7 +1170,8 @@ def find(timeline: Timeline | str | Path, audio_path: str | Path,
     """
     points, rows, (tab_s, rec_s) = measure(
         timeline, audio_path, progress, tolerance_ms)
-    report = read_report(rows)
+    report = read_report(
+        rows, timeline if isinstance(timeline, Timeline) else None)
     report["tab_s"] = tab_s
     report["recording_s"] = rec_s
     longer = max(tab_s, rec_s, 1e-9)

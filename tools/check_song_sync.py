@@ -81,6 +81,7 @@ drift_curve = autosync.drift_curve
 read_report = autosync.read_report
 usable_rows = autosync.usable_rows
 breaks_in = autosync.breaks_in
+described_breaks = autosync.described_breaks
 sections = autosync.sections
 merged_sections = autosync.merged_sections
 robust_line = autosync._robust_line
@@ -136,43 +137,6 @@ def _write_sync(args, tab_path: Path, rows) -> None:
 
 def mmss(seconds: float) -> str:
     return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
-
-
-def breaks_with_span(kept):
-    """(last reading before, first after, the jump) for every break.
-
-    ``breaks_in`` names the reading AFTER a break, which is all the map
-    needs. A REPORT needs the one before it as well: the two together are
-    how wide the uncertainty is, and a jump localised to two minutes is not
-    a place anybody can put a sync point. Positions are window CENTRES,
-    which is what a stored point carries.
-    """
-    at_break = dict(breaks_in(kept))
-    half = WINDOW_S / 2.0
-    out = []
-    for (before, _), (after, _) in zip(kept, kept[1:]):
-        if after in at_break:
-            out.append((before + half, after + half, at_break[after]))
-    return out
-
-
-def bars_worth(timeline, when_s: float, seconds: float):
-    """(bars, the length of one bar there) that much time is worth.
-
-    A break said in seconds is a number; said in BARS it is something to act
-    on, because what a tab holds and a recording does not is a whole number
-    of bars. The length is read where the break is rather than averaged, so
-    a tempo change elsewhere cannot answer about this stretch.
-    """
-    at = when_s * 1000.0
-    lengths = [m.end_ms - m.start_ms for m in timeline.measures
-               if m.end_ms > m.start_ms]
-    if not lengths:
-        return None
-    here = [m.end_ms - m.start_ms for m in timeline.measures
-            if m.start_ms <= at < m.end_ms and m.end_ms > m.start_ms]
-    bar_ms = here[0] if here else float(np.median(lengths))
-    return seconds * 1000.0 / bar_ms, bar_ms / 1000.0
 
 
 def section_fits(kept):
@@ -263,7 +227,7 @@ def main() -> int:
     # answers it has been in autosync for months, so it is read from there
     # rather than fitted a second way here. Two answers to one question is
     # the fault this project has paid for at the repeats and the transpose.
-    report = read_report(rows)
+    report = read_report(rows, timeline)
     kept = usable_rows(rows)
     unusable = report["windows"] - report["ambiguous"] - report["usable"]
     print(f"\nLESEN  ({report['windows']} Fenster)")
@@ -286,36 +250,35 @@ def main() -> int:
         return 0
 
     # ---- where they stop being the same piece of music ---------------
-    breaks = breaks_with_span(kept)
+    breaks = described_breaks(kept, timeline)
     if breaks:
         print("\nBRUECHE  (hier sind Tab und Aufnahme nicht dasselbe Stueck)")
-        for before, after, jump in breaks:
+        for b in breaks:
             who = ("der Tab hat Musik, die die Aufnahme nicht hat"
-                   if jump < 0 else
+                   if b.jump_s < 0 else
                    "die Aufnahme hat Musik, die der Tab nicht hat")
-            print(f"  zwischen {mmss(before)} und {mmss(after)}: "
-                  f"{abs(jump):.1f}s -- {who}")
-            worth = bars_worth(timeline, before, abs(jump))
-            if worth:
-                bars, bar_s = worth
+            print(f"  zwischen {mmss(b.before_s)} und {mmss(b.at_s)}: "
+                  f"{abs(b.jump_s):.1f}s -- {who}")
+            if b.bars is not None:
                 # In BARS, because what a tab holds and a recording does not
                 # is a whole number of them -- and that is the thing to act
                 # on. Seconds alone are a number nobody can do anything with.
-                print(f"    das sind {bars:.1f} Takte "
-                      f"(ein Takt dort: {bar_s:.2f}s)")
-                if bars < 1.0:
-                    # Music cannot be missing by two thirds of a bar. Under
-                    # one bar this is the break threshold firing on a reading
-                    # at a section edge, not an arrangement difference -- and
-                    # saying "0.7 Takte fehlen" sends somebody looking for
-                    # something that is not there.
-                    print("    Unter einem Takt: das ist eher ein "
-                          "Lesefehler am Abschnittsrand\n    als fehlende "
-                          "Musik.")
-            if after - before > 2 * STEP_S:
-                print(f"    Die Stelle ist nur auf {after - before:.0f}s "
-                      f"eingegrenzt -- dazwischen\n    ist kein Fenster "
-                      f"lesbar, also kann niemand sagen WO genau.")
+                print(f"    das sind {b.bars:.1f} Takte "
+                      f"(ein Takt dort: {b.bar_s:.2f}s)")
+            if not b.real:
+                # Music cannot be missing by two thirds of a bar. Under one
+                # bar this is the break threshold firing on a reading at a
+                # section edge, not an arrangement difference -- and saying
+                # "0.7 Takte fehlen" sends somebody looking for something
+                # that is not there.
+                print("    Unter einem Takt: das ist eher ein "
+                      "Lesefehler am Abschnittsrand\n    als fehlende "
+                      "Musik.")
+            elif not b.localised:
+                print(f"    Die Stelle ist nur auf "
+                      f"{b.at_s - b.before_s:.0f}s eingegrenzt -- dazwischen"
+                      f"\n    ist kein Fenster lesbar, also kann niemand "
+                      f"sagen WO genau.")
 
     # ---- each section, with its own line -----------------------------
     fits = section_fits(kept)

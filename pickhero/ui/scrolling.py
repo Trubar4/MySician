@@ -1479,6 +1479,7 @@ class PlayingScreen:
         #: "not asked yet" and "" means "nothing to say" -- the panel is
         #: drawn every frame while it is open, and this costs a disk read.
         self._source_video: str | None = None
+        self._source_video_link: str | None = None
         # Which page of how many the tab view last drew, so the footer can
         # say it without the drawing having to reach the footer. The page
         # number comes from the clock and not from the layout, so unlike
@@ -10281,6 +10282,7 @@ class PlayingScreen:
             return
         _, points, report = result
         self._sync_lines = self._auto_sync_report_lines(points, report)
+        self._say_break(report)
         if not report["readable"] or len(points) < 2:
             return
         # Written beside the tab as soon as they exist. These are minutes of
@@ -10320,6 +10322,42 @@ class PlayingScreen:
         described = list(self._sync_lines)
         self._describe_sync()
         self._sync_lines = described + self._sync_lines
+
+    def _say_break(self, report) -> None:
+        """Put the headline on the HUD, not only in a panel nobody opened.
+
+        `_sync_lines` is drawn by `S` and by nothing else, so a player who
+        never presses it is never told his recording is missing eight bars
+        -- which is the one finding here that means "go and get another
+        file". The fifth time in this project that a feature could not be
+        seen working; the note is news, the panel is the state behind it.
+
+        Deliberately not the whole of it: one line that says WHAT and names
+        the key that has the link.
+        """
+        from pickhero.audio import autosync
+        breaks = report.get("breaks") or []
+        real = [b for b in breaks if b.real]
+        if real:
+            worst = max(real, key=lambda b: abs(b.jump_s))
+            side = "the tab has" if worst.jump_s < 0 else "the recording has"
+            self._say(f"{format_time(worst.at_s * 1000)}: {side} "
+                      f"{worst.bars:.1f} bars the other has not — S says "
+                      f"which recording fits")
+            return
+        # The commoner case, and the one the player actually met: a vamp with
+        # no landmarks, ten seconds of offset across it, and a map drawing a
+        # line through the middle. "It syncs at the start and not at the end"
+        # is what that feels like from the inside.
+        vague = [b for b in breaks if not b.localised and b.bars is not None
+                 and b.bars >= autosync.MIN_BREAK_BARS]
+        if not vague:
+            return
+        worst = max(vague, key=lambda b: abs(b.jump_s))
+        self._say(f"{format_time(worst.before_s * 1000)}–"
+                  f"{format_time(worst.at_s * 1000)} could not be read and "
+                  f"the offset moves {abs(worst.jump_s):.1f} s across it — "
+                  f"S says what to do")
 
     def _silent_tail(self) -> tuple[float, int] | None:
         """(last note, empty bars after it), when a tab ends in silence.
@@ -10568,13 +10606,138 @@ class PlayingScreen:
         lines.append(
             f"SYNC   found by listening — {report['usable']} of "
             f"{report['windows']} windows{span}")
-        if report["breaks"]:
-            where = "  ".join(f"{format_time(at * 1000)} ({by:+.1f} s)"
-                              for at, by in report["breaks"][:4])
-            lines.append(
-                f"SYNC   the tab and the recording part company at {where}"
-                " — check those places by ear")
+        lines += self._break_lines(report)
         return lines
+
+    def _break_lines(self, report) -> list[str]:
+        """Where the tab and the recording stop being the same music.
+
+        The old line said this in SECONDS and advised "check those places by
+        ear", which points at a sync point -- and a sync point cannot bridge
+        it: `SyncMap` clamps a segment's slope, so a ten-second step over a
+        six-second gap is spread across the music rather than expressed.
+        Measured on the player's own songs: the app named a place and
+        nothing said what it meant, so "check by ear" was the whole of the
+        advice for a thing no amount of ear can fix.
+
+        Said in BARS, because that is the unit the difference really comes
+        in, and under one bar it is not said at all -- music cannot be
+        missing by two thirds of a bar.
+
+        BOTH CAUSES, because nothing in the lag curve tells them apart. A
+        recording that is a different edit and a tab whose riffs recur both
+        produce a staircase that never comes back, and Godsmack's 3.9 bars
+        at 3:58 is almost certainly a window matching the wrong repeat.
+        Naming only the first would send him to replace a recording that is
+        fine -- which is exactly what the first version of this line did to
+        Dry County before `Break.real` learnt to require `localised`.
+
+        And the LINK, because without it neither cause has an action behind
+        it. Songsterr's points were timed against one particular upload --
+        which is why their own player never shows this -- and that video's
+        id has been in the map cached beside the tab all along. Audio from
+        it settles the question either way: it syncs, or it breaks in the
+        same places and the repeats were the answer.
+        """
+        from pickhero.audio import autosync
+        real = [b for b in (report.get("breaks") or []) if b.real]
+        if not real:
+            return self._unreadable_stretch_lines(report)
+        worst = max(real, key=lambda b: abs(b.jump_s))
+        who = ("the tab has {n} bars this recording has not"
+               if worst.jump_s < 0 else
+               "this recording has {n} bars the tab has not")
+        rest = [b for b in real if b is not worst]
+        more = ("" if not rest else
+                ", and " + ("one more at " if len(rest) == 1 else
+                            f"{len(rest)} more at ")
+                + ", ".join(format_time(b.at_s * 1000) for b in rest[:3]))
+        # How wide the uncertainty is, where no window between is readable.
+        # A jump localised to two minutes is not a place anybody can put a
+        # point, and saying the time alone claims it is.
+        # The stretches nobody could read are named in a clause rather than
+        # given lines of their own: Godsmack has one real break and two of
+        # them, and five lines about one song's sync is a panel nobody
+        # finishes reading. They are not breaks (see `Break.real`), but a
+        # player told about one place when there are three has been told the
+        # wrong shape of problem.
+        blind = len([b for b in (report.get("breaks") or [])
+                     if not b.localised and b.bars is not None
+                     and b.bars >= autosync.MIN_BREAK_BARS])
+        unread = ("" if not blind else
+                  f", and the offset moves across "
+                  + ("another stretch" if blind == 1 else
+                     f"{blind} more stretches")
+                  + " nothing could be read in")
+        out = [f"SYNC   {format_time(worst.at_s * 1000)} — "
+               + who.format(n=f"{worst.bars:.1f}") + more + unread,
+               "SYNC   either a different edit of the song, or a passage "
+               "that repeats and the measurement matched the wrong repeat "
+               "— no sync point can bridge either"]
+        video = self._source_video_url()
+        out.append(
+            f"SYNC   audio from {video} — what Songsterr timed its points "
+            f"against — would settle it" if video else
+            "SYNC   no Songsterr link for this song, so no video to name "
+            "— Ctrl+U pastes one")
+        return out
+
+    def _unreadable_stretch_lines(self, report) -> list[str]:
+        """Where the offset moved across a stretch nothing could be read in.
+
+        This is Dry County, and it is the commonest shape of "it syncs at
+        the start and not at the end". A vamp over one chord has no
+        landmarks, so no window in it can be placed; the offset either side
+        differs by ten seconds; and what happened in between is a guess the
+        map makes by drawing a line.
+
+        NOT called a break, because it is not one -- see `Break.real`. What
+        can honestly be said is that the map is interpolating there and how
+        far it has to reach.
+
+        And the bar map is the answer rather than a sync point, which is the
+        useful half: Songsterr's points are one per BAR and need no readable
+        window at all. On the same song the listening leaves this 108-second
+        hole and the bar map follows the recording flat to 0.7 s end to end.
+        """
+        from pickhero.audio import autosync
+        vague = [b for b in (report.get("breaks") or [])
+                 if not b.localised and b.bars is not None
+                 and b.bars >= autosync.MIN_BREAK_BARS]
+        if not vague:
+            return []
+        worst = max(vague, key=lambda b: abs(b.jump_s))
+        out = [f"SYNC   nothing is readable between "
+               f"{format_time(worst.before_s * 1000)} and "
+               f"{format_time(worst.at_s * 1000)}, and the offset moves "
+               f"{abs(worst.jump_s):.1f} s across it — the map draws a "
+               f"straight line through that"]
+        if self._bar_map_available():
+            out.append("SYNC   Songsterr's bar map needs no readable window "
+                       "— one point per bar (Alt+S, then Ctrl+S)")
+        else:
+            out.append(f"SYNC   Shift+N/M and Shift+S pin a point by ear "
+                       f"inside it, or paste a Songsterr link with Ctrl+U "
+                       f"for a per-bar map")
+        return out
+
+    def _source_video_url(self) -> str:
+        """Just the URL of the recording Songsterr timed against, or "".
+
+        `_source_video_line` is the same fact in a sentence; the break line
+        needs the bare link inside a sentence of its own. Both read
+        `songsterr.video_url`, so they cannot name different videos.
+        """
+        if self._source_video_link is None:
+            self._source_video_link = ""
+            if self._song_path:
+                from pickhero.tabs import songsterr
+                try:
+                    self._source_video_link = songsterr.video_url_for(
+                        self._song_path)
+                except Exception:              # noqa: BLE001
+                    self._source_video_link = ""
+        return self._source_video_link
 
     def _songsterr_report_lines(self, points, report) -> list[str]:
         """What Songsterr's bar map did, said as its own answer.
@@ -10599,19 +10762,22 @@ class PlayingScreen:
                 "SYNC   nothing was stored. Download the tab from Songsterr "
                 "again, or line it up by hand with Shift+N/M and Shift+S"]
         if not report["readable"] or len(points) < 2:
-            return [
+            # The breaks come first here: "is this the same recording" is
+            # the right question and the break line is the answer to it,
+            # with the video that settles it.
+            return (self._break_lines(report) + [
                 f"SYNC   Songsterr's bar map does not fit this recording — "
                 f"{report['usable']} of {report['windows']} windows agreed "
                 f"with it",
                 "SYNC   nothing was stored. Is this the same recording the "
-                "tab was made from?"]
+                "tab was made from?"])
         # A dropped bar line is a state, not a detail: Songsterr's bar 0 is
         # regularly the VIDEO's start rather than the first bar line, and
         # one such point is a second of correction spread over the music.
         dropped = report.get("spikes") or 0
         refused = (f", {dropped} bar line{'s' if dropped > 1 else ''} refused "
                    f"(no drift could put them there)" if dropped else "")
-        return [
+        return self._break_lines(report) + [
             f"SYNC   from Songsterr's {report['bars']} bar times, lined up "
             f"here at {report['constant_s']:+.2f} s — {report['usable']} of "
             f"{report['windows']} windows agree to "

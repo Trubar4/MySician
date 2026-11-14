@@ -199,7 +199,7 @@ def source_video_line(entries, tab_bars: int = 0) -> str:
     line that cannot name a video is a line with nothing to act on.
     """
     entry = main_entry(entries)
-    video = video_id_of(entry)
+    video = video_url(entries)
     if not video:
         return ""
     points = len(bar_times_of_entry(entry))
@@ -208,7 +208,7 @@ def source_video_line(entries, tab_bars: int = 0) -> str:
     # nothing is marked, and a backing track is a different performance --
     # the What's Up lesson, where the longest entry was the wrong one.
     feature = entry.get("feature") if isinstance(entry, dict) else None
-    where = f"youtu.be/{video}"
+    where = video
     if feature:
         return (f"Songsterr timed its points against {where} "
                 f"(a \"{feature}\" upload, not a marked main recording) "
@@ -222,6 +222,23 @@ def source_video_line(entries, tab_bars: int = 0) -> str:
         return (f"Songsterr timed its points against {where} -- {points} "
                 f"bars against this tab's {tab_bars}")
     return (f"Songsterr timed its points against {where} -- {points} bars")
+
+
+def video_url(entries) -> str:
+    """The marked recording's URL, or "" -- one place that builds it.
+
+    The sync panel names the video in a sentence and the break line needs
+    the bare link, so two callers want the same string. Two spellings of one
+    URL is how one of them comes to name a different video.
+    """
+    video = video_id_of(main_entry(entries))
+    return f"youtu.be/{video}" if video else ""
+
+
+def video_url_for(tab_path) -> str:
+    """The same URL, read off the map cached beside a tab. "" if there is none."""
+    raw = load_cache(tab_path)
+    return video_url(raw.get("entries")) if raw is not None else ""
 
 
 def source_video_line_for(tab_path, tab_bars: int = 0) -> str:

@@ -7670,11 +7670,14 @@ handles it: 4 sections, 3 breaks, 20 points.
 - **It is not a missing section either.** Searching the WHOLE recording for each tab window, with no +/-40 s band, the best match anywhere
   in the file scores **0.18-0.27 with the runner-up 0.01 behind**, against 0.43 against 0.34 at 3:00. **The music there has no landmarks**:
   it is the long instrumental, a vamp over one chord, and chroma over a 20 s window of a vamp is the same everywhere in the vamp.
-- **What IS established is the size of it.** Tab 311.5 s maps to recording 309.1, and tab 425.3 to recording 411.6: the tab writes 113.8 s
-  where the recording plays 102.5 -- **11.3 s, or 8 bars at 160 BPM.** Cut 11.3 s out of the vamp and the whole ten minutes reads at ONE
-  constant offset: windows agreeing on a single offset **47 of 95 -> 54 of 93**, median lag -2.40 s either side of the cut, MAD 0.05 s.
-- **Where you cut makes no measurable difference** (52-54 at every position from 5:15 to 7:03), which is the vamp's own missing landmarks
-  showing up a second time. So the app can say the eight bars are there and can never say which eight.
+- **And "eight bars are missing" was WRONG** -- see "A Jump Across A Hole Is Not A Step" below, which records how and what it cost. It is
+  accumulated tempo, his recording is fine, and the two sentences that follow are an artefact of the same unreadable gap rather than
+  evidence of a cut.
+- Tab 311.5 s maps to recording 309.1, and tab 425.3 to recording 411.6: the tab writes 113.8 s where the recording plays 102.5 --
+  **11.3 s**. Cutting that out of the vamp makes the whole ten minutes read at ONE constant offset (windows agreeing **47 of 95 -> 54 of
+  93**), and **where you cut makes no measurable difference** (52-54 at every position from 5:15 to 7:03). That last line should have been
+  the warning rather than a footnote: **a cut whose POSITION does not matter is a cut the data cannot see**, which is exactly what a smooth
+  drift looks like when it is forced into a step.
 - **Songsterr says the same from the other side, and reading it properly overturns what this chapter first claimed.** Their thirty maps
   split **27 at 233 points and 3 at 241** -- and the ONE marked `feature: null`, which is the recording the tab was written FROM, carries
   **241, matching the tab's 241 bars exactly**, running to 586.3 s. So the tab is not the odd one out: the 233-point maps are the backing
@@ -7716,6 +7719,60 @@ stretches more precisely, and no monotone path can invent an answer where the ch
 (`chroma_of_tab_file` walks every pitched track, the Songsterr path uses `_whole_song_timeline()`), the points live under `song_key` which is
 the tab's stem, and `merge_by_bar` takes the bar grid, the tempo and the length from the primary. Nothing a merge changes is an input to
 either measurement.
+
+## A Jump Across A Hole Is Not A Step, And It Cost A Wrong Diagnosis
+
+*"Würde mir unsere App jetzt auch sagen, dass ich eine andere Audioquelle benötige?"* The app said a PLACE and advised "check those
+places by ear" — and the chapter above, and I to the player in as many words, said his Dry County rip was missing eight bars. **It is
+not, and the measurement that settles it needed no new code and no new recording.**
+
+Songsterr's own map for that tab, against the tab's own bar grid:
+
+| | |
+|---|---|
+| map points / tab bars | **241 / 241** |
+| biggest single-bar step | **−1.50 s** |
+| what eight missing bars would be | **one step of 24 s** |
+| total, bar 0 to bar 240 | −16.65 s, accumulated |
+| across the unreadable 5:27–7:15 | −7.2 s over 110 s = **6.6 %** |
+
+**There is no step anywhere.** The 16.6 s is tempo, and across that vamp the recording runs 6.6 % against the written grid — just outside
+the 5 % `MAX_DRIFT_RATE` allows, so `breaks_in` is obliged to call it a break. And the fit of that map against **his own MP3** is flat to
+**±0.7 s end to end** (69 of 92 windows, share 0.75), so his file is the same edit as the video. His recording was never wrong: the tab's
+grid walks, and the bar map is what bridges it.
+
+- **A break is only music when it is LOCALISED.** A jump measured across a stretch where nothing is readable is `unknown rate × gap` and
+  proves nothing. Over `2 × STEP_S` the fastest allowed drift moves the readings 0.6 s, which no bar of any real song is shorter than, so
+  a break of one bar over that gap cannot be drift; over a longer gap nobody knows what the rate was, and this refuses to guess. That one
+  condition turns Dry County from a false accusation into silence.
+- **And the two causes cannot be told apart anyway, so the line names both.** A recording that really is a different edit and a tab whose
+  riffs recur produce the SAME shape — a staircase that never comes back. Godsmack's curve is four plateaus (+10.0, +11.2, −1.9, −9.5,
+  −17.9) and this file already calls those wrong-repeat matches; Dry County's was one step of the same size. Naming only the first sends
+  the player to replace a recording that is fine, which is precisely what happened.
+- **Said in BARS, and under one bar not said at all.** `MIN_BREAK_BARS` is reasoned rather than fitted — rare in this file, and the whole
+  reason it needs no recording to justify: music cannot be missing by two thirds of a bar. On Dry County it separates the three cleanly:
+  0.69, 6.88, 0.63.
+- **With the LINK, because without it there is nothing to do.** *"Ohne Link habe ich keine Lösung."* Songsterr's points were timed against
+  one particular upload — which is why their own player never shows this — and that id has been in the map cached beside the tab since the
+  download screen first wrote one. Audio from it settles the question either way: it syncs, or it breaks in the same places and the repeats
+  were the answer. Where no map is stored, the line names `Ctrl+U` rather than saying nothing.
+- **The case that is LEFT gets its own sentence, and it is Dry County's**: *"nothing is readable between 5:27 and 7:15, and the offset
+  moves 10.3 s across it — the map draws a straight line through that"*, followed by the thing that actually fixes it, which is not a sync
+  point: **Songsterr's bar map needs no readable window.** One point per bar.
+- **The bar-map path had no break detection at all**, which made it the one place a recording that really was a different edit could never
+  be named — it read "69 of 92 windows agree to 200 ms" and stored a map walking 16.6 s. It reads them off `usable_rows` now, never off the
+  windows that agreed with the constant: with a 3 s agreement tolerance, those are the ones a break has by definition been removed from.
+- **And it is SAID on the HUD, not only in the panel.** `_sync_lines` is drawn by `S` and by nothing else, so a player who never presses it
+  is never told. Fifth time in this project that a feature could not be seen working.
+- **Controls**: five of the six songs with a recording on this machine report no break at all, and Godsmack reports one — 3.9 bars at
+  3:58 — with both causes named. `check_song_sync.py` reads the same arithmetic now instead of its own copy, and its output on Dry County is
+  unchanged to the decimal.
+- **One thing fixed in passing**: the old line printed the window's START where a stored point carries its CENTRE, so every break it ever
+  named was ten seconds early.
+
+**The lesson is not about breaks.** *"Where you cut makes no measurable difference"* is in the chapter above, in my own words, three lines
+under the conclusion it refutes — **a cut whose position does not matter is a cut the data cannot see.** The second measurement that would
+have caught it was one function call away for the whole week it stood there.
 
 ## A Passage Is A File, Or It Is A Confound
 
@@ -8197,6 +8254,15 @@ median inside its own noise.
 waits `COLLECT_FRAMES` (12) hops before it emits a pitch at all -- 151 ms at 44.1 kHz -- plus one frame. **32 ms** is left for
 the Focusrite, the driver and everything else. His reaction time is not in there either, and must not be: playing along with a
 pulse is anticipatory rather than reactive, which is the whole reason the wizard clicks instead of showing a note.
+
+### Two Reasons To Store Nothing, And They Mean Opposite Things
+
+The screen read *"The median is inside its own noise, so it is not an effect. Nothing was stored."* on a reading of 25 notes, median
+−18 ms, spread ±23 — where the noise bound is `MEDIAN_SIGMAS x MEDIAN_SE_FACTOR x spread / sqrt(n)` = **17 ms** and the median is just
+OUTSIDE it. What refused it is `FINE_MS`, the 20 ms floor.
+
+The two sentences tell a player to do opposite things: **inside the noise means measure again**, more samples would resolve it; **under
+the floor means you are done**, and measuring again can only waste a minute. One branch was saying the first for both.
 
 ## One Line Fitted Through A Staircase
 

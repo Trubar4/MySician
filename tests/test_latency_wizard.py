@@ -506,3 +506,38 @@ class TestTheAppReachesIt:
         from pickhero.ui.app import App
         app = App(Config())
         assert app._latency_menu is None
+
+
+class TestTwoReasonsToStoreNothing:
+    """They tell the player to do opposite things.
+
+    "Inside its own noise" means measure again -- more samples would resolve
+    it. "Under the floor" means you are done, and measuring again can only
+    waste a minute. One branch said the first for both, on the player's own
+    reading: 25 notes, median -18 ms, spread +/-23, so the noise bound is
+    17 ms and the 20 ms floor is what refused it.
+    """
+
+    def _text(self, median, spread, count=25):
+        return " ".join(latency.verdict_text(
+            {"verdict": "fine", "count": count, "median_ms": median,
+             "spread_ms": spread}, None))
+
+    def test_under_the_floor_says_you_are_done(self):
+        said = self._text(-18.0, 23.0)
+        assert "not worth chasing" in said
+        assert "nothing needs to be" in said
+        assert "noise" not in said
+
+    def test_above_it_but_inside_the_noise_says_measure_again(self):
+        """A wide spread on few samples: 30 ms median, +/-90 over 8 notes
+        puts the bound at 118 ms."""
+        said = self._text(30.0, 90.0, count=8)
+        assert "inside its own noise" in said
+        assert "Measuring again" in said
+
+    def test_the_two_are_never_both_said(self):
+        for median, spread in ((-18.0, 23.0), (30.0, 90.0), (5.0, 10.0),
+                               (19.9, 40.0), (20.0, 1.0)):
+            said = self._text(median, spread, count=8)
+            assert ("not worth chasing" in said) != ("noise" in said), said
