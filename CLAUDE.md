@@ -8004,3 +8004,90 @@ This is the `fetch_ffmpeg.py` arrow for the second time, and the rule written th
 - **cp1252 HAS an em dash**, which is precisely why this survived unnoticed: the fault appears only on the console the player actually has.
 
 **And the literals were only half of it.** A song NAME comes out of the log, and this player's own folder holds *"I Prevail - There's Fear In Letting Go"* with a **curly apostrophe (U+2019)** -- which cp1252 encodes and cp850 does not. So a finished analysis would have been replaced by a traceback because of one character in one title. `sys.stdout.reconfigure(errors="replace")` makes an unshowable character a question mark instead; a stream that cannot be reconfigured (a pipe, a captured stream) is not an error either. **Being strict about the literals is a rule you can hold; data is a rule you cannot, so the stream has to forgive.**
+
+## A Real Song Convicts Twice As Well As The Test File Predicted
+
+*"Anbei die Aufnahmen von Godsmack."* Two takes of the cut passage (bars 103-116, Drop C, three-string power chords on
+strings 6/5/4, 414 notes in 32 s, gaps 134-536 ms so **81 of 137 verification windows are dropped**), one of each copy,
+`dropped_blocks 0`, Focusrite at MME index 2. This is the measurement the chord-credit chapters named as missing: *"it is
+still a test file, not a song: three strings on a clean standard-tuned guitar is not drop C through a high-gain amp."*
+
+| | as played | a semitone wrong | gap |
+|---|---|---|---|
+| correct copy played | 85.3 % | **12.8 %** | **72.5 points** |
+| up1 copy played (the error direction) | 85.5 % | **15.9 %** | 69.6 |
+| *the test file, for comparison* | *96.2 / 91.9 %* | *34.6 / 30.3 %* | *62 / 62* |
+
+**The false green is 13-16 % on real material against 30-35 % on the test file**, and the gap is ten points WIDER. So the
+test file was the pessimistic case, not the optimistic one -- which is the opposite of what a clean standard-tuned
+diagnostic would be expected to give, and is worth keeping as a warning about extrapolating from one.
+
+- **What convicts is the PITCH, not the verifier.** 36 % of the strikes got a window and 87 % of the notes went red, so
+  most of the conviction cannot be the verifier's. A drop-tuned power chord read a fret off comes back as a clean wrong
+  pitch far more often than the test file's did.
+- **With `_unpitched_chord_credit` off the wrong reading keeps 3.6 % and 9.4 %**, and the right one 79.5 % and 86.0 %. So
+  the strum credit is still the whole of the leniency, as the test file said -- but on real material it buys **0 to 6
+  points** of real credit where it cost 30-35 points of false green there and 13-16 here. **The trade is now measured on
+  both kinds of material and it is NOT being moved**: the credit was fitted against isolated reference takes where it took
+  a correct E5 from 8/10 to 10/10, and four takes do not overturn that. What is wanted before touching it is the same
+  passage played with a string deliberately left out.
+- **`check_power_chord_credit.py` takes a cut pair with `--right`/`--wrong`** and resolved a bare name against `songs/`
+  even when the name already carried a directory, so a cut passage was looked for at `songs/songs/<name>.gp5`. `_resolve`
+  is the one place that decides.
+
+## The Offset The Score Cannot See
+
+*"Einzelne Noten werden kaum mehr erkannt und powerchords sind fast nur noch gruen"*, and *"Noten werden gruen markiert,
+bevor der Progressbalken dort ist und bevor ich sie gespielt habe."* He then found it himself -- **the timing offset had
+to go to about -200 ms** -- and both of my hypotheses were refuted by measurement first, which is the only reason they
+are written down.
+
+- **The 200 ms hit window is innocent.** I had told him to raise `G` to 200 (the Scorpions chapter: his chord strikes land
+  50-70 ms ahead of the beat), so a wider window swallowing neighbours was the obvious suspect. Swept on his own takes,
+  the semitone-wrong reading is **flat at 12-16 % from 100 to 250 ms** while the right one climbs 70 % -> 85 %, and the
+  gap is widest at exactly 200. The window is catching an early hand, not reaching for notes.
+- **And the SCORE cannot find the offset on this material.** Nudging every strike from -300 to +300 ms moves the score by
+  **11 points in total**, peaking at -25 ms -- so a sweep over a strummed take reports his offset as already optimal while
+  he can see on screen that it is 175 ms out. The reason is the strum credit: one strike credits a whole written chord, and
+  with chords 134 ms apart there is always a chord near enough, at any offset. **The eye is the better instrument here and
+  the percentage is the worse one** -- which is the same finding as "eighty percent that does not feel like eighty
+  percent", one level further in.
+- **So a sweep tool must run on SINGLE-note material**, where the curve has a peak at all. On chords it would confidently
+  report the wrong answer, which is worse than having no tool.
+- **The offset does not touch the bar map or the listening**, which was his question. `audio_latency_offset_ms` has exactly
+  one reader, `_sync_offset_song_ms()`, and it moves where a STRIKE lands in song time. `autosync` compares the recording's
+  chroma against the tab's and `SyncMap` maps song time to recording time; neither reads it. **Third time these two have
+  been confused**, after the sync panel had to rename its line to `Your playing: +0 ms (K)` for the same reason -- so the
+  separation on screen is still not doing its job.
+
+## One Line Fitted Through A Staircase
+
+*"Ja, zieh check_song_sync.py nach."* It fitted a single robust line to the whole song and reported the slope, so Dry
+County -- whose tab holds bars the recording does not -- came back as **"Wanderung -26.5 ms pro Sekunde (-2.65 %)"**. That
+is not a speed. It is eight bars, and no stretch factor can do anything about it.
+
+The sections machinery that answers it has been in `autosync` for months, because the APP needs it; the tool fitted its
+own line beside it, which is two answers to one question. It reads `read_report`, `usable_rows`, `sections` and
+`breaks_in` now, and fits a line **per section**. On that song:
+
+```
+BRUECHE  (hier sind Tab und Aufnahme nicht dasselbe Stueck)
+  zwischen 5:27 und 7:15: 10.3s -- der Tab hat Musik, die die Aufnahme nicht hat
+    das sind 6.9 Takte (ein Takt dort: 1.50s)
+    Die Stelle ist nur auf 108s eingegrenzt -- dazwischen
+    ist kein Fenster lesbar, also kann niemand sagen WO genau.
+ABSCHNITTE
+  0:21-5:27   47 Fenster   -2.41s   +0.08 ms/s
+  7:15-9:15   17 Fenster  -13.22s  -24.93 ms/s
+```
+
+- **A break is said in BARS**, read off the bar grid where the break is rather than averaged, because what a tab holds and
+  a recording does not is a whole number of bars -- and a number of bars is something to act on where a number of seconds
+  is not.
+- **Under one bar it says so.** Music cannot be missing by two thirds of a bar: below one bar the break threshold has fired
+  on a reading at a section edge, and printing "0.7 Takte fehlen" sends somebody looking for something that is not there.
+- **The uncertainty is printed beside the size.** A 10.3 s break localised to 108 seconds is not a place anybody can put a
+  sync point, and the old report could not express that at all. `breaks_with_span` is what adds the reading BEFORE the
+  break to the one `breaks_in` names.
+- **The residual per window survives**, measured against its own section's line rather than against one global one -- that
+  listing is the property this tool exists for: an outlier is named and counted and cannot move the answer.

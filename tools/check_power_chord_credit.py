@@ -149,6 +149,18 @@ def percent(green, yellow, red):
     return 100.0 * green / total if total else 0.0
 
 
+def _resolve(tab):
+    """A bare name is one of the test tabs in songs/; anything else is a path.
+
+    A cut passage is given as "songs/<name>.gp5" from the repo root, and
+    joining that onto SONGS again looks for songs/songs/<name>.gp5.
+    """
+    path = Path(tab)
+    if path.is_absolute() or path.parent != Path("."):
+        return path
+    return SONGS / path
+
+
 def tabs_for(take, right=RIGHT, wrong=WRONG):
     """(as played, a semitone away, what that direction is) off the manifest.
 
@@ -176,8 +188,8 @@ def check(directory, right=RIGHT, wrong=WRONG):
               f"which is neither test tab -- skipped")
         return True
 
-    played_tab = SONGS / played if not Path(played).is_absolute() else Path(played)
-    away_tab = SONGS / away if not Path(away).is_absolute() else Path(away)
+    played_tab = _resolve(played)
+    away_tab = _resolve(away)
     right = score(wav, take, rate, played_tab)
     wrong = score(wav, take, rate, away_tab)
     bare = score(wav, take, rate, away_tab, strum=False)

@@ -78,6 +78,12 @@ decode = autosync.decode
 chroma_of_audio = autosync.chroma_of_audio
 chroma_of_tab = autosync.chroma_of_tab_file
 drift_curve = autosync.drift_curve
+read_report = autosync.read_report
+usable_rows = autosync.usable_rows
+breaks_in = autosync.breaks_in
+sections = autosync.sections
+merged_sections = autosync.merged_sections
+robust_line = autosync._robust_line
 
 
 def onset_envelope(x: np.ndarray, hop: int) -> np.ndarray:
@@ -126,6 +132,59 @@ def _write_sync(args, tab_path: Path, rows) -> None:
     print("  Die App richtet das Tab damit an dieser Aufnahme aus. "
           "Im Song: Shift+S setzt\n  einen weiteren Punkt von Hand, "
           "Ctrl+Shift+S loescht alle.")
+
+
+def mmss(seconds: float) -> str:
+    return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+
+def breaks_with_span(kept):
+    """(last reading before, first after, the jump) for every break.
+
+    ``breaks_in`` names the reading AFTER a break, which is all the map
+    needs. A REPORT needs the one before it as well: the two together are
+    how wide the uncertainty is, and a jump localised to two minutes is not
+    a place anybody can put a sync point. Positions are window CENTRES,
+    which is what a stored point carries.
+    """
+    at_break = dict(breaks_in(kept))
+    half = WINDOW_S / 2.0
+    out = []
+    for (before, _), (after, _) in zip(kept, kept[1:]):
+        if after in at_break:
+            out.append((before + half, after + half, at_break[after]))
+    return out
+
+
+def bars_worth(timeline, when_s: float, seconds: float):
+    """(bars, the length of one bar there) that much time is worth.
+
+    A break said in seconds is a number; said in BARS it is something to act
+    on, because what a tab holds and a recording does not is a whole number
+    of bars. The length is read where the break is rather than averaged, so
+    a tempo change elsewhere cannot answer about this stretch.
+    """
+    at = when_s * 1000.0
+    lengths = [m.end_ms - m.start_ms for m in timeline.measures
+               if m.end_ms > m.start_ms]
+    if not lengths:
+        return None
+    here = [m.end_ms - m.start_ms for m in timeline.measures
+            if m.start_ms <= at < m.end_ms and m.end_ms > m.start_ms]
+    bar_ms = here[0] if here else float(np.median(lengths))
+    return seconds * 1000.0 / bar_ms, bar_ms / 1000.0
+
+
+def section_fits(kept):
+    """Each section with the line fitted to it, in time order."""
+    out = []
+    for part in merged_sections(sections(kept)):
+        ats = [a for a, _ in part]
+        lags = [b for _, b in part]
+        slope, intercept = robust_line(ats, lags)
+        residual = [b - (slope * a + intercept) for a, b in part]
+        out.append((part, slope, intercept, residual))
+    return out
 
 
 def main() -> int:
@@ -196,77 +255,144 @@ def main() -> int:
     if len(rows) < 4:
         print("\nZu wenige Fenster fuer eine Aussage.")
         return 0
-    times = np.array([r[0] for r in rows])
-    lags = np.array([r[1] for r in rows])
-    # Robust line: the median over all pairwise slopes, which a handful of
-    # windows matching the wrong chorus cannot move.
-    slopes = [(lags[j] - lags[i]) / (times[j] - times[i])
-              for i in range(len(rows)) for j in range(i + 1, len(rows))
-              if times[j] - times[i] > 30.0]
-    slope = float(np.median(slopes)) if slopes else 0.0
-    intercept = float(np.median(lags - slope * times))
-    residual = lags - (slope * times + intercept)
-    used = int((np.abs(residual) <= OUTLIER_S).sum())
 
-    print(f"\nVERSATZ  ({used} von {len(rows)} Fenstern auf der Geraden)")
-    print(f"  {'Tab-Zeit':>9}{'Versatz':>10}{'erwartet':>11}{'Rest':>8}")
-    for i, ((t, lag, _), fitted, res) in enumerate(
-            zip(rows, slope * times + intercept, residual)):
-        out = abs(res) > OUTLIER_S
-        # Every window is FITTED; only the table is thinned, and an outlier
-        # is always shown -- it is the thing worth seeing.
-        if i % PRINT_EVERY and not out:
-            continue
-        mark = "   Ausreisser" if out else ""
-        print(f"  {int(t) // 60:6d}:{int(t) % 60:02d}{lag:9.1f}s"
-              f"{fitted:10.1f}s{res:8.1f}{mark}")
-    if used < 4:
-        print("\nZu wenige Fenster liegen auf einer Geraden. Das ist ein "
-              "Ergebnis, kein Fehler:\ndie Aufnahme laesst sich so nicht "
-              "ausrichten.")
+    # One line through the WHOLE song is what this tool used to fit, and on a
+    # song whose tab holds bars the recording does not it reports the
+    # staircase as a speed: Dry County came back at "-2.65 % Wanderung",
+    # which is not a rate -- it is eight bars. The sections machinery that
+    # answers it has been in autosync for months, so it is read from there
+    # rather than fitted a second way here. Two answers to one question is
+    # the fault this project has paid for at the repeats and the transpose.
+    report = read_report(rows)
+    kept = usable_rows(rows)
+    unusable = report["windows"] - report["ambiguous"] - report["usable"]
+    print(f"\nLESEN  ({report['windows']} Fenster)")
+    print(f"  nicht eindeutig        {report['ambiguous']:4d}   (konnten "
+          f"einen Refrain nicht vom anderen unterscheiden)")
+    print(f"  Ausreisser/zu klein    {unusable:4d}")
+    print(f"  verwendbar             {report['usable']:4d}   "
+          f"= {report['share'] * 100:.0f} %")
+    if report["covered"]:
+        lo, hi = report["covered"]
+        print(f"  gemessen  {mmss(lo)}-{mmss(hi)} von {mmss(report['song_s'])}")
+    print(f"  Abschnitte {report['sections']}, davon "
+          f"{report['sections_used']} verwendbar")
+    for lo, hi in report["unreadable"]:
+        print(f"    nicht lesbar  {mmss(lo)}-{mmss(hi)}")
+
+    if not kept:
+        print("\nKein Abschnitt laesst sich ausrichten. Das ist ein "
+              "Ergebnis, kein Fehler:\ndie Aufnahme passt so nicht zum Tab.")
         return 0
 
-    print(f"\n  Anfang {intercept:+.1f}s, Wanderung {slope * 1000:+.1f} ms "
-          f"pro Sekunde ({slope * 100:+.2f} %)")
+    # ---- where they stop being the same piece of music ---------------
+    breaks = breaks_with_span(kept)
+    if breaks:
+        print("\nBRUECHE  (hier sind Tab und Aufnahme nicht dasselbe Stueck)")
+        for before, after, jump in breaks:
+            who = ("der Tab hat Musik, die die Aufnahme nicht hat"
+                   if jump < 0 else
+                   "die Aufnahme hat Musik, die der Tab nicht hat")
+            print(f"  zwischen {mmss(before)} und {mmss(after)}: "
+                  f"{abs(jump):.1f}s -- {who}")
+            worth = bars_worth(timeline, before, abs(jump))
+            if worth:
+                bars, bar_s = worth
+                # In BARS, because what a tab holds and a recording does not
+                # is a whole number of them -- and that is the thing to act
+                # on. Seconds alone are a number nobody can do anything with.
+                print(f"    das sind {bars:.1f} Takte "
+                      f"(ein Takt dort: {bar_s:.2f}s)")
+                if bars < 1.0:
+                    # Music cannot be missing by two thirds of a bar. Under
+                    # one bar this is the break threshold firing on a reading
+                    # at a section edge, not an arrangement difference -- and
+                    # saying "0.7 Takte fehlen" sends somebody looking for
+                    # something that is not there.
+                    print("    Unter einem Takt: das ist eher ein "
+                          "Lesefehler am Abschnittsrand\n    als fehlende "
+                          "Musik.")
+            if after - before > 2 * STEP_S:
+                print(f"    Die Stelle ist nur auf {after - before:.0f}s "
+                      f"eingegrenzt -- dazwischen\n    ist kein Fenster "
+                      f"lesbar, also kann niemand sagen WO genau.")
+
+    # ---- each section, with its own line -----------------------------
+    fits = section_fits(kept)
+    print("\nABSCHNITTE")
+    print(f"  {'von-bis':<14}{'Fenster':>8}{'Versatz':>10}"
+          f"{'Wanderung':>12}{'Rest':>8}")
+    half = WINDOW_S / 2.0
+    for part, slope, intercept, residual in fits:
+        ats = [a for a, _ in part]
+        span = f"{mmss(ats[0] + half)}-{mmss(ats[-1] + half)}"
+        worst = max(abs(r) for r in residual)
+        print(f"  {span:<14}{len(part):8d}"
+              f"{slope * ats[0] + intercept:+9.2f}s"
+              f"{slope * 1000:+10.2f} ms/s{worst * 1000:7.0f} ms")
+
+    # Every window is FITTED; only the table is thinned. The residual per
+    # window is the point of this tool -- it is what says an outlier was
+    # named and counted rather than quietly moving the answer.
+    print(f"\nVERSATZ  ({'Rest je Fenster gegen die Gerade seines Abschnitts'})")
+    print(f"  {'Tab-Zeit':>9}{'Versatz':>10}{'erwartet':>11}{'Rest':>8}")
+    for part, slope, intercept, residual in fits:
+        for i, ((at, lag), res) in enumerate(zip(part, residual)):
+            if i % PRINT_EVERY and i not in (0, len(part) - 1):
+                continue
+            print(f"  {mmss(at + half):>9}{lag:9.1f}s"
+                  f"{slope * at + intercept:10.1f}s{res:8.1f}")
 
     if args.write_sync:
         _write_sync(args, tab_path, rows)
 
-    # Is the rate CONSTANT? That is the whole question behind "can one
-    # number fix this", and a single fitted line cannot answer it -- it
-    # reports an average and hides a rate that doubles halfway through. A
-    # band playing without a click does exactly that, and no correction
-    # factor, offset or stretch can follow it.
-    print("\n  Abschnitt        lokale Wanderung")
-    locals_ = []
-    # Inliers only. A window that matched the wrong chorus is 14 s out and
-    # would invent a rate change wherever it happens to fall.
-    ok = np.abs(residual) <= OUTLIER_S
-    for lo in range(0, int(times[-1]), 45):
-        sel = ok & (times >= lo) & (times < lo + 60)
-        if sel.sum() >= 5:
-            m = float(np.polyfit(times[sel], lags[sel], 1)[0])
-            locals_.append(m)
-            print(f"  {lo:4d}-{lo + 60:4d}s      {m * 1000:+8.2f} ms/s")
+    # ---- the verdict -------------------------------------------------
+    if breaks:
+        total = sum(abs(j) for _, _, j in breaks)
+        print(f"\n  -> Tab und Aufnahme sind nicht dasselbe Arrangement: "
+              f"{len(breaks)} Bruch/Brueche,\n     zusammen {total:.1f}s. "
+              f"Kein Offset und keine Rate ueberbrueckt einen Bruch.")
+        print("     Entweder eine Aufnahme, die zum Tab passt, oder die Takte "
+              "aus dem Tab\n     nehmen -- oder je Abschnitt ein Sync-Punkt "
+              "von Hand (Shift+S).")
 
-    total = slope * (times[-1] - times[0])
-    worst = float(np.abs(residual[ok]).max()) if ok.any() else 0.0
-    print(f"\n  Insgesamt {total:+.1f}s ueber den Song.")
+    # Is the rate CONSTANT within the longest section? That is the whole
+    # question behind "can one number fix this", and it has to be asked of a
+    # section rather than of the song: across a break the answer is about
+    # the arrangement and not about a tempo.
+    part, slope, intercept, residual = max(
+        fits, key=lambda f: f[0][-1][0] - f[0][0][0])
+    ats = [a for a, _ in part]
+    lags = [b for _, b in part]
+    where = f"{mmss(ats[0] + half)}-{mmss(ats[-1] + half)}"
+    total = slope * (ats[-1] - ats[0])
+    worst = max(abs(r) for r in residual)
+    print(f"\n  Laengster Abschnitt {where}: {total:+.1f}s ueber "
+          f"{(ats[-1] - ats[0]):.0f}s.")
     if abs(total) * 1000 < AUDIBLE_MS:
-        print("  -> Tab und Aufnahme laufen zusammen. Was in der App "
-              "auseinanderlaeuft,\n     entsteht in der App: Offset, "
-              "Resync oder verlorene Frames.")
+        print("  -> Darin laufen Tab und Aufnahme zusammen. Was in der App "
+              "auseinanderlaeuft,\n     entsteht in der App: Offset, Resync "
+              "oder verlorene Frames.")
         return 0
 
     reaches = AUDIBLE_MS / 1000.0 / abs(slope) if slope else float("inf")
-    print(f"  -> Tab und Aufnahme laufen auseinander. {AUDIBLE_MS:.0f} ms "
-          f"sind nach {reaches:.0f}s erreicht.")
+    print(f"  -> Darin laufen sie auseinander. {AUDIBLE_MS:.0f} ms sind nach "
+          f"{reaches:.0f}s erreicht.")
+    print("\n  Abschnitt        lokale Wanderung")
+    locals_ = []
+    for lo in range(int(ats[0]), int(ats[-1]), 45):
+        sel = [(a, b) for a, b in part if lo <= a < lo + 60]
+        if len(sel) >= 5:
+            m = float(np.polyfit([a for a, _ in sel], [b for _, b in sel],
+                                 1)[0])
+            locals_.append(m)
+            print(f"  {lo:4d}-{lo + 60:4d}s      {m * 1000:+8.2f} ms/s")
     if len(locals_) < 3:
         # Not enough clean windows to say either way, and saying "steady"
         # for want of data is how the first version of this reported a rate
         # that doubles as constant.
-        print("     Ob die Wanderung gleichmaessig ist, laesst sich mit "
-              "so wenigen sauberen\n     Fenstern nicht sagen.")
+        print("     Ob die Wanderung gleichmaessig ist, laesst sich mit so "
+              "wenigen sauberen\n     Fenstern nicht sagen.")
     elif (max(locals_) - min(locals_)) * 1000 > RATE_SPREAD_MS:
         print(f"     Die Wanderung ist NICHT gleichmaessig "
               f"({min(locals_) * 1000:+.1f} bis {max(locals_) * 1000:+.1f} "
