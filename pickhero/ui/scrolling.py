@@ -1475,6 +1475,10 @@ class PlayingScreen:
         # against the notes lives in it, and none of it is needed while
         # playing -- which is what the screen is for.
         self._show_sync: bool = False
+        #: The cached bar map's own video, read once per song. None means
+        #: "not asked yet" and "" means "nothing to say" -- the panel is
+        #: drawn every frame while it is open, and this costs a disk read.
+        self._source_video: str | None = None
         # Which page of how many the tab view last drew, so the footer can
         # say it without the drawing having to reach the footer. The page
         # number comes from the clock and not from the layout, so unlike
@@ -5414,6 +5418,9 @@ class PlayingScreen:
                        if self._songsterr_id() else
                        "   |   no Songsterr link (Ctrl+U pastes one)")
                     + "   |   Alt+S changes it", "hud_accent"))
+        source_video = self._source_video_line()
+        if source_video:
+            out.append((f"SYNC   {source_video}", "hud_text"))
         latency = self._latency_line()
         if latency:
             out.append(latency)
@@ -5428,6 +5435,36 @@ class PlayingScreen:
             if beyond:
                 out.append((beyond, "feedback_close"))
         return out
+
+    def _source_video_line(self) -> str:
+        """Which recording Songsterr's bar map was timed against.
+
+        The cheapest sync fix a song can have, and it was unreadable: the
+        video id has been in the map cached beside the tab since the
+        download screen first wrote one, `main_entry` says in its own
+        docstring that it is *"the video to take"*, and nothing showed it.
+
+        It is also the answer to *"wieso haben die Songs bei Songsterr mit
+        MP3 Background nicht das gleiche Problem?"* -- their player plays
+        that video, so there is no constant to find and nothing missing to
+        bridge. `Ctrl+C` copies the screen, so the URL is reachable from
+        here without a text field.
+
+        Read ONCE per song: the panel is redrawn every frame while it is
+        open and this touches the disk.
+        """
+        if self._source_video is None:
+            self._source_video = ""
+            if self._song_path:
+                from pickhero.tabs import songsterr
+                try:
+                    self._source_video = songsterr.source_video_line_for(
+                        self._song_path, len(self._timeline.measures))
+                except Exception:              # noqa: BLE001
+                    # A detail line is never worth losing the panel over,
+                    # which is the rule `describe_tab` already follows.
+                    self._source_video = ""
+        return self._source_video
 
     def _recording_sync_line(self) -> str:
         """Where the RECORDING's sync stands, when nothing has just measured.

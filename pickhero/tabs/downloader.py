@@ -570,6 +570,13 @@ def grab_song(song_id: int, output_path: str | Path,
         if isinstance(meta.get("aiGenerated"), bool):
             grab.ai_generated = bool(meta["aiGenerated"])
         grab.notes += _revision_notes(grab)
+        # WHICH recording those points were timed against. This is the one
+        # line that turns "now go and find an MP3" into "get the audio from
+        # this video", and it is why Songsterr's own player never shows the
+        # drift: it plays that video. The id has been in the reply all along.
+        video = songsterr.source_video_line(entries, grab.tab_bars)
+        if video:
+            grab.notes.append(video)
     except songsterr.NotFound as exc:
         grab.notes.append(f"No bar map: {exc}")
         return grab

@@ -8099,3 +8099,41 @@ ABSCHNITTE
   break to the one `breaks_in` names.
 - **The residual per window survives**, measured against its own section's line rather than against one global one -- that
   listing is the property this tool exists for: an outlier is named and counted and cannot move the answer.
+
+### The One Line That Makes The Sync Problem Disappear
+
+*"Wie kriegen wir das Syncen besser hin? Es ist mir ein Raetsel wieso die Songs bei Songsterr mit MP3 Background nicht das gleiche Problem
+haben."*
+
+**Because their player plays the video their map was made FOR.** `video-points` are timestamps into one particular YouTube upload, so on
+their site there is no constant to find and no missing section to bridge. A player's own MP3 is a different file with a different intro trim
+and a different encoder padding -- and on Dry County it is a rip missing eight bars of the instrumental, which no algorithm can recover
+because the music is not in the file.
+
+**So the cheapest sync fix a song can have is naming that video, and it was unreadable.** The id has been in the bar map cached beside the tab
+since the download screen first wrote one; `main_entry`'s own docstring has said for months that *"when the player downloads the audio, this
+is the video to take"*; and **`video_id_of` was read once inside the fit and shown to nobody.** Dry County's is
+`https://youtu.be/Q-UWZg1d6BU`.
+
+- **`songsterr.source_video_line` is the one implementation**, read by the sync panel (`S`) and by the download screen -- where it matters
+  most, because that is the moment the player has a tab and no recording and is about to go looking for one. Two sentences for one fact is
+  how one of them comes to name a different video.
+- **The bar counts are printed beside each other and NO verdict is drawn from them.** `_covers` already owns that decision and accepts a
+  shorter map where every bar past it is empty, so a line calling 233-against-241 a mismatch would contradict the fit beside it. Only where
+  the counts are EQUAL does it add the actionable half -- *"so audio from THAT video needs almost no lining up"* -- because that is the one
+  case where the claim is safe.
+- **Only the entry Songsterr MARKS may be called the tab's own recording.** `main_entry` falls back to the first usable timeline when nothing
+  carries `feature: null`, and a backing track is a different performance -- the What's Up lesson, where taking the longest entry handed that
+  song the wrong one. The line says `(a "backing" upload, not a marked main recording)` there rather than implying it is the real thing.
+- **Read ONCE per song.** The panel is redrawn every frame while it is open and this touches the disk; a per-frame read is the loop this
+  project has had to move out of a frame four times. `None` means not asked and `""` means nothing to say, so the memo distinguishes them.
+- **A map it cannot read never takes the panel down**, the rule `describe_tab` and `scan_files` already follow.
+- **`Ctrl+C` is what makes the URL usable** -- it copies the screen, so there is no need for a text field or a browser launch, and nothing
+  about this reaches the network: it reads a file the player already has.
+- **The wiring is asserted end to end through the real `grab_song`**, not by reading the source. A note nothing appends is a feature that
+  ships doing nothing, which this project has shipped four times.
+- **And `clickable` invents no key from it**, checked rather than assumed: `spans()` on the whole line returns nothing, because `be/Q` is not
+  two slash-joined single letters and a hyphen either side disqualifies the rest. A URL that pressed `Q` would switch the easier reading on.
+
+**One test of my own was wrong about its own premise** and is kept as a note in its docstring: it asserted ZERO disk reads over sixty calls on
+a fixture that had never asked, so the first of the sixty did the read. The property is one read, not none.

@@ -172,6 +172,66 @@ def video_id_of(entry) -> str:
     return found.strip() if isinstance(found, str) else ""
 
 
+def source_video_line(entries, tab_bars: int = 0) -> str:
+    """Which recording Songsterr's points were timed against, as one line.
+
+    `main_entry`'s own docstring has said for months that *"when the player
+    downloads the audio, this is the video to take: the points were made
+    against it, which leaves the fit with almost nothing to find"* -- and
+    `video_id_of` was read once inside the fit and shown to NOBODY. So the
+    cheapest sync fix a song can have was sitting in the cached bar map
+    beside the tab, unreadable.
+
+    It is why Songsterr's own player never shows the drift this project
+    keeps measuring: it plays the video its map was made for, so there is no
+    constant to find and no missing section to bridge. A player's own MP3 is
+    a different file.
+
+    The BAR COUNTS are said beside each other and no verdict is drawn from
+    them, because `_covers` already owns that decision and accepts a shorter
+    map where every bar past it is empty. Dry County is why that matters:
+    27 of its 30 maps carry 233 points and the one marked `feature: null`
+    carries 241, which is the tab's own count exactly -- so the tab is right
+    and the player's recording is one of the rips missing eight bars. Read
+    as "most of their maps say 233", the fault comes out the wrong way round.
+
+    "" when there is no map, no video id, or no timeline worth the name: a
+    line that cannot name a video is a line with nothing to act on.
+    """
+    entry = main_entry(entries)
+    video = video_id_of(entry)
+    if not video:
+        return ""
+    points = len(bar_times_of_entry(entry))
+    # Only the entry Songsterr MARKS as the tab's own recording may be
+    # called that. `main_entry` falls back to the first usable timeline when
+    # nothing is marked, and a backing track is a different performance --
+    # the What's Up lesson, where the longest entry was the wrong one.
+    feature = entry.get("feature") if isinstance(entry, dict) else None
+    where = f"youtu.be/{video}"
+    if feature:
+        return (f"Songsterr timed its points against {where} "
+                f"(a \"{feature}\" upload, not a marked main recording) "
+                f"-- {points} bars"
+                + (f", this tab {tab_bars}" if tab_bars else ""))
+    if tab_bars and points == tab_bars:
+        return (f"Songsterr timed its points against {where} -- {points} "
+                f"bars, the same as this tab, so audio from THAT video "
+                f"needs almost no lining up")
+    if tab_bars:
+        return (f"Songsterr timed its points against {where} -- {points} "
+                f"bars against this tab's {tab_bars}")
+    return (f"Songsterr timed its points against {where} -- {points} bars")
+
+
+def source_video_line_for(tab_path, tab_bars: int = 0) -> str:
+    """The same line, read off the map cached beside a tab. "" if there is none."""
+    raw = load_cache(tab_path)
+    if raw is None:
+        return ""
+    return source_video_line(raw.get("entries"), tab_bars)
+
+
 def bar_times_of_entry(entry) -> list[float]:
     """One entry's per-bar timeline, or [] if it is not one.
 
