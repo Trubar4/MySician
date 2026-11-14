@@ -33,6 +33,23 @@ STANDARD = {1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 40}
 DROP_C = {1: 62, 2: 57, 3: 53, 4: 48, 5: 43, 6: 36}
 
 
+def unpitched_at(ms):
+    """A strike loud enough to be real that produced no pitch at all."""
+    return TimestampedNote(
+        note=DetectedNote(midi_note=0, frequency=0.0, confidence=0.0,
+                          name="", is_onset=True, unpitched=True),
+        timestamp_ms=float(ms), sample_pos=int(ms * 44.1))
+
+
+def subharmonic_at(ms, midi):
+    """A reading folded up from below the guitar's range."""
+    return TimestampedNote(
+        note=DetectedNote(midi_note=midi, frequency=midi_to_freq(midi),
+                          confidence=1.0, name=midi_to_name(midi),
+                          is_onset=True, subharmonic=True),
+        timestamp_ms=float(ms), sample_pos=int(ms * 44.1))
+
+
 def strike_at(ms, midi):
     return TimestampedNote(
         note=DetectedNote(midi_note=midi, frequency=midi_to_freq(midi),
@@ -144,8 +161,12 @@ class TestWhatItMeasures:
         return (i * 37) % 100
 
     def _run(self, delay_ms, jitter_ms=4.0, fired_late=0.0, seed=7,
-             tuning=STANDARD):
-        """`fired_late=None` means the ragged pattern above."""
+             tuning=STANDARD, played=None):
+        """`fired_late=None` means the ragged pattern above.
+
+        `played` is the pitch the GUITAR sounded, which need not be anything
+        the tuning holds -- that is the whole point of reading it back.
+        """
         config = Config()
         config.save = lambda: None                     # type: ignore[method-assign]
         config.audio_latency_offset_ms = 0.0
@@ -155,9 +176,9 @@ class TestWhatItMeasures:
         screen._fired = [
             c.at_ms + (self._ragged(i) if fired_late is None else fired_late)
             for i, c in enumerate(screen._schedule)]
+        pitch = screen._midi if played is None else int(played)
         screen._strikes = [
-            strike_at(at + delay_ms + random.gauss(0.0, jitter_ms),
-                      screen._midi)
+            strike_at(at + delay_ms + random.gauss(0.0, jitter_ms), pitch)
             for at in screen._fired]
         screen._finish()
         return config.audio_latency_offset_ms, screen._lines
@@ -248,6 +269,156 @@ class TestWhatItMeasures:
         from pickhero.config import MAX_LATENCY_OFFSET_MS
         stored, _ = self._run(+2000.0, jitter_ms=2.0)
         assert abs(stored) <= MAX_LATENCY_OFFSET_MS
+
+
+# ── the tuning dependency, which was a real bug ────────────────────────────
+
+class TestItReadsThePitchItHeard:
+    """*"Warum muss ich die Gitarre extra drop c tunen, um das timing zu
+    syncen?"* He did not: the wizard took the string-4 pitch out of the SONG's
+    tuning and wrote the tab at it, so a standard-tuned guitar against a Drop
+    C song was asked for MIDI 48, played 50, and nothing matched.
+    """
+
+    def test_a_standard_guitar_measures_against_a_drop_c_song(self):
+        stored, lines = TestWhatItMeasures()._run(
+            +60.0, tuning=DROP_C, played=50)
+        assert stored == pytest.approx(-60.0, abs=6.0)
+
+    def test_and_it_says_which_pitch_it_timed_against(self):
+        _stored, lines = TestWhatItMeasures()._run(
+            +60.0, tuning=DROP_C, played=50)
+        assert any("D3" in line for line in lines)
+
+    def test_any_string_at_all_gives_the_same_answer(self):
+        """Measured over the guitar's whole range: the pitch is irrelevant to
+        WHEN a strike arrived, which is the whole reason this works."""
+        answers = [TestWhatItMeasures()._run(+60.0, played=midi)[0]
+                   for midi in (40, 45, 48, 50, 55, 59, 64)]
+        assert all(a == pytest.approx(answers[0], abs=0.1) for a in answers)
+
+    def test_the_commonest_reading_wins_not_the_first(self):
+        votes = [strike_at(0, 61)] + [strike_at(i, 50) for i in range(9)]
+        assert latency.pitch_played(votes) == 50
+
+    def test_an_unpitched_strike_does_not_vote(self):
+        """It carries no pitch at all -- `midi_note` means nothing there."""
+        notes = [strike_at(i, 50) for i in range(3)]
+        notes += [unpitched_at(i) for i in range(40)]
+        assert latency.pitch_played(notes) == 50
+
+    def test_nor_does_a_subharmonic(self):
+        """It names a chord sounding in the room, not one string -- the same
+        reason the matcher never scores one."""
+        notes = [strike_at(i, 50) for i in range(3)]
+        notes += [subharmonic_at(i, 24) for i in range(40)]
+        assert latency.pitch_played(notes) == 50
+
+    def test_nothing_readable_measures_nothing(self):
+        assert latency.pitch_played([unpitched_at(0)]) is None
+        assert latency.pitch_played([]) is None
+
+    def test_a_tie_goes_to_the_lower_pitch(self):
+        """A tie is the detector undecided, and the harmonic is the wrong
+        one of the two."""
+        assert latency.pitch_played([strike_at(0, 50), strike_at(1, 62)]) == 50
+
+    def test_the_string_keys_only_move_the_hint(self):
+        screen = LatencyMenuScreen(Config(), STANDARD)
+        screen.pick_string(2)
+        assert "string 2" in screen.prompt()
+
+
+# ── the click goes out the way the backing does ────────────────────────────
+
+class TestTheClickCarriesTheBackingOffset:
+    """At song time T the MIDI backing sounds the note written at T - B, so
+    the player hears it B late and his strike lands B late with it. An offset
+    measured without B is wrong by exactly B the moment he plays along.
+    """
+
+    def _with(self, backing, hand=60.0, jitter=3.0):
+        config = Config()
+        config.save = lambda: None                     # type: ignore[method-assign]
+        config.audio_latency_offset_ms = 0.0
+        config.backing_offset_ms = backing
+        screen = LatencyMenuScreen(config, STANDARD)
+        screen._began_ms = 0.0
+        random.seed(5)
+        # The click really goes out `backing` late, and he plays with what he
+        # hears rather than with the beat it was due on.
+        screen._fired = [c.at_ms + backing for c in screen._schedule]
+        screen._strikes = [strike_at(at + hand + random.gauss(0.0, jitter), 50)
+                           for at in screen._fired]
+        screen._finish()
+        return config.audio_latency_offset_ms
+
+    def test_a_delayed_backing_is_part_of_the_answer(self):
+        assert self._with(+80.0) == pytest.approx(-140.0, abs=6.0)
+
+    def test_and_so_is_one_that_runs_early(self):
+        """-20 rather than -40: at -40 the total is 20 ms, which sits exactly
+        on `FINE_MS` and is refused as not an effect. The first version of
+        this test chose that value and read the refusal as a fault."""
+        assert self._with(-20.0) == pytest.approx(-40.0, abs=6.0)
+
+    def test_a_backing_offset_can_take_the_total_under_the_floor(self):
+        """And then nothing is stored, which is the report's rule and not
+        this screen's: a median inside its own noise is not an effect, so a
+        hand 60 ms late behind a backing 40 ms early has nothing to remove."""
+        assert self._with(-40.0) == 0.0
+
+    def test_no_backing_offset_changes_nothing(self):
+        """The control: this is what the screen did before, so a song whose
+        backing needs no offset must measure exactly as it always did."""
+        assert self._with(0.0) == pytest.approx(-60.0, abs=6.0)
+
+    def test_a_backing_that_cancels_the_hand_stores_nothing(self):
+        """Not a special case -- it is the arithmetic. With the backing
+        already 60 ms early and the hand 60 ms late there is nothing left for
+        an offset to remove, and the report refuses a median in its noise."""
+        assert self._with(-60.0) == 0.0
+
+    def test_the_frame_s_own_jitter_still_cancels_on_top_of_it(self):
+        """Both at once, which is the only arrangement that is right about
+        both: the deliberate delay stays in the median and the unpredictable
+        lateness drops out."""
+        config = Config()
+        config.save = lambda: None                     # type: ignore[method-assign]
+        config.audio_latency_offset_ms = 0.0
+        config.backing_offset_ms = 50.0
+        screen = LatencyMenuScreen(config, STANDARD)
+        screen._began_ms = 0.0
+        random.seed(5)
+        screen._fired = [c.at_ms + 50.0 + TestWhatItMeasures._ragged(i)
+                         for i, c in enumerate(screen._schedule)]
+        screen._strikes = [strike_at(at + random.gauss(0.0, 3.0), 50)
+                           for at in screen._fired]
+        screen._finish()
+        # The hand is exactly on the click it hears, so only the 50 ms of
+        # deliberate delay is left.
+        assert config.audio_latency_offset_ms == pytest.approx(-50.0, abs=8.0)
+
+    def test_the_global_value_is_used_and_never_a_song_s_own(self):
+        """What this screen stores is one number per setup, so it has to be
+        measured against the backing delay that is also per setup."""
+        config = Config()
+        config.backing_offset_ms = 30.0
+        config.song_backing_offsets = {"some song": 400.0}
+        screen = LatencyMenuScreen(config, STANDARD)
+        assert screen._backing_offset() == 30.0
+
+    def test_it_is_said_on_screen_rather_than_applied_in_silence(self):
+        lines = latency.verdict_text(
+            {"verdict": "latency", "median_ms": 140.0, "spread_ms": 4.0,
+             "count": 16}, -140.0, 46.0, heard=50, backing_offset_ms=80.0)
+        assert any("80 ms" in line and "backing" in line for line in lines)
+
+    def test_and_nothing_is_said_when_there_is_no_offset(self):
+        lines = latency.verdict_text(
+            {"verdict": "latency", "median_ms": 60.0, "spread_ms": 4.0,
+             "count": 16}, -60.0, 46.0, heard=50, backing_offset_ms=0.0)
+        assert not any("backing" in line for line in lines)
 
 
 # ── and the screen itself ──────────────────────────────────────────────────

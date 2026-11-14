@@ -118,6 +118,47 @@ def calibration_string(tuning: dict[int, int]) -> tuple[int, int]:
     return int(string), int(tuning[string])
 
 
+def pitch_played(strikes) -> int | None:
+    """The pitch the player really sounded, as the commonest reading of it.
+
+    **This is what frees the measurement from the guitar's tuning**, and the
+    first version of this screen had that dependency as a hard one: it took
+    the string-4 pitch out of the SONG's tuning and wrote the tab at it, so a
+    player whose guitar was in standard tuning and whose cursor sat on a Drop
+    C song was asked for MIDI 48, played 50, and the wizard collected nothing
+    and said "not enough was heard". He had to retune his guitar to calibrate
+    a sound card.
+
+    And the pitch is irrelevant to what is being measured, which is the whole
+    reason this works: the wizard times WHEN a strike arrived, not what it
+    was. Measured over A2, C3, D3, G3, B3 and E4 with the tab written at the
+    pitch heard, the answer is **identical to a tenth of a millisecond** at
+    every one of them. So the tab is written at whatever came back, and any
+    string will do.
+
+    The COMMONEST rather than the first: one stray reading must not set the
+    pitch for sixteen clicks. Unpitched strikes do not vote -- they carry no
+    pitch at all -- and nor do subharmonics, which name a chord rather than a
+    string and would be a reading of several strings at once.
+    """
+    votes: dict[int, int] = {}
+    for strike in strikes:
+        note = getattr(strike, "note", strike)
+        if getattr(note, "unpitched", False) or getattr(
+                note, "subharmonic", False):
+            continue
+        midi = int(getattr(note, "midi_note", 0) or 0)
+        if midi <= 0:
+            continue
+        votes[midi] = votes.get(midi, 0) + 1
+    if not votes:
+        return None
+    # Ties go to the LOWER pitch, which is the fundamental rather than one of
+    # its harmonics -- a tie means the detector could not decide, and the
+    # harmonic is the reading that is wrong.
+    return min(votes, key=lambda m: (-votes[m], m))
+
+
 def timeline_at(times_ms, midi_note: int, string: int,
                 bpm: float = CLICK_BPM) -> Timeline:
     """One note per given moment, as a tab the real matcher can score.
@@ -160,7 +201,9 @@ def click_timeline(midi_note: int, string: int, *,
 
 
 def verdict_text(report: dict | None, applied: float | None,
-                 output_latency_ms: float = 0.0) -> list[str]:
+                 output_latency_ms: float = 0.0,
+                 heard: int | None = None,
+                 backing_offset_ms: float = 0.0) -> list[str]:
     """What to say about a finished measurement, in the report's own words.
 
     Three things have to be said and the third is the one a wizard like this
@@ -175,6 +218,19 @@ def verdict_text(report: dict | None, applied: float | None,
     if report is None:
         return ["Not enough was heard to measure anything.",
                 "Play ON the click, one note a beat, and try again."]
+    lines_after: list[str] = []
+    if heard is not None:
+        # Which pitch it read, because the tab is now WRITTEN at it: that
+        # makes "it heard one string sixteen times" and "it heard three
+        # different things" two reports rather than one number, and the
+        # player is the only one who knows which he played.
+        from pickhero.audio.note_utils import midi_to_name
+        lines_after.append(f"It heard {midi_to_name(heard)} and timed "
+                           f"against that.")
+    if backing_offset_ms:
+        lines_after.append(
+            f"The click was delayed by the {backing_offset_ms:+.0f} ms "
+            f"backing offset, so this answer holds while that one does.")
     verdict = report.get("verdict")
     spread = report.get("spread_ms")
     samples = report.get("count")
@@ -183,20 +239,20 @@ def verdict_text(report: dict | None, applied: float | None,
             f"spread +/-{spread:.0f} ms"]
     if applied is None:
         if verdict == "scatter":
-            return head + [
+            return head + lines_after + [
                 "That is the PLAYING, not latency: the notes are spread too "
                 "wide for one offset to fix.",
                 "Nothing was stored. Play closer to the click, or leave the "
                 "offset where it is."]
         if verdict == "per_string":
-            return head + [
+            return head + lines_after + [
                 "The strings disagree with each other, which one offset "
                 "cannot fix either.",
                 "Nothing was stored."]
-        return head + [
+        return head + lines_after + [
             "The median is inside its own noise, so it is not an effect.",
             "Nothing was stored."]
-    out = head + [f"Offset set to {applied:+.0f} ms."]
+    out = head + lines_after + [f"Offset set to {applied:+.0f} ms."]
     if output_latency_ms > 0:
         out.append(
             f"About {output_latency_ms:.0f} ms of that is this mixer's own "

@@ -8143,6 +8143,61 @@ sync measurement already costs 130 dropped buffers), and because the fire times 
   opened fine. The excepts are narrowed to `pygame.error` and friends now, with the reason written beside them: an except
   for the DEVICE must not be wide enough to hide a mistake in the code.
 
+### Retuning A Guitar To Calibrate A Sound Card
+
+*"Warum muss ich die Gitarre extra drop c tunen, um das timing zu syncen?"* He did not have to, and the answer is a bug I
+shipped the day before. The wizard took the string-4 pitch out of the SONG under the cursor and **wrote the tab at it**, so a
+standard-tuned guitar against a Drop C song was asked for MIDI 48, played 50, and the screen said *"Not enough was heard"*.
+
+**And the pitch is irrelevant to what is being measured, which is why this is pure loss.** The wizard times WHEN a strike
+arrived, not what it was. Measured with the tab written at the pitch heard, over A2, C3, D3, G3, B3 and E4: **identical to a
+tenth of a millisecond at every one of them.** So `latency.pitch_played` reads the pitch back off the strikes and the tab is
+written at that.
+
+- **The commonest reading, not the first.** One stray frame must not set the pitch for sixteen clicks.
+- **Unpitched strikes do not vote** (they carry no pitch at all) and **nor do subharmonics** (they name a chord in the room
+  rather than a string). Asserted with forty of each against three real ones.
+- **A tie goes to the LOWER pitch.** A tie is the detector undecided, and the harmonic is the reading that is wrong.
+- **The string hint stays and `1`-`6` still move it**, because reliability is still a real question -- not the low E, which
+  `yinfast` folds to a third of its pitch on 301 of 301 readings, and not the top two, which read 18 % and 13 % of their
+  frames at the level the reference takes were recorded at. **It recommends where it used to demand**, and the result line
+  says which pitch it timed against, so "it heard one string sixteen times" and "it heard three different things" are two
+  reports rather than one number.
+
+### The Click Now Goes Out The Way The Backing Does
+
+The same conversation found the second half: *"1a und 2 müssen wir nur 1x je Setup machen."* Right -- and the two are **not
+independent**, which is what nothing on screen said.
+
+At song time T the MIDI backing sounds the note written at `T - B`, so the player hears it B late and his strike lands B late
+with it. The wizard fired its click **raw**, so it measured `output + input` and stored it in a slot whose correct value is
+`B + output + input`. **Set a backing offset afterwards and the stored number is wrong by exactly B.**
+
+So the click is fired at `at_ms + B` and **the tab is written at `fired - B`**. Two things ride on that line and they pull
+opposite ways:
+
+- the frame's own lateness is unpredictable and he cannot play to it, so he plays to what he HEARS and the fired time is the
+  truth -- scoring against the nominal beat bakes half a frame of bias in, measured at **+50.5 ms** on a ragged loop;
+- the backing offset is deliberate and constant and is **part of the answer**.
+
+Subtracting B from the fire time keeps the jitter cancelling AND leaves B in the median, which is the only arrangement that is
+right about both. Measured end to end: `B = 0` is unchanged (the control), `+80` moves the stored offset to -140, `-20` to -40,
+and **`-60` against a 60 ms hand stores nothing at all** -- not a special case but the arithmetic, and the report then refuses a
+median inside its own noise.
+
+- **The GLOBAL offset, never a song's own override.** What this screen stores is one number per setup, so it has to be measured
+  against the backing delay that is also per setup.
+- **It is said rather than applied in silence** -- *"the click was delayed by the +80 ms backing offset, so this answer holds
+  while that one does"*, and nothing at all when there is none.
+- **A test of mine landed exactly on `FINE_MS`.** At `B = -40` against a 60 ms hand the median is 20 ms, which is not an effect
+  by the report's own rule, and I read the refusal as a fault before reading the threshold. The case is kept as its own test,
+  because a backing offset taking the total under the floor is a thing a player will meet.
+
+**And the number he dialled in by hand is mostly neither him nor his interface.** Of his 200 ms, **168 ms is the app**: aubio
+waits `COLLECT_FRAMES` (12) hops before it emits a pitch at all -- 151 ms at 44.1 kHz -- plus one frame. **32 ms** is left for
+the Focusrite, the driver and everything else. His reaction time is not in there either, and must not be: playing along with a
+pulse is anticipatory rather than reactive, which is the whole reason the wizard clicks instead of showing a note.
+
 ## One Line Fitted Through A Staircase
 
 *"Ja, zieh check_song_sync.py nach."* It fitted a single robust line to the whole song and reported the slope, so Dry

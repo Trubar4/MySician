@@ -70,6 +70,7 @@ class LatencyMenuScreen:
         self._strikes: list = []
         self._began_ms = 0.0
         self._applied: float | None = None
+        self._heard: int | None = None     # the pitch the run really read
 
     # ── what it asks of the player ─────────────────────────────────────────
 
@@ -79,23 +80,38 @@ class LatencyMenuScreen:
         return midi_to_name(self._midi)
 
     def prompt(self) -> str:
-        """Which string, and why that one.
+        """Which string to try, and why that one -- a HINT, not a demand.
 
-        Never the low E, whatever a player would reach for first: measured on
-        the tuner's own reference takes, `yinfast` returns a THIRD of its
-        pitch on 301 of 301 confident readings of an open low E. A folded
-        reading is a subharmonic, `_times_its_own_strike` refuses it, and the
-        wizard would collect nothing while looking like a broken detector.
+        The measurement reads the pitch off what was played
+        (`latency.pitch_played`), so any string will do and the guitar need
+        not be in the song's tuning. What the hint is for is reliability: not
+        the low E, whatever a player would reach for first, because measured
+        on the tuner's own reference takes `yinfast` returns a THIRD of its
+        pitch on 301 of 301 confident readings of an open low E -- and not
+        the top two either, which read 18 % and 13 % of their frames at the
+        level those takes were recorded at.
         """
-        return (f"Play the OPEN string {self._string} ({self.note_name}) "
-                f"on every click.")
+        return (f"Play ONE open string on every click — "
+                f"try string {self._string} ({self.note_name}).")
 
     def pick_string(self, string: int) -> None:
-        """1-6 overrides the choice, the way the tuner's own keys do."""
+        """1-6 moves the HINT. It cannot change what is measured."""
         pitch = self._tuning.get(int(string))
         if pitch is None or self._state == "running":
             return
         self._string, self._midi = int(string), int(pitch)
+
+    def _backing_offset(self) -> float:
+        """The GLOBAL backing offset, which the click is delayed by.
+
+        `backing_offset_for("")` is the global value rather than any song's
+        override: what this screen stores is one number per setup, so it has
+        to be measured against the one backing delay that is also per setup.
+        """
+        getter = getattr(self._config, "backing_offset_for", None)
+        if getter is None:
+            return float(getattr(self._config, "backing_offset_ms", 0.0))
+        return float(getter(""))
 
     # ── the run ────────────────────────────────────────────────────────────
 
@@ -152,8 +168,9 @@ class LatencyMenuScreen:
         for note in self._capture.get_notes():
             if note.note.is_onset:
                 self._strikes.append(note)
+        delay = self._backing_offset()
         while (self._next_click < len(self._schedule)
-               and now >= self._schedule[self._next_click].at_ms):
+               and now >= self._schedule[self._next_click].at_ms + delay):
             sound = output.click_sound()
             if sound is not None:
                 sound.play()
@@ -164,7 +181,7 @@ class LatencyMenuScreen:
             self._fired.append(now)
             self._next_click += 1
         if self._next_click >= len(self._schedule) and now > (
-                self._schedule[-1].at_ms + latency.beat_ms()):
+                self._schedule[-1].at_ms + delay + latency.beat_ms()):
             self._finish()
 
     def _finish(self) -> None:
@@ -172,6 +189,7 @@ class LatencyMenuScreen:
         self._state = "done"
         strikes, fired = self._strikes, list(self._fired)
         self._stop()
+        self._heard = latency.pitch_played(strikes)
         report = self._score(strikes, fired)
         if report is not None and report.get("verdict") in APPLIES:
             # The same arithmetic `_auto_sync_timing` uses, and the same
@@ -180,17 +198,40 @@ class LatencyMenuScreen:
             # factor -- there is no practice speed on this screen.
             self._applied = self._store(-report["median_ms"])
         self._lines = latency.verdict_text(report, self._applied,
-                                           output.buffer_latency_ms())
+                                           output.buffer_latency_ms(),
+                                           self._heard,
+                                           self._backing_offset())
 
     def _score(self, strikes, fired) -> dict | None:
         """The clicks as a tab, the real matcher, and the real report."""
-        scored = [at for at, click in zip(fired, self._schedule)
+        delay = self._backing_offset()
+        # The written times are the fire times with the DELIBERATE delay
+        # taken back out. Two different things are riding on this and they
+        # pull opposite ways:
+        #
+        # - the frame's own lateness is unpredictable and he cannot play to
+        #   it, so he plays to what he HEARS and the fired time is the truth.
+        #   Scoring against the nominal beat bakes half a frame of bias into
+        #   every offset -- measured at +50.5 ms on a ragged frame loop.
+        # - the backing offset is deliberate and constant, and it is part of
+        #   the answer: at song time T the backing sounds the note written at
+        #   T - B, so he hears it B late and his strike lands B late with it.
+        #   An offset measured without B is wrong by exactly B the moment he
+        #   plays along to the backing.
+        #
+        # Subtracting B from the fire time keeps the jitter cancelling AND
+        # leaves B in the median, which is the only arrangement that is right
+        # about both.
+        scored = [at - delay for at, click in zip(fired, self._schedule)
                   if click.scored]
         if len(scored) < MIN_SAMPLES or not strikes:
             return None
-        # The written times ARE the fire times, which is what makes the
-        # frame's own lateness drop out of the answer.
-        timeline = latency.timeline_at(scored, self._midi, self._string)
+        heard = latency.pitch_played(strikes)
+        if heard is None:
+            return None
+        # Written AT the pitch that came back, so the guitar's tuning cannot
+        # make this screen collect nothing. See `latency.pitch_played`.
+        timeline = latency.timeline_at(scored, heard, self._string)
         window = float(self._config.timing_window_ms)
         matcher = NoteMatcher(timeline, timing_window_ms=window,
                               late_window_ms=300.0)
@@ -240,7 +281,7 @@ class LatencyMenuScreen:
                            f"beat, then {latency.SCORED_CLICKS} are measured "
                            f"({latency.SCORED_CLICKS * latency.beat_ms() / 1000:.0f} s).",
                     theme.hud_text, 292)
-            centred(mid, "SPACE starts   |   1-6 picks a string   |   ESC back",
+            centred(mid, "SPACE starts   |   1-6 suggests a string   |   ESC back",
                     theme.hud_accent, 360)
         elif self._state == "running":
             done = max(0, self._next_click - latency.LEAD_IN_CLICKS)
