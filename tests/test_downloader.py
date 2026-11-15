@@ -347,3 +347,40 @@ class TestFindingARevisionThatStillHasAFile:
         from pickhero.tabs import downloader as d
         monkeypatch.setattr(d, "_fetch_json", lambda url: None)
         assert "did not answer" in d._source_of(1)[2]
+
+
+class TestWhatARevisionWithNoFileSays:
+    """The one line that is supposed to answer "what DOES Songsterr hold".
+
+    It printed `sorted(revision)[:8]`, and on the player's own Disturbed
+    reply those eight are all the `a` keys -- so `source` and `tracks`, the
+    only two that decide anything, fell off the end of a list that did not
+    say it was truncated. He asked "was fuer ein Tab haelt Songsterr, wenn
+    es kein GuitarPro ist" with that screenshot in front of him, and the
+    screenshot could not tell him.
+    """
+
+    DISTURBED = ["aiGenerated", "artist", "artistId", "audioV4",
+                 "audioV4Generated", "audioV4Meta", "audioV4Midi", "audios"]
+
+    def test_the_two_that_decide_are_named_even_when_absent(self):
+        from pickhero.tabs.downloader import _revision_keys
+        line = _revision_keys({k: 1 for k in self.DISTURBED})
+        assert "source: no" in line
+        assert "tracks: no" in line
+
+    def test_tracks_is_not_pushed_off_the_end_by_the_a_keys(self):
+        from pickhero.tabs.downloader import _revision_keys
+        line = _revision_keys({k: 1 for k in self.DISTURBED + ["tracks"]})
+        assert "tracks: yes" in line
+        # ... which is exactly what the old rule could not do.
+        assert "tracks" not in ", ".join(sorted(self.DISTURBED + ["tracks"])[:8])
+
+    def test_a_long_reply_says_how_many_it_left_out(self):
+        from pickhero.tabs.downloader import _revision_keys
+        line = _revision_keys({f"k{i:02d}": 1 for i in range(30)})
+        assert "+20 more" in line
+
+    def test_a_short_one_claims_no_leftovers(self):
+        from pickhero.tabs.downloader import _revision_keys
+        assert "more" not in _revision_keys({"source": "", "artist": "x"})

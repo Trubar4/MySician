@@ -183,6 +183,29 @@ def find(query: str, max_results: int = 10) -> list[SongsterrResult]:
 SOURCE_HOPS = 8
 
 
+def _revision_keys(revision: dict) -> str:
+    """What a revision with no Guitar Pro file DOES carry, readably.
+
+    This existed to turn the next screenshot into the answer instead of
+    another round of guessing at an API nobody here can reach -- and it was
+    `sorted(revision)[:8]`, which is alphabetical. On the player's own
+    Disturbed reply that is eight keys all beginning with `a`, printed as
+    though the list were the whole of it, and the two keys that decide
+    anything -- `source` and `tracks` -- fall off the end. A truncated list
+    that does not say it is truncated is worse than no list.
+
+    So the two are named first and by name, present or absent, then the
+    rest, then how many were left over.
+    """
+    keys = sorted(revision)
+    decides = [f"{k}: {'yes' if k in revision else 'no'}"
+               for k in ("source", "tracks")]
+    rest = [k for k in keys if k not in ("source", "tracks")]
+    shown, over = rest[:10], len(rest) - 10
+    line = ", ".join(decides + shown)
+    return line + (f", +{over} more" if over > 0 else "")
+
+
 def _source_of(song_id: int) -> tuple[str, int, str]:
     """(the GP file's URL, the revision it came from, why there is none).
 
@@ -230,7 +253,7 @@ def _source_of(song_id: int) -> tuple[str, int, str]:
         source = revision.get("source")
         if isinstance(source, str) and source.startswith("http"):
             return source, int(revision_id), ""
-        last_keys = ", ".join(sorted(revision)[:8]) or "nothing"
+        last_keys = _revision_keys(revision)
         revision_id = revision.get("prevRevisionId")
 
     # Named with what was actually looked at. "Songsterr holds no file" said

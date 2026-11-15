@@ -756,3 +756,45 @@ class TestWhatTheDownloadSaysAboutTheSong:
         grab = downloader.grab_song(1, tmp_path / "s.gp5", want_audio=False)
         line = [n for n in grab.notes if n.startswith("Bar map")][0]
         assert "4 bars" in line and "52" in line
+
+
+class TestTheNotesFitTheWindow:
+    """They were blitted centred and unwrapped, so both ends were cut.
+
+    Which is where the useful half lives: the download screen's longest
+    note is the list of fields a Songsterr revision holds, and the player
+    asked *"was fuer ein Tab haelt Songsterr, wenn es kein GuitarPro ist"*
+    looking at a screenshot of it. `source` and `tracks` are the answer and
+    they sit at the end of that line.
+    """
+
+    def _font(self):
+        import pygame
+        pygame.init()
+        pygame.font.init()
+        return pygame.font.SysFont("arial", 18)
+
+    def test_a_long_note_is_broken_into_lines_that_fit(self):
+        from pickhero.ui.footer import wrap_words
+        font = self._font()
+        note = ("Songsterr holds no Guitar Pro file for this tab - 1 revision "
+                "checked back to 9687871 (it has: source: no, tracks: yes, "
+                "aiGenerated, artist, artistId, audioV4, audioV4Generated, "
+                "audioV4Meta, audioV4Midi, audios, +3 more)")
+        width = 1200
+        parts = wrap_words(note, font, width)
+        assert len(parts) > 1
+        assert all(font.size(p)[0] <= width for p in parts)
+        # Nothing is lost on the way: it is a break, not a trim.
+        assert " ".join(parts) == note
+
+    def test_a_note_that_already_fits_is_one_line(self):
+        from pickhero.ui.footer import wrap_words
+        font = self._font()
+        assert wrap_words("Tab: song.gp5", font, 1200) == ["Tab: song.gp5"]
+
+    def test_one_word_wider_than_the_screen_is_left_alone(self):
+        from pickhero.ui.footer import wrap_words
+        font = self._font()
+        word = "x" * 400
+        assert wrap_words(word, font, 200) == [word]

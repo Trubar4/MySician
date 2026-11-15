@@ -117,6 +117,9 @@ class DownloadMenuScreen:
             pasted = " ".join(clipboard_text().split())
             if pasted:
                 self._query += pasted
+            else:
+                from pickhero.ui import clipboard
+                self._notes = [f"Nothing pasted — {clipboard.last_error}"]
             return None
 
         if event.key == pygame.K_BACKSPACE:
@@ -487,10 +490,19 @@ class DownloadMenuScreen:
         head = item_font.render(self._status_msg, True, t.hud_accent)
         surface.blit(head, (w // 2 - head.get_width() // 2, 110))
 
+        # Wrapped, because these are sentences and one of them is the list
+        # of fields a revision holds. Centred and unwrapped, anything wider
+        # than the window loses BOTH ends -- and the end is where `tracks`
+        # and `source` are.
+        from pickhero.ui.footer import wrap_words
         top = 170
-        for i, note in enumerate(self._notes):
-            line = hint_font.render(note, True, t.hud_text)
-            surface.blit(line, (w // 2 - line.get_width() // 2, top + i * 26))
+        row = 0
+        for note in self._notes:
+            for part in wrap_words(note, hint_font, w - 80):
+                line = hint_font.render(part, True, t.hud_text)
+                surface.blit(line, (w // 2 - line.get_width() // 2,
+                                    top + row * 26))
+                row += 1
 
         hint = "Ctrl+C: copy this screen  |  any key: back to the songs"
         clickable.blit_centred(surface, hint_font, hint, h - 36, w,

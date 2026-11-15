@@ -9660,15 +9660,6 @@ class PlayingScreen:
             plan.append((max(0.0, min(1.0, s1 / length)), rate))
         return tuple(plan)
 
-    def _mp3_rate(self) -> float:
-        """The FIRST segment's rate, which is all a single number can say.
-
-        For the HUD and the run log only -- "how far off is this recording"
-        wants one number. NOTHING is built from it any more: see below.
-        """
-        plan = self._mp3_plan()
-        return plan[0][1] if plan else 1.0
-
     def _mp3_build_tempo(self) -> float:
         """What `timestretch.build` has to be asked for.
 
@@ -10516,9 +10507,15 @@ class PlayingScreen:
         nobody wants. The same tkinter the file chooser already uses.
         """
         from pickhero.tabs import songsterr
-        song_id = songsterr.song_id_of(self._clipboard_text())
+        from pickhero.ui import clipboard
+        text = self._clipboard_text()
+        song_id = songsterr.song_id_of(text)
         if not song_id:
-            self._say("Copy a Songsterr link first, then press Ctrl+U")
+            # "Copy a link first" is the right advice for an empty clipboard
+            # and an accusation when the clipboard itself is the fault.
+            why = clipboard.last_error
+            self._say(f"Clipboard: {why}" if why and not text
+                      else "Copy a Songsterr link first, then press Ctrl+U")
             return
         setter = getattr(self._config, "set_songsterr_for", None)
         if setter is None:
@@ -11066,16 +11063,20 @@ class PlayingScreen:
             # Two different reasons for the same wait, and a line saying
             # "fitting to 100 % speed" would name neither.
             if abs(self._tempo_factor - 1.0) < 1e-6:
-                what = f"to this tab ({(1 / self._mp3_rate() - 1) * 100:+.2f} %)"
+                what = "to this tuning"
             else:
                 what = f"to {int(self._tempo_factor * 100)} % speed"
             return (f"Audio: fitting {what} "
                     f"— {self._mp3_stretch_progress:.0%} — {name}")
-        rate = self._mp3_rate()
-        speed = ("" if abs(rate - 1.0) < 1e-6
-                 else f"  [{(1 / rate - 1) * 100:+.2f} % Shift+S] ")
-        if self._sync_anchor is not None:
-            speed = "  [sync point 1 set — line up near the end, Shift+S] "
+        # No rate here. It used to print the first sync segment's rate and
+        # offer Shift+S, which was two lies in eight characters: the rate is
+        # a CONSEQUENCE of the stored points rather than something that key
+        # sets, and nothing is built from it any more -- the correction warps
+        # the tab. A number that moves and changes nothing is worse than no
+        # number. What the points cover is in the sync panel, where it can
+        # say which stretch was measured.
+        speed = ("  [sync point 1 set — line up near the end, Shift+S] "
+                 if self._sync_anchor is not None else "")
         return (f"Audio: {_offset_text(self._mp3_offset())}{speed} "
                 f"(Shift+N/M ±10ms, Ctrl ±1s, Ctrl+Shift ±10s) — {name}")
 

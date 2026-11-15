@@ -461,8 +461,14 @@ class App:
             return
         lines = text.count("\n") + 1
         plural = "s" if lines != 1 else ""
-        said = (f"Copied {lines} line{plural} to the clipboard"
-                if put_clipboard(text) else "Could not reach the clipboard")
+        if put_clipboard(text):
+            said = f"Copied {lines} line{plural} to the clipboard"
+        else:
+            # Named, not "could not reach it". The player reported the
+            # clipboard going dead after the first copy and the app had one
+            # sentence for every way that can happen.
+            from pickhero.ui import clipboard
+            said = f"Could not copy — {clipboard.last_error or 'no reason given'}"
         if callable(say):
             say(said)
 

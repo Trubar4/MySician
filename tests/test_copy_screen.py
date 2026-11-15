@@ -110,8 +110,14 @@ class TestTheKeyReachesEveryScreen:
         app = _app(tmp_path)
         app._menu.reload_files()
         monkeypatch.setattr(clipboard, "put_clipboard", lambda text: False)
+        monkeypatch.setattr(clipboard, "last_error", "TclError: no display")
         _press_ctrl_c(app)
-        assert "Could not reach the clipboard" in app._menu._reload_note
+        note = app._menu._reload_note
+        # The PROPERTY is that the reason reaches the screen, not the
+        # wording: "could not reach the clipboard" was one sentence for
+        # every way a copy can fail, and the player reported one of them.
+        assert "Could not copy" in note
+        assert "no display" in note
 
     def test_it_says_how_much_it_took(self, tmp_path, monkeypatch):
         (tmp_path / "song.gp5").write_bytes(b"x")

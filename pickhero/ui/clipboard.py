@@ -4,28 +4,87 @@ Its own module because two screens need it and neither should have to
 import the other: the player screen takes a Songsterr link off it (Ctrl+U),
 and the search box takes one as text (Ctrl+V). The same tkinter the file
 chooser already uses.
+
+**The two halves want opposite things from the interpreter**, which is the
+bug the player reported: *"Nachdem ich erstmals mit Str+C den HUD kopiert
+habe, geht es nicht mehr aus dem Speicher in der App. Ich kann nichts
+anderes mehr einfuegen."*
+
+- A WRITE has to leave an interpreter alive. Tk does not copy the text into
+  the operating system; it registers itself as the clipboard's owner and
+  hands the text over when somebody asks for it. Destroy the interpreter and
+  there is nobody left to ask -- which is both halves of his report at once:
+  the text never reaches another app, and this one reads back nothing.
+  `root.update()` was put here for that and is not enough, because the ask
+  comes whenever the other app feels like it, not before the next line runs.
+- A READ has to NOT own the selection. Where Tk owns it, `clipboard_get`
+  answers out of its own copy instead of going to the system, so the app
+  would read back its own last copy for ever however many times the player
+  copied something else.
+
+So the write keeps one hidden window for the life of the process and the
+read builds a throwaway one, and neither is the other's leftover.
+
+None of this is reproducible on the machine it was written on -- there is no
+tkinter and no desktop here -- so the reason is REPORTED rather than
+swallowed into an empty string. `last_error` is what the next screenshot
+has to carry: "no clipboard support", "the clipboard is empty" and "the
+clipboard holds something that is not text" are three different problems and
+were one return value.
 """
 
 from __future__ import annotations
 
+#: Why the last call came back with nothing. "" when it did not.
+last_error = ""
 
-def clipboard_text() -> str:
-    """The clipboard's text, or "" when there is no way to ask.
+#: The hidden window that owns what this app has copied. Never destroyed:
+#: destroying it is what takes the text back off the clipboard.
+_owner = None
 
-    One seam because it is the one part of pasting that cannot run without
-    a desktop -- no tkinter and an empty clipboard look the same from here,
-    and the advice to the player is the same either way.
-    """
+
+def _tk():
+    """tkinter, or None where there is no desktop to talk to."""
     try:
         import tkinter
+        return tkinter
+    except Exception:                      # pragma: no cover - no desktop here
+        return None
+
+
+def clipboard_text() -> str:
+    """The clipboard's text, or "" -- and then `last_error` says why.
+
+    A FRESH interpreter every time, deliberately. One that has copied
+    something owns the selection, and Tk answers an owned selection out of
+    its own copy without asking the system at all -- so reusing the window
+    `put_clipboard` keeps alive would hand back this app's own last copy for
+    ever, whatever the player had copied since.
+    """
+    global last_error
+    tkinter = _tk()
+    if tkinter is None:
+        last_error = "no clipboard support on this machine (tkinter missing)"
+        return ""
+    root = None
+    try:
         root = tkinter.Tk()
         root.withdraw()
-        try:
-            return str(root.clipboard_get())
-        finally:
-            root.destroy()
-    except Exception:
+        text = str(root.clipboard_get())
+    except Exception as exc:
+        # TclError for an empty clipboard and for one holding an image, and
+        # they are not the same problem. Narrowing it further would mean
+        # naming Tcl's own wording, which moves between versions.
+        last_error = f"{type(exc).__name__}: {exc}".strip() or "empty"
         return ""
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+    last_error = "" if text else "the clipboard is empty"
+    return text
 
 
 def put_clipboard(text: str) -> bool:
@@ -40,22 +99,34 @@ def put_clipboard(text: str) -> bool:
     player was reading a 200-character error off a photograph of his monitor
     and typing it back to be diagnosed.
 
-    tkinter's clipboard is emptied when its interpreter is destroyed, so the
-    window is kept alive for one `update()` after the append -- without it
-    the copy appears to work and the paste comes back empty on Windows.
+    The window is kept for the life of the process rather than destroyed
+    after an `update()`. Tk serves the clipboard on demand from the owning
+    interpreter, and "on demand" is whenever the other application asks --
+    which is after this function has returned, after the next copy, and after
+    the player has walked to the browser. One `update()` only covers whoever
+    happened to ask inside it.
     """
+    global last_error, _owner
     if not text:
+        last_error = "nothing to copy"
+        return False
+    tkinter = _tk()
+    if tkinter is None:
+        last_error = "no clipboard support on this machine (tkinter missing)"
         return False
     try:
-        import tkinter
-        root = tkinter.Tk()
-        root.withdraw()
-        try:
-            root.clipboard_clear()
-            root.clipboard_append(text)
-            root.update()              # hand it to the window manager
-        finally:
-            root.destroy()
-        return True
-    except Exception:
+        if _owner is None:
+            _owner = tkinter.Tk()
+            _owner.withdraw()
+        _owner.clipboard_clear()
+        _owner.clipboard_append(text)
+        _owner.update()            # hand it over to whoever is asking now
+    except Exception as exc:
+        # A window torn down by something else (the display going away, a
+        # file chooser's own interpreter) must not make the key dead for the
+        # rest of the session, so the next press builds a new one.
+        _owner = None
+        last_error = f"{type(exc).__name__}: {exc}".strip() or "copy failed"
         return False
+    last_error = ""
+    return True

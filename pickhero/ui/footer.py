@@ -35,3 +35,35 @@ def wrap_on_bars(line: str, font, width: int) -> list[str]:
     if current.strip():
         out.append(current.strip())
     return out or [line]
+
+
+def wrap_words(line: str, font, width: int) -> list[str]:
+    """Break one line of PROSE into as many as it takes to fit `width`.
+
+    `wrap_on_bars` breaks at the "|" a footer carries, which a sentence does
+    not have. The download screen's notes are sentences -- and a list of the
+    fields a Songsterr revision holds, which is the longest of them and grew
+    when it stopped truncating itself.
+
+    Every one of them was blitted centred and unwrapped, so anything wider
+    than the window lost BOTH ends. Fourth time in this project: the playing
+    screen's footer, the sync panel, the completion overlay, this.
+
+    A single word wider than the screen is left alone, the same answer
+    `wrap_on_bars` gives a single entry: shortening the text is a decision
+    for whoever wrote it.
+    """
+    if font.size(line)[0] <= width:
+        return [line]
+    out: list[str] = []
+    current = ""
+    for word in line.split(" "):
+        candidate = word if not current else f"{current} {word}"
+        if current and font.size(candidate)[0] > width:
+            out.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        out.append(current)
+    return out or [line]

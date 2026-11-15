@@ -7820,6 +7820,63 @@ all refused with the reason.
 **What this still cannot answer until the takes arrive**, said before any number: whether the 30-35 % false green the test file measures
 holds on real material. That is the whole point of the passage, and it is a measurement rather than a prediction.
 
+## Tk Does Not Copy The Text, It Promises To Hand It Over
+
+*"Nachdem ich erstmals mit Str+C den HUD kopiert habe, geht es nicht mehr aus dem Speicher in der App. Ich kann nichts anderes mehr
+einfuegen - wie bspw. einen Songsterr Link. Ausserhalb der App gehen andere Str+C Speicher."*
+
+Both halves of that are one mechanism. **Tk does not put text into the operating system's clipboard; it registers itself as the clipboard's
+OWNER and serves the text when somebody asks for it.** Every call in `clipboard.py` built an interpreter and destroyed it again -- so after
+a copy there was nobody left to serve, which is the text never reaching another app AND this app reading back nothing.
+
+`root.update()` was put there for exactly this and cannot do it: it covers whoever happens to ask inside that one line, and the browser asks
+a minute later.
+
+- **The write keeps ONE hidden window for the life of the process.** Destroying it is what takes the text back off the clipboard, so it is
+  not destroyed.
+- **And the read must NOT use that window.** An interpreter that owns the selection answers `clipboard_get` out of its own copy without the
+  system being asked at all -- so reusing the owner would hand back this app's own last copy for ever, whatever had been copied since. A
+  throwaway interpreter never owns anything, which is the one thing the old shape had right.
+- **A window that broke is replaced rather than dead for the session**, or one failed copy takes the key with it.
+- **The reason is reported, not swallowed into `""`.** "No clipboard support", "the clipboard is empty" and "the clipboard holds something
+  that is not text" were one return value and three different problems; `Ctrl+U` answered all of them with *"Copy a Songsterr link first"*,
+  which is advice for one of the three and an accusation for the other two. `last_error` is read by all three keys now.
+- **None of it is reproducible here** -- no tkinter and no desktop on this machine -- so what the tests pin is the SHAPE, through a stand-in
+  for Tk: which window each half uses, that the owner survives a second copy, and that a copy cannot make later pastes read it back. The
+  mechanism itself can only be confirmed at the player's.
+
+## The Key List Was Cut Off Exactly Where The Answer Was
+
+*"Was fuer ein Tab haelt Songsterr, wenn es kein GuitarPro ist und koennen wir das auch nutzen?"* -- asked with the download screen's own
+failure line in front of him, which exists to answer precisely that:
+
+```
+Songsterr holds no Guitar Pro file for this tab - 1 revision checked back to 9687871
+  (it has: aiGenerated, artist, artistId, audioV4, audioV4Generated, audioV4Meta, audioV4Midi, audios)
+```
+
+**Every one of those eight begins with `a`, because it was `sorted(revision)[:8]`.** `source` and `tracks` -- the only two keys that decide
+anything -- fall off the end of a list that does not say it is truncated. The chapter that built this line said it *"turns the next
+screenshot into the answer instead of another round of guessing at an API nobody here can reach"*, and the truncation defeated exactly that:
+from his screenshot it is not knowable whether that revision carries `tracks[].hash` at all.
+
+- **The two that decide are named by name, present or absent**, then the rest, then how many were left over.
+- **And the notes were never wrapped.** They are blitted centred, so anything wider than the window loses BOTH ends -- and the end is where
+  `tracks` and `source` now are. `footer.wrap_words` is the prose twin of `wrap_on_bars`, in the same module for the same reason: one place
+  that knows how to make text fit. **Fourth time in this project**, after the playing screen's footer, the sync panel and the completion
+  overlay.
+
+## A Rate Nothing Builds From Is A Number That Moves And Changes Nothing
+
+The Audio line printed `[-1.64 % Shift+S]`, and it was wrong twice in eight characters. The rate is the FIRST SEGMENT of the stored sync
+plan -- a consequence of the points rather than something `Shift+S` sets -- and **nothing has been built from it since the correction became
+a warp of the tab**: `_mp3_rate()` had exactly two readers and both were this line and its sibling in the "fitting..." message.
+
+Removed, and `_mp3_rate` with it rather than left tested and unused -- the fault this file has already written up for `system_pitch` and
+`PAPER`. What the points COVER is in the sync panel, where it can also say which stretch was measured. `set_mp3_rate_for` stays: a settings
+file written by an older build still carries a rate, and resetting it when a recording is picked is the repair.
+
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
