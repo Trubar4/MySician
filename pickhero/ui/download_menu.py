@@ -289,9 +289,16 @@ class DownloadMenuScreen:
                 self._notes.append(f"Its bar map ({grab.bars} bars) is saved "
                                    f"and waiting.")
                 self._notes.append(f"Fetch the tab yourself and save it in "
-                                   f"your songs folder as:")
-                self._notes.append(grab.wanted_name)
-                self._notes.append("Then the sync is already set up.")
+                                   f"your songs folder under this NAME (any "
+                                   f"Guitar Pro extension will do):")
+                self._notes.append(Path(grab.wanted_name).stem)
+                # The count, because the map is refused where the tab has
+                # FEWER bars than it -- there is nowhere to put the extra
+                # ones. A tab rebuilt by a third-party downloader can differ
+                # from Songsterr's own bar grid, and then the map is dropped
+                # in silence and the song falls back to the listening.
+                self._notes.append(f"It needs {grab.bars} bars, or the map "
+                                   f"cannot be used.")
             self._notes.append("Songsterr is open in your browser.")
             self._status_msg = f"{name} — not downloaded"
             webbrowser.open(get_songsterr_url(result.song_id, result.title,

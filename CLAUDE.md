@@ -7866,6 +7866,13 @@ from his screenshot it is not knowable whether that revision carries `tracks[].h
   that knows how to make text fit. **Fourth time in this project**, after the playing screen's footer, the sync panel and the completion
   overlay.
 
+**And the instruction it gives after that was half an instruction.** "Save it as `<name>.gp5`" is what a file from Songsterr would have been
+called; a tab rebuilt by a third-party downloader is a `.gp`, and renaming it is pointless -- the loader dispatches on the file's CONTENT and
+`.gp` has been in `GP_EXTENSIONS` all along. So the NAME is what is asked for, not the extension. And the bar COUNT goes with it, because
+`_covers` refuses a map with more bars than the tab: measured on the player's own hand-fetched Disturbed file, **118 bars against a cached map
+of 121** -- so the map he was told was "saved and waiting" would have been dropped in silence and the song would have fallen back to the
+listening, which is the thing he was trying to get away from.
+
 ## A Rate Nothing Builds From Is A Number That Moves And Changes Nothing
 
 The Audio line printed `[-1.64 % Shift+S]`, and it was wrong twice in eight characters. The rate is the FIRST SEGMENT of the stored sync
