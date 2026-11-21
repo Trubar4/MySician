@@ -543,6 +543,28 @@ class TestATabWrittenAtTheWrongTempo:
         found = autosync.written_tempo_gap(self._tab(), 295.4)
         assert abs(found["ratio"] - 1.0) < 0.01
 
+    def test_a_bar_in_another_signature_is_not_a_tempo_change(self):
+        """Eva Under Fire's "Blow": 84 bars of 4/4 and two of 2/4, all at a
+        constant 126 BPM. Comparing the BARS made this abstain on a song it
+        can answer -- so the comparison is per QUARTER. 3/4 against 6/8 is
+        the same confusion.
+        """
+        measures, at, tempo = [], 0.0, 126.0
+        quarter = 60_000.0 / tempo
+        for i in range(86):
+            beats = 2 if i in (40, 41) else 4
+            length = quarter * beats
+            measures.append(MeasureInfo(index=i, start_ms=at,
+                                        end_ms=at + length, beats=beats,
+                                        beat_type=4))
+            at += length
+        song = Timeline([], SongMetadata(title="t", tempo=126),
+                        measures=measures)
+        assert song.duration_ms == pytest.approx(at, abs=1.0)
+        found = autosync.written_tempo_gap(song, at / 1000.0)
+        assert found is not None
+        assert found["ratio"] == pytest.approx(1.0, abs=0.001)
+
     def test_a_tab_with_tempo_changes_gets_no_single_answer(self):
         """One number cannot describe a file that changes tempo, and a wrong
         number here would send the player to fix something that is right."""

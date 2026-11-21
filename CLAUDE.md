@@ -7993,6 +7993,89 @@ and the wobble measured on Reckless is *"up to 345 ms, systematic over several b
 survives any thinning that keeps the curve. It would have changed nothing, and the measurement that says so
 was already in this file.
 
+## The Two Paths Fail On Different Songs, And One Of Them Is The Default
+
+*"Hier ist noch ein Beispiel."* Eva Under Fire, "Blow" -- tab, cached bar map and his own recording, both paths through the
+app's own code:
+
+| | windows | stored |
+|---|---|---|
+| **the listening** | **23 of 24**, 1 ambiguous | **7 points, 0:00-2:38 of 2:42** |
+| the bar map | **2 of 24** | nothing |
+
+**That is Parkway Drive exactly reversed**, where the listening stores nothing and the bar map places the middle three
+minutes. Two songs, two paths, one failure each -- so neither measurement is the right default on its own, and the sample
+that moved the default a week ago was one song.
+
+**And the default now in the tree is the one that fails on this song.** An undecided song with a bar map available has its
+source rewritten to `songsterr`, which by design never falls back (*"falling back would be the app deciding again, which is
+the thing that was reported"*). So Eva Under Fire opens, measures, stores nothing, and the listening that reads it 23 of 24
+is never asked. The player set no source, so this is not his choice being obeyed -- it is the app's.
+
+**What that argues for, and it is not built:** `auto` reversed -- the bar map first, because it is a file read and cannot
+fail, then the listening when the map does not fit -- as the default for an undecided song, with the two explicit choices
+still obeyed with no fallback. That keeps his rule (*"Ich habe das Gefuehl es entscheidet noch immer selbst"*) exactly:
+an explicit answer is final, an undecided song gets whichever measurement works. Not built, because changing a default on
+two songs is what produced this one.
+
+## A Tempo Nobody Could Act On, Printed Behind A Gate Nobody Reaches
+
+*"Ja, hol die BPM-Zeile aus der 10-%-Schranke."* `written_tempo_gap` computes what a tab's written tempo would have to be
+to fit the recording, correctly, and the line that says it sat behind `wrong_length` -- `MAX_LENGTH_MISMATCH`, **10 %**,
+which means *"go and get another file"*. Nothing answered the band between a percent and a tenth. Measured on Parkway
+Drive: 173 bars at a written **140 BPM** is 4:56 against a 5:08 recording, **4 % apart**, the map is stored, it
+extrapolates **6.6 s** past its coverage -- and the one number he could type into Guitar Pro was computed on every run
+and never printed.
+
+- **It is a CAVEAT where the map was stored, not a refusal.** Inside the gate the points are carrying the difference, so
+  the "nothing was stored" that belongs to a 27 % mismatch would be a lie. One line, appended; the surrounding lines
+  already say what was stored.
+- **`TEMPO_GAP_FLOOR` is 2 % and it is derived rather than fitted.** The suggestion is printed as whole BPM, so under
+  about two per cent it rounds to the value already in the file and the line would name the number it is complaining
+  about -- 2 % of 140 BPM is 2.8, of 65 BPM is 1.3. The rounding is ALSO checked, because the floor alone does not
+  guarantee it at every tempo. Eva Under Fire reads **1.9 %** and says nothing, which is right: its listening stores
+  seven good points.
+- **The bar map rules the other cause OUT, which the listening can never do.** Songsterr times one point per bar, so a
+  map of this tab's own bar count is proof that no music is missing -- and *"either the tempo or four per cent the
+  recording has not"* becomes the tempo, full stop. The counts matching is the test and not the map's presence, because
+  `_covers` accepts a shorter map whose remaining bars are empty.
+- **One reader of the fact** (`_tempo_gap_sentence`), said in three places now. Three copies of one sentence is how one of
+  them comes to name a different number.
+- **And the bar-map path reported neither length**, so the feature would have silently done nothing on the one song it was
+  asked for -- the fifth time in this file. `align_to_bar_times` carries `tab_s` and `recording_s` now; it decodes the
+  recording anyway.
+
+**A second gap in the same function, found by the new song rather than reasoned:** it abstained whenever the bars were not
+all the same LENGTH, on the argument that the file then carries tempo changes. "Blow" is 84 bars of 4/4 and two of 2/4 at
+a constant **126 BPM** -- so its bars come in two lengths and its tempo is one number, and the rule refused a song it
+could answer. 3/4 against 6/8 is the same confusion. It compares the QUARTER now, and a real tempo change still moves that
+and is still refused.
+
+## The EXE Has No ffmpeg, So The Audio Half Never Reaches YouTube
+
+*"Es wundert mich noch immer, dass ich den Download machen muss, obwohl das erste MP3 von unserer App automatisch geladen
+wurde."* Not YouTube's bot check -- the download stops one step earlier, on this machine's own build, and the reason is a
+comment in `release.yml`:
+
+```
+# ffmpeg is deliberately NOT bundled -- it is 37 MB of the EXE, and it
+# serves one feature that does not currently work
+```
+
+`youtube.missing()` is checked BEFORE yt-dlp runs, so every EXE GitHub Actions has produced since reports **"ffmpeg was
+not found -- put ffmpeg.exe next to MySician.exe"** and never asks YouTube anything. The bot check may also be waiting
+behind it; nothing has got far enough to find out.
+
+**The decision that produced this is now stale, and that is the finding.** It was dropped because the audio feature "does
+not currently work" -- and the audio feature has since fixed a song outright: audio from the video Songsterr timed against
+is what made From The Heart Of Darkness sync (*"Mit dem neuen Download laeuft Heart of the darkness Synchron"*). A feature
+that repairs a sync nothing else can repair is worth 37 MB, or worth one file copy.
+
+**It needs no rebuild either way**, which is why the cheap half is tried first: `_search_folders` looks beside the
+executable, so `ffmpeg.exe` dropped next to `MySician.exe` works on the build he already has -- and that is the sentence
+the screen already prints. What it does NOT print is where to get one, which is the "half a message" fault that chapter
+fixed once already for a player who is not a developer.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

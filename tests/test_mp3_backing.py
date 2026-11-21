@@ -1924,6 +1924,134 @@ class TestSayingItIsTheTempo:
         assert "not the same transcription" in lines
 
 
+class TestTheTempoLineOutsideTheTenPerCentGate(TestSayingItIsTheTempo):
+    """Parkway Drive: 173 bars at a written 140 BPM is 4:56 against a 5:08
+    recording -- 4 % apart, so `wrong_length` never fired and the one number
+    the player could act on was computed and never printed. The map IS
+    stored there, and extrapolates 6.6 s past its coverage.
+    """
+
+    def _grid(self, screen, bars=173, tempo=140.0, beats=4):
+        from pickhero.tabs.timeline import (MeasureInfo, SongMetadata,
+                                            Timeline)
+        bar_ms = 60_000.0 / tempo * beats
+        measures = [MeasureInfo(index=i, start_ms=i * bar_ms,
+                                end_ms=(i + 1) * bar_ms, beats=beats)
+                    for i in range(bars)]
+        screen._timeline = Timeline([], SongMetadata(title="t", tempo=tempo),
+                                    measures=measures)
+        return bars * bar_ms / 1000.0
+
+    def _heard(self, tab_s, rec_s):
+        """A reading that WORKED, which is the case the gate used to hide."""
+        out = self._report(tab_s, rec_s)
+        out.update({"readable": True, "wrong_length": False,
+                    "points": [(0.0, -200.0), (240_000.0, -900.0)],
+                    "covered": (90.0, 272.0),
+                    "length_gap": abs(tab_s - rec_s) / max(tab_s, rec_s)})
+        return out
+
+    def test_a_readable_reading_still_names_the_tempo(self, tmp_path,
+                                                      monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch)
+        tab_s = self._grid(screen)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [(0.0, -200.0), (240_000.0, -900.0)], self._heard(tab_s, 308.5)))
+        assert "140 BPM" in lines and "135" in lines
+        assert "found by listening" in lines
+
+    def test_and_does_not_claim_nothing_was_stored(self, tmp_path,
+                                                   monkeypatch):
+        """Inside the gate the points are carrying the difference, so the
+        refusal that belongs to a 27 % mismatch would be a lie here."""
+        screen = self._screen(tmp_path, monkeypatch)
+        tab_s = self._grid(screen)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [(0.0, -200.0), (240_000.0, -900.0)], self._heard(tab_s, 308.5)))
+        assert "nothing was stored" not in lines
+
+    def test_under_the_floor_nothing_is_said(self, tmp_path, monkeypatch):
+        """Eva Under Fire reads 1.9 % and its listening stores seven good
+        points. A line there would be noise about a song that works."""
+        screen = self._screen(tmp_path, monkeypatch)
+        tab_s = self._grid(screen, bars=86, tempo=126.0)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [(0.0, -200.0)], self._heard(tab_s, tab_s * 1.019)))
+        assert "BPM" not in lines
+
+    def test_nor_when_the_suggestion_rounds_to_what_is_written(
+            self, tmp_path, monkeypatch):
+        """The line prints whole BPM, so naming the value it is complaining
+        about would be absurd."""
+        screen = self._screen(tmp_path, monkeypatch)
+        tab_s = self._grid(screen, bars=40, tempo=20.0)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [(0.0, -200.0)], self._heard(tab_s, tab_s * 1.025)))
+        assert "BPM" not in lines
+
+    def _bar_map(self, tab_s, rec_s, bars=173, measures=173):
+        return {
+            "source": "songsterr", "points": [(0.0, -200.0),
+                                              (240_000.0, -900.0)],
+            "readable": True, "windows": 43, "usable": 17, "ambiguous": 0,
+            "breaks": [], "sections": 1, "sections_used": 1, "unreadable": [],
+            "covered": (90.0, 272.0), "song_s": tab_s, "share": 0.4,
+            "wrong_bars": False, "wrong_length": False, "spikes": 0,
+            "bars": bars, "measures": measures, "constant_s": -1.2,
+            "scatter_ms": 180.0, "offered": [bars],
+            "tab_s": tab_s, "recording_s": rec_s,
+        }
+
+    def test_a_bar_map_of_this_tabs_own_bars_rules_the_music_out(
+            self, tmp_path, monkeypatch):
+        """Songsterr times one point per bar, so a map of 173 bars against a
+        173-bar tab is proof that no music is missing -- which turns "either
+        the tempo or 4 % of missing music" into the tempo, full stop. The
+        listening can never establish that."""
+        screen = self._screen(tmp_path, monkeypatch)
+        tab_s = self._grid(screen)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [(0.0, -200.0)], self._bar_map(tab_s, 308.5)))
+        assert "140 BPM" in lines and "135" in lines
+        assert "music the recording does not" not in lines
+        assert "either" not in lines
+
+    def test_a_map_of_fewer_bars_leaves_both_causes_standing(
+            self, tmp_path, monkeypatch):
+        """`_covers` accepts a shorter map where every bar past it is empty,
+        so the counts matching is the test and not the map's presence."""
+        screen = self._screen(tmp_path, monkeypatch)
+        tab_s = self._grid(screen)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [(0.0, -200.0)], self._bar_map(tab_s, 308.5, bars=165)))
+        assert "140 BPM" in lines
+        assert "music the recording does not" in lines
+
+    def test_the_bar_map_path_reports_both_lengths(self, monkeypatch):
+        """Without them the sentence cannot be built at all, and the feature
+        would silently do nothing on the one song it was asked for."""
+        import numpy as np
+        from pickhero.audio import autosync
+        from pickhero.tabs.timeline import (MeasureInfo, SongMetadata,
+                                            Timeline)
+        measures = [MeasureInfo(index=i, start_ms=i * 1000.0,
+                                end_ms=(i + 1) * 1000.0) for i in range(4)]
+        song = Timeline([], SongMetadata(title="t", tempo=120),
+                        measures=measures)
+        monkeypatch.setattr(autosync, "decode", lambda path,
+                            samplerate=44100: (np.zeros(44100 * 7), 44100))
+        monkeypatch.setattr(autosync, "chroma_of_audio", lambda s, r,
+                            progress=None: (np.zeros((100, 12)), 21.5))
+        monkeypatch.setattr(autosync, "chroma_of_timeline",
+                            lambda tl, fps: np.zeros((100, 12)))
+        monkeypatch.setattr(autosync, "drift_curve", lambda tab, rec, fps,
+                            progress=None: [(0.0, 1.0, 0.9)])
+        report = autosync.align_to_bar_times(
+            song, "audio.mp3", [0.0, 1.0, 2.0, 3.0])
+        assert report["tab_s"] == pytest.approx(4.0, abs=0.1)
+        assert report["recording_s"] == pytest.approx(7.0, abs=0.1)
+
+
 class TestNoPathThatWritesTheSyncLeavesANudgeStanding:
     """`base_offset_ms` is a correction ON TOP of the points, so a stale one
     is added to every one of them.

@@ -10525,6 +10525,48 @@ class PlayingScreen:
         self._say(f"Songsterr {song_id} — Ctrl+S will use its bar map if the "
                   f"listening cannot read this song")
 
+    def _tempo_gap_sentence(self, report, bars_match: bool) -> str:
+        """What the written tempo would have to be, or "" where that cannot
+        be said.
+
+        ONE reader of that fact, because it is said in three places now --
+        the tab that is a different transcription, the listening that
+        worked, and the bar map. Three copies of one sentence is how one of
+        them comes to name a different number.
+
+        It used to be said only behind `wrong_length`, which is 10 % and
+        means "go and get another file". Nothing answered the band between a
+        percent and a tenth: measured on Parkway Drive, a tab written at
+        140 BPM against a recording that wants 134.6 is 4 % apart, the map
+        is stored and extrapolates 6.6 s past its coverage, and the one
+        number the player could act on was computed and never printed.
+
+        `bars_match` is Songsterr having timed the same number of bars this
+        tab has, which rules the structural cause OUT: nothing is missing,
+        so the whole difference is the tempo. Without it both causes are
+        named, because nothing here can tell them apart -- What's Up looked
+        like 16 % of tempo and was mostly eight bars the recording has not.
+        """
+        from pickhero.audio import autosync
+        tempo = autosync.written_tempo_gap(
+            self._timeline, report.get("recording_s", 0.0))
+        if tempo is None:
+            return ""
+        off = abs(tempo["ratio"] - 1.0)
+        if off <= autosync.TEMPO_GAP_FLOOR:
+            return ""
+        if round(tempo["wanted"]) == round(tempo["written"]):
+            return ""              # it would name the value it complains of
+        lengths = (f"this tab is {format_time(report.get('tab_s', 0) * 1000)}"
+                   f" and the recording is "
+                   f"{format_time(report.get('recording_s', 0) * 1000)}")
+        wanted = (f"the written {tempo['written']:.0f} BPM should be about "
+                  f"{tempo['wanted']:.0f}")
+        if bars_match:
+            return f"{lengths} — {wanted}"
+        return (f"{lengths} — either {wanted}, or the tab has "
+                f"{off * 100:.0f} % of music the recording does not")
+
     def _auto_sync_report_lines(self, points, report) -> list[str]:
         from pickhero.audio import autosync
         """What the listening found, in words a player can act on.
@@ -10542,9 +10584,8 @@ class PlayingScreen:
         if report.get("source") == "songsterr":
             return self._songsterr_report_lines(points, report)
         if report.get("wrong_length"):
-            tempo = autosync.written_tempo_gap(
-                self._timeline, report.get("recording_s", 0.0))
-            if tempo is not None and abs(tempo["ratio"] - 1.0) > 0.02:
+            said = self._tempo_gap_sentence(report, bars_match=False)
+            if said:
                 # The tab's bars are all one length, so its tempo is the one
                 # thing wrong with it -- and the right tempo is a number to
                 # act on, where "16 % apart" is not. No offset can repair a
@@ -10559,13 +10600,7 @@ class PlayingScreen:
                 # would have sent the player to change a tempo that is very
                 # nearly right.
                 return [
-                    f"SYNC   this tab is {format_time(report['tab_s'] * 1000)}"
-                    f" and the recording is "
-                    f"{format_time(report['recording_s'] * 1000)} — either "
-                    f"the written {tempo['written']:.0f} BPM should be about "
-                    f"{tempo['wanted']:.0f}, or the tab has "
-                    f"{abs(tempo['ratio'] - 1) * 100:.0f} % of music the "
-                    f"recording does not",
+                    f"SYNC   {said}",
                     "SYNC   no offset or rate can repair either, so nothing "
                     "was stored. Songsterr's bar map can tell them apart "
                     "(Ctrl+U, then Alt+S)",
@@ -10603,6 +10638,13 @@ class PlayingScreen:
         lines.append(
             f"SYNC   found by listening — {report['usable']} of "
             f"{report['windows']} windows{span}")
+        # A CAVEAT and not a refusal: the points are stored and are carrying
+        # the difference. What they cannot carry is the stretch outside their
+        # coverage, where the map extrapolates -- so the cheapest repair for
+        # a song whose written tempo is wrong is the tempo, not more points.
+        said = self._tempo_gap_sentence(report, bars_match=False)
+        if said:
+            lines.append(f"SYNC   {said}")
         lines += self._break_lines(report)
         return lines
 
@@ -10736,6 +10778,21 @@ class PlayingScreen:
                     self._source_video_link = ""
         return self._source_video_link
 
+    def _bar_map_tempo_lines(self, report) -> list[str]:
+        """The tempo sentence, with the structural cause ruled out where the
+        bar counts say so.
+
+        Songsterr times one point per bar, so a map of this tab's own bar
+        count is proof that no music is missing -- which is the half the
+        listening can never establish. On Parkway Drive that turns "either
+        the tempo or four per cent of missing music" into the tempo, full
+        stop.
+        """
+        same = (report.get("bars") and
+                report.get("bars") == report.get("measures"))
+        said = self._tempo_gap_sentence(report, bars_match=bool(same))
+        return [f"SYNC   {said}"] if said else []
+
     def _songsterr_report_lines(self, points, report) -> list[str]:
         """What Songsterr's bar map did, said as its own answer.
 
@@ -10762,19 +10819,20 @@ class PlayingScreen:
             # The breaks come first here: "is this the same recording" is
             # the right question and the break line is the answer to it,
             # with the video that settles it.
-            return (self._break_lines(report) + [
-                f"SYNC   Songsterr's bar map does not fit this recording — "
-                f"{report['usable']} of {report['windows']} windows agreed "
-                f"with it",
-                "SYNC   nothing was stored. Is this the same recording the "
-                "tab was made from?"])
+            return (self._break_lines(report)
+                    + self._bar_map_tempo_lines(report) + [
+                        f"SYNC   Songsterr's bar map does not fit this "
+                        f"recording — {report['usable']} of "
+                        f"{report['windows']} windows agreed with it",
+                        "SYNC   nothing was stored. Is this the same "
+                        "recording the tab was made from?"])
         # A dropped bar line is a state, not a detail: Songsterr's bar 0 is
         # regularly the VIDEO's start rather than the first bar line, and
         # one such point is a second of correction spread over the music.
         dropped = report.get("spikes") or 0
         refused = (f", {dropped} bar line{'s' if dropped > 1 else ''} refused "
                    f"(no drift could put them there)" if dropped else "")
-        return self._break_lines(report) + [
+        return self._break_lines(report) + self._bar_map_tempo_lines(report) + [
             f"SYNC   from Songsterr's {report['bars']} bar times, lined up "
             f"here at {report['constant_s']:+.2f} s — {report['usable']} of "
             f"{report['windows']} windows agree to "

@@ -133,6 +133,14 @@ MIN_USABLE_SHARE = 1.0 / 3.0
 # per cent is far outside the 5 % the drift model allows, so nothing this
 # rejects could have been fitted anyway.
 MAX_LENGTH_MISMATCH = 0.10
+# How far the written tempo must be out before saying so is worth a line.
+# NOT the same question as MAX_LENGTH_MISMATCH, which is where a tab stops
+# being a transcription of this recording at all. This is where the number
+# the player would type into Guitar Pro stops being the number already in
+# the file: the suggestion is printed as whole BPM, so under about two per
+# cent it rounds to what is written there and the line would name the value
+# it is complaining about. 2 % of 140 BPM is 2.8, of 65 BPM is 1.3.
+TEMPO_GAP_FLOOR = 0.02
 # How far a window may sit from the constant before it is not agreeing with a
 # made per-bar map. Wider than the map's own error -- measured at 80 to 92 ms
 # median against the player's Thunder recording -- and far narrower than a
@@ -982,6 +990,12 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
         "unreadable": [], "share": 0.0, "wrong_bars": False,
         "spikes": 0,
         "offered": [len(c) for c in candidates],
+        # The two lengths, because the panel's tempo line needs them on this
+        # path too -- and without them it is a feature that silently does
+        # nothing on the one song it was asked for. `recording_s` is filled
+        # in once the file has been decoded, which happens below anyway.
+        "tab_s": timeline.duration_ms / 1000.0,
+        "recording_s": 0.0,
     }
     fitting = _distinct([_from_zero(c) for c in candidates
                          if _covers(timeline, bar_starts, c)])
@@ -995,6 +1009,7 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
         return report
 
     samples, rate = decode(audio_path)
+    report["recording_s"] = (len(samples) / rate) if rate else 0.0
     if progress is not None and progress(0.05, "listening") is False:
         raise Cancelled()
     rec, fps = chroma_of_audio(
@@ -1199,8 +1214,16 @@ def find(timeline: Timeline | str | Path, audio_path: str | Path,
 def written_tempo_gap(timeline: Timeline, recording_s: float) -> dict | None:
     """What this tab's written tempo would have to be to fit the recording.
 
-    None when the tab's bars are NOT all the same length: then the file
-    carries tempo changes and one number cannot describe the difference.
+    None when the tab does not run at ONE tempo: then one number cannot
+    describe the difference, and a wrong one would send the player to change
+    something that is right.
+
+    Measured per QUARTER rather than per bar, because those are not the same
+    question. Eva Under Fire's "Blow" is 84 bars of 4/4 and two of 2/4 at a
+    constant 126 BPM -- so its bars come in two lengths and its tempo is a
+    single number, and comparing the bars made this abstain on a song it
+    could have answered. 3/4 and 6/8 differ the same way. A real tempo
+    change moves the quarter and is still refused.
 
     This is the fault no offset and no rate can repair. An offset moves the
     whole song by a constant; a sync map bends it by at most a tenth (see
@@ -1213,13 +1236,18 @@ def written_tempo_gap(timeline: Timeline, recording_s: float) -> dict | None:
     bars = list(timeline.measures)
     if len(bars) < 3 or recording_s <= 0 or timeline.duration_ms <= 0:
         return None
-    lengths = [b.start_ms - a.start_ms for a, b in zip(bars, bars[1:])]
-    if max(lengths) - min(lengths) > 1.0:      # a millisecond of rounding
+    quarters = []
+    for a, b in zip(bars, bars[1:]):
+        length = b.start_ms - a.start_ms
+        in_quarters = (a.beats or 4) * 4.0 / (a.beat_type or 4)
+        if length <= 0 or in_quarters <= 0:
+            return None
+        quarters.append(length / in_quarters)
+    if max(quarters) - min(quarters) > 1.0:    # a millisecond of rounding
         return None
     ratio = (timeline.duration_ms / 1000.0) / recording_s
     return {
         "written": timeline.metadata.tempo,
         "wanted": timeline.metadata.tempo * ratio,
         "ratio": ratio,
-        "bar_s": lengths[0] / 1000.0,
     }
