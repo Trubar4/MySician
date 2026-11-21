@@ -28,6 +28,7 @@ from pickhero.matcher import (FINE_MS, STRING_MIN_SAMPLES, MatchType,
                               NoteMatcher)
 from pickhero.audio import midi_playback
 from pickhero.audio import output
+from pickhero.audio import syncmap
 from pickhero.audio.syncmap import SyncMap
 from pickhero import drill as drill_mod
 from pickhero import practice_log
@@ -455,6 +456,61 @@ AUDIO_CLOCK_GAP_SLACK_MS = 50.0
 # 0.2 %. The start and the end of the song are what this wants.
 MIN_SYNC_SPAN_MS = 30_000.0
 
+
+def _sync_fits(report) -> bool:
+    """Whether a measurement produced a map worth storing.
+
+    The same test `_take_auto_sync` applies before it writes anything, said
+    once so the fallback cannot disagree with the storing about what
+    counts as having worked.
+    """
+    return bool(report.get("readable")) and len(report.get("points") or []) >= 2
+
+
+def _replaced_by(point, here, point_by_hand: bool) -> bool:
+    """Whether a new hand-set point takes the place of a stored one.
+
+    TWO rules, because the two kinds of point are not the same evidence:
+
+    - a HAND point within `MIN_SYNC_SPAN_MS` is one correction made twice,
+      and the newer is the one the player just demonstrated. That is the
+      rule as it always was, and it is right for what it was written for.
+    - a MEASURED point is only dropped when it CONTRADICTS the new one, so
+      the map carries the rest of the song exactly as it did.
+    """
+    if point_by_hand and abs(point[0] - here[0]) < MIN_SYNC_SPAN_MS:
+        return True
+    return contradicts(point, here)
+
+
+def contradicts(point, here) -> bool:
+    """Whether a stored point and a new one cannot both describe one
+    recording -- which is the only reason to drop one of them.
+
+    `Shift+S` used to replace every point within `MIN_SYNC_SPAN_MS` (30 s),
+    a rule written when a song's whole sync was two hand-set points and the
+    correction between them was ONE rate: there a pair five seconds apart
+    implied any speed at all, so the near one had to go. A measured map is a
+    different animal. Songsterr's bar map puts a point every five seconds
+    and the listening thins to one every few, so measured on the player's own
+    Parkway Drive **one press near the start deleted five to thirteen
+    measured points** -- a minute of measurement for one correction by ear,
+    at exactly the place a player corrects first. That is why pinning one
+    point felt like being made to sync the whole song by hand.
+
+    What really cannot stand is a pair the map cannot EXPRESS: `SyncMap`
+    clamps a segment's slope to `MAX_RATE`, so two points demanding more than
+    that are not two readings, they are a contradiction, and the new one --
+    somebody's ear, now -- wins. Nothing else is touched, so the measured
+    points carry the rest of the song exactly as they did.
+
+    Derived rather than fitted: the bound is the map's own clamp.
+    """
+    gap = abs(point[0] - here[0])
+    if gap <= 0.0:
+        return True                       # the same moment, twice
+    return abs(point[1] - here[1]) > (syncmap.MAX_RATE - 1.0) * gap
+
 # How many rows of music the page view shows at once, and how wide its
 # playhead is drawn. Two rows because that is what a reader uses -- the one
 # under the hand and the one arriving -- and everything past it was spending
@@ -512,7 +568,7 @@ VIEW_SHORT = {"standard": "Standard", "hybrid": "Hybrid", "tab": "Tab page"}
 # What each sync source is called on screen. The words say what will HAPPEN
 # when Ctrl+S is pressed, not what the setting is named in the file.
 SYNC_SOURCE_WORDS = {
-    "auto": "listen, then Songsterr if that fails",
+    "auto": "Songsterr's bar map, then listen if it does not fit",
     "listen": "listen only",
     "songsterr": "Songsterr's bar map only",
     "hand": "by hand only — Ctrl+S does nothing",
@@ -10008,7 +10064,6 @@ class PlayingScreen:
             return
         if self._sync_source() == "hand":
             return
-        self._default_to_the_bar_map()
         self._start_auto_sync()
 
     def _adopt_songsterr_id(self) -> int:
@@ -10048,51 +10103,6 @@ class PlayingScreen:
             return False
         from pickhero.tabs import songsterr
         return songsterr.load_cache(self._song_path) is not None
-
-    def _default_to_the_bar_map(self) -> str:
-        """A song with nothing stored starts on Songsterr. Returns the source.
-
-        *"Ich hätte gerne standardmäßig Songsterr map nehmen, wenn noch
-        nichts hinterlegt ist. Wenn schon was da ist, dann lassen wir es
-        so."*
-
-        **This reverses advice I gave a week ago, and the reason is that the
-        ground moved rather than that he asked twice.** Measured on his own
-        Thunder recording the listening is 8-16 ms and the bar map is 80-92,
-        so `auto` -- listen first, fall back -- produced the better answer
-        and was the right default. Then the measurement started running BY
-        ITSELF when a song opens, and that changed what the comparison is
-        between:
-
-        - the bar map is a **file read**: it was cached beside the tab at
-          download time, so it costs nothing and cannot fail
-        - the listening is **seconds of FFT on a worker thread**, at the
-          exact moment the player is reaching for the space bar, and on his
-          songs it has failed outright more than once -- What's Up reads
-          +9.9, -34.4, -6.2 and +21.1 s and means none of it
-
-        A default is what happens to somebody who has not decided. Making
-        that the slow answer that sometimes reads nothing, rather than the
-        instant one that is 80 ms out and correctable with seven presses of
-        Shift+M, is the wrong way round.
-
-        It is STORED, not just used for this run, so the panel names it and
-        `Alt+S` can move it -- a default nobody can see is a decision the
-        app made in secret. Only when there is a map to reach for: setting
-        this on a song with no Songsterr id would leave `Ctrl+S` refusing
-        with "no link is stored", which is worse than listening.
-        """
-        if self._sync_source() != "auto" or not self._bar_map_available():
-            return self._sync_source()
-        setter = getattr(self._config, "set_sync_source_for", None)
-        if setter is None:
-            return "auto"
-        setter(self._song_key, "songsterr")
-        try:
-            self._config.save()
-        except OSError:
-            pass                    # it still applies to this run
-        return "songsterr"
 
     def _clear_mp3_note(self) -> None:
         """Drop a status message once it has been overtaken by events.
@@ -10230,16 +10240,43 @@ class PlayingScreen:
                     found = self._ask_songsterr(song_id, path, report, None)
                     self._auto_sync_result = ("ok", found["points"], found)
                     return
+                if source == "auto" and self._bar_map_available():
+                    # The MAP first, and the order was the other way round
+                    # for a week. The listening is finer where it works --
+                    # 8 to 16 ms against 80 to 92 on his Thunder recording
+                    # -- but this runs by itself when a song opens, so the
+                    # comparison is no longer "which is more accurate": the
+                    # map is a file read beside the tab that cannot fail,
+                    # and the listening is seconds of FFT that sometimes
+                    # reads nothing at all.
+                    #
+                    # And it FALLS BACK, which the old default could not.
+                    # Measured on two of his songs, one failure each:
+                    # Parkway Drive's listening keeps 12 of 42 windows and
+                    # stores nothing, Eva Under Fire's bar map agrees with
+                    # 2 of 24. Neither measurement is right on its own, and
+                    # a song nobody has decided about should get whichever
+                    # one works. An explicit `listen` or `songsterr` is
+                    # still obeyed alone -- falling back THERE would be the
+                    # app deciding again, which is the thing he reported.
+                    mapped = self._ask_songsterr(song_id, path, report, None)
+                    if _sync_fits(mapped):
+                        self._auto_sync_result = ("ok", mapped["points"],
+                                                  mapped)
+                        return
+                    heard = autosync.find(tab, path, report)
+                    if _sync_fits(heard):
+                        self._auto_sync_result = ("ok", heard["points"], heard)
+                        return
+                    # Neither fits. The MAP's answer is reported, because it
+                    # carries the break lines and the video that settles
+                    # them -- and it says the listening was tried too, or a
+                    # player reads "the bar map does not fit" and presses
+                    # Alt+S for the thing that has already failed.
+                    mapped["listening"] = heard
+                    self._auto_sync_result = ("ok", mapped["points"], mapped)
+                    return
                 found = autosync.find(tab, path, report)
-                if source == "auto" and not found["readable"] and song_id:
-                    # The listening produced nothing. A made per-bar map does
-                    # not care that a song repeats itself, which is the one
-                    # thing that defeats a windowed search -- so it is the
-                    # fallback, not the first answer. Measured on Thunder,
-                    # on readings neither was fitted to: the listening is 8
-                    # to 16 ms where it works and this is 80 to 92, so it is
-                    # asked second and only when the first has nothing.
-                    found = self._ask_songsterr(song_id, path, report, found)
                 self._auto_sync_result = ("ok", found["points"], found)
             except Exception as exc:
                 # Named rather than swallowed: "the file cannot be decoded"
@@ -10248,7 +10285,10 @@ class PlayingScreen:
                     "error", f"{type(exc).__name__}: {exc}", None)
 
         self._auto_sync_progress = (0.0, "reading the recording")
-        self._sync_lines = ["SYNC   listening to the recording…"]
+        first = ("the bar map" if source == "songsterr"
+                 or (source == "auto" and self._bar_map_available())
+                 else "the recording")
+        self._sync_lines = [f"SYNC   reading {first}…"]
         # Seconds of FFT on a worker thread is enough to starve the audio
         # callback on a laptop, and the player reports dropouts here. Marking
         # the capture does not prevent them -- only the machine can do that --
@@ -10819,11 +10859,15 @@ class PlayingScreen:
             # The breaks come first here: "is this the same recording" is
             # the right question and the break line is the answer to it,
             # with the video that settles it.
+            heard = report.get("listening") or {}
+            also = ("" if not heard else
+                    f", and the listening kept {heard.get('usable', 0)} of "
+                    f"{heard.get('windows', 0)}")
             return (self._break_lines(report)
                     + self._bar_map_tempo_lines(report) + [
                         f"SYNC   Songsterr's bar map does not fit this "
                         f"recording — {report['usable']} of "
-                        f"{report['windows']} windows agreed with it",
+                        f"{report['windows']} windows agreed with it{also}",
                         "SYNC   nothing was stored. Is this the same "
                         "recording the tab was made from?"])
         # A dropped bar line is a state, not a detail: Songsterr's bar 0 is
@@ -10874,8 +10918,10 @@ class PlayingScreen:
         # a song whose map reads +11.0 s in the solo got a point saying +0,
         # which does not mend a drifting tail, it destroys a working map.
         here = (self._playback_ms, self._sync_map().offset_at(self._playback_ms))
+        by_hand = set(getattr(self._config, "hand_anchors_for",
+                              lambda _k: [])(self._song_key))
         points = [p for p in self._mp3_anchors()
-                  if abs(p[0] - here[0]) >= MIN_SYNC_SPAN_MS]
+                  if not _replaced_by(p, here, p[0] in by_hand)]
         dropped = len(self._mp3_anchors()) - len(points)
         points.append(here)
         points.sort()
@@ -10883,6 +10929,9 @@ class PlayingScreen:
         if setter is None:
             return
         setter(self._song_key, points)
+        mark = getattr(self._config, "mark_hand_anchor_for", None)
+        if mark is not None:
+            mark(self._song_key, here[0])
         # The nudge has been spent: it is inside the point now, and left
         # standing it would be applied a second time to the whole song --
         # including the parts the player had already got right.
@@ -11036,8 +11085,8 @@ class PlayingScreen:
             lines.append("SYNC Shift+S adds one, Ctrl+Shift+S clears, "
                          "Ctrl+S measures again")
         if replaced:
-            lines.append(f"replaced {replaced} point(s) closer than "
-                         f"{MIN_SYNC_SPAN_MS / 1000:.0f} s to this one")
+            lines.append(f"replaced {replaced} point(s) that disagreed with "
+                         f"it — the rest of the map is untouched")
         self._sync_lines = ["SYNC   " + lines[0]] + lines[1:]
 
     def _clear_sync_rate(self) -> None:

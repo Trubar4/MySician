@@ -8076,6 +8076,66 @@ executable, so `ffmpeg.exe` dropped next to `MySician.exe` works on the build he
 the screen already prints. What it does NOT print is where to get one, which is the "half a message" fault that chapter
 fixed once already for a player who is not a developer.
 
+## A Hand-Set Point Made The Whole Song Manual
+
+*"Mir ist nie klar, ob ein manueller Sync mich zwingt den ganzen Song manuell zu syncen oder wann wir wieder auf die map achten."*
+
+**Nothing in the design forces that, and the code did it anyway.** A point set with `Shift+S` joins the SAME list the measurement
+filled, and between any two points the map interpolates -- so one correction by ear is local and the measured points carry the rest.
+That is the answer to his question, and it was false near the point: `_set_sync_point` replaced everything within
+`MIN_SYNC_SPAN_MS` (30 s), a rule written when a song's whole sync was two hand-set points and the correction between them was ONE
+rate. A bar map puts a point every five seconds.
+
+Measured on his own Parkway Drive map (42 points):
+
+| `Shift+S` at | measured points deleted |
+|---|---|
+| 0:00 | 5 of 42 |
+| **0:23** | **8 of 42** |
+| 1:00 | 13 of 42 |
+
+His own panel said `replaced 9 point(s) closer than 30 s to this one` after one press -- a minute of measurement for one correction,
+at exactly the place a player corrects first, which is why pinning one point felt like being made to do the whole song.
+
+- **Two kinds of point, two rules** (`_replaced_by`). A HAND point within 30 s is one correction made twice and the newer wins, which
+  is the old rule where it was right. A MEASURED point is dropped only when it CONTRADICTS the new one.
+- **"Contradicts" is derived, not fitted**: `SyncMap` clamps a segment's slope to `MAX_RATE`, so a pair demanding more than that is
+  not two readings but a contradiction the map could not express anyway. On his map that drops 2 points where the span rule dropped 8.
+- **Which anchors are HIS is stored** (`song_mp3_hand_anchors`), as its own `song_*` dict rather than a third element on each anchor:
+  the pair is what `SyncMap`, the sidecar, the merge and every settings file already written expect. Being a `song_*` dict is what
+  carries it through `forget_song`, `rename_song`, the sidecar and `merge_stats` without anyone writing the name down.
+- **`set_mp3_anchors_for` prunes the marks**, so `Ctrl+S`, `Ctrl+Shift+S` and picking another recording drop them for free. A caller
+  that forgot would leave a measured point wearing somebody's hand, and the next press 30 s away would delete it.
+- **And the line says what it did**: `replaced N point(s) that disagreed with it — the rest of the map is untouched`.
+
+## Two Measurements, One Failure Each, And The Default Could Only Pick One
+
+*"Ja zu beidem."* The default set a week ago REWROTE an undecided song's source to `songsterr`, which by design never falls back. Two
+of his songs, one failure each:
+
+| | the listening | the bar map |
+|---|---|---|
+| Parkway Drive, "From The Heart Of Darkness" | 12 of 42 windows -- **stores nothing** | 17 of 43, 42 points |
+| Eva Under Fire, "Blow" | 23 of 24, 7 points | **2 of 24 -- stores nothing** |
+
+So neither is right alone, and the old default left Eva Under Fire with no sync at all while the panel said the player had chosen it.
+
+- **`auto` takes the MAP first and falls back to the listening.** The map is a file read beside the tab and cannot fail; the listening
+  is seconds of FFT that sometimes reads nothing -- and this runs by itself when a song opens, which is what made the instant answer
+  the right first one. That half of last week's reasoning stands; what was wrong is that it was spent writing a setting instead of
+  changing what `auto` means.
+- **Nothing is written behind the player's back any more.** `_default_to_the_bar_map` is gone, so an undecided song stays `auto` and
+  `Alt+S` still decides for a song he has an opinion about. An explicit `listen` or `songsterr` is still obeyed ALONE: falling back
+  there would be the app deciding again, which is the thing he reported.
+- **A stored `songsterr` is turned back into `auto` once, on load.** Most of them are the rewrite rather than a choice, and the
+  migration is safe because `auto` now tries the same map first -- the only thing it gives back is the fallback. One flag, so a
+  deliberate Alt+S choice stays, exactly as the automatic gate's repair is guarded.
+- **When neither fits, the MAP's answer is reported** -- it carries the break lines and the video that settles them -- **and it says
+  the listening was tried too** (`and the listening kept 4 of 40`). Without that the player reads "the bar map does not fit" and
+  presses Alt+S for the thing that has already failed.
+- **`_sync_fits` is one predicate**, used by the fallback and by the storing, so they cannot disagree about what counts as having
+  worked.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

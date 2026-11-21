@@ -215,10 +215,14 @@ class Config:
     song_songsterr: dict = field(default_factory=dict)
     # {song key: "auto" | "songsterr" | "listen" | "hand"}. WHICH measurement
     # this song's sync comes from, decided by the player and not by the app.
-    # "auto" listens and falls back to the bar map; the other three do one
-    # thing and say so. The default is auto only because a song nobody has
-    # decided about has to do something.
+    # "auto" takes Songsterr's bar map and falls back to the listening when
+    # the map does not fit this recording; the other three do one thing and
+    # say so. The default is auto only because a song nobody has decided
+    # about has to do something.
     song_sync_source: dict = field(default_factory=dict)
+    #: Set once on load, when every stored "songsterr" was turned back into
+    #: "auto". See the repair in `load`.
+    sync_source_repaired: bool = False
     # Where the player lined the recording up, per song, as
     # [[song ms, offset ms], ...]. A LIST because two points are a straight
     # line and a band that played without a click does not follow one:
@@ -226,6 +230,13 @@ class Config:
     # and back to -260 ms, so the best straight line corrects by nothing at
     # all and leaves 1.07 s standing in the middle.
     song_mp3_anchors: dict = field(default_factory=dict)
+    # {song key: [song ms, ...]} -- which of those anchors the player set by
+    # EAR. A hand point replaces a nearby hand point, because two of them
+    # thirty seconds apart are one correction made twice; it leaves a
+    # MEASURED point alone unless the two contradict outright. Measured on
+    # his Parkway Drive, one press near the start used to delete five to
+    # thirteen points of a bar map.
+    song_mp3_hand_anchors: dict = field(default_factory=dict)
     # Semitones this song is PLAYED away from how it is written, per song.
     # A tab in Drop C played on a Drop D guitar is +2: the same fret numbers,
     # a tone higher. The frets never move, so the picture is untouched -- what
@@ -594,6 +605,43 @@ class Config:
                 [float(a), float(b)] for a, b in sorted(points)]
         else:
             self.song_mp3_anchors.pop(song_key, None)
+        # A hand-set time that is no longer a point is not a hand-set point.
+        # Pruning HERE rather than at each caller is what makes `Ctrl+S`,
+        # `Ctrl+Shift+S` and picking another recording drop the marks for
+        # free: all three go through this setter, and one that forgot would
+        # leave a measured point wearing somebody's hand.
+        kept = {a for a, _ in (points or [])}
+        marks = [t for t in self.hand_anchors_for(song_key) if t in kept]
+        if marks:
+            self.song_mp3_hand_anchors[song_key] = marks
+        else:
+            self.song_mp3_hand_anchors.pop(song_key, None)
+
+    def hand_anchors_for(self, song_key: str) -> list[float]:
+        """The song times of the points this player set BY EAR.
+
+        Which matters because the two kinds are replaced by different
+        rules: see `scrolling._set_sync_point`. Stored as its own dict
+        rather than a third element on each anchor, because the anchor
+        format is read by `SyncMap`, the sidecar, the merge and a settings
+        file written months ago, and a pair is what all of them expect.
+        """
+        if not song_key:
+            return []
+        out = []
+        for entry in self.song_mp3_hand_anchors.get(song_key) or []:
+            try:
+                out.append(float(entry))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def mark_hand_anchor_for(self, song_key: str, song_ms: float) -> None:
+        if not song_key:
+            return
+        marks = set(self.hand_anchors_for(song_key))
+        marks.add(float(song_ms))
+        self.song_mp3_hand_anchors[song_key] = sorted(marks)
 
     def transpose_for(self, song_key: str) -> int:
         """How far this song is played from how it is written, in semitones."""
@@ -689,6 +737,24 @@ class Config:
             # most of the picks in an arpeggio -- see AudioConfig.
             if audio_data.get("onset_threshold") == 0.3:
                 audio_data["onset_threshold"] = 0.05
+            # Repair, once: a song nobody had decided about had its sync
+            # source REWRITTEN to "songsterr" the first time it was opened,
+            # so most stored values are the app's choice and not the
+            # player's -- and "songsterr" never falls back, by design. On
+            # Eva Under Fire the bar map agrees with 2 of 24 windows and the
+            # listening with 23, so that song stored nothing at all and the
+            # measurement that reads it was never asked.
+            #
+            # Safe because "auto" now tries the SAME map first: the only
+            # thing this gives back is the fallback. The flag makes it
+            # happen exactly once, so a deliberate Songsterr-only from
+            # Alt+S stays.
+            if not data.get("sync_source_repaired"):
+                sources = data.get("song_sync_source")
+                if isinstance(sources, dict):
+                    data["song_sync_source"] = {
+                        k: v for k, v in sources.items() if v != "songsterr"}
+            data["sync_source_repaired"] = True
             # Repair: auto-sync used to be unbounded and could measure against
             # the wrong note in a repeating riff, walking the offset out to
             # values no real latency can explain. Anything past a plausible

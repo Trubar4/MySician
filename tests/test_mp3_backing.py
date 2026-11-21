@@ -1041,7 +1041,10 @@ class TestAutoSyncInsideTheApp:
         screen = self._screen(tmp_path, monkeypatch)
         screen._start_auto_sync()
         assert screen._auto_sync_thread is not None
-        assert "listening" in " ".join(screen._sync_lines)
+        # A line while it runs, naming what is being read -- "listening" was
+        # the word until `auto` started with the bar map, and the property
+        # was never the word.
+        assert "reading" in " ".join(screen._sync_lines)
         self._run(screen)
 
     def test_what_it_finds_is_stored(self, tmp_path, monkeypatch):
@@ -1495,17 +1498,60 @@ class TestTheRecordingsOwnSpeed:
         assert screen._mp3_plan() == ()
         assert screen._mp3_build_tempo() == 1.0
 
-    def test_a_point_too_close_replaces_the_one_it_lands_on(
+    def test_a_measured_map_survives_a_point_set_by_hand(
         self, tmp_path, monkeypatch
     ):
-        """The offset moves in 10 ms steps, so two points five seconds apart
-        would invent a rate out of one keypress. The newer reading wins --
-        it is the one the player just demonstrated."""
+        """*"Mir ist nie klar, ob ein manueller Sync mich zwingt den ganzen
+        Song manuell zu syncen."* It did, near the point: the 30 s rule was
+        written for two hand points and a bar map has one every five
+        seconds, so one press deleted five to thirteen measured points on
+        his own Parkway Drive."""
+        screen = self._screen(tmp_path, monkeypatch)
+        measured = [(float(i) * 5_000.0, -100.0) for i in range(20)]
+        screen._config.set_mp3_anchors_for("song", measured)
+        self._mark(screen, 42_000.0, -120.0)
+        kept = screen._mp3_anchors()
+        assert (42_000.0, -120.0) in kept
+        assert len(kept) == 21, "a measured point was deleted"
+
+    def test_but_one_that_contradicts_it_goes(self, tmp_path, monkeypatch):
+        """Two points demanding more than `syncmap.MAX_RATE` between them
+        are not two readings, and the map cannot express the pair anyway."""
+        from pickhero.audio import syncmap
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for(
+            "song", [(0.0, -100.0), (41_000.0, -100.0), (90_000.0, -100.0)])
+        self._mark(screen, 42_000.0, -900.0)
+        kept = dict(screen._mp3_anchors())
+        assert 41_000.0 not in kept, "800 ms in 1 s is not a drift"
+        assert 0.0 in kept and 90_000.0 in kept
+        assert (syncmap.MAX_RATE - 1.0) * 1_000.0 < 800.0
+
+    def test_two_points_by_hand_still_replace_each_other(
+        self, tmp_path, monkeypatch
+    ):
+        """The old rule, kept where it was right: thirty seconds apart they
+        are one correction made twice, and the newer is the one just
+        demonstrated."""
         screen = self._screen(tmp_path, monkeypatch)
         self._mark(screen, 10_000.0, 0.0)
         self._mark(screen, 15_000.0, 200.0)
         anchors = screen._mp3_anchors()
         assert len(anchors) == 1 and anchors[0] == (15_000.0, 200.0)
+
+    def test_and_re_measuring_forgets_whose_points_they_were(
+        self, tmp_path, monkeypatch
+    ):
+        """Or a measured point inherits a hand mark at the same time and is
+        deleted by the next press 30 s away."""
+        screen = self._screen(tmp_path, monkeypatch)
+        self._mark(screen, 10_000.0, 0.0)
+        assert screen._config.hand_anchors_for("song") == [10_000.0]
+        screen._config.set_mp3_anchors_for(
+            "song", [(10_000.0, -5.0), (60_000.0, -5.0)])
+        assert screen._config.hand_anchors_for("song") == [10_000.0]
+        screen._config.set_mp3_anchors_for("song", [(60_000.0, -5.0)])
+        assert screen._config.hand_anchors_for("song") == []
 
     def test_an_impossible_pair_is_left_out_of_the_plan(
         self, tmp_path, monkeypatch

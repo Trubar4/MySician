@@ -288,20 +288,75 @@ class TestInsideTheApp:
             "recording_s": 260.0, "length_gap": 0.0, "wrong_length": False,
         })
 
-    def test_the_listening_is_asked_first_and_kept_when_it_works(
+    def test_the_bar_map_is_asked_first_and_kept_when_it_fits(
             self, tmp_path, monkeypatch):
-        """It is five to ten times finer than the bar map where it works."""
-        asked = []
-        self._listening(monkeypatch, readable=True)
-        self._bar_map(monkeypatch, [0.94, 4.04], asked=asked)
+        """It is a file read beside the tab and it cannot fail, where the
+        listening is seconds of FFT that sometimes reads nothing at all --
+        and this runs by itself when a song opens."""
+        heard = []
+        monkeypatch.setattr(autosync, "find",
+                            lambda *a, **k: heard.append(1) or {})
+        self._bar_map(monkeypatch, [0.94, 4.04])
+        monkeypatch.setattr(autosync, "align_to_bar_times",
+                            lambda tl, path, bars, progress=None: {
+                                "source": "songsterr", "bars": 2,
+                                "measures": 2, "readable": True,
+                                "points": [(0.0, -2150.0), (9231.0, -2160.0)],
+                                "windows": 40, "usable": 38, "ambiguous": 1,
+                                "constant_s": 1.21, "scatter_ms": 76.0,
+                                "breaks": [], "covered": (0.0, 240.0),
+                                "song_s": 260.0, "wrong_bars": False})
         screen = self._screen(tmp_path, monkeypatch, song_id=2333598)
         screen._start_auto_sync()
         self._run(screen)
-        assert asked == [], "Songsterr was asked when it was not needed"
+        assert heard == [], "the listening ran when it was not needed"
+        assert screen._mp3_anchors() == [(0.0, -2150.0), (9231.0, -2160.0)]
+
+    def test_and_the_listening_takes_over_when_the_map_does_not_fit(
+            self, tmp_path, monkeypatch):
+        """Eva Under Fire: the bar map agrees with 2 of 24 windows and the
+        listening with 23. The old default stored "songsterr", which never
+        falls back, so that song got no sync at all."""
+        self._listening(monkeypatch, readable=True)
+        self._bar_map(monkeypatch, [0.94, 4.04])
+        monkeypatch.setattr(autosync, "align_to_bar_times",
+                            lambda tl, path, bars, progress=None: {
+                                "source": "songsterr", "bars": 2,
+                                "measures": 2, "readable": False,
+                                "points": [], "windows": 24, "usable": 2,
+                                "ambiguous": 0, "constant_s": 0.0,
+                                "scatter_ms": 0.0, "breaks": [],
+                                "covered": None, "song_s": 260.0,
+                                "wrong_bars": False})
+        screen = self._screen(tmp_path, monkeypatch, song_id=2333598)
+        screen._start_auto_sync()
+        self._run(screen)
         assert screen._mp3_anchors() == [(0.0, -100.0), (60_000.0, -120.0)]
 
-    def test_and_the_bar_map_takes_over_when_it_does_not(self, tmp_path,
-                                                          monkeypatch):
+    def test_and_neither_says_both_were_tried(self, tmp_path, monkeypatch):
+        """"The bar map does not fit" on its own sends the player to press
+        Alt+S for the thing that has already failed."""
+        self._listening(monkeypatch, readable=False)
+        self._bar_map(monkeypatch, [0.94, 4.04])
+        monkeypatch.setattr(autosync, "align_to_bar_times",
+                            lambda tl, path, bars, progress=None: {
+                                "source": "songsterr", "bars": 2,
+                                "measures": 2, "readable": False,
+                                "points": [], "windows": 24, "usable": 2,
+                                "ambiguous": 0, "constant_s": 0.0,
+                                "scatter_ms": 0.0, "breaks": [],
+                                "covered": None, "song_s": 260.0,
+                                "wrong_bars": False})
+        screen = self._screen(tmp_path, monkeypatch, song_id=2333598)
+        screen._start_auto_sync()
+        self._run(screen)
+        panel = " ".join(screen._sync_lines)
+        assert "2 of 24" in panel
+        assert "listening kept 4 of 40" in panel
+        assert screen._mp3_anchors() == []
+
+    def test_a_long_map_is_fitted_and_stored(self, tmp_path,
+                                              monkeypatch):
         self._listening(monkeypatch, readable=False)
         self._bar_map(monkeypatch,
                       [0.94, 4.04, 7.11, 10.2, 13.27, 16.42, 19.53, 22.62],
@@ -463,14 +518,25 @@ class TestTheChoiceIsThePlayersNotTheApps:
         assert asked == []
         assert "Ctrl+U" in screen._status_note_text()
 
-    def test_auto_is_still_the_old_behaviour(self, tmp_path, monkeypatch):
-        """A song nobody has decided about has to do something."""
-        asked = self._both(monkeypatch, listening_readable=False)
+    def test_auto_takes_the_map_first_and_falls_back(self, tmp_path,
+                                                      monkeypatch):
+        """A song nobody has decided about has to do something, and after
+        two songs each of which defeated one measurement, the honest
+        something is whichever of the two works."""
+        asked = self._both(monkeypatch, bars_readable=False)
         screen = self._screen(tmp_path, monkeypatch)
         assert screen._sync_source() == "auto"
         self._ctrl_s(screen)
         self._run(screen)
-        assert asked == ["listened", "songsterr"]
+        assert asked == ["songsterr", "listened"]
+
+    def test_and_the_listening_is_not_asked_when_the_map_fits(
+            self, tmp_path, monkeypatch):
+        asked = self._both(monkeypatch)
+        screen = self._screen(tmp_path, monkeypatch)
+        self._ctrl_s(screen)
+        self._run(screen)
+        assert asked == ["songsterr"]
 
     def test_plain_s_still_opens_the_panel(self, tmp_path, monkeypatch):
         """Alt is neither Ctrl nor Shift, so the bare-S branch would have
@@ -877,6 +943,12 @@ class TestAnUndecidedSongStartsOnTheBarMap:
     Now it runs BY ITSELF when a song opens, and the comparison is between
     a file read that cannot fail and seconds of FFT at the moment the player
     is reaching for the space bar.
+
+    **And the first shape of it REWROTE the stored source to "songsterr",
+    which never falls back.** Eva Under Fire's bar map agrees with 2 of 24
+    windows and its listening with 23, so that song stored nothing and the
+    measurement that reads it was never asked. `auto` takes the map first
+    itself now, so nothing is written and the fallback survives.
     """
 
     def _screen(self, tmp_path, monkeypatch, cached=True, source=None,
@@ -909,19 +981,23 @@ class TestAnUndecidedSongStartsOnTheBarMap:
         return PlayingScreen(_song(), config=config, song_key="song",
                              song_path=str(tab))
 
-    def test_a_cached_bar_map_makes_it_the_source(self, tmp_path,
-                                                  monkeypatch):
+    def test_a_cached_bar_map_is_what_auto_reaches_for_first(
+            self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
         screen.update()
-        assert screen._sync_source() == "songsterr"
+        assert screen._sync_source() == "auto"
+        assert screen._bar_map_available()
 
-    def test_and_it_is_stored_not_just_used(self, tmp_path, monkeypatch):
-        """A default nobody can see is a decision the app made in secret.
-        Stored, so the panel names it and Alt+S can move it."""
+    def test_and_nothing_is_written_behind_the_players_back(self, tmp_path,
+                                                            monkeypatch):
+        """The rewrite made every undecided song an explicit "Songsterr
+        only", which never falls back -- so a song the map cannot place was
+        left with no sync at all and the panel said the player had chosen
+        it."""
         screen = self._screen(tmp_path, monkeypatch)
         screen.update()
-        assert screen._config.sync_source_for("song") == "songsterr"
-        assert "Songsterr's bar map only" in " ".join(
+        assert screen._config.song_sync_source == {}
+        assert "listen" in " ".join(
             t for t, _ in screen.sync_block_lines())
 
     def test_a_stored_link_counts_even_with_no_cache_yet(self, tmp_path,
@@ -929,15 +1005,14 @@ class TestAnUndecidedSongStartsOnTheBarMap:
         screen = self._screen(tmp_path, monkeypatch, cached=False,
                               song_id=2333598)
         screen.update()
-        assert screen._sync_source() == "songsterr"
+        assert screen._bar_map_available()
 
-    def test_a_song_with_no_map_at_all_keeps_listening(self, tmp_path,
-                                                       monkeypatch):
-        """Setting Songsterr on a song with no id would leave Ctrl+S
-        refusing with "no link is stored", which is worse than listening."""
+    def test_a_song_with_no_map_at_all_just_listens(self, tmp_path,
+                                                     monkeypatch):
         screen = self._screen(tmp_path, monkeypatch, cached=False)
         screen.update()
         assert screen._sync_source() == "auto"
+        assert not screen._bar_map_available()
 
     def test_a_song_that_is_already_lined_up_is_not_touched(self, tmp_path,
                                                             monkeypatch):
@@ -1041,7 +1116,8 @@ class TestATabCarriedAcrossWithItsBarMap:
         monkeypatch.setattr(autosync, "find", lambda *a, **k: runs.append(1))
         screen = self._screen(tmp_path, monkeypatch)
         screen.update()
-        assert screen._sync_source() == "songsterr"
+        assert screen._sync_source() == "auto"
+        assert screen._bar_map_available()
         assert screen._auto_sync_thread is not None, \
             "the sync refused instead of measuring"
         screen._auto_sync_thread.join(30)
