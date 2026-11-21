@@ -80,6 +80,81 @@ class TestTheBuildStamp:
         stamp = _from_git()
         assert stamp == "" or "checkout" in stamp
 
+    @staticmethod
+    def _fake_tree(tmp_path, monkeypatch, *, loose=True, packed=False):
+        """A `.git` just real enough for `_from_git`, with HEAD deliberately
+        OLDER than the ref -- which is what a `git pull` leaves behind: it
+        fast-forwards `refs/heads/<branch>` and never touches HEAD."""
+        import os
+
+        import pickhero.build_info as build_info
+
+        git = tmp_path / ".git"
+        (git / "refs" / "heads" / "claude").mkdir(parents=True)
+        head = git / "HEAD"
+        head.write_text("ref: refs/heads/claude/work\n", encoding="utf-8")
+        ref = git / "refs" / "heads" / "claude" / "work"
+        if loose:
+            ref.write_text("4b2a09760768e902d92a3cea97b85cb36100c2b4\n",
+                           encoding="utf-8")
+        if packed:
+            (git / "packed-refs").write_text(
+                "# pack-refs with: peeled fully-peeled sorted \n"
+                "4b2a09760768e902d92a3cea97b85cb36100c2b4 "
+                "refs/heads/claude/work\n"
+                "^0000000000000000000000000000000000000000\n",
+                encoding="utf-8")
+        from datetime import datetime, timezone
+
+        def epoch(text):
+            return datetime.strptime(text, "%Y-%m-%d %H:%M").replace(
+                tzinfo=timezone.utc).timestamp()
+
+        old = epoch("2026-11-07 14:48")   # the branch was checked out
+        new = epoch("2026-11-21 16:13")   # and pulled a fortnight later
+        os.utime(head, (old, old))
+        for later in (ref, git / "packed-refs"):
+            if later.exists():
+                os.utime(later, (new, new))
+        pkg = tmp_path / "pickhero"
+        pkg.mkdir()
+        monkeypatch.setattr(build_info, "__file__",
+                            str(pkg / "build_info.py"))
+        return build_info
+
+    def test_the_date_is_the_commit_it_names_rather_than_HEADs_own_mtime(
+        self, tmp_path, monkeypatch
+    ):
+        """A `git pull` writes the REF, never HEAD -- which is only touched
+        when somebody switches branch. Taking HEAD's mtime put today's
+        commit beside the day the branch was checked out: on the player's own
+        log, a sha from 16:13 stamped two weeks earlier. A date that stale
+        makes a current build look ancient, which is the one confusion this
+        stamp exists to end."""
+        build_info = self._fake_tree(tmp_path, monkeypatch)
+        stamp = build_info._from_git()
+        assert "4b2a0976 work" in stamp
+        assert "2026-11-21 16:13" in stamp, stamp
+
+    def test_a_fresh_clone_keeps_its_refs_packed_and_still_says_something(
+        self, tmp_path, monkeypatch
+    ):
+        """No loose file for the branch at all. Without `packed-refs` that is
+        "unknown build" on a tree somebody has just cloned."""
+        build_info = self._fake_tree(tmp_path, monkeypatch,
+                                     loose=False, packed=True)
+        stamp = build_info._from_git()
+        assert "4b2a0976 work" in stamp
+        assert "2026-11-21 16:13" in stamp, stamp
+
+    def test_and_a_ref_nothing_can_resolve_is_not_a_crash(
+        self, tmp_path, monkeypatch
+    ):
+        """Neither a loose file nor a packed one. The stamp falls back rather
+        than raising while the window is coming up."""
+        build_info = self._fake_tree(tmp_path, monkeypatch, loose=False)
+        assert build_info._from_git() == ""
+
     def test_neither_is_not_a_crash(self, monkeypatch):
         import pickhero.build_info as build_info
 

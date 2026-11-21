@@ -55,28 +55,71 @@ def _bundled() -> str:
     return text.strip()
 
 
+def _packed(git: Path, ref: str) -> str:
+    """The sha for `ref` out of `packed-refs`, where git keeps a tidied one.
+
+    A fresh clone has no loose file for its branch at all, so without this a
+    checkout somebody has just cloned reports "unknown build" -- which is
+    the one answer this module exists to avoid.
+    """
+    try:
+        lines = (git / "packed-refs").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        if line.startswith("#") or line.startswith("^"):
+            continue
+        sha, _, name = line.partition(" ")
+        if name.strip() == ref:
+            return sha.strip()
+    return ""
+
+
 def _from_git() -> str:
     """HEAD, read off the filesystem rather than by running git.
 
     A checkout is what a developer runs, and there the interesting thing is
     the commit. Reading `.git` directly costs a couple of file opens; a
     subprocess costs tens of milliseconds and can hang on a network drive.
+
+    **The date comes from the file the SHA was read from, and that was a
+    real bug.** It used to be `HEAD`'s own mtime -- and a `git pull` that
+    fast-forwards a branch writes `refs/heads/<branch>`, never `HEAD`, which
+    is only touched when somebody switches branch. So the line carried
+    today's commit beside the date the branch was checked out: measured on
+    the player's own log, a sha from 16:13 stamped **two weeks** earlier.
+    A date that stale makes a current build look ancient, which is exactly
+    the "is it fixed or did it not reach my machine" confusion this file is
+    here to end -- and it nearly had me tell the player to pull a branch he
+    was already running.
     """
     root = Path(__file__).resolve().parent.parent
-    head = root / ".git" / "HEAD"
+    git = root / ".git"
     try:
-        ref = head.read_text(encoding="utf-8").strip()
+        ref = (git / "HEAD").read_text(encoding="utf-8").strip()
     except OSError:
         return ""
     try:
+        stamped = git / "HEAD"
         if ref.startswith("ref: "):
-            target = root / ".git" / ref[5:]
-            sha = target.read_text(encoding="utf-8").strip()
-            branch = ref[5:].rsplit("/", 1)[-1]
+            name = ref[5:]
+            branch = name.rsplit("/", 1)[-1]
+            target = git / name
+            try:
+                sha = target.read_text(encoding="utf-8").strip()
+                stamped = target
+            except OSError:
+                # No loose file: a fresh clone keeps its refs packed, and
+                # `packed-refs` was written when they were packed -- which
+                # for a clone is when the commit arrived. HEAD's own mtime
+                # can be far older, so it is the worse of the two here too.
+                sha = _packed(git, name)
+                if not sha:
+                    return ""
+                stamped = git / "packed-refs"
         else:
             sha, branch = ref, "detached"
-        when = datetime.fromtimestamp(
-            (root / ".git" / "HEAD").stat().st_mtime, timezone.utc)
+        when = datetime.fromtimestamp(stamped.stat().st_mtime, timezone.utc)
         return f"{sha[:8]} {branch} {when:%Y-%m-%d %H:%M} (checkout)"
     except (OSError, ValueError):
         return ""

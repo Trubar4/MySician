@@ -8233,6 +8233,59 @@ reads them: Eva's bar map is **24 of 24** and Parkway's listening is 25 of 47 at
 evidence still stands on its own argument (the map is a file read that cannot fail; the listening is seconds of FFT that sometimes reads nothing),
 but the evidence given for it was not evidence.
 
+## Five Corrections In One Minute, And One Survived
+
+*"Da waren jetzt aber viele Korrekturen in der ersten Minute nötig. Jetzt passt es momentan. Können wir mir hier irgendwie etwas manuelle
+Arbeit abnehmen?"* His log says `mp3_corrections 1 38s:+50ms` — **one**, for a minute of work, and that is not him giving up. It is a rule of
+mine from the day before deleting each press as he made the next.
+
+`_replaces_correction` dropped any stored correction within `MIN_SYNC_SPAN_MS` (30 s) of a new one. Simulated over what a player actually does
+in the first minute of a song that drifts:
+
+| pressed | kept under the 30 s span | kept under the bound below |
+|---|---|---|
+| 10s:+40  20s:+90  30s:+60  40s:+120  50s:+80 | **1** — `50s:+80` | **5** |
+| 36s:-40  39s:+350  43s:+270  50s:+70 | **1** — `50s:+70` | 3 |
+
+**The span came in from the days when two hand points WERE the whole correction**, and there it was right: the offset moves in 10 ms steps, so
+a pair five seconds apart implied any speed at all and the last keypress would have invented the song's whole rate. On a layer sitting over a
+map that already carries the rate, that argument is gone — and nobody re-derived it when the layer was built, the day before.
+
+- **The bound is `SyncMap`'s own clamp, read rather than re-fitted.** Between two corrections the curve bends by at most `MAX_RATE`, so a pair
+  demanding more than 10 % of the gap is not two readings: it is one the map cannot express, and keeping both would TRUNCATE the correction
+  just demonstrated. Inside that bound both are residuals the map carries happily. `CORRECTION_BEND` is `syncmap.MAX_RATE - 1.0` and not a
+  number of its own.
+- **It is the same rule by a better route for the case the old one got right.** Two presses at one spot, and a wild correction half a second
+  later, replace under both — which is why `test_a_pair_the_map_cannot_express_keeps_only_the_newer` passes on the unfixed code and is the
+  control.
+- **A 20-second disagreement is refused outright rather than clamped.** `test_an_impossible_pair_is_left_out_of_the_plan` asserted a section
+  clamped to `MIN_RATE`; the older correction is simply dropped now, which says the same thing without storing a rate nobody demonstrated.
+- **`MIN_SYNC_SPAN_MS` is deleted rather than left with no reader**, the fault this file has written up for `system_pitch`, `PAPER` and
+  `_mp3_plan`.
+
+**What this does NOT fix**, and it is the other half of his minute. His 42 stored points read `36s:-38ms  39s:+351ms  50s:+71ms` — a **389 ms
+spike at 39 s**, which is both of the `+11.11 %` clamped sections in that log and most of `mp3_worst_pull_ms 609`. The picture is pulled at 5 %
+of real time, so a 389 ms step needs eight seconds to track and is gone in three: it never arrives, and he corrects it by hand. `_without_spikes`
+cannot see it after the thinning (its neighbours are 3 s and 11 s away, where `MAX_DRIFT_RATE` allows 550 ms), and applying the same test to the
+kept ROWS instead drops **0 spikes on all four** of the songs here. So the filter that would catch it is unvalidated on anything I have, and the
+next move is his current recording rather than a threshold.
+
+## A Pull Writes The Ref, Never HEAD
+
+The same log's first line: `build 4b2a0976 inspiring-wozniak-x09i60 2026-11-07 14:48 (checkout)`. **The sha is today's commit and the date is
+a fortnight old**, so it reads as a player running a build from two weeks ago — and it nearly had me tell him to pull a branch he was already
+running, with a sentence of mine built on a log I had misread.
+
+`_from_git` took **`.git/HEAD`'s mtime**. A `git pull` that fast-forwards a branch writes `.git/refs/heads/<branch>`; HEAD is only touched when
+somebody switches branch. Reproduced on this machine in one command: HEAD 11:03, the ref 16:13, the stamp 11:03.
+
+- **The date comes from the file the SHA was read from.** One line, and it makes the two halves of the stamp describe the same moment.
+- **And a fresh clone had no stamp at all.** Its refs are packed, so the loose read raised and the whole function returned `""` — `unknown
+  build` on a tree somebody has just cloned, which is the one answer this module exists to avoid. `packed-refs` is read as the fallback, and
+  stamped from `packed-refs` rather than HEAD: for a clone that file was written when the commit arrived, where HEAD's mtime can be far older.
+- **Both are asserted on a `.git` built by hand with HEAD deliberately older than the ref**, because that is what a pull leaves behind and no
+  real checkout here can be put into that state on purpose. Both fail on the unfixed code.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

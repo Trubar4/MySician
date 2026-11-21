@@ -1577,16 +1577,31 @@ class TestTheRecordingsOwnSpeed:
         assert m.correction_at(0.0) == pytest.approx(350.0)
         assert m.correction_at(240_000.0) == pytest.approx(120.0)
 
-    def test_two_corrections_close_together_replace_each_other(
+    def test_a_pair_the_map_cannot_express_keeps_only_the_newer(
         self, tmp_path, monkeypatch
     ):
-        """The old rule, kept where it was right: thirty seconds apart they
-        are one correction made twice, and the newer is the one just
-        demonstrated."""
+        """400 ms apart over half a second is 80 %, where the curve bends by
+        10 % -- so keeping both would truncate the correction just
+        demonstrated. The newer is the one the player stands behind."""
         screen = self._screen(tmp_path, monkeypatch)
         self._mark(screen, 10_000.0, 0.0)
-        self._mark(screen, 15_000.0, 200.0)
-        assert screen._mp3_corrections() == [(15_000.0, 200.0)]
+        self._mark(screen, 10_500.0, 400.0)
+        assert screen._mp3_corrections() == [(10_500.0, 400.0)]
+
+    def test_but_five_corrections_in_one_minute_all_survive(
+        self, tmp_path, monkeypatch
+    ):
+        """*"Da waren jetzt aber viele Korrekturen in der ersten Minute
+        noetig."* Under the 30-second span these five collapsed to ONE -- a
+        minute of work and `mp3_corrections 1` in the log to show for it.
+        Each is a residual the map carries happily; none contradicts its
+        neighbour."""
+        screen = self._screen(tmp_path, monkeypatch)
+        want = [(10_000.0, 40.0), (20_000.0, 90.0), (30_000.0, 60.0),
+                (40_000.0, 120.0), (50_000.0, 80.0)]
+        for at, value in want:
+            self._mark(screen, at, value)
+        assert screen._mp3_corrections() == want
 
     def test_a_dense_map_gives_the_range_rather_than_150_figures(
         self, tmp_path, monkeypatch
@@ -1626,15 +1641,16 @@ class TestTheRecordingsOwnSpeed:
     def test_an_impossible_pair_is_left_out_of_the_plan(
         self, tmp_path, monkeypatch
     ):
-        """A real mismatch is about a percent; twenty means the two points
+        """A real mismatch is about a percent; twenty seconds means the two
         cannot both be right, and playing the song at that speed is
-        indistinguishable from a broken recording."""
+        indistinguishable from a broken recording. It used to survive as a
+        clamped section; refusing the older outright says the same thing
+        without carrying a rate nobody demonstrated."""
         screen = self._screen(tmp_path, monkeypatch)
         self._mark(screen, 10_000.0, 0.0)
         self._mark(screen, 100_000.0, 20_000.0)
-        # Clamped to what a recording can really do, in both directions.
-        rate, = screen._sync_map().rates()
-        assert rate == pytest.approx(syncmap.MIN_RATE)
+        assert screen._mp3_corrections() == [(100_000.0, 20_000.0)]
+        assert not screen._sync_map().rates()
 
     def test_the_scroll_speed_is_never_touched(self, tmp_path, monkeypatch):
         """The correction goes into the file's length. In the scale it would

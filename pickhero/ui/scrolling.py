@@ -450,11 +450,11 @@ AUDIO_CLOCK_PULL_FRACTION = 0.10
 #: whose own control says the clocks agreed throughout.
 AUDIO_CLOCK_GAP_SLACK_MS = 50.0
 
-# How far apart the two sync points must be. The offset is dialled in 10 ms
-# steps, so one keypress over a short span is a large speed error: over 30 s
-# it is 0.03 %, against the ~1 % the correction is for; over 5 s it would be
-# 0.2 %. The start and the end of the song are what this wants.
-MIN_SYNC_SPAN_MS = 30_000.0
+# How much of a correction's own value a neighbouring correction is allowed
+# to demand -- `SyncMap`'s own rate clamp, in the one place a keypress can
+# run into it. Not a constant of its own: the bound IS the clamp, so this is
+# the clamp read rather than a number fitted beside it.
+CORRECTION_BEND = syncmap.MAX_RATE - 1.0
 
 # How many per-section rates the panel lists before it gives the range
 # instead. A measured map has 40 to 150 points; eight figures fit a line and
@@ -476,20 +476,29 @@ def _sync_fits(report) -> bool:
 def _replaces_correction(stored, here) -> bool:
     """Whether a new correction takes the place of a stored one.
 
-    One rule, because there is one kind of thing in this list now: a
-    correction within `MIN_SYNC_SPAN_MS` is one correction made twice, and
-    the newer is the one the player just demonstrated.
+    Only where keeping both would stop the NEW one being honoured. Between
+    two corrections `SyncMap` bends the curve by at most `syncmap.MAX_RATE`,
+    so a pair demanding more than `CORRECTION_BEND` of the gap is not two
+    readings -- it is one the map cannot express, and the player's newest is
+    the one to keep. Anything inside that bound is two residuals the map
+    carries happily, so both stay.
 
-    It used to be two rules over one list, with the measured points in there
-    as well -- a hand point replaced a nearby hand point and dropped a
-    measured point only where the two contradicted outright. Both halves
-    were wrong. The 30 s rule deleted five to thirteen points of a bar map
-    for one press, and the contradiction rule let a measured point five
-    seconds away survive and pull the correction straight back to the map's
-    value, which made `Shift+S` a triangle five seconds wide. The measured
-    map is not in this list at all now; see `SyncMap.correction_at`.
+    Derived rather than fitted: it is the clamp the evaluation already
+    applies, asked before the fact instead of after.
+
+    **It was a 30-second span for a day, and that cost the player an
+    evening.** The span came in from the days when two hand points WERE the
+    whole correction and the rate between them was the whole answer -- there
+    a pair five seconds apart implied any speed at all. On a layer sitting
+    over a map that already carries the rate it has no argument left, and
+    measured it is brutal: five corrections at 10, 20, 30, 40 and 50 s
+    collapse to **one**, the last pressed. That is *"da waren jetzt aber
+    viele Korrekturen in der ersten Minute noetig"* -- each press deleting
+    the one before it, with `mp3_corrections 1` in the log to show for a
+    minute of work.
     """
-    return abs(stored[0] - here[0]) < MIN_SYNC_SPAN_MS
+    gap = abs(stored[0] - here[0])
+    return abs(stored[1] - here[1]) >= CORRECTION_BEND * gap
 
 
 # How many rows of music the page view shows at once, and how wide its
@@ -11116,9 +11125,9 @@ class PlayingScreen:
             lines.append("Shift+S corrects here, Ctrl+Shift+S clears, "
                          "Ctrl+S measures again")
         if replaced:
-            lines.append(f"replaced {replaced} correction(s) within "
-                         f"{MIN_SYNC_SPAN_MS / 1000:.0f} s — the measured "
-                         f"map is untouched")
+            lines.append(f"replaced {replaced} correction(s) too close to "
+                         f"agree with this one — the measured map is "
+                         f"untouched")
         self._sync_lines = ["SYNC   " + lines[0]] + ["SYNC " + l
                                                      for l in lines[1:]]
 
