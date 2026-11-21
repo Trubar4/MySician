@@ -7912,6 +7912,87 @@ really holds down, and the steppers are gated a second time at 150 ms by `_step_
 - Three of the eleven tests fail on the old rule; the other eight are the controls, including that a held arrow really does arrive
   five times at the same place the others are counted.
 
+## The Default Was Nearly Moved On Two Songs, And The Third Refuted It
+
+*"Bin mir nicht sicher. Wir brauchen mehr Tests."* He was right to stop it. I had put two options to him --
+move the default back to the listening (A), or raise the pull for a bar-map-derived map (B) -- on the
+strength of the two songs the chapter above measured, where the bar map cost 206 ms and 158 ms of follow
+lag and the listening cost **0**. He sent a third song, and it reverses the recommendation.
+
+**Parkway Drive, "From The Heart Of Darkness"** -- tab, cached bar map and his own recording, measured
+through the app's own two paths:
+
+| | windows | stored | worst follow lag |
+|---|---|---|---|
+| **the listening** | 12 of 42 usable (share 0.29, under `MIN_USABLE_SHARE`) | **nothing** | -- |
+| **the bar map** | 17 of 43 | 42 points, covering 1:30-4:32 of 4:57 | **219 ms** |
+
+**On his newest song the listening stores nothing at all.** A default of "listen first" would leave that
+song with no sync whatsoever, where the bar map at least places the middle three minutes. So A is refused,
+and the honest reason is that two songs were not a sample.
+
+**What DOES reproduce is the bar map's lag: 206, 158 and now 219 ms over three songs**, all of them above
+`AUDIBLE_MS`. That is a finding by this file's own rule -- three readings, one direction, one order of
+magnitude.
+
+### And on this song the lag is a symptom, not the fault
+
+*"Die letzten beiden Songs, die ich gespielt habe, waren jeweils um fast eine Sekunde nicht Sync."* A second
+is five times the follow lag, so the follow loop cannot be what he is seeing. Three clocks say what is:
+
+| | |
+|---|---|
+| the tab, 173 bars at a constant 140 BPM | **296.6 s** |
+| Songsterr's map for video `DEWN2vnSCAA` | **301.6 s** |
+| his recording | **308.5 s** |
+
+The tab's own bar grid walks **+6.75 s** away from Songsterr's bar times over the song -- a steady +1.7 %,
+which is the tab written fast -- and his recording is another 2.3 % longer again. `align_to_bar_times` looks
+for ONE constant between the map and the file; a 2.3 % rate is not a constant, which is exactly why only 17
+of 43 windows agree and the coverage collapses to the middle. Outside it the map extrapolates, from +148 ms
+at the start to **-6644 ms** at the end, and a second of error in the first ninety seconds is what that
+looks like from the inside.
+
+- **The app already says the fix, and it says it behind `S`**: *"Songsterr timed its points against
+  youtu.be/DEWN2vnSCAA -- 173 bars, the same as this tab, so audio from THAT video needs almost no lining
+  up."* Same master, no rate to find, and the whole problem goes.
+- **And the app computes the tempo answer and never says it.** `written_tempo_gap` returns 140 BPM wanting
+  to be **134.6** on this song -- correct, actionable, and gated behind `report["wrong_length"]`, which is
+  `MAX_LENGTH_MISMATCH` at **10 %**. This song is 4 % apart, so the sentence never fires; and the bar-map
+  path returns before reaching it in any case. The threshold was fitted against Thunder's 27 %, which is
+  the "go and get another file" case, and nothing covers the band between a percent and a tenth.
+
+### The pull curve, measured rather than argued
+
+Option B is still the only lever that does not need a different recording, so it is measured on that stored
+map rather than left as a proposal:
+
+| pull | allows | worst lag | worst bend used |
+|---|---|---|---|
+| 2 % | 20 ms/s | 1516 ms | 20 ms/s |
+| **5 %** (shipped) | 50 ms/s | **219 ms** | 50 ms/s |
+| 7 % | 70 ms/s | 158 ms | 70 ms/s |
+| **10 %** | 100 ms/s | **67 ms** | 100 ms/s |
+| 15 % | 150 ms/s | 33 ms | 150 ms/s |
+| 30 % | 300 ms/s | 31 ms | 300 ms/s |
+
+**10 % is where the lag drops under `AUDIBLE_MS`, and 15 % is the knee.** The bend used equals the cap at
+every value, which is the mechanism shown directly: the picture is already being pulled as hard as it is
+allowed and still falls behind.
+
+**It is NOT built**, for the reason the table cannot answer: what a 100 ms/s bend looks like on screen is
+not measured anywhere, and 5 % was chosen to be invisible rather than to be sufficient. Raising it would
+trade a lag nobody has complained about for a motion nobody has looked at -- and on this song the lag is a
+consequence of the wrong recording, which costs nothing to fix.
+
+### And the thinning idea was wrong by construction
+
+The hypothesis before any of this was that a bar map is thinned at `SIMPLIFY_MS` (25 ms) and would follow
+better thinned at `AUDIBLE_MS` (100). **Douglas-Peucker removes only deviations SMALLER than its tolerance**,
+and the wobble measured on Reckless is *"up to 345 ms, systematic over several bars, not a spike"* -- which
+survives any thinning that keeps the curve. It would have changed nothing, and the measurement that says so
+was already in this file.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
