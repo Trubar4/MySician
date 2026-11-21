@@ -377,8 +377,39 @@ class TestInsideTheApp:
         assert screen._mp3_anchors() == [(0.0, -2150.0), (21539.0, -2160.0)]
         panel = " ".join(screen._sync_lines)
         assert "Songsterr" in panel and "8 bar times" in panel
-        assert "coarser than listening" in panel, \
-            "it is being dressed up as the finer measurement"
+        # Which measurement is under the song, and whether its own error was
+        # read out of the windows. It used to say "coarser than listening
+        # (80-90 ms against 10)", which was true of one constant and is a
+        # lie about a refined map -- see `autosync.residual_curve`. A report
+        # carrying no refinement says so rather than implying one.
+        assert "not refined" in panel, \
+            "a map nobody refined is being presented as a refined one"
+        assert "repeats itself" in panel, \
+            "the one thing it does that the listening cannot is unsaid"
+
+    def test_and_a_refined_one_says_what_was_taken_out(self, tmp_path,
+                                                       monkeypatch):
+        """The gap the refinement closes is the one the old line announced:
+        80-92 ms from the bar times alone against 8-16 from the listening."""
+        self._listening(monkeypatch, readable=False)
+        self._bar_map(monkeypatch, [0.94, 4.04, 7.11, 10.2])
+        monkeypatch.setattr(autosync, "align_to_bar_times",
+                            lambda tl, path, bars, progress=None: {
+                                "source": "songsterr", "bars": 4,
+                                "measures": 4, "readable": True,
+                                "points": [(0.0, -2150.0), (9260.0, -2160.0)],
+                                "windows": 40, "usable": 38, "ambiguous": 1,
+                                "constant_s": 1.21, "scatter_ms": 102.0,
+                                "refined": 35, "breaks": [],
+                                "covered": (0.0, 240.0), "song_s": 260.0,
+                                "wrong_bars": False,
+                            })
+        screen = self._screen(tmp_path, monkeypatch, song_id=2333598)
+        screen._start_auto_sync()
+        self._run(screen)
+        panel = " ".join(screen._sync_lines)
+        assert "refined by 35" in panel and "102 ms" in panel
+        assert "not refined" not in panel
 
     def test_with_no_link_pasted_it_is_never_asked(self, tmp_path, monkeypatch):
         asked = []
@@ -1444,3 +1475,96 @@ class TestABarLineNoDriftCouldPutThere:
         report = TestFittingItToARecording()._aligned(
             monkeypatch, [1.2, 1.25, 1.18, 1.22, 1.21])
         assert "spikes" in report
+
+
+class TestTheMapsOwnWindowsRefineIt:
+    """`drift_curve` has already run on the map-warped tab inside the fit.
+
+    `_fit_one` took the MEDIAN of its lags and threw the rest away -- and
+    the rest is the map's own error, window by window, already measured.
+    Scored on windows the curve was NOT fitted to (every other one):
+
+        Parkway Drive   91 ms median / 200 ms p90  ->   4 ms /  9 ms
+        Eva Under Fire  88 / 148                   ->   8 / 16
+        Dry County     183 / 345                   ->  12 / 50
+
+    which closes the 80-92 ms against 8-16 ms this project records for
+    Songsterr's map against the listening, out of numbers that were already
+    there. The follow loop is unmoved (237 -> 237 ms worst on Parkway) and
+    the spike filter drops exactly as many points either way (17 of 149 on
+    Dry County), so neither is paying for it.
+    """
+
+    BARS = [i * 2000.0 for i in range(40)]
+    TIMES = [i * 2.0 for i in range(40)]
+
+    def _rows(self, lag_of):
+        """One window every 6 s with a healthy margin, as drift_curve emits
+        them: `at` is the window START in the warped tab's own time."""
+        return [(float(i * 6), lag_of(i * 6.0), 0.9) for i in range(13)]
+
+    def _fit(self, rows):
+        base = {"points": [], "windows": 0, "usable": 0, "share": 0.0,
+                "refined": 0, "spikes": 0}
+        return autosync._fit_one(base, self.BARS, self.TIMES, rows, 25.0)
+
+    def _offset_at(self, report, song_ms):
+        from pickhero.audio.syncmap import SyncMap
+        return SyncMap(report["points"]).offset_at(song_ms)
+
+    def test_a_constant_error_is_still_one_constant(self):
+        """The control: where every window agrees, the curve is flat and the
+        answer is bit-for-bit what the median gave."""
+        rows = self._rows(lambda at: 1.5)
+        report = self._fit(rows)
+        assert report["refined"] == len(rows)
+        for song_ms in (0.0, 40_000.0, 78_000.0):
+            assert self._offset_at(report, song_ms) == pytest.approx(-1500.0)
+
+    def test_a_sloped_error_is_followed(self):
+        """A map whose own windows say it drifts: 0 at the start and 500 ms
+        by 1:12, which one constant can only split the difference on."""
+        rows = self._rows(lambda at: at / 144.0)       # 0.5 s over 72 s
+        report = self._fit(rows)
+        assert report["refined"] == len(rows)
+        # Each window's reading, reproduced where the window sits. The
+        # window's MIDDLE, because the lag was measured over all 20 s of it.
+        for at, lag, _ in rows:
+            song_ms = (at + autosync.WINDOW_S / 2.0) * 1000.0
+            assert self._offset_at(report, song_ms) == pytest.approx(
+                -lag * 1000.0, abs=15.0)
+
+    def test_and_one_constant_could_not_have(self):
+        """The control for the control: the old answer is off by a quarter
+        of a second at the ends, which is over the 100 ms where picture and
+        sound stop reading as one event."""
+        rows = self._rows(lambda at: at / 144.0)
+        median = sorted(lag for _, lag, _ in rows)[len(rows) // 2]
+        worst = max(abs(lag - median) for _, lag, _ in rows) * 1000.0
+        assert worst > 200.0
+
+    def test_a_window_past_a_break_does_not_refine_it(self):
+        """`BAR_MAP_AGREE_S` ties a window to THIS map's constant. A ten
+        second residual is the two files parting company, and letting it in
+        would warp the map rather than correct it."""
+        rows = self._rows(lambda at: 1.5 + (10.0 if at >= 48 else 0.0))
+        report = self._fit(rows)
+        assert report["refined"] == 8, "a break was read as a correction"
+        assert self._offset_at(report, 70_000.0) == pytest.approx(-1500.0)
+
+    def test_an_ambiguous_window_does_not_refine_it_either(self):
+        """The margin says the window could not tell one chorus from
+        another, and a reading that cannot is not evidence about anything."""
+        rows = [(at, lag, 0.9 if i % 2 else 0.0)
+                for i, (at, lag, _) in enumerate(self._rows(lambda at: 1.5))]
+        assert self._fit(rows)["refined"] == 6
+
+    def test_the_residual_is_held_outside_the_windows_that_measured_it(self):
+        """Not extrapolated, for the reason `SyncMap.correction_at` is not:
+        a slope fitted to a residual says nothing about the stretch nobody
+        could read, and the map underneath carries the drift there."""
+        xs, ys = [10.0, 20.0], [0.1, 0.3]
+        assert autosync.residual_at(0.0, xs, ys) == pytest.approx(0.1)
+        assert autosync.residual_at(15.0, xs, ys) == pytest.approx(0.2)
+        assert autosync.residual_at(900.0, xs, ys) == pytest.approx(0.3)
+        assert autosync.residual_at(5.0, [], []) == 0.0

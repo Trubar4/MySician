@@ -8136,6 +8136,103 @@ So neither is right alone, and the old default left Eva Under Fire with no sync 
 - **`_sync_fits` is one predicate**, used by the fallback and by the storing, so they cannot disagree about what counts as having
   worked.
 
+## A Correction By Ear Belongs On TOP Of The Map, Not In It
+
+*"Will ich das überhaupt? Eigentlich müsste die App prüfen, ob es dazwischen trotzdem die map nutzt oder nicht. Es ist einfach zu viel Handarbeit
+für mich."*
+
+He was right, and the thing he was questioning was a sentence of mine that was false. `Shift+S` dropped its point into the measured anchor list,
+where one of two rules had to decide what to do about the neighbours — and **both are wrong, in opposite directions:**
+
+| | what one press does to a bar map with a point every five seconds |
+|---|---|
+| the 30-second rule (before) | deletes **5 to 13 measured points** — a minute of measurement for one correction |
+| the contradiction rule (after) | deletes nothing, and is itself undone within five seconds |
+
+Simulated on the second, with a +350 ms correction at 0:20:
+
+| song time | 0:15 | 0:18 | **0:20** | 0:22 | 0:25 |
+|---|---|---|---|---|---|
+| correction applied | 0 ms | 210 | **350** | 210 | **0** |
+
+**A triangle five seconds wide.** The reason is arithmetic: a measured point five seconds away differing by 350 ms implies 7 %, under
+`MAX_RATE`, so it is not a contradiction, it survives, and it pulls the correction straight back to the map's value. One `Shift+S` on a
+bar-mapped song was worth nothing at all.
+
+- **So the correction is a second LAYER.** `SyncMap` takes a third argument and `base_offset_ms` is generalised from one constant to several
+  points: the map keeps its shape everywhere and the hand bends only the residual. Between two corrections the bend is the line joining them.
+- **One correction is a constant over the whole song, which is exactly what the stored offset always was**, so this is a strict generalisation
+  of it rather than a new kind of thing — and that is asserted, not reasoned: one correction and one `base_offset_ms` of the same size give the
+  same answer at every millisecond of a real map.
+- **Held outside the outermost correction, where the map EXTRAPOLATES.** The two layers do different things outside themselves and both are
+  right: a recording drifting at the last measured point is still drifting after it, while a slope fitted to two observed residuals would
+  invent drift the map underneath is already carrying. At the rate the player described (350 ms at 0:10, 120 ms at 1:10) an extrapolated
+  correction reaches zero at 1:01 and keeps going.
+- **Both layers are evaluated into ONE curve**, because the inverse has to be exact and the total is what the rate clamp must bound. One
+  interpolation cannot express two different outside rules at its ends, so two **sentinels** an hour outside carry the true value there and the
+  outer segments already have the right slope. Without them a song with corrections and no map extrapolated them, and **500 ms read as 1038 ms
+  two minutes later** — which is how this was found.
+- **`rates()` answers over the total and `covers()` only over the measured points.** The first is what the app is APPLYING (the run log's
+  `mp3_sync_sections`, the panel's figures) and a correction is evidence about the recording too — the player heard it drift. The second is
+  explicitly about where somebody measured, and a correction by ear is not that.
+- **Re-measuring drops them, and says so**, the same rule the nudge already loses on that path: a correction describes a residual of the map it
+  was set against, and the new measurement may not carry the same bias. Dropped in `set_mp3_anchors_for`, so `Ctrl+S`, `Ctrl+Shift+S` and
+  picking another recording all do it for free.
+- **The two are said APART** — on the panel, in the help page's own column, and in the run log (`mp3_corrections` beside `mp3_sync_points`).
+  They are fixed in different places: `Ctrl+S` measures the first again and `Shift+S` adds to the second, and a single count of "17 points"
+  cannot say which of them a player is looking at.
+- **`_mp3_plan` was deleted rather than left tested and unused.** The rate stopped going into the stretched build a while ago, so it had no
+  reader in the app at all and `rates()` answers the same question — the fault this file has already written up for `system_pitch` and `PAPER`.
+- **`song_mp3_hand_anchors` goes with the rule it existed for**, and there is no migration: it shipped a week ago and cannot have been written
+  yet.
+
+## The Bar Map's Own Windows Already Measured Its Error
+
+*"Schaffen wir es die Map zu nutzen und mit dem Listening und meinen Korrekturen zu kombinieren. Das Listening nimmt was es von mir und der map
+hat und ergänzt nur?"*
+
+Yes, and it needed no second measurement: **the listening has already run inside the bar-map fit.** `align_to_bar_times` warps the tab through
+each candidate map and `drift_curve` reads the warped tab against the recording — and `_fit_one` then took the **median** of those per-window
+lags and threw the rest away. The rest is the map's own error, window by window.
+
+Scored on windows the curve was NOT fitted to (every other one, fitted on the rest):
+
+| | one constant (as it was) | plus the residual curve |
+|---|---|---|
+| Parkway Drive | 91 ms median / 200 ms p90 | **4 ms / 9 ms** |
+| Eva Under Fire | 88 / 148 | **8 / 16** |
+| Dry County | 183 / 345 | **12 / 50** |
+
+**A factor of 15 to 25, and all three under `AUDIBLE_MS` at the ninetieth percentile where the constant-only version is over it on every song.**
+That is the 80-92 ms against 8-16 ms this file records for Songsterr's map against the listening — closed, on the bar-map path, out of numbers
+that were already there.
+
+- **TWO filters, because they answer different questions.** `BAR_MAP_AGREE_S` ties a window to THIS map's constant, which is what keeps a window
+  past a break out: a 10 s residual there is the two files parting company, and letting it in would warp the map rather than refine it.
+  `usable_rows` then drops what the listening itself refuses — a window that could not tell one chorus from another, and a spike within its own
+  section.
+- **Held outside the windows that measured it**, for the same reason the hand corrections are: the map underneath carries the drift where nobody
+  could read anything.
+- **It costs nothing to track and nothing in refused bar lines.** The follow loop's worst lag is unmoved (Parkway 237 → 237 ms, Eva 17 → 17,
+  Dry County's 1.5 s is its break either way) and `_without_spikes` drops **17 of 149** bar lines on Dry County with the residual and 17 without.
+  Points go 40 → 44, 23 → 25 and 132 → 138.
+- **The panel's own claim had to be retracted with it.** It said *"coarser than listening (80–90 ms against 10)"*, which was true of one constant
+  and is a lie about a refined map. It now says how many windows refined it and how much disagreement was taken out, and a report that carries
+  no refinement says **"not refined"** rather than implying one.
+
+**And the idea this replaced is refuted rather than shelved.** The plan was to seed `drift_curve`'s ±40 s lag search with the bar map as a prior,
+so the listening would refine rather than search blind. Measured: restricting the choice to ±2 s of the map's prediction gains **one** window on
+Parkway and four on Dry County. The first run of that probe said 31 of 43 against 17 — and that was `RUNNER_UP_GUARD_S` (5 s) leaving **no lag
+outside the guard**, so `margin` came back as `score + 1` and every window passed. **The margin filter switching itself off, not the listening
+improving: the ninth time in this project a measuring instrument has measured itself.** What the windows that fail actually fail is the margin,
+and narrowing the search cannot help with that. The whole prize comes from warping the TAB, not from narrowing the SEARCH.
+
+**Two numbers of my own were wrong and are corrected here.** I reported Eva Under Fire's bar map agreeing with 2 of 24 windows and Parkway
+Drive's listening keeping 12 of 42 — both measured with ONE track where the app reads every pitched track (`chroma_of_tab_file`). Read as the app
+reads them: Eva's bar map is **24 of 24** and Parkway's listening is 25 of 47 at a scatter of 2112 ms. The default that was changed on that
+evidence still stands on its own argument (the map is a file read that cannot fail; the listening is seconds of FFT that sometimes reads nothing),
+but the evidence given for it was not evidence.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

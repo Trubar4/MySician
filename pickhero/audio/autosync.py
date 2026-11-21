@@ -988,7 +988,7 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
         "ambiguous": 0, "breaks": [], "covered": None, "song_s": 0.0,
         "wrong_length": False, "sections": 0, "sections_used": 0,
         "unreadable": [], "share": 0.0, "wrong_bars": False,
-        "spikes": 0,
+        "spikes": 0, "refined": 0,
         "offered": [len(c) for c in candidates],
         # The two lengths, because the panel's tempo line needs them on this
         # path too -- and without them it is a feature that silently does
@@ -1086,9 +1086,11 @@ def _fit_one(base: dict, bar_starts, bar_times, rows, tolerance_ms,
         return report
 
     # The stored points are the MAP's own bar lines, corrected by the one
-    # constant -- so what is kept is Songsterr's measurement, not a smoothing
-    # of ours. Thinned the same way, because a bar the line between its
-    # neighbours already predicts is not worth a point.
+    # constant AND by what the windows say the map got wrong there -- so
+    # what is kept is Songsterr's shape with our residual on it, not a
+    # smoothing of either. Thinned the same way, because a bar the line
+    # between its neighbours already predicts is not worth a point.
+    # See `residual_curve` for what the refinement is worth, held out.
     #
     # A point is (song ms, offset ms) with the app's usual sign: the
     # recording is at song_ms - offset_ms. The map puts bar i at `time` in
@@ -1096,13 +1098,73 @@ def _fit_one(base: dict, bar_starts, bar_times, rows, tolerance_ms,
     # offset is the song's own bar line minus that. Getting the constant's
     # sign wrong here reads as a map that is twice the constant out --
     # measured at 324 ms against readings the report claimed 76 ms of.
-    raw = [(float(start), start - (time + constant) * 1000.0)
+    xs, ys = residual_curve(rows, constant)
+    report["refined"] = len(xs)
+    raw = [(float(start),
+            start - (time + constant + residual_at(time, xs, ys)) * 1000.0)
            for start, time in zip(bar_starts, bar_times)]
     kept = _without_spikes(raw)
     report["spikes"] = len(raw) - len(kept)
     report["points"] = [(round(a, 1), round(b, 1))
                         for a, b in simplify(kept, tolerance_ms)]
     return report
+
+
+def residual_curve(rows: Sequence[tuple[float, float, float]],
+                   constant: float) -> tuple[list[float], list[float]]:
+    """What the bar map got WRONG, window by window, in seconds.
+
+    The listening has already run here: `align_to_bar_times` warps the tab
+    through the candidate map and `drift_curve` reads the warped tab against
+    the recording. `_fit_one` then took the MEDIAN of those lags and threw
+    the rest away -- and the rest is the map's own error, already measured.
+
+    Scored on windows it was NOT fitted to (every other one), the curve
+    against the single constant:
+
+        Parkway Drive   91 ms median / 200 ms p90  ->   4 ms /  9 ms
+        Eva Under Fire  88 / 148                   ->   8 / 16
+        Dry County     183 / 345                   ->  12 / 50
+
+    which is the 80-92 ms against 8-16 ms this file records for Songsterr's
+    map against the listening -- closed, on the bar-map path, out of numbers
+    that were already there. The follow loop is unmoved by the extra detail
+    (237 -> 237 ms worst on Parkway, 17 -> 17 on Eva), so it costs nothing
+    to track.
+
+    TWO filters, because they answer different questions. `BAR_MAP_AGREE_S`
+    ties a window to THIS map's constant, which is what keeps a window past
+    a break out -- a 10 s residual there would warp the map wildly rather
+    than refine it. `usable_rows` then drops what the listening itself
+    refuses: a window that could not tell one chorus from another, and a
+    spike within its own section.
+    """
+    clean = set(usable_rows(rows))
+    use = [(at, lag) for at, lag, margin in rows
+           if margin >= MIN_MARGIN and abs(lag - constant) <= BAR_MAP_AGREE_S
+           and (at, lag) in clean]
+    # The window's own middle, not its start: the lag was measured over the
+    # whole 20 s, and attributing it to the first frame would put every
+    # correction ten seconds early. The same rule `points_from_rows` uses.
+    return ([at + WINDOW_S / 2.0 for at, _ in use],
+            [lag - constant for _, lag in use])
+
+
+def residual_at(song_s: float, xs: Sequence[float],
+                ys: Sequence[float]) -> float:
+    """The residual here, held outside the windows that measured it.
+
+    Flat rather than extrapolated, for the reason `SyncMap.correction_at`
+    is: a slope fitted to a residual says nothing about the stretch nobody
+    could read, and the map underneath is already carrying the drift there.
+    """
+    if not xs:
+        return 0.0
+    if song_s <= xs[0]:
+        return ys[0]
+    if song_s >= xs[-1]:
+        return ys[-1]
+    return float(np.interp(song_s, xs, ys))
 
 
 def replace_times(timeline: Timeline, bar_starts: Sequence[float],

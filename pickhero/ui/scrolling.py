@@ -10853,13 +10853,25 @@ class PlayingScreen:
         dropped = report.get("spikes") or 0
         refused = (f", {dropped} bar line{'s' if dropped > 1 else ''} refused "
                    f"(no drift could put them there)" if dropped else "")
+        # The map's shape with OUR residual on it, which is what closes the
+        # gap this line used to announce: the bar times alone are 80-92 ms
+        # against the listening's 8-16, and the windows that found the
+        # constant have already measured that difference window by window.
+        refined = report.get("refined") or 0
+        how = ([f"SYNC   refined by {refined} of them — Songsterr's shape, "
+                f"our residual on it, so the {report['scatter_ms']:.0f} ms "
+                f"they disagreed by is taken out rather than averaged"]
+               if refined else
+               ["SYNC   not refined: too few windows to read the map's own "
+                "error, so one constant is the whole of it"])
         return self._break_lines(report) + self._bar_map_tempo_lines(report) + [
             f"SYNC   from Songsterr's {report['bars']} bar times, lined up "
             f"here at {report['constant_s']:+.2f} s — {report['usable']} of "
             f"{report['windows']} windows agree to "
             f"{report['scatter_ms']:.0f} ms{refused}",
-            "SYNC   coarser than listening (80–90 ms against 10) but it does "
-            "not care that a song repeats itself. Shift+S refines it",
+        ] + how + [
+            "SYNC   it does not care that a song repeats itself, which is "
+            "what the listening cannot do. Shift+S corrects it by ear",
         ]
 
     def _auto_sync_line(self) -> str:
