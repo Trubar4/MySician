@@ -8,7 +8,8 @@ corrects by almost nothing and leaves a second standing in the middle.
 
 import pytest
 
-from pickhero.audio.syncmap import MAX_RATE, MIN_RATE, SyncMap
+from pickhero.audio.syncmap import (MADE_MAX_RATE, MAX_RATE, MIN_RATE,
+                                    SyncMap)
 
 THEIRS = [(0.0, -260.0), (177_000.0, -1330.0), (258_000.0, -260.0)]
 
@@ -339,3 +340,67 @@ class TestACorrectionIsASecondLayer:
     def test_nothing_at_all_is_still_empty(self):
         assert SyncMap([], base_offset_ms=-420.0).empty
         assert not SyncMap([], corrections=[(0.0, 5.0)]).empty
+
+
+class TestAMadeMapMayHoldAStep:
+    """Where the points came from decides how far a segment may bend.
+
+    The tight pair protects against a SEARCH: the listening slides a window
+    along the recording and a window that matched the wrong chorus lands
+    seconds away, so two points close together imply any rate at all.
+    Songsterr's per-bar map cannot make that mistake -- it is written down
+    rather than searched for -- so a step in it is music.
+
+    The step that found this is on the player's own Trans-Siberian Orchestra
+    file: the tab writes its first ten bars at 3.12 s each where the
+    recording plays 2.90, and then holds bar 11 for 6.08 s where the tab
+    writes 3.12. Spread at the tight clamp, that demanded three times the
+    authority `_follow_recording` has and the picture fell a second behind.
+    """
+
+    # 19 s apart, carrying 2.3 s: the shape the simplification leaves of
+    # that held bar, and a rate of about 1.19.
+    STEP = [(0.0, 0.0), (18_700.0, 745.0), (31_170.0, -1556.0),
+            (56_470.0, -1323.0)]
+
+    def test_a_found_map_is_clamped_exactly_as_before(self):
+        m = SyncMap(self.STEP)
+        assert max(m.rates()) == pytest.approx(MAX_RATE)
+        assert min(m.rates()) >= MIN_RATE
+
+    def test_a_made_map_carries_the_step(self):
+        m = SyncMap(self.STEP, made=True)
+        assert max(m.rates()) == pytest.approx(1.185, abs=0.01)
+
+    def test_and_the_offset_it_reports_is_the_one_measured(self):
+        """The clamp is not a detail of the rates: it is what the picture is
+        placed by. Halfway across the step the found map is out by most of
+        it, and the made one lands on the line between the two points."""
+        made = SyncMap(self.STEP, made=True)
+        found = SyncMap(self.STEP)
+        middle = (18_700.0 + 31_170.0) / 2
+        assert made.offset_at(middle) == pytest.approx(-405.5, abs=1.0)
+        assert abs(found.offset_at(middle) - made.offset_at(middle)) > 500.0
+
+    def test_a_made_map_is_still_invertible(self):
+        """The wider bound may not reach zero: `song_at` is interpolated
+        over the points' recording positions, and a segment at rate 0 would
+        make the map non-monotone."""
+        m = SyncMap(self.STEP, made=True)
+        for at in range(0, 60_000, 331):
+            assert m.song_at(m.recording_at(at)) == pytest.approx(at, abs=1e-6)
+
+    def test_even_a_map_that_asks_for_the_impossible_stays_a_map(self):
+        """Two points a second apart differing by ten seconds is not music,
+        whoever made it. The bound still holds, just further out."""
+        m = SyncMap([(0.0, 0.0), (1000.0, -10_000.0)], made=True)
+        rate, = m.rates()
+        assert rate == pytest.approx(MADE_MAX_RATE)
+        assert m.song_at(m.recording_at(500.0)) == pytest.approx(500.0,
+                                                                 abs=1e-6)
+
+    def test_the_default_is_found(self):
+        """A map with no provenance is treated as the riskier kind. Every
+        song synced before this flag existed is one of those."""
+        assert not SyncMap(self.STEP).made
+        assert SyncMap(self.STEP, made=True).made

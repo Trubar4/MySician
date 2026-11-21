@@ -939,3 +939,129 @@ class TestTheHeadIsAsWideAsTheMusicAllows:
                 assert drawn.get_width() <= placed.width, (
                     f"fret {placed.note.fret} is {drawn.get_width()} px in a "
                     f"{placed.width:.0f} px head")
+
+
+class TestABarTooDenseForTheSongGetsItsOwnHead:
+    """*"Ich dachte wir aendern in solchen Takten die Geschwindigkeit des
+    Progressbars und machen die Koepfe so schmal, dass die Zahlen gerade noch
+    ohne Ueberlappung lesbar sind."*
+
+    He is right, and the measurement says the head is the only lever there:
+    in the bar that prompted it -- 48 notes 81 ms apart in a double bar of
+    "Carol Of The Bells" -- every gap is the SAME, so there is nothing for a
+    stretch to redistribute between them. It needs 56.6 head widths against
+    the song's median of 15.6, and `head_width_for`'s 90th percentile cannot
+    see two bars of 98: narrowing the whole song for them takes the fret
+    numbers from 37 px of type to 19.
+    """
+
+    #: Where the sweep is. One bar in forty, because the whole point is a
+    #: bar `head_width_for`'s 90th percentile cannot see: on the player's own
+    #: song it is two bars of 98.
+    DENSE = 20
+
+    def _song_with_one_dense_bar(self, bars=40, dense=DENSE, notes_in_it=48):
+        """Ordinary bars, and one holding a sweep too tight for any of them."""
+        out, measures = [], []
+        for bar in range(bars):
+            start = bar * 4000.0
+            measures.append(MeasureInfo(index=bar, start_ms=start,
+                                        end_ms=start + 4000.0,
+                                        beats=4, beat_type=4))
+            n = notes_in_it if bar == dense else 4
+            for i in range(n):
+                out.append(NoteEvent(
+                    timestamp_ms=start + i * (4000.0 / n),
+                    duration_ms=100.0, midi_note=40 + (i % 12),
+                    string=1 + (i % 6), fret=10 + (i % 8), measure=bar))
+        return Timeline(out, SongMetadata(title="sweep", tempo=60),
+                        measures=measures)
+
+    def _rows(self, song, width=1280.0):
+        units = sheet.bar_units(song)
+        tall = sheet.head_for_room(600.0)
+        wide = sheet.head_width_for(units, width, tall)
+        return sheet.lay_out(song, width, wide), wide
+
+    def test_the_dense_bar_is_the_only_one_narrowed(self):
+        rows, wide = self._rows(self._song_with_one_dense_bar())
+        narrowed = [r for r in rows if r.head != pytest.approx(wide)]
+        assert len(narrowed) == 1
+        assert narrowed[0].head < wide
+        assert narrowed[0].first_bar == narrowed[0].last_bar == self.DENSE
+
+    def test_and_it_is_no_longer_crowded(self, monkeypatch):
+        """`crowded` means heads in this row DO touch. That was the state
+        the view could only report, and press `-` -- which costs the whole
+        song's legibility for two bars of it.
+
+        The control is the same song with the floor raised to the song's own
+        head, so no bar can be narrowed at all: that IS the old behaviour,
+        and it has to come back crowded or this test passes on anything.
+        """
+        song = self._song_with_one_dense_bar()
+        rows, wide = self._rows(song)
+        assert not any(r.crowded for r in rows)
+        monkeypatch.setattr(sheet, "MIN_HEAD_PX", wide)
+        before = sheet.lay_out(song, 1280.0, wide)
+        assert any(r.crowded for r in before), "the control is not a control"
+
+    def test_two_head_sizes_never_sit_side_by_side(self):
+        """The size changes only where the music does -- at a line break --
+        so a narrowed bar is alone on its row."""
+        rows, wide = self._rows(self._song_with_one_dense_bar())
+        for row in rows:
+            if row.head != pytest.approx(wide):
+                assert row.first_bar == row.last_bar
+
+    def test_the_note_is_squeezed_SIDEWAYS_and_not_shrunk(self):
+        """The row keeps its height, so a narrowed head is the same note
+        drawn narrower -- which is what the scrolling board has always done
+        to buy look-ahead. Shrinking the row would be a different feature
+        and a worse one."""
+        song = self._song_with_one_dense_bar()
+        rows, wide = self._rows(song)
+        narrowed, = [r for r in rows if r.head != pytest.approx(wide)]
+        assert narrowed.head < wide          # narrower
+        # ... and no note of it is drawn shorter than its own head: the
+        # minimum width a `Placed` ever gets is the head it was laid out at,
+        # and the row's HEIGHT is not a function of that at all.
+        assert min(p.width for p in narrowed.notes) >= narrowed.head
+        assert sheet.row_height(wide) == sheet.row_height(wide)
+
+    def test_a_bar_that_cannot_fit_even_at_the_floor_still_says_so(self):
+        """The floor is `MIN_HEAD_PX`, below which a two-digit fret number
+        no longer fits inside its own head and the drawing drops it. A bar
+        you cannot read the frets of is not parted, it is gone -- so past
+        that the row stays crowded and reports it, exactly as before."""
+        song = self._song_with_one_dense_bar(notes_in_it=400)
+        rows, wide = self._rows(song)
+        hopeless, = [r for r in rows if r.first_bar == self.DENSE]
+        assert hopeless.head == pytest.approx(sheet.MIN_HEAD_PX)
+        assert hopeless.crowded
+
+    def test_a_song_with_no_dense_bar_is_bit_for_bit_what_it_was(self):
+        """The control. Almost every song is this one."""
+        rows, wide = self._rows(_song())
+        assert all(r.head == pytest.approx(wide) for r in rows)
+        assert not any(r.crowded for r in rows)
+
+    def test_the_fret_numbers_are_really_drawn_in_the_narrow_bar(self):
+        """The failure this floor exists to prevent, asserted through the
+        real drawing: `_draw_sheet_row` SKIPS a label wider than its head,
+        so a head narrowed too far takes the fret numbers with it and
+        nothing on screen says why."""
+        song = self._song_with_one_dense_bar()
+        screen = _screen(song)
+        screen._playback_ms = 4000.0 * self.DENSE + 100.0
+        screen.render(_surface())
+        narrowed = [r for r in screen._sheet_rows
+                    if r.first_bar == r.last_bar == self.DENSE]
+        assert narrowed, "the dense bar did not get a row of its own"
+        row = narrowed[0]
+        font = screen._fret_font(row.head / 2, row.head / 2,
+                                 screen._fret_digits)
+        for placed in row.notes:
+            label = str(placed.note.fret)
+            assert font.render(label, True, (255, 255, 255)).get_width() \
+                <= placed.width, f"fret {label} would not be drawn"

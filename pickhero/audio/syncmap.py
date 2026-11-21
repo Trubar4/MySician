@@ -41,6 +41,42 @@ from bisect import bisect_right
 MIN_RATE = 0.9
 MAX_RATE = 1.1
 
+# ... and the same bounds for a map that was MADE rather than found.
+#
+# The tight pair above protects against a SEARCH: the listening slides a
+# window along the recording, so a window that matched the wrong chorus
+# lands seconds away and two points set close together then imply any rate
+# at all. Godsmack's staircase is that fault and these bounds are its net.
+#
+# Songsterr's bar map cannot make that mistake. It is one timestamp per bar,
+# written down rather than searched for, so a step in it is MUSIC -- and the
+# step this was built for is real: on Trans-Siberian Orchestra's "Carol Of
+# The Bells" the tab writes its first ten bars at 3.12 s each where the
+# recording plays 2.90, and then holds bar 11 for 6.08 s where the tab
+# writes 3.12. The map carries that correctly (28 of 31 windows agree, 73 ms
+# of scatter); what could not carry it was the clamp, which spread a 2.3 s
+# step over twelve seconds at the limit and left `_follow_recording` chasing
+# a demand three times its authority. Measured on the player's own file, the
+# worst the picture fell behind:
+#
+#     as it shipped (1.1 / 5 % pull)                    1498 ms
+#     pull alone, any value                              960 ms  -- the clamp
+#     the bounds below and a 15 % pull                    114 ms
+#
+# 2.0 rather than the 1.19 that song demands, and it is reasoned rather than
+# fitted: a recording may hold a written bar for twice its length -- a
+# fermata, a half-time bar -- and past that the tab and the recording are
+# not the same piece of music, which `_covers` and the break lines already
+# answer. Over the two bar maps to hand the worst segment is 1.185 and 44 of
+# 43 segments of the other are inside the TIGHT pair, so this is headroom
+# for the case that needed it and nothing else.
+#
+# The bound may not reach zero: `song_at` is interpolated over the points'
+# recording positions, so a segment whose rate hits 0 would make the map
+# non-monotone and no longer invertible.
+MADE_MIN_RATE = 0.5
+MADE_MAX_RATE = 2.0
+
 # How far outside the real breakpoints the sentinels sit -- an hour, which no
 # song reaches, so nothing real is ever read off the segment beyond them. See
 # `__init__`: they exist so that the map's extrapolation and the correction's
@@ -58,10 +94,15 @@ class SyncMap:
 
     def __init__(self, points: list[tuple[float, float]] | None = None,
                  base_offset_ms: float = 0.0,
-                 corrections: list[tuple[float, float]] | None = None):
+                 corrections: list[tuple[float, float]] | None = None,
+                 made: bool = False):
         # With no points at all the single stored offset is the whole answer,
         # which is what every song starts as and what most songs stay as.
         self.base_offset_ms = float(base_offset_ms)
+        # Where the points came from, which is the only thing that says
+        # whether a step in them is music or a wrong-chorus match. See
+        # MADE_MIN_RATE.
+        self.made = bool(made)
         self.points = sorted((float(a), float(b)) for a, b in (points or []))
         self.corrections = sorted(
             (float(a), float(b)) for a, b in (corrections or []))
@@ -218,16 +259,22 @@ class SyncMap:
         so the slope is clamped to what a recording can really do. The bound
         is on the RATE the segment implies, in both directions, so the same
         rule holds whichever way the map is being read.
+
+        Which bound depends on where the points came from: a searched map
+        can land on the wrong chorus and needs the tight pair, a MADE one
+        cannot and a step in it is music. See `MADE_MIN_RATE`.
         """
         run = xs[i + 1] - xs[i]
         if run <= 0:
             return 0.0
         slope = (ys[i + 1] - ys[i]) / run
+        low, high = ((MADE_MIN_RATE, MADE_MAX_RATE) if self.made
+                     else (MIN_RATE, MAX_RATE))
         if slope_of_offset:
             # offset per song ms: rate = 1 - slope
-            return max(1.0 - MAX_RATE, min(1.0 - MIN_RATE, slope))
+            return max(1.0 - high, min(1.0 - low, slope))
         # song ms per recording ms: rate = 1 / slope
-        return max(1.0 / MAX_RATE, min(1.0 / MIN_RATE, slope))
+        return max(1.0 / high, min(1.0 / low, slope))
 
     def _interp(self, x: float, xs: list[float], ys: list[float],
                 slope_of_offset: bool) -> float:

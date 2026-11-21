@@ -1231,20 +1231,32 @@ class TestTheRecordingKeepsTimeAndThePictureFollows:
         # recording is only 59.4 s of song.
         wanted = screen._sync_map().song_at(60_000.0)
         assert wanted < screen._playback_ms
-        # A 600 ms error, corrected at 5 % of the time that passes, is
-        # twelve seconds of playing -- invisible, and that is the point.
+        # A 600 ms error, corrected at a fraction of the time that passes,
+        # is seconds of playing -- invisible, and that is the point.
         for _ in range(60 * 15):
             screen._follow_recording(1 / 60)
         assert screen._playback_ms == pytest.approx(wanted, abs=2.0)
 
     def test_and_never_faster_than_the_eye(self, tmp_path, monkeypatch):
-        """A correction the player can SEE is worse than the error."""
+        """A correction the player can SEE is worse than the error.
+
+        Read off the constant rather than written down beside it: the whole
+        property is that ONE frame's correction is a slew limit, and a test
+        that pinned the number would have to be edited every time the number
+        moves -- which is exactly when the property is worth checking.
+        A frame's worth is a pixel or so at this app's scroll speeds.
+        """
+        from pickhero.ui.scrolling import SYNC_PULL_FRACTION
         screen = self._screen(tmp_path, monkeypatch, at_ms=60_000.0)
         self._sync(screen, [(0.0, 0.0), (240_000.0, -2400.0)])
         screen._playback_ms = 58_000.0       # well over a second out
         before = screen._playback_ms
         screen._follow_recording(1 / 60)
-        assert 0 < screen._playback_ms - before <= 1000.0 / 60 * 0.05 + 1e-6
+        room = 1000.0 / 60 * SYNC_PULL_FRACTION
+        assert 0 < screen._playback_ms - before <= room + 1e-6
+        # And the limit really is a limit: a frame may never move the
+        # picture by a tenth of the error it is correcting.
+        assert room < 2000.0 * 0.1
 
     def test_a_snap_is_counted_because_the_player_sees_it(self, tmp_path,
                                                           monkeypatch):
@@ -2384,3 +2396,85 @@ class TestWhatABreakIsSaidToBe(TestAutoSyncInsideTheApp):
         screen._start_auto_sync()
         self._run(screen)
         assert not said
+
+
+class TestWhereTheMapCameFromTravelsWithIt:
+    """A step in a per-bar map is music; a step in a searched one is a fault.
+
+    *"Sync sehr schwierig zu erreichen. Musste haendisch nachsyncen."* On the
+    player's Trans-Siberian Orchestra file the bar map is right -- 28 of 31
+    windows, 73 ms of scatter -- and says the recording holds a bar of the
+    intro for 6.08 s where the tab writes 3.12. The clamp could not express
+    that, so it smeared a 2.3 s step across twelve seconds and the picture
+    fell a second behind over the whole intro.
+    """
+
+    def _screen(self, tmp_path, monkeypatch):
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        monkeypatch.setattr(Mp3Player, "open", lambda self: True)
+        monkeypatch.setattr(Mp3Player, "ready", property(lambda self: True))
+        return PlayingScreen(_timeline(), config=config, song_key="song")
+
+    STEP = [(0.0, 0.0), (18_700.0, 745.0), (31_170.0, -1556.0)]
+
+    def test_the_screen_asks_the_config_which_kind_it_has(
+        self, tmp_path, monkeypatch
+    ):
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for("song", self.STEP)
+        assert not screen._sync_map().made
+        screen._config.set_mp3_anchors_for("song", self.STEP, made=True)
+        assert screen._sync_map().made
+
+    def test_and_it_changes_where_the_picture_is_put(
+        self, tmp_path, monkeypatch
+    ):
+        """The flag is not bookkeeping: it is what places the recording."""
+        screen = self._screen(tmp_path, monkeypatch)
+        middle = (18_700.0 + 31_170.0) / 2
+        screen._config.set_mp3_anchors_for("song", self.STEP)
+        found = screen._mp3_ms(middle)
+        screen._config.set_mp3_anchors_for("song", self.STEP, made=True)
+        made = screen._mp3_ms(middle)
+        assert abs(found - made) > 500.0
+
+    def test_clearing_the_points_clears_it(self, tmp_path, monkeypatch):
+        """Both go through the one setter, so a song whose map was dropped
+        cannot keep the permission that map carried -- and every caller that
+        clears the anchors (a new recording, Ctrl+Shift+S) gets it free."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for("song", self.STEP, made=True)
+        screen._config.set_mp3_anchors_for("song", [])
+        assert not screen._config.mp3_map_is_made("song")
+        assert not screen._sync_map().made
+
+    def test_re_measuring_by_ear_takes_it_back(self, tmp_path, monkeypatch):
+        """The failure the setter's shape prevents: a bar map replaced by a
+        listening result would otherwise leave the old permission standing
+        and bend the new map three times as far as it should."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for("song", self.STEP, made=True)
+        screen._config.set_mp3_anchors_for("song", self.STEP)
+        assert not screen._sync_map().made
+
+    def test_it_travels_with_the_song(self, tmp_path, monkeypatch):
+        """Named `song_something`, so the sidecar, the merge, forget_song and
+        rename_song all carry it without anybody writing the name down."""
+        from pickhero.tabs import sidecar
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for("song", self.STEP, made=True)
+        assert "song_mp3_made" in sidecar.song_fields(screen._config)
+        carried = sidecar.collect("song", screen._config)
+        assert carried["settings"].get("song_mp3_made") is True
+
+    def test_a_song_nobody_measured_is_treated_as_the_riskier_kind(
+        self, tmp_path, monkeypatch
+    ):
+        """Every song synced before the flag existed has no entry, and the
+        tight clamp is the safe answer for those."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.song_mp3_anchors["song"] = [list(p) for p in self.STEP]
+        assert not screen._sync_map().made

@@ -231,6 +231,12 @@ class Row:
     # which means some heads in it DO touch. Said out loud rather than left
     # to be discovered.
     crowded: bool
+    # How WIDE a head is drawn on this row. The song's, except on a row
+    # holding one bar too dense to part at that size -- see `lay_out`. The
+    # height never changes, so a narrowed head is the same note squeezed
+    # sideways, which is what the scrolling board has always done to buy
+    # look-ahead.
+    head: float = 0.0
 
     def x_at(self, ms: float) -> float:
         """Where the playhead is at this moment, in pixels from the left.
@@ -469,33 +475,70 @@ def lay_out(timeline: Timeline, width: float, head_px: float,
     # Only the FALLBACK, for a bar that cannot say how long a crotchet is in
     # it. Every bar that can is read on its own -- see `quarter_ms`.
     written_quarter = 60_000.0 / max(1, timeline.metadata.tempo)
-    per_quarter = QUARTER_HEADS * head_px
-    min_gap = MIN_GAP_HEADS * head_px
+
+    def plan_at(bar, anchors, head):
+        per_ms = (QUARTER_HEADS * head) / quarter_ms(bar, written_quarter)
+        widths = _widths(anchors, per_ms, MIN_GAP_HEADS * head)
+        return bar, anchors, widths, sum(widths), head
 
     plans = []
     for bar in measures:
         anchors = _bar_anchors(bar, notes)
-        per_ms = per_quarter / quarter_ms(bar, written_quarter)
-        widths = _widths(anchors, per_ms, min_gap)
-        plans.append((bar, anchors, widths, sum(widths)))
+        plan = plan_at(bar, anchors, head_px)
+        if width > 0 and plan[3] > width:
+            # Denser than a whole line can hold at the song's head size, so
+            # the heads of THIS bar are narrowed until it fits.
+            #
+            # *"Ich dachte wir aendern in solchen Takten die Geschwindigkeit
+            # des Progressbars und machen die Koepfe so schmal, dass die
+            # Zahlen gerade noch ohne Ueberlappung lesbar sind."* He is
+            # right, and the arithmetic says the head is the only lever: in
+            # the bar that prompted it -- 48 notes 81 ms apart in a double
+            # bar of "Carol Of The Bells" -- every gap is the SAME, so there
+            # is nothing for a stretch to redistribute. It needs 56.6 head
+            # widths against the song's median of 15.6, which is why
+            # `head_width_for`'s 90th percentile does not see it: two bars
+            # of 98 are the top 2 %, and narrowing the whole song for them
+            # takes the fret numbers from 37 px of type to 19.
+            #
+            # Every width here is linear in the head, so the size that makes
+            # this bar exactly fill the line is arithmetic rather than a
+            # search. Floored at `MIN_HEAD_PX`: below that a two-digit fret
+            # number no longer fits inside its own head and `_draw_sheet_row`
+            # drops it, which is worse than a touching head -- a bar you
+            # cannot read the frets of is not parted, it is gone. A bar that
+            # still does not fit at the floor stays `crowded` and says so.
+            own = max(MIN_HEAD_PX, head_px * width / plan[3])
+            if own < head_px:
+                plan = plan_at(bar, anchors, own)
+        plans.append(plan)
 
     rows: list[Row] = []
     batch: list[tuple] = []
     taken = 0.0
     for plan in plans:
-        wanted = plan[3]
-        if batch and taken + wanted > width:
-            rows.append(_row(len(rows), batch, taken, width, head_px, notes))
+        wanted, head = plan[3], plan[4]
+        # A narrowed bar takes a row of its own, so two head sizes are never
+        # side by side: the size changes only where the music does, at a
+        # line break. It would end up alone anyway -- it fills the line by
+        # construction -- but saying so is what makes that a rule rather
+        # than an accident of the arithmetic.
+        alone = head != head_px
+        if batch and (alone or taken + wanted > width):
+            rows.append(_row(len(rows), batch, taken, width, notes))
             batch, taken = [], 0.0
         batch.append(plan)
         taken += wanted
+        if alone:
+            rows.append(_row(len(rows), batch, taken, width, notes))
+            batch, taken = [], 0.0
     if batch:
-        rows.append(_row(len(rows), batch, taken, width, head_px, notes))
+        rows.append(_row(len(rows), batch, taken, width, notes))
     return rows
 
 
 def _row(index: int, batch: list[tuple], taken: float, width: float,
-         head_px: float, notes: list[NoteEvent]) -> Row:
+         notes: list[NoteEvent]) -> Row:
     """Justify one row to the full width and place its notes.
 
     Stretched when the bars ask for less than the line has -- an engraver
@@ -504,11 +547,13 @@ def _row(index: int, batch: list[tuple], taken: float, width: float,
     case where heads are allowed to touch and the row says so.
     """
     scale = width / taken if taken > 0 else 1.0
+    # One head per row, because a narrowed bar is alone on its own.
+    head_px = batch[0][4]
     times: list[float] = []
     xs: list[float] = []
     bar_lines: list[float] = []
     x = 0.0
-    for bar, anchors, widths, _ in batch:
+    for bar, anchors, widths, _, _ in batch:
         bar_lines.append(x)
         for anchor, w in zip(anchors, widths):
             times.append(anchor)
@@ -522,8 +567,8 @@ def _row(index: int, batch: list[tuple], taken: float, width: float,
     row = Row(index=index, first_bar=batch[0][0].index,
               last_bar=batch[-1][0].index, start_ms=start_ms, end_ms=end_ms,
               notes=(), bar_lines=tuple(bar_lines), times=tuple(times),
-              xs=tuple(xs), crowded=scale < CROWDED)
-    return replace(row, notes=_place(row, notes, head_px, width))
+              xs=tuple(xs), crowded=scale < CROWDED, head=head_px)
+    return replace(row, notes=_place(row, notes, row.head, width))
 
 
 def _place(row: Row, notes: list[NoteEvent], head_px: float,

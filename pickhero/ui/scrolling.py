@@ -399,11 +399,28 @@ MAX_PIPELINE_GRACE_MS = 300.0
 # creeping there over half a minute.
 SYNC_SNAP_MS = 1500.0
 # Otherwise the picture may be corrected by at most this fraction of the time
-# that really passed, so it is never seen to jump. The mismatch being chased
-# is about 1 %, so five times that is plenty of authority, and pygame's
-# get_pos() moves in buffer-sized steps -- the slew limit is what smooths
-# those into a scroll nobody can see move.
-SYNC_PULL_FRACTION = 0.05
+# that really passed, so it is never seen to jump. pygame's get_pos() moves
+# in buffer-sized steps, and the slew limit is what smooths those into a
+# scroll nobody can see move.
+#
+# 5 % for a year, on the argument that the mismatch being chased is about
+# 1 % so five times that is plenty. That is true of a band drifting and
+# false of a tab whose grid disagrees with the recording: on Trans-Siberian
+# Orchestra's "Carol Of The Bells" the written intro runs 7.6 % fast against
+# the recording for ten bars, so the picture fell behind by the difference
+# for the whole of it and the error ACCUMULATED -- +1 ms at 5 s, -513 at 32,
+# -1245 at 35, and back to 1 ms from 50 s on, which is where the player's
+# "about a second behind, and in sync on the second run" comes from. A seek
+# re-places the recording at `recording_at(song)` exactly, so it zeroes what
+# had accumulated; nothing settles down.
+#
+# What it costs is a frame's worth of extra scroll: 15 % of 16.7 ms is 2.5 ms
+# of song time, which at this app's scroll speeds is about one pixel. What it
+# buys, simulated over the player's own stored maps: that song 1498 -> 114 ms
+# (with the made-map bounds), Born To Be My Baby 62 -> 2, I'd Die For You
+# 2 -> 1, and Godsmack -- whose map is the known-bad staircase -- unchanged
+# at 3 snaps either way. A bad map is not made worse by tracking it faster.
+SYNC_PULL_FRACTION = 0.15
 
 # The INPUT device has a clock of its own too, and it is not the same one the
 # song runs on. A strike is stamped from the ring buffer's sample counter
@@ -3332,12 +3349,18 @@ class PlayingScreen:
 
         # Sized and centred on the head's own WIDTH, which is no longer its
         # height: a digit centred at x + head/2 would sit outside a narrow
-        # head, and one sized for the height would not fit in it. The SONG's
-        # head width, never the row's narrowest note -- a number that is a
-        # different size on one row from the next is this display's one
-        # standing rule broken.
-        fret_font = self._fret_font(self._sheet_head_w / 2, radius,
-                                    self._fret_digits)
+        # head, and one sized for the height would not fit in it.
+        #
+        # The ROW's head width, never the row's narrowest note. The standing
+        # rule is that a number may not be one size on one note and another
+        # on the one beside it -- a size that varied inside a line would read
+        # as emphasis the music never asked for. A row that is one bar too
+        # dense to part at the song's size has a size of its own, and it
+        # changes at the line break; see `sheet.lay_out`. Every other row is
+        # the song's, so on almost every song this is the one number it has
+        # always been.
+        fret_font = self._fret_font(
+            (row.head or self._sheet_head_w) / 2, radius, self._fret_digits)
         for note, x, cy, width, _base in marks:
             text = "X" if note.dead else str(note.fret)
             drawn = fret_font.render(text, True, t.note_text)
@@ -5542,8 +5565,12 @@ class PlayingScreen:
                     f"   |   Ctrl+S measures it")
         covered = format_time(max(t for t, _ in points))
         by_ear = (f", {len(fixes)} correction(s) by ear" if fixes else "")
-        return (f"SYNC   lined up: {len(points)} measured points out to "
-                f"{covered}{by_ear}   |   Ctrl+S measures again")
+        # WHICH measurement, because the two are followed differently: a
+        # made map may bend as far as a held bar needs, a found one may not.
+        made = getattr(self._config, "mp3_map_is_made", None)
+        how = ("made" if made and made(self._song_key) else "heard")
+        return (f"SYNC   lined up ({how}): {len(points)} measured points "
+                f"out to {covered}{by_ear}   |   Ctrl+S measures again")
 
     def _toggle_sync_block(self) -> None:
         """S: show what is going on with the sound, or put it away again."""
@@ -8132,7 +8159,13 @@ class PlayingScreen:
             fh.write(f"mp3_time_scale\t{player.time_scale:.3f}\n")
         anchors = self._mp3_anchors()
         sync = self._sync_map()
+        # WHERE they came from, beside how many there are. It decides how
+        # far one segment may bend (`syncmap.MADE_MIN_RATE`), so two logs
+        # with the same point count can follow the recording very
+        # differently -- and nothing else in the log could say which.
         fh.write(f"mp3_sync_points\t{len(anchors)}\t"
+                 + ("made (Songsterr's per-bar map)" if sync.made
+                    else "found by listening") + "\t"
                  + " ".join(f"{at / 1000:.0f}s:{off:+.0f}ms"
                             for at, off in anchors) + "\n")
         # One rate per gap between points. Two numbers pulling in OPPOSITE
@@ -9587,8 +9620,10 @@ class PlayingScreen:
         change while the player is placing them, and a map cached behind that
         is the kind of thing that answers yesterday's question.
         """
+        made = getattr(self._config, "mp3_map_is_made", None)
         return SyncMap(self._mp3_anchors(), self._mp3_offset(),
-                       self._mp3_corrections())
+                       self._mp3_corrections(),
+                       made=bool(made and made(self._song_key)))
 
     def _mp3_ms(self, playback_ms: float) -> float:
         """Song position as the recording should hear it.
@@ -10315,7 +10350,12 @@ class PlayingScreen:
         setter = getattr(self._config, "set_mp3_anchors_for", None)
         if setter is None:
             return
-        setter(self._song_key, points)
+        # WHICH measurement these came from travels with them: a step in a
+        # per-bar map is music and may bend the map as far as it has to, a
+        # step in a searched one is a window that matched the wrong chorus.
+        setter(self._song_key, points,
+               **({"made": True} if report.get("source") == "songsterr"
+                  else {}))
         rate_setter = getattr(self._config, "set_mp3_rate_for", None)
         if rate_setter is not None:
             rate_setter(self._song_key, 1.0)

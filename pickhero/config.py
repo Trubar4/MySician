@@ -240,6 +240,14 @@ class Config:
     # same rule the nudge follows: a correction for a bias in the OLD map
     # cannot be assumed to hold for a new one.
     song_mp3_corrections: dict = field(default_factory=dict)
+    # {song key: True} when this song's anchors were MADE -- read off
+    # Songsterr's per-bar map -- rather than FOUND by listening. The only
+    # thing it decides is how far one segment of the map may bend: a
+    # searched map can match the wrong chorus and a step in it is a fault,
+    # a made one is a timestamp per bar and a step in it is music. See
+    # `syncmap.MADE_MIN_RATE`. Written by the same setter as the anchors,
+    # so the two can never describe different measurements.
+    song_mp3_made: dict = field(default_factory=dict)
     # Semitones this song is PLAYED away from how it is written, per song.
     # A tab in Drop C played on a Drop D guitar is +2: the same fret numbers,
     # a tone higher. The frets never move, so the picture is untouched -- what
@@ -598,11 +606,21 @@ class Config:
                 continue
         return sorted(points)
 
+    def mp3_map_is_made(self, song_key: str) -> bool:
+        """Whether this song's anchors came from a per-bar map."""
+        return bool(song_key) and bool(self.song_mp3_made.get(song_key))
+
     def set_mp3_anchors_for(self, song_key: str,
-                            points: list[tuple[float, float]]) -> None:
+                            points: list[tuple[float, float]],
+                            made: bool = False) -> None:
         """Store them, or forget the song when there are none left.
 
-        Any correction set by ear goes with them: see below.
+        `made` travels with the points through this one setter rather than
+        beside them, because where a map came from is a property OF that
+        map: set apart, a re-measurement that fell back to the listening
+        would leave the old answer standing and bend the new map three
+        times as far as it should. Any correction set by ear goes with
+        them too: see below.
         """
         if not song_key:
             return
@@ -611,6 +629,10 @@ class Config:
                 [float(a), float(b)] for a, b in sorted(points)]
         else:
             self.song_mp3_anchors.pop(song_key, None)
+        if points and made:
+            self.song_mp3_made[song_key] = True
+        else:
+            self.song_mp3_made.pop(song_key, None)
         # A correction describes a residual of the map that was there when
         # it was set, so a NEW map invalidates it -- the same argument the
         # nudge already loses on this path, and for the same reason: the

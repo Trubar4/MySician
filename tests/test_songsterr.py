@@ -311,6 +311,12 @@ class TestInsideTheApp:
         self._run(screen)
         assert heard == [], "the listening ran when it was not needed"
         assert screen._mp3_anchors() == [(0.0, -2150.0), (9231.0, -2160.0)]
+        # ... and that it was MADE travels with it, because that is what
+        # decides how far a segment of it may bend. A step in a per-bar map
+        # is music -- a held bar, a fermata -- where a step in a searched
+        # one is a window that matched the wrong chorus.
+        assert screen._config.mp3_map_is_made("song")
+        assert screen._sync_map().made
 
     def test_and_the_listening_takes_over_when_the_map_does_not_fit(
             self, tmp_path, monkeypatch):
@@ -332,6 +338,11 @@ class TestInsideTheApp:
         screen._start_auto_sync()
         self._run(screen)
         assert screen._mp3_anchors() == [(0.0, -100.0), (60_000.0, -120.0)]
+        # The listening CAN match the wrong chorus, so these points get the
+        # tight clamp -- and the bar map's permission must not be left
+        # standing from the attempt before it.
+        assert not screen._config.mp3_map_is_made("song")
+        assert not screen._sync_map().made
 
     def test_and_neither_says_both_were_tried(self, tmp_path, monkeypatch):
         """"The bar map does not fit" on its own sends the player to press

@@ -8865,3 +8865,148 @@ is the video to take"*; and **`video_id_of` was read once inside the fit and sho
 
 **One test of my own was wrong about its own premise** and is kept as a note in its docstring: it asserted ZERO disk reads over sixty calls on
 a fixture that had never asked, so the first of the sixty did the read. The property is one read, not none.
+
+## The Map Was Right And The Picture Could Not Follow It
+
+*"Sync sehr schwierig zu erreichen. Musste haendisch nachsyncen."* -- and then, from the same song: *"Ich spiele durch bis zu Sekunde
+32 mit dem Powerchord. Er kommt ca. 1 Sekunde hinter dem Bild. Ich spule mit Pfeiltasten zurueck und lasse laufen. Jetzt ist es
+sync. Warum erst beim 2. Mal?"* He asked whether it was the machine or the clocks. It is neither, and his own run log says so on
+four lines: `clock_ratio 1.0000`, `clock_stalls 0`, `frames_over_budget_percent 7`, `audio_clock_ratio 1.0009`.
+
+**The bar map is right about the recording.** Re-measured here on his files (Trans-Siberian Orchestra, "Carol Of The Bells"), 28 of
+31 windows agree to a scatter of **73 ms**. What it says is:
+
+| | |
+|---|---|
+| tab bars 1-10 | **3.12 s** each, where Songsterr measures **2.90** -- by bar 10 the tab is **1.42 s** ahead |
+| tab bar 11 | the recording holds it **6.08 s**, the tab writes 3.12 -- a **2.3 s step at one bar line** |
+
+**Two bounds then stop the picture carrying that, and each is a bound fitted for a different quantity.**
+
+- `SyncMap` clamps every segment to **+/-10 %**, so the step cannot be expressed at all: it is smeared over the twelve seconds to
+  the next stored point, at the limit. The sections in his log say it outright -- `-9.09% -9.09% ... +11.11%`, four of them pinned.
+- `_follow_recording` may correct by **5 % of the time that really passed**, chosen to be invisible against the ~1 % a band
+  drifting produces. Against a tab whose written intro runs 7.6 % fast it is simply not enough authority, so the error accumulates
+  for as long as the demand lasts.
+
+**And the saturation is not a simulation -- it is in his own `Shift+W` take.** The recorder writes `audio_offset_ms` into the
+manifest whenever it moves, and the pull moves it:
+
+| stretch of the take | the offset walked at |
+|---|---|
+| 3.3 - 36.6 s | -2.46 % |
+| 41.0 - 44.4 s | **-4.74 %** |
+| **44.5 - 68.0 s** | **+4.98 %** |
+| 70.3 - 118.4 s | +0.21 % |
+
+**The limit is 5.00 %, and it sat on it for twenty-three seconds in one direction.** A correction loop pinned at its maximum is a
+loop that is not keeping up, and nothing in the app said so.
+
+### Why it is in sync the second time
+
+Because the lag **accumulates from the start of the song**. Simulated over his stored map: +1 ms at 5 s, -226 at 25, **-513 at 32**,
+-1245 at 35 -- and from **50 s on it is back to 1 ms**. The whole fault lives between 10 and 45 s, which is the stretch his tab's
+intro disagrees with the recording over.
+
+A seek re-places the recording at `recording_at(song)` **exactly**, so whatever had accumulated is gone; over the few seconds he
+then replays, the map demands almost nothing. Seek back to 28 s and run to 32: **-165 ms instead of -513.** Nothing settles down
+and nothing warms up -- the second run is simply shorter.
+
+### What changed
+
+- **`SyncMap` learns where its points came from** (`made`). The tight pair protects against a SEARCH: the listening slides a window
+  along the recording, a window that matched the wrong chorus lands seconds away, and two points close together then imply any rate
+  at all -- Godsmack's staircase is that fault and the clamp is its net. Songsterr's bar map cannot make that mistake. It is one
+  timestamp per bar, written down rather than searched for, so **a step in it is music** and it gets `MADE_MIN_RATE` / `MADE_MAX_RATE`
+  (0.5 to 2.0) instead.
+- **2.0 is reasoned, and the reasoning is named rather than dressed as a fit**: a recording may hold a written bar for twice its
+  length -- a fermata, a half-time bar -- and past that the tab and the recording are not the same piece of music, which `_covers`
+  and the break lines already answer. The worst segment any real bar map here demands is **1.185** (this song); the other, Born To
+  Be My Baby, has **0 of 43** segments outside the TIGHT pair. So this is headroom for the case that needed it and nothing else.
+  It may not reach zero: `song_at` is interpolated over the points' recording positions, and a segment at rate 0 would stop the map
+  being invertible.
+- **The provenance travels with the points through ONE setter.** Set apart, a re-measurement that fell back to the listening would
+  leave the old permission standing and bend the new map three times as far as it should. `song_mp3_made` is a `song_*` dict, so the
+  sidecar, `forget_song`, `rename_song` and the merge carry it without anybody writing the name down.
+- **`SYNC_PULL_FRACTION` 5 % -> 15 %.** What it costs is 2.5 ms of song time on a 16.7 ms frame, which at this app's scroll speeds
+  is about one pixel. What it buys, over the stored maps to hand: this song **1498 -> 114 ms**, Born To Be My Baby **62 -> 2**,
+  I'd Die For You 2 -> 1, and Godsmack -- whose map is the known-bad staircase -- **unchanged at 3 snaps**. A bad map is not made
+  worse by tracking it faster.
+- **Neither half is enough alone**, which is why both moved: at the shipped clamp no pull reaches under **960 ms**, and at the wider
+  clamp the shipped pull still leaves **1447**.
+- **The run log and the sync panel name which kind of map is under the song** (`made (Songsterr's per-bar map)` against `found by
+  listening`). It decides how far a segment may bend, so two logs with the same point count can follow a recording very differently
+  and nothing else could say which.
+
+**And one candidate fix was built, measured and thrown away.** `_without_spikes` drops the three bar lines leading INTO the step
+(+938, +1100, +1423 -- each one convicted because the line between its neighbours is broken by the step after it), which turns the
+2.3 s step into a twelve-second ramp. Rescuing them looked obviously right and makes it **worse**: 1501 ms and a visible snap,
+against 114 ms and none. **A ramp the loop can track beats a step it has to jump**, so the cascade is doing good work here by
+accident and is left alone.
+
+## A Bar Too Dense For The Song Gets Its Own Head
+
+*"Ich dachte wir aendern in solchen Takten die Geschwindigkeit des Progressbars und machen die Koepfe so schmal, dass die Zahlen
+gerade noch ohne Ueberlappung lesbar sind."*
+
+Half of that already happens: on the sheet the playhead runs unevenly by construction (`Row.x_at` is piecewise linear over the
+anchors), and a dense bar already takes proportionally more of its line. On the bar he sent a picture of it buys nothing, and the
+measurement says why: **bars 86 and 87 of his song are 48 notes at 81 ms in a double bar, and every gap is the SAME** -- there is
+nothing for a stretch to redistribute. The head is the only lever.
+
+| | |
+|---|---|
+| what those bars need | **56.6 head widths** |
+| the song's median bar | 15.6 |
+| so `head_width_for`'s 90th percentile | never sees them -- two bars of 98 are the top 2 % |
+| narrowing the whole song instead (percentile 0.98) | head 45.8 -> 23.8 px, **fret numbers 37 px of type -> 19** |
+| at zoom 1.0, before | heads 32 px apart at a 46 px head -- **30 % overlap**, 3 of 48 rows `crowded` |
+
+So a bar whose width at the song's head exceeds the line gets **its own, narrower head**, and nothing else changes. Every width in
+`lay_out` is linear in the head, so the size that makes the bar exactly fill its line is arithmetic rather than a search.
+
+- **Floored at `MIN_HEAD_PX`**, and the floor is about the NUMBERS: below it a two-digit fret no longer fits inside its own head and
+  `_draw_sheet_row` silently drops it. **A bar whose frets cannot be read is not parted, it is gone.** Past the floor the row stays
+  `crowded` and says so, exactly as before.
+- **A narrowed bar is alone on its row**, so two head sizes are never side by side: the size changes only where the music does, at a
+  line break. It would end up alone anyway -- it fills the line by construction -- but saying so is what makes it a rule rather than
+  an accident of the arithmetic, and it is what keeps the standing rule intact (a number may not be one size on one note and another
+  on the one beside it).
+- **The note is squeezed SIDEWAYS, not shrunk.** The row keeps its height, which is what the scrolling board has done for months to
+  buy look-ahead. Handing the narrow number to `row_height` would shrink the music vertically, which is the one thing this must not
+  do.
+- **Measured on his song: crowded rows 3 -> 0 at every zoom, the page count unchanged at 48 rows**, and only bars 77, 86 and 87 get
+  a head of their own (43.3, 27.1 and 27.1 px). The tightest same-string pair goes from **13.8 px of overlap to 4.9 px of gap**, and
+  the fret numbers in that bar come out at 22 px of type.
+- **The control is in the class**: the same song with the floor raised to the song's own head is the old behaviour, and it has to
+  come back `crowded` or the test passes on anything.
+
+## Nineteen Semitones Is Not Twelve, And That Is The Whole Difference
+
+*"9. Bund auf D-Saite wird praktisch nicht erkannt im schnellen Spiel."* Measured on his run, over the first two minutes:
+
+| written | notes | green |
+|---|---|---|
+| **D string, fret 9** (B3) | 198 | **17 -- 9 %** |
+| G string, fret 9 (E4), the same passage | 116 | **107 -- 92 %** |
+
+The ostinato is B3 and E4, 162 ms apart. The detector reports **MIDI 40 (E2) on 179 strikes** -- and on **168 of those, the only
+notes struck in the preceding 1.2 s were exactly those two**. E2 is their common period: B3 is its 3rd harmonic and E4 its 4th. A
+textbook missing fundamental, and not a ringing low E -- that string was last struck a median of **53 seconds** earlier.
+
+**Why one of the two is credited and the other is not: E4 is 24 semitones above E2 and B3 is 19.** The matcher grants octave
+equivalence, 24 is two octaves and 19 is nothing. There is no policy in that, only arithmetic.
+
+**And the `subharmonic` flag cannot see it, for a reason that is structural rather than a threshold.** The flag means *"folded up
+from BELOW the guitar's range"* -- it was fitted on power chords on the low strings, where the common period lands under E2 and the
+collector really does fold it. For a figure played at the 9th to 12th fret the common period lands **inside** the range, at the
+guitar's own lowest note, so nothing folds and the reading looks like a clean confident E2.
+
+**Nothing was built**, and the player chose that: a rule crediting a sub-multiple would buy ~119 of those 198 notes and would also
+turn a pick that was never played green when its neighbours are still ringing. There is no recording of the passage to control it
+with, and this project does not ship a threshold it cannot re-fit. `Shift+W` over that passage, played right and played a fret
+wrong, is what would settle it -- the same shape as `check_power_chord_credit.py`.
+
+**What it is NOT: `_hold_for_rescue` would gain nothing here even if the flag were widened.** At 162 ms between strikes no
+verification window ever arrives -- his log reads `chord_windows_judged 7` against `windows_dropped_short 455` -- so the existing
+subharmonic path would hold every one of them and answer none.
