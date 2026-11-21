@@ -456,6 +456,12 @@ AUDIO_CLOCK_GAP_SLACK_MS = 50.0
 # 0.2 %. The start and the end of the song are what this wants.
 MIN_SYNC_SPAN_MS = 30_000.0
 
+# How many per-section rates the panel lists before it gives the range
+# instead. A measured map has 40 to 150 points; eight figures fit a line and
+# a hundred and fifty do not, and a line drawn wider than the screen is
+# centred, so both ends go.
+MAX_SECTIONS_SHOWN = 8
+
 
 def _sync_fits(report) -> bool:
     """Whether a measurement produced a map worth storing.
@@ -11087,8 +11093,20 @@ class PlayingScreen:
         if not lines:
             lines.append("nothing measured and nothing corrected yet")
         if rates:
-            lines.append(f"{len(rates)} section(s): " + "  ".join(
-                f"{(1 / rate - 1) * 100:+.2f} %" for rate in rates))
+            # Listed only while there are few of them. A measured map carries
+            # 40 to 150 points, so one entry per gap is 149 figures across a
+            # line that is centred when it overflows -- which cuts BOTH ends,
+            # the fault the footer, the sync panel and the completion overlay
+            # have each been fixed for once already. Past that, the range is
+            # what a reader can act on: a song whose sections run -0.5 % to
+            # +0.5 % is a band breathing, and one with a +11 % in it has a
+            # point in the wrong place.
+            spans = sorted((1 / rate - 1) * 100.0 for rate in rates)
+            lines.append(
+                f"{len(rates)} section(s): "
+                + ("  ".join(f"{v:+.2f} %" for v in spans)
+                   if len(spans) <= MAX_SECTIONS_SHOWN
+                   else f"{spans[0]:+.2f} % to {spans[-1]:+.2f} %"))
         if fixes and not points and len(fixes) < 2:
             # With no map underneath, one correction is a constant and
             # nothing more -- the old "1 of 2" case, and still true there.

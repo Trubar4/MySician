@@ -1588,6 +1588,30 @@ class TestTheRecordingsOwnSpeed:
         self._mark(screen, 15_000.0, 200.0)
         assert screen._mp3_corrections() == [(15_000.0, 200.0)]
 
+    def test_a_dense_map_gives_the_range_rather_than_150_figures(
+        self, tmp_path, monkeypatch
+    ):
+        """A measured map carries 40 to 150 points, so one figure per gap is
+        a line drawn wider than the screen -- which is centred, so BOTH ends
+        go. The fault the footer and the sync panel have each had once."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for(
+            "song", [(float(i) * 5_000.0, -100.0 - i) for i in range(40)])
+        screen._describe_sync()
+        line, = [l for l in screen._sync_lines if "section(s)" in l]
+        assert "39 section(s)" in line and " to " in line
+        assert line.count("%") == 2, "every section is still being listed"
+
+    def test_but_a_handful_are_still_listed(self, tmp_path, monkeypatch):
+        """Where they fit, the figures themselves are what says a band was
+        breathing rather than a point being in the wrong place."""
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for(
+            "song", [(0.0, -100.0), (60_000.0, -200.0), (120_000.0, -150.0)])
+        screen._describe_sync()
+        line, = [l for l in screen._sync_lines if "section(s)" in l]
+        assert "2 section(s)" in line and line.count("%") == 2
+
     def test_and_re_measuring_drops_them(self, tmp_path, monkeypatch):
         """A correction describes a residual of the map it was set against,
         and a new measurement may not carry the same bias -- the argument
