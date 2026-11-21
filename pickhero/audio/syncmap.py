@@ -41,6 +41,12 @@ from bisect import bisect_right
 MIN_RATE = 0.9
 MAX_RATE = 1.1
 
+# How far outside the real breakpoints the sentinels sit -- an hour, which no
+# song reaches, so nothing real is ever read off the segment beyond them. See
+# `__init__`: they exist so that the map's extrapolation and the correction's
+# held value can both be true at the ends of ONE interpolation.
+SENTINEL_MS = 3_600_000.0
+
 
 class SyncMap:
     """song time <-> recording time, through the places they agree.
@@ -51,24 +57,112 @@ class SyncMap:
     """
 
     def __init__(self, points: list[tuple[float, float]] | None = None,
-                 base_offset_ms: float = 0.0):
+                 base_offset_ms: float = 0.0,
+                 corrections: list[tuple[float, float]] | None = None):
         # With no points at all the single stored offset is the whole answer,
         # which is what every song starts as and what most songs stay as.
         self.base_offset_ms = float(base_offset_ms)
         self.points = sorted((float(a), float(b)) for a, b in (points or []))
-        self._songs = [p[0] for p in self.points]
-        self._offsets = [p[1] for p in self.points]
-        # The recording position of each point, which is what the inverse is
-        # interpolated over. Increasing as long as no segment's offset slope
-        # reaches 1, and _slope() is clamped so none can.
-        self._recordings = [s - o for s, o in self.points]
+        self.corrections = sorted(
+            (float(a), float(b)) for a, b in (corrections or []))
+        self._map_songs = [p[0] for p in self.points]
+        self._map_offsets = [p[1] for p in self.points]
+        # ONE curve, evaluated at every breakpoint either layer has, because
+        # both directions and the rate clamp have to see the same thing. Two
+        # interpolations added together would be the same answer computed
+        # twice, and the inverse could not then be exact over either of them.
+        self._songs = sorted({*self._map_songs,
+                              *(c[0] for c in self.corrections)})
+        self._offsets = [self._map_offset(t) + self.correction_at(t)
+                         for t in self._songs]
+        # ... and two sentinels, because the two layers do different things
+        # OUTSIDE themselves: the map extrapolates its last slope on purpose
+        # (a recording drifting at the last point is still drifting after
+        # it), and a correction is held (a slope fitted to two observed
+        # residuals would invent drift the map already carries).
+        #
+        # One interpolation cannot express both at its ends -- it continues
+        # whatever the outermost segment's slope happens to be, so a song
+        # with corrections and no map extrapolated them and a correction
+        # of 500 ms read as 1038 ms two minutes later. The sentinels carry
+        # the TRUE value far outside, so the outer segments already have
+        # the right slope and continuing it is right as well.
+        self._ix, self._iy = list(self._songs), list(self._offsets)
+        if self._ix:
+            for edge in (self._ix[0] - SENTINEL_MS,
+                         self._ix[-1] + SENTINEL_MS):
+                self._ix.append(edge)
+                self._iy.append(self._map_offset(edge)
+                                + self.correction_at(edge))
+            order = sorted(range(len(self._ix)), key=self._ix.__getitem__)
+            self._ix = [self._ix[i] for i in order]
+            self._iy = [self._iy[i] for i in order]
+        # The recording position of each breakpoint, which is what the
+        # inverse is interpolated over. Increasing as long as no segment's
+        # offset slope reaches 1, and _slope() is clamped so none can.
+        self._recordings = [t - o for t, o in zip(self._ix, self._iy)]
 
     def __len__(self) -> int:
         return len(self.points)
 
     @property
     def empty(self) -> bool:
-        return not self.points
+        """Nothing but the nudge: neither measured nor corrected by hand."""
+        return not self.points and not self.corrections
+
+    # -- the two layers ----------------------------------------------------
+
+    def _map_offset(self, song_ms: float) -> float:
+        """What the MEASUREMENT says here, before anybody corrected it."""
+        if not self.points:
+            return 0.0
+        if len(self.points) == 1:
+            return self._map_offsets[0]
+        return self._interp(song_ms, self._map_songs, self._map_offsets,
+                            slope_of_offset=True)
+
+    def correction_at(self, song_ms: float) -> float:
+        """What the player added on top of the measurement here.
+
+        A second layer rather than points in the same list, and the reason is
+        a measurement: dropped into the anchor list, one correction only
+        removes the measured points it CONTRADICTS -- and a measured point
+        five seconds away differing by 350 ms implies 7 %, under the clamp,
+        so it survives and drags the correction straight back to the map's
+        value. On a bar map with a point every five seconds that made
+        `Shift+S` a triangle five seconds wide:
+
+            song 0:15  0 ms | 0:18  210 | 0:20  350 | 0:22  210 | 0:25  0
+
+        The rule before that deleted every measured point within thirty
+        seconds instead, which destroyed the map's shape where it was most
+        likely to be right. Both are wrong, in opposite directions, and
+        neither is what the player asked for -- *"es ist einfach zu viel
+        Handarbeit"*. A correction belongs on top: the map keeps its shape
+        and the hand only bends the residual.
+
+        **Flat outside the outermost correction, where the map
+        extrapolates.** A correction is something somebody OBSERVED, and a
+        slope fitted to two observations of a residual would invent drift
+        that the map underneath already carries. One correction is therefore
+        a constant over the whole song, which is exactly what
+        `base_offset_ms` is -- so this is a strict generalisation of it.
+        """
+        if not self.corrections:
+            return 0.0
+        if len(self.corrections) == 1:
+            return self.corrections[0][1]
+        xs = [c[0] for c in self.corrections]
+        ys = [c[1] for c in self.corrections]
+        if song_ms <= xs[0]:
+            return ys[0]
+        if song_ms >= xs[-1]:
+            return ys[-1]
+        i = max(0, min(len(xs) - 2, bisect_right(xs, song_ms) - 1))
+        run = xs[i + 1] - xs[i]
+        if run <= 0:
+            return ys[i]
+        return ys[i] + (song_ms - xs[i]) * (ys[i + 1] - ys[i]) / run
 
     # -- the two directions ------------------------------------------------
 
@@ -84,11 +178,13 @@ class SyncMap:
         Read as a nudge on top, the keys work everywhere and a point set
         after nudging carries what was heard.
         """
-        if not self.points:
+        if not self._songs:
             return self.base_offset_ms
-        if len(self.points) == 1:
+        if len(self._songs) == 1 and not self.points:
+            # One correction and nothing measured: a constant, which is what
+            # the single stored offset always was.
             return self._offsets[0] + self.base_offset_ms
-        return self._interp(song_ms, self._songs, self._offsets,
+        return self._interp(song_ms, self._ix, self._iy,
                             slope_of_offset=True) + self.base_offset_ms
 
     def recording_at(self, song_ms: float) -> float:
@@ -102,14 +198,14 @@ class SyncMap:
         piecewise-linear function of song time, so its inverse is piecewise
         linear over the recording positions of the same points.
         """
-        if not self.points:
+        if not self._songs:
             return recording_ms + self.base_offset_ms
-        if len(self.points) == 1:
+        if len(self._songs) == 1 and not self.points:
             return recording_ms + self._offsets[0] + self.base_offset_ms
         # The points' recording positions were taken without the nudge, so a
         # recording moment is looked up where it would have been without it.
         return self._interp(recording_ms + self.base_offset_ms,
-                            self._recordings, self._songs,
+                            self._recordings, self._ix,
                             slope_of_offset=False)
 
     # -- how a segment is read ---------------------------------------------
@@ -156,10 +252,17 @@ class SyncMap:
     # -- what the screen says about it -------------------------------------
 
     def rates(self) -> tuple[float, ...]:
-        """How fast the recording runs against the tab, one per segment."""
+        """How fast the recording runs against the tab, one per segment.
+
+        The TOTAL, because this answers what the app is applying -- the run
+        log's `mp3_sync_sections` and the panel's per-section figures -- and
+        a correction set by ear is evidence about the recording too: the
+        player heard it drift. What stays measurement-only is `covers()` and
+        `drift_seen_ms()`, which are explicitly about the measured span.
+        """
         return tuple(
             1.0 - self._slope(self._songs, self._offsets, i, True)
-            for i in range(len(self.points) - 1))
+            for i in range(len(self._songs) - 1))
 
     def covers(self) -> tuple[float, float] | None:
         """The span the points were actually measured over, or None.
@@ -171,7 +274,7 @@ class SyncMap:
         """
         if len(self.points) < 2:
             return None
-        return self._songs[0], self._songs[-1]
+        return self._map_songs[0], self._map_songs[-1]
 
     def drift_seen_ms(self) -> float:
         """How far the offset moved across the part that WAS measured.
@@ -183,10 +286,10 @@ class SyncMap:
         """
         if len(self.points) < 2:
             return 0.0
-        return max(self._offsets) - min(self._offsets)
+        return max(self._map_offsets) - min(self._map_offsets)
 
     def worst_correction_ms(self) -> float:
         """The largest offset the map applies. A size for "how far out"."""
-        if not self.points:
+        if not self._songs:
             return abs(self.base_offset_ms)
         return max(abs(o + self.base_offset_ms) for o in self._offsets)

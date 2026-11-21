@@ -230,13 +230,16 @@ class Config:
     # and back to -260 ms, so the best straight line corrects by nothing at
     # all and leaves 1.07 s standing in the middle.
     song_mp3_anchors: dict = field(default_factory=dict)
-    # {song key: [song ms, ...]} -- which of those anchors the player set by
-    # EAR. A hand point replaces a nearby hand point, because two of them
-    # thirty seconds apart are one correction made twice; it leaves a
-    # MEASURED point alone unless the two contradict outright. Measured on
-    # his Parkway Drive, one press near the start used to delete five to
-    # thirteen points of a bar map.
-    song_mp3_hand_anchors: dict = field(default_factory=dict)
+    # {song key: [[song ms, extra ms], ...]} -- what the player corrected BY
+    # EAR, as a second layer on top of the measured anchors above. Not points
+    # in the same list: dropped in there, one correction only removes the
+    # measured points it CONTRADICTS, and a measured point five seconds away
+    # differing by 350 ms implies 7 %, under the clamp -- so it survives and
+    # pulls the correction back to the map's value within five seconds. See
+    # `SyncMap.correction_at`. Dropped when the map is measured again, the
+    # same rule the nudge follows: a correction for a bias in the OLD map
+    # cannot be assumed to hold for a new one.
+    song_mp3_corrections: dict = field(default_factory=dict)
     # Semitones this song is PLAYED away from how it is written, per song.
     # A tab in Drop C played on a Drop D guitar is +2: the same fret numbers,
     # a tone higher. The frets never move, so the picture is untouched -- what
@@ -597,7 +600,10 @@ class Config:
 
     def set_mp3_anchors_for(self, song_key: str,
                             points: list[tuple[float, float]]) -> None:
-        """Store them, or forget the song when there are none left."""
+        """Store them, or forget the song when there are none left.
+
+        Any correction set by ear goes with them: see below.
+        """
         if not song_key:
             return
         if points:
@@ -605,43 +611,43 @@ class Config:
                 [float(a), float(b)] for a, b in sorted(points)]
         else:
             self.song_mp3_anchors.pop(song_key, None)
-        # A hand-set time that is no longer a point is not a hand-set point.
-        # Pruning HERE rather than at each caller is what makes `Ctrl+S`,
-        # `Ctrl+Shift+S` and picking another recording drop the marks for
-        # free: all three go through this setter, and one that forgot would
-        # leave a measured point wearing somebody's hand.
-        kept = {a for a, _ in (points or [])}
-        marks = [t for t in self.hand_anchors_for(song_key) if t in kept]
-        if marks:
-            self.song_mp3_hand_anchors[song_key] = marks
-        else:
-            self.song_mp3_hand_anchors.pop(song_key, None)
+        # A correction describes a residual of the map that was there when
+        # it was set, so a NEW map invalidates it -- the same argument the
+        # nudge already loses on this path, and for the same reason: the
+        # new measurement may not carry the same bias, and carrying one over
+        # assumes an answer nobody has. Dropping it HERE rather than at each
+        # caller is what makes `Ctrl+S`, `Ctrl+Shift+S` and picking another
+        # recording do it for free: all three go through this setter.
+        self.song_mp3_corrections.pop(song_key, None)
 
-    def hand_anchors_for(self, song_key: str) -> list[float]:
-        """The song times of the points this player set BY EAR.
+    def mp3_corrections_for(self, song_key: str
+                            ) -> list[tuple[float, float]]:
+        """What the player corrected by ear, as (song ms, extra ms).
 
-        Which matters because the two kinds are replaced by different
-        rules: see `scrolling._set_sync_point`. Stored as its own dict
-        rather than a third element on each anchor, because the anchor
-        format is read by `SyncMap`, the sidecar, the merge and a settings
-        file written months ago, and a pair is what all of them expect.
+        Its own dict rather than a third element on each anchor, because the
+        anchor format is read by `SyncMap`, the sidecar, the merge and a
+        settings file written months ago, and a pair is what all of them
+        expect.
         """
         if not song_key:
             return []
         out = []
-        for entry in self.song_mp3_hand_anchors.get(song_key) or []:
+        for entry in self.song_mp3_corrections.get(song_key) or []:
             try:
-                out.append(float(entry))
-            except (TypeError, ValueError):
+                out.append((float(entry[0]), float(entry[1])))
+            except (TypeError, ValueError, IndexError):
                 continue
-        return out
+        return sorted(out)
 
-    def mark_hand_anchor_for(self, song_key: str, song_ms: float) -> None:
+    def set_mp3_corrections_for(self, song_key: str,
+                                points: list[tuple[float, float]]) -> None:
         if not song_key:
             return
-        marks = set(self.hand_anchors_for(song_key))
-        marks.add(float(song_ms))
-        self.song_mp3_hand_anchors[song_key] = sorted(marks)
+        if points:
+            self.song_mp3_corrections[song_key] = [
+                [float(a), float(b)] for a, b in sorted(points)]
+        else:
+            self.song_mp3_corrections.pop(song_key, None)
 
     def transpose_for(self, song_key: str) -> int:
         """How far this song is played from how it is written, in semitones."""

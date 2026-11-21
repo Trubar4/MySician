@@ -231,3 +231,111 @@ class TestItBeatsWhatWeHadBefore:
         """Which is why this was rebuilt: two points is the straight line the
         app shipped, and it leaves a quarter of a second."""
         assert self._worst(2) > 200.0
+
+
+class TestACorrectionIsASecondLayer:
+    """What the player bends by ear, on top of what was measured.
+
+    The measurement that made this necessary: dropped into the anchor list,
+    a correction only removes the measured points it CONTRADICTS, and a
+    measured point five seconds away differing by 350 ms implies 7 % -- under
+    the clamp, so it survives and pulls the correction back. On a bar map
+    with a point every five seconds that is a triangle five seconds wide:
+
+        0:15  0 ms | 0:18  210 | 0:20  350 | 0:22  210 | 0:25  0
+
+    The rule before it deleted every measured point within thirty seconds
+    instead, which destroyed the map's shape where it was most likely to be
+    right. Both are wrong, in opposite directions.
+    """
+
+    # A bar map: a point every five seconds, all saying the same thing.
+    DENSE = [(float(i) * 5_000.0, -1000.0) for i in range(25)]
+
+    def test_the_measured_map_alone_is_unchanged(self):
+        """The control: a song nobody has corrected reads as it always did."""
+        plain, layered = SyncMap(THEIRS), SyncMap(THEIRS, corrections=[])
+        for at in range(0, 300_000, 1000):
+            assert layered.offset_at(at) == plain.offset_at(at)
+
+    def test_a_correction_survives_a_dense_map_around_it(self):
+        m = SyncMap(self.DENSE, corrections=[(20_000.0, -350.0)])
+        for at in (15_000.0, 20_000.0, 25_000.0, 60_000.0, 120_000.0):
+            assert m.offset_at(at) == pytest.approx(-1350.0)
+
+    def test_one_correction_is_the_old_stored_offset(self):
+        """A strict generalisation: one correction is a constant over the
+        whole song, which is exactly what `base_offset_ms` is."""
+        nudged = SyncMap(THEIRS, base_offset_ms=250.0)
+        fixed = SyncMap(THEIRS, corrections=[(120_000.0, 250.0)])
+        for at in range(0, 300_000, 1000):
+            assert fixed.offset_at(at) == pytest.approx(nudged.offset_at(at))
+
+    def test_between_two_of_them_it_is_the_line_joining_them(self):
+        m = SyncMap(THEIRS, corrections=[(10_000.0, 350.0),
+                                         (70_000.0, 120.0)])
+        assert m.correction_at(10_000.0) == pytest.approx(350.0)
+        assert m.correction_at(40_000.0) == pytest.approx(235.0)
+        assert m.correction_at(70_000.0) == pytest.approx(120.0)
+
+    def test_and_held_outside_them_rather_than_extrapolated(self):
+        """A slope fitted to two observed residuals would invent drift the
+        map underneath already carries -- and at that rate this one would
+        reach zero at 1:01 and keep going."""
+        m = SyncMap(THEIRS, corrections=[(10_000.0, 350.0),
+                                         (70_000.0, 120.0)])
+        assert m.correction_at(0.0) == pytest.approx(350.0)
+        assert m.correction_at(250_000.0) == pytest.approx(120.0)
+
+    def test_corrections_with_no_map_are_held_too(self):
+        """The case the sentinels were added for: with nothing measured, the
+        outermost segment IS a correction, so a plain interpolation
+        extrapolated it -- 500 ms read as 1038 ms two minutes later."""
+        m = SyncMap([], corrections=[(10_000.0, 500.0), (70_000.0, 300.0)])
+        assert m.offset_at(0.0) == pytest.approx(500.0)
+        assert m.offset_at(250_000.0) == pytest.approx(300.0)
+
+    def test_but_the_map_still_extrapolates_past_its_last_point(self):
+        """Deliberately, and documented: a recording drifting at the last
+        point is still drifting after it. A correction inside the map must
+        not switch that off."""
+        plain = SyncMap(THEIRS)
+        fixed = SyncMap(THEIRS, corrections=[(120_000.0, 100.0)])
+        assert (fixed.offset_at(400_000.0) - plain.offset_at(400_000.0)
+                == pytest.approx(100.0))
+        assert plain.offset_at(400_000.0) != pytest.approx(
+            plain.offset_at(258_000.0))
+
+    def test_the_inverse_is_still_exact(self):
+        """The reason both layers are evaluated into one curve: the recording
+        is a piecewise-linear function of song time either way, and the
+        round trip has to come back to the millisecond."""
+        m = SyncMap(THEIRS, base_offset_ms=-175.0,
+                    corrections=[(10_000.0, 350.0), (70_000.0, 120.0)])
+        for at in range(0, 300_000, 977):
+            assert m.song_at(m.recording_at(at)) == pytest.approx(at, abs=1e-6)
+
+    def test_two_corrections_too_close_cannot_imply_a_wild_rate(self):
+        """The same clamp the measured points get, because the total is what
+        the picture follows."""
+        m = SyncMap([], corrections=[(0.0, 0.0), (1000.0, -900.0)])
+        rate, = m.rates()
+        assert rate == pytest.approx(MAX_RATE)
+
+    def test_a_correction_counts_as_a_section(self):
+        """`rates()` answers what the app is APPLYING -- the run log's
+        mp3_sync_sections and the panel's figures -- and the player heard the
+        recording drift, which is evidence about it."""
+        assert len(SyncMap([], corrections=[(0.0, 0.0),
+                                            (100_000.0, -1000.0)]).rates()) == 1
+
+    def test_but_covers_is_still_only_what_was_measured(self):
+        """Beyond the outermost MEASURED point the map extrapolates, and the
+        panel says so. A correction by ear is not a measurement of the span.
+        """
+        m = SyncMap(THEIRS, corrections=[(400_000.0, 50.0)])
+        assert m.covers() == (0.0, 258_000.0)
+
+    def test_nothing_at_all_is_still_empty(self):
+        assert SyncMap([], base_offset_ms=-420.0).empty
+        assert not SyncMap([], corrections=[(0.0, 5.0)]).empty

@@ -14,7 +14,7 @@ import threading
 import pygame
 import pytest
 
-from pickhero.audio import timestretch
+from pickhero.audio import syncmap, timestretch
 
 from pickhero.audio.mp3_playback import (
     MIN_RESYNC_GAP_MS, RESYNC_MS, Mp3Player,
@@ -898,8 +898,8 @@ class TestAnAlreadySyncedSongSaysSo:
         screen = self._screen([(0.0, -260.0), (177_000.0, -1330.0),
                                (258_000.0, -260.0)])
         panel = " ".join(screen._sync_lines)
-        assert "0:00" in panel and "2:57" in panel and "4:18" in panel
-        assert "3 points" in panel
+        assert "0:00" in panel and "4:18" in panel
+        assert "3 measured point(s)" in panel
 
     def test_a_song_nobody_synced_says_nothing(self):
         """A panel that is always there is a panel nobody reads."""
@@ -1173,7 +1173,10 @@ class TestAutoSyncInsideTheApp:
         screen._playback_ms = 200_000.0
         screen.handle_event(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_s, mod=pygame.KMOD_SHIFT))
-        assert len(screen._mp3_anchors()) == 3
+        # The measured map is untouched and the press is a correction on top
+        # of it -- which is the whole of this change.
+        assert len(screen._mp3_anchors()) == 2
+        assert len(screen._mp3_corrections()) == 1
 
 
 class TestTheRecordingKeepsTimeAndThePictureFollows:
@@ -1406,16 +1409,26 @@ class TestTheRecordingsOwnSpeed:
 
         `offset_ms` is where the offset TRULY is here, which is what they
         measured. It is reached by nudging, because the stored offset is a
-        nudge on top of whatever the existing points already say -- so the
-        press has to be given the difference, exactly as a hand on Shift+N
-        would arrive at it. Setting the stored offset to the absolute value
-        and pressing was the old shape of this, and it only worked because
-        the map threw the number away and `_set_sync_point` saved it anyway.
+        nudge on top of whatever is already in force -- so the press has to
+        be given the difference, exactly as a hand on Shift+N would arrive
+        at it. Setting the stored offset to the absolute value and pressing
+        was the old shape of this, and it only worked because the map threw
+        the number away and `_set_sync_point` saved it anyway.
         """
         screen._playback_ms = at_ms
         already = screen._sync_map().offset_at(at_ms)
         screen._config.set_mp3_offset_for("song", offset_ms - already)
         screen._set_sync_point()
+
+    def _in_force(self, screen):
+        """What the map applies, as (song ms, offset ms) at its breakpoints.
+
+        The player's presses land in the CORRECTION layer now, not in the
+        measured anchor list, so a test that reads `_mp3_anchors()` is
+        reading the layer underneath the thing it just did.
+        """
+        m = screen._sync_map()
+        return [(t, m.offset_at(t)) for t in m._songs]
 
     def test_a_point_records_what_is_heard_not_what_is_stored(
         self, tmp_path, monkeypatch
@@ -1434,8 +1447,8 @@ class TestTheRecordingsOwnSpeed:
         heard = screen._sync_map().offset_at(300_000.0)
         screen._config.set_mp3_offset_for("song", 200.0)      # the nudge
         screen._set_sync_point()
-        placed = dict(screen._mp3_anchors())[300_000.0]
-        assert placed == pytest.approx(heard + 200.0)
+        assert (screen._sync_map().offset_at(300_000.0)
+                == pytest.approx(heard + 200.0))
 
     def test_the_nudge_is_spent_once_the_point_holds_it(
         self, tmp_path, monkeypatch
@@ -1473,30 +1486,37 @@ class TestTheRecordingsOwnSpeed:
     ):
         screen = self._screen(tmp_path, monkeypatch)
         self._players_own(screen)
-        plan = screen._mp3_plan()
-        assert len(plan) == 2
+        rates = screen._sync_map().rates()
+        assert len(rates) == 2
         # The two sections pull in OPPOSITE directions -- which is exactly
         # what a single number cannot say, and why a straight line through
         # the ends corrects by nothing at all.
-        assert (plan[0][1] - 1.0) * (plan[1][1] - 1.0) < 0
-        assert plan[0][1] == pytest.approx(1.0060, abs=1e-3)
-        assert plan[1][1] == pytest.approx(0.9868, abs=1e-3)
+        assert (rates[0] - 1.0) * (rates[1] - 1.0) < 0
+        assert rates[0] == pytest.approx(1.0060, abs=1e-3)
+        assert rates[1] == pytest.approx(0.9868, abs=1e-3)
 
     def test_two_points_are_still_one_straight_line(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)
         drift = 0.0109
         self._mark(screen, 10_000.0, 10_000.0 * drift)
         self._mark(screen, 250_000.0, 250_000.0 * drift)
-        plan = screen._mp3_plan()
-        assert len(plan) == 1
-        assert plan[0][1] == pytest.approx(1.0 - drift, abs=1e-4)
+        rate, = screen._sync_map().rates()
+        assert rate == pytest.approx(1.0 - drift, abs=1e-4)
 
     def test_one_point_alone_changes_nothing(self, tmp_path, monkeypatch):
-        """It cannot: a single place says where, never how fast."""
+        """It cannot: a single place says where, never how fast.
+
+        And held rather than extrapolated, so it is the same 500 ms at the
+        start of the song and at the end -- which is exactly what the single
+        stored offset used to be, and why one correction is a strict
+        generalisation of it rather than a new kind of thing.
+        """
         screen = self._screen(tmp_path, monkeypatch)
         self._mark(screen, 10_000.0, 500.0)
-        assert screen._mp3_plan() == ()
+        assert screen._sync_map().rates() == ()
         assert screen._mp3_build_tempo() == 1.0
+        for at in (0.0, 10_000.0, 250_000.0):
+            assert screen._sync_map().offset_at(at) == pytest.approx(500.0)
 
     def test_a_measured_map_survives_a_point_set_by_hand(
         self, tmp_path, monkeypatch
@@ -1510,24 +1530,54 @@ class TestTheRecordingsOwnSpeed:
         measured = [(float(i) * 5_000.0, -100.0) for i in range(20)]
         screen._config.set_mp3_anchors_for("song", measured)
         self._mark(screen, 42_000.0, -120.0)
-        kept = screen._mp3_anchors()
-        assert (42_000.0, -120.0) in kept
-        assert len(kept) == 21, "a measured point was deleted"
+        assert screen._mp3_anchors() == measured, "the map was touched"
+        assert screen._mp3_corrections() == [(42_000.0, -20.0)]
 
-    def test_but_one_that_contradicts_it_goes(self, tmp_path, monkeypatch):
-        """Two points demanding more than `syncmap.MAX_RATE` between them
-        are not two readings, and the map cannot express the pair anyway."""
-        from pickhero.audio import syncmap
+    def test_and_the_correction_is_not_undone_five_seconds_later(
+        self, tmp_path, monkeypatch
+    ):
+        """The fault the layer exists for, and the one a measurement found.
+
+        With the correction dropped into the measured list, a bar map's own
+        point five seconds away differs by 20 ms over 5 s -- 0.4 %, far
+        under the clamp -- so it survives the contradiction test and pulls
+        the correction back to the map's value. Measured on a map with a
+        point every five seconds and a 350 ms correction: a triangle five
+        seconds wide, 0 ms at 0:15, 350 at 0:20, 0 again at 0:25.
+        """
         screen = self._screen(tmp_path, monkeypatch)
         screen._config.set_mp3_anchors_for(
-            "song", [(0.0, -100.0), (41_000.0, -100.0), (90_000.0, -100.0)])
-        self._mark(screen, 42_000.0, -900.0)
-        kept = dict(screen._mp3_anchors())
-        assert 41_000.0 not in kept, "800 ms in 1 s is not a drift"
-        assert 0.0 in kept and 90_000.0 in kept
-        assert (syncmap.MAX_RATE - 1.0) * 1_000.0 < 800.0
+            "song", [(float(i) * 5_000.0, -100.0) for i in range(20)])
+        self._mark(screen, 20_000.0, 250.0)
+        for at in (20_000.0, 25_000.0, 40_000.0, 90_000.0):
+            assert screen._sync_map().offset_at(at) == pytest.approx(250.0), (
+                f"the correction did not survive to {at / 1000:.0f} s")
 
-    def test_two_points_by_hand_still_replace_each_other(
+    def test_two_corrections_bend_only_between_themselves(
+        self, tmp_path, monkeypatch
+    ):
+        """*"Am Anfang ist das Bild 350 ms vor dem Tab... etwas später im
+        gleichen Song ist wieder ein Abstand aber nur mehr 120 ms."*
+
+        Between them the bend is the line joining them; outside, each is
+        held, because a slope fitted to two observed residuals would invent
+        drift the map underneath already carries.
+        """
+        screen = self._screen(tmp_path, monkeypatch)
+        screen._config.set_mp3_anchors_for(
+            "song", [(0.0, -100.0), (240_000.0, -100.0)])
+        self._mark(screen, 10_000.0, -100.0 + 350.0)
+        self._mark(screen, 70_000.0, -100.0 + 120.0)
+        m = screen._sync_map()
+        assert m.correction_at(10_000.0) == pytest.approx(350.0)
+        assert m.correction_at(40_000.0) == pytest.approx(235.0)
+        assert m.correction_at(70_000.0) == pytest.approx(120.0)
+        # Held outside, not extrapolated: at the old rate it would reach
+        # zero by 1:01 and keep going.
+        assert m.correction_at(0.0) == pytest.approx(350.0)
+        assert m.correction_at(240_000.0) == pytest.approx(120.0)
+
+    def test_two_corrections_close_together_replace_each_other(
         self, tmp_path, monkeypatch
     ):
         """The old rule, kept where it was right: thirty seconds apart they
@@ -1536,22 +1586,18 @@ class TestTheRecordingsOwnSpeed:
         screen = self._screen(tmp_path, monkeypatch)
         self._mark(screen, 10_000.0, 0.0)
         self._mark(screen, 15_000.0, 200.0)
-        anchors = screen._mp3_anchors()
-        assert len(anchors) == 1 and anchors[0] == (15_000.0, 200.0)
+        assert screen._mp3_corrections() == [(15_000.0, 200.0)]
 
-    def test_and_re_measuring_forgets_whose_points_they_were(
-        self, tmp_path, monkeypatch
-    ):
-        """Or a measured point inherits a hand mark at the same time and is
-        deleted by the next press 30 s away."""
+    def test_and_re_measuring_drops_them(self, tmp_path, monkeypatch):
+        """A correction describes a residual of the map it was set against,
+        and a new measurement may not carry the same bias -- the argument
+        the nudge already loses on that path."""
         screen = self._screen(tmp_path, monkeypatch)
-        self._mark(screen, 10_000.0, 0.0)
-        assert screen._config.hand_anchors_for("song") == [10_000.0]
+        self._mark(screen, 10_000.0, 250.0)
+        assert screen._mp3_corrections()
         screen._config.set_mp3_anchors_for(
-            "song", [(10_000.0, -5.0), (60_000.0, -5.0)])
-        assert screen._config.hand_anchors_for("song") == [10_000.0]
-        screen._config.set_mp3_anchors_for("song", [(60_000.0, -5.0)])
-        assert screen._config.hand_anchors_for("song") == []
+            "song", [(0.0, -5.0), (60_000.0, -5.0)])
+        assert screen._mp3_corrections() == []
 
     def test_an_impossible_pair_is_left_out_of_the_plan(
         self, tmp_path, monkeypatch
@@ -1562,7 +1608,9 @@ class TestTheRecordingsOwnSpeed:
         screen = self._screen(tmp_path, monkeypatch)
         self._mark(screen, 10_000.0, 0.0)
         self._mark(screen, 100_000.0, 20_000.0)
-        assert screen._mp3_plan() == ()
+        # Clamped to what a recording can really do, in both directions.
+        rate, = screen._sync_map().rates()
+        assert rate == pytest.approx(syncmap.MIN_RATE)
 
     def test_the_scroll_speed_is_never_touched(self, tmp_path, monkeypatch):
         """The correction goes into the file's length. In the scale it would
@@ -1571,7 +1619,7 @@ class TestTheRecordingsOwnSpeed:
         screen = self._screen(tmp_path, monkeypatch)
         before = screen._mp3_scale()
         self._players_own(screen)
-        assert screen._mp3_plan()
+        assert screen._sync_map().rates()
         assert screen._mp3_scale() == before
 
     def test_syncing_never_rebuilds_the_recording(self, tmp_path, monkeypatch):
@@ -1591,7 +1639,9 @@ class TestTheRecordingsOwnSpeed:
         screen = self._screen(tmp_path, monkeypatch)
         self._players_own(screen)
         screen._clear_sync_rate()
-        assert screen._mp3_anchors() == [] and screen._mp3_plan() == ()
+        assert screen._mp3_anchors() == []
+        assert screen._mp3_corrections() == []
+        assert screen._sync_map().rates() == ()
         assert screen._mp3_build_tempo() == 1.0
 
     def test_it_survives_a_practice_speed_change(self, tmp_path, monkeypatch):
@@ -1634,7 +1684,7 @@ class TestTheRecordingsOwnSpeed:
         screen.handle_event(down)
         screen.handle_event(down)
         screen.handle_event(down)
-        assert len(screen._mp3_anchors()) == 1
+        assert len(screen._mp3_corrections()) == 1
 
     def test_a_song_with_no_recording_says_so(self, tmp_path, monkeypatch):
         screen = self._screen(tmp_path, monkeypatch)

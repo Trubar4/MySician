@@ -648,7 +648,7 @@ class TestThePanelSaysWhereTheRecordingStands:
         screen._config.set_mp3_anchors_for(
             screen._song_key, [(0.0, -120.0), (125_000.0, -130.0)])
         said = self._panel(screen)
-        assert "2 sync points" in said and "2:05" in said
+        assert "2 measured points" in said and "2:05" in said
 
     def test_no_recording_means_no_line_about_one(self):
         assert "lined up" not in self._panel(_screen())

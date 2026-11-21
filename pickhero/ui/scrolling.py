@@ -467,49 +467,24 @@ def _sync_fits(report) -> bool:
     return bool(report.get("readable")) and len(report.get("points") or []) >= 2
 
 
-def _replaced_by(point, here, point_by_hand: bool) -> bool:
-    """Whether a new hand-set point takes the place of a stored one.
+def _replaces_correction(stored, here) -> bool:
+    """Whether a new correction takes the place of a stored one.
 
-    TWO rules, because the two kinds of point are not the same evidence:
+    One rule, because there is one kind of thing in this list now: a
+    correction within `MIN_SYNC_SPAN_MS` is one correction made twice, and
+    the newer is the one the player just demonstrated.
 
-    - a HAND point within `MIN_SYNC_SPAN_MS` is one correction made twice,
-      and the newer is the one the player just demonstrated. That is the
-      rule as it always was, and it is right for what it was written for.
-    - a MEASURED point is only dropped when it CONTRADICTS the new one, so
-      the map carries the rest of the song exactly as it did.
+    It used to be two rules over one list, with the measured points in there
+    as well -- a hand point replaced a nearby hand point and dropped a
+    measured point only where the two contradicted outright. Both halves
+    were wrong. The 30 s rule deleted five to thirteen points of a bar map
+    for one press, and the contradiction rule let a measured point five
+    seconds away survive and pull the correction straight back to the map's
+    value, which made `Shift+S` a triangle five seconds wide. The measured
+    map is not in this list at all now; see `SyncMap.correction_at`.
     """
-    if point_by_hand and abs(point[0] - here[0]) < MIN_SYNC_SPAN_MS:
-        return True
-    return contradicts(point, here)
+    return abs(stored[0] - here[0]) < MIN_SYNC_SPAN_MS
 
-
-def contradicts(point, here) -> bool:
-    """Whether a stored point and a new one cannot both describe one
-    recording -- which is the only reason to drop one of them.
-
-    `Shift+S` used to replace every point within `MIN_SYNC_SPAN_MS` (30 s),
-    a rule written when a song's whole sync was two hand-set points and the
-    correction between them was ONE rate: there a pair five seconds apart
-    implied any speed at all, so the near one had to go. A measured map is a
-    different animal. Songsterr's bar map puts a point every five seconds
-    and the listening thins to one every few, so measured on the player's own
-    Parkway Drive **one press near the start deleted five to thirteen
-    measured points** -- a minute of measurement for one correction by ear,
-    at exactly the place a player corrects first. That is why pinning one
-    point felt like being made to sync the whole song by hand.
-
-    What really cannot stand is a pair the map cannot EXPRESS: `SyncMap`
-    clamps a segment's slope to `MAX_RATE`, so two points demanding more than
-    that are not two readings, they are a contradiction, and the new one --
-    somebody's ear, now -- wins. Nothing else is touched, so the measured
-    points carry the rest of the song exactly as they did.
-
-    Derived rather than fitted: the bound is the map's own clamp.
-    """
-    gap = abs(point[0] - here[0])
-    if gap <= 0.0:
-        return True                       # the same moment, twice
-    return abs(point[1] - here[1]) > (syncmap.MAX_RATE - 1.0) * gap
 
 # How many rows of music the page view shows at once, and how wide its
 # playhead is drawn. Two rows because that is what a reader uses -- the one
@@ -1553,7 +1528,7 @@ class PlayingScreen:
         # empty every time, so the player had no way to tell a synced song
         # from one nobody had touched. That is the "a feature that cannot be
         # seen working" fault, applied to the most expensive setting there is.
-        if self._mp3_anchors():
+        if self._mp3_anchors() or self._mp3_corrections():
             self._describe_sync()
         else:
             # *"Ich hätte gerne, dass das beim ersten Öffnen automatisch
@@ -5540,12 +5515,20 @@ class PlayingScreen:
         if not self._mp3_path():
             return ""                      # no recording, nothing to line up
         points = self._mp3_anchors()
-        if not points:
+        fixes = self._mp3_corrections()
+        if not points and not fixes:
             return ("SYNC   the recording is NOT lined up yet — "
                     "Ctrl+S measures it")
+        if not points:
+            # Corrected by ear and never measured, which is a state of its
+            # own: `Ctrl+S` would not replace anything, it would do the
+            # measuring for the first time.
+            return (f"SYNC   lined up by ear only: {len(fixes)} correction(s)"
+                    f"   |   Ctrl+S measures it")
         covered = format_time(max(t for t, _ in points))
-        return (f"SYNC   lined up: {len(points)} sync points out to {covered}"
-                f"   |   Ctrl+S measures again")
+        by_ear = (f", {len(fixes)} correction(s) by ear" if fixes else "")
+        return (f"SYNC   lined up: {len(points)} measured points out to "
+                f"{covered}{by_ear}   |   Ctrl+S measures again")
 
     def _toggle_sync_block(self) -> None:
         """S: show what is going on with the sound, or put it away again."""
@@ -8160,6 +8143,14 @@ class PlayingScreen:
                      f"-{anchors[-1][0] / 1000:.0f}s of "
                      f"{self._timeline.duration_ms / 1000:.0f}s"
                      f"\t{covered:.0f}%\n")
+        # What the player corrected BY EAR, apart from what was measured.
+        # The two are fixed in different places -- Ctrl+S measures the first
+        # again and Shift+S adds to the second -- so a single count cannot
+        # say which of them a reading of this log is about.
+        fixes = self._mp3_corrections()
+        fh.write(f"mp3_corrections\t{len(fixes)}\t"
+                 + " ".join(f"{at / 1000:.0f}s:{off:+.0f}ms"
+                            for at, off in fixes) + "\n")
         fh.write(f"mp3_worst_pull_ms\t{self._worst_sync_pull_ms:.0f}\n")
         fh.write(f"mp3_snaps\t{self._mp3_snaps}\n")
         fh.write(f"mp3_leads\t{'yes' if self._mp3_led else 'no'}\n")
@@ -8535,10 +8526,11 @@ class PlayingScreen:
                  SYNC_SOURCE_WORDS[self._sync_source()]),
                 ("Ctrl+S: find the offsets by listening to the recording",
                  self._sync_span_label()),
-                "Shift+S: line it up HERE and add a sync point.",
-                "  Two points give one speed, three give two sections, and a",
-                "  band that played without a click needs the sections.",
-                "  Ctrl+Shift+S clears them all.",
+                ("Shift+S: line it up HERE and correct the map there",
+                 self._corrections_label()),
+                "  The correction holds until the next one, and the measured",
+                "  map carries the rest of the song exactly as it did.",
+                "  Ctrl+Shift+S clears the lot.",
                 "On the song list, O opens the settings screen — everything",
                 "that is set once, with anything away from standard marked.",
                 ], "small"),
@@ -9580,7 +9572,8 @@ class PlayingScreen:
         change while the player is placing them, and a map cached behind that
         is the kind of thing that answers yesterday's question.
         """
-        return SyncMap(self._mp3_anchors(), self._mp3_offset())
+        return SyncMap(self._mp3_anchors(), self._mp3_offset(),
+                       self._mp3_corrections())
 
     def _mp3_ms(self, playback_ms: float) -> float:
         """Song position as the recording should hear it.
@@ -9695,26 +9688,10 @@ class PlayingScreen:
         getter = getattr(self._config, "mp3_anchors_for", None)
         return getter(self._song_key) if getter else []
 
-    def _mp3_plan(self) -> tuple[tuple[float, float], ...]:
-        """((fraction through the song, how fast the recording runs), ...).
-
-        One entry per gap between anchors. Two anchors give one entry, which
-        is the straight line the first version could express; three give two,
-        which is the least that can follow a band. The rate between two
-        anchors is `1 - (offset change) / (time between them)` -- the same
-        arithmetic as before, applied per segment.
-        """
-        anchors = self._mp3_anchors()
-        length = self._timeline.duration_ms or 1.0
-        plan: list[tuple[float, float]] = []
-        for (s1, o1), (s2, o2) in zip(anchors, anchors[1:]):
-            if s2 - s1 < MIN_SYNC_SPAN_MS:
-                continue
-            rate = 1.0 - (o2 - o1) / (s2 - s1)
-            if not (MIN_MP3_RATE <= rate <= MAX_MP3_RATE):
-                continue
-            plan.append((max(0.0, min(1.0, s1 / length)), rate))
-        return tuple(plan)
+    def _mp3_corrections(self) -> list[tuple[float, float]]:
+        """What the player corrected by ear, on top of the measured map."""
+        getter = getattr(self._config, "mp3_corrections_for", None)
+        return getter(self._song_key) if getter else []
 
     def _mp3_build_tempo(self) -> float:
         """What `timestretch.build` has to be asked for.
@@ -10893,46 +10870,46 @@ class PlayingScreen:
         return f"SYNC   {what}… {fraction * 100:.0f} %"
 
     def _set_sync_point(self) -> None:
-        """Remember that the recording is right HERE, and rebuild from all
-        of them.
+        """Remember that the recording is right HERE, on top of the map.
 
         The offset can only say where the recording starts, and for a while
         this took exactly two points -- which is a straight line. The player's
         own measurements say that is not enough: their offset runs -260 ms at
         the start, -1330 ms at 2:57 and back to -260 ms at 4:18, so the best
         straight line corrects by nothing at all and leaves 1.07 s standing in
-        the middle. A band that played without a click does not follow a line,
-        and every point they set is one more piece of it that can be followed.
+        the middle. A band that played without a click does not follow a line.
 
-        It is a repair and not a cure, and it has to be offered as one: the
-        correction is a step at each point, not a curve, because the anchors
-        are the only places the truth is known.
+        What is stored is a CORRECTION -- a residual on top of whatever was
+        measured -- and not a point in the measured list. *"Es ist einfach zu
+        viel Handarbeit für mich."* Dropped into the measured list, one press
+        either deleted a minute of the map (the 30-second rule) or was itself
+        deleted by the map within five seconds (the contradiction rule). On
+        top, the map keeps its shape everywhere and this bends only what the
+        map got wrong -- which is what one press by ear can honestly claim.
+
+        Between two corrections the bend is the straight line joining them;
+        outside the outermost, it is held. See `SyncMap.correction_at`.
         """
         if self._mp3_player is None:
             self._say("No backing track — Shift+U to pick one")
             return
-        # The offset IN FORCE here, not the stored one. On a song that has
-        # never been synced they are the same number. On one that has, the
-        # stored offset is a nudge sitting on top of the map -- and saving
-        # the nudge alone wrote a point unrelated to anything being heard:
-        # a song whose map reads +11.0 s in the solo got a point saying +0,
-        # which does not mend a drifting tail, it destroys a working map.
-        here = (self._playback_ms, self._sync_map().offset_at(self._playback_ms))
-        by_hand = set(getattr(self._config, "hand_anchors_for",
-                              lambda _k: [])(self._song_key))
-        points = [p for p in self._mp3_anchors()
-                  if not _replaced_by(p, here, p[0] in by_hand)]
-        dropped = len(self._mp3_anchors()) - len(points)
-        points.append(here)
-        points.sort()
-        setter = getattr(self._config, "set_mp3_anchors_for", None)
+        # The nudge is exactly the residual the player just demonstrated, and
+        # it sits on top of the TOTAL -- so the correction to store is what
+        # is already in force here plus the nudge. On a song with no
+        # correction yet those are the same number.
+        sync = self._sync_map()
+        here = (self._playback_ms,
+                sync.correction_at(self._playback_ms) + self._mp3_offset())
+        kept = [c for c in self._mp3_corrections()
+                if not _replaces_correction(c, here)]
+        dropped = len(self._mp3_corrections()) - len(kept)
+        kept.append(here)
+        kept.sort()
+        setter = getattr(self._config, "set_mp3_corrections_for", None)
         if setter is None:
             return
-        setter(self._song_key, points)
-        mark = getattr(self._config, "mark_hand_anchor_for", None)
-        if mark is not None:
-            mark(self._song_key, here[0])
-        # The nudge has been spent: it is inside the point now, and left
+        setter(self._song_key, kept)
+        # The nudge has been spent: it is inside the correction now, and left
         # standing it would be applied a second time to the whole song --
         # including the parts the player had already got right.
         self._set_mp3_offset(0.0)
@@ -11053,41 +11030,67 @@ class PlayingScreen:
                 f"was readable, so the recording is extrapolated. "
                 f"One Shift+S here pins it.")
 
+    def _corrections_label(self) -> str:
+        """How many corrections by ear this song carries, for the help page.
+
+        Its own number rather than folded into the point count: a reader
+        has to be able to tell what `Ctrl+S` would throw away from what it
+        would replace.
+        """
+        fixes = self._mp3_corrections()
+        if not fixes:
+            return "none"
+        return f"{len(fixes)} by ear"
+
     def _describe_sync(self, replaced: int = 0) -> None:
-        """The sync points and what they add up to, kept on screen.
+        """The two layers and what they add up to, kept on screen.
 
         Not a note that expires: the player spends minutes moving between
         points, and a message that is gone by then leaves them guessing which
         press the next one will be.
+
+        The measured map and the corrections by ear are said APART, because
+        they are fixed in different places: `Ctrl+S` measures the first again
+        and `Shift+S` adds to the second, and a single count of "17 points"
+        cannot say which of the two a player is looking at.
         """
         points = self._mp3_anchors()
+        fixes = self._mp3_corrections()
         rates = self._sync_map().rates()
-        lines = [
-            "  ".join(f"{_clock_text(at)} {_offset_text(off)}"
-                      for at, off in points)
-        ]
-        if len(points) < 2:
-            lines.append("SYNC 1 of 2 — now go somewhere else in the song, "
-                         "line the recording up with Shift+N/M, Shift+S again")
-        else:
-            spans = "  ".join(f"{(1 / rate - 1) * 100:+.2f} %"
-                              for rate in rates) or "nothing usable"
+        lines: list[str] = []
+        if points:
             # Where the points actually ARE. Beyond the outermost one the map
             # extrapolates, and a song whose points all sit in the first
             # minute is a song whose last four are a guess -- which the
             # panel has to say rather than leave to be discovered.
-            covered = (f"measured {_clock_text(points[0][0])}"
-                       f"–{_clock_text(points[-1][0])} of "
-                       f"{_clock_text(self._timeline.duration_ms)}")
             lines.append(
-                f"SYNC {len(points)} points, {len(rates)} section(s): "
-                f"{spans}   ({covered})")
-            lines.append("SYNC Shift+S adds one, Ctrl+Shift+S clears, "
+                f"{len(points)} measured point(s)   "
+                f"(measured {_clock_text(points[0][0])}"
+                f"–{_clock_text(points[-1][0])} of "
+                f"{_clock_text(self._timeline.duration_ms)})")
+        if fixes:
+            lines.append("by ear: " + "  ".join(
+                f"{_clock_text(at)} {_offset_text(off)}"
+                for at, off in fixes))
+        if not lines:
+            lines.append("nothing measured and nothing corrected yet")
+        if rates:
+            lines.append(f"{len(rates)} section(s): " + "  ".join(
+                f"{(1 / rate - 1) * 100:+.2f} %" for rate in rates))
+        if fixes and not points and len(fixes) < 2:
+            # With no map underneath, one correction is a constant and
+            # nothing more -- the old "1 of 2" case, and still true there.
+            lines.append("1 of 2 — now go somewhere else in the song, line "
+                         "the recording up with Shift+N/M, Shift+S again")
+        else:
+            lines.append("Shift+S corrects here, Ctrl+Shift+S clears, "
                          "Ctrl+S measures again")
         if replaced:
-            lines.append(f"replaced {replaced} point(s) that disagreed with "
-                         f"it — the rest of the map is untouched")
-        self._sync_lines = ["SYNC   " + lines[0]] + lines[1:]
+            lines.append(f"replaced {replaced} correction(s) within "
+                         f"{MIN_SYNC_SPAN_MS / 1000:.0f} s — the measured "
+                         f"map is untouched")
+        self._sync_lines = ["SYNC   " + lines[0]] + ["SYNC " + l
+                                                     for l in lines[1:]]
 
     def _clear_sync_rate(self) -> None:
         """Back to the recording as it was made.
@@ -11111,7 +11114,8 @@ class PlayingScreen:
             if setter is not None:
                 setter(self._song_key, value)
         self._config.save()
-        self._say("Recording sync cleared — points, rate and offset")
+        self._say("Recording sync cleared — measured points, corrections, "
+                  "rate and offset")
 
     def _set_mp3_offset(self, offset_ms: float) -> None:
         """Store the recording's offset and move the recording to match."""
