@@ -46,7 +46,33 @@ from pickhero.ui.scrolling import PlayingScreen
 #: bar map alike. With the tuning filter on it walks the filtered list, which
 #: is exactly what the player reported -- *"alle Songs mit Drop D Stimmung
 #: sind weg... Alles weg MP3, GP, Map"*.
-NEVER_REPEAT = frozenset({pygame.K_ESCAPE, pygame.K_SPACE, pygame.K_DELETE})
+#: The keys a HELD press may fire more than once. Everything else is one
+#: press, one action.
+#:
+#: This was the other way round -- a NEVER_REPEAT list of the keys caught
+#: misbehaving -- and it grew four times: escape (left the song AND closed
+#: the app), space (counted in and stopped again), DELETE (emptied a folder
+#: of songs), and then Ctrl+V, which pasted a Songsterr link three times
+#: into the search box on one 400 ms press.
+#:
+#: **The two failure modes are not equal, and that is the whole argument for
+#: inverting it.** Forgetting a key on an opt-OUT list means a destroyed
+#: song, a duplicated paste, a toggle that undoes itself. Forgetting one on
+#: this list means a key that has to be pressed twice instead of held, which
+#: nobody will ever report. So the list that may be wrong is the harmless
+#: one.
+#:
+#: What is here is what a hand really holds down: moving a cursor or a
+#: playhead, eating characters, and the three stepping pairs -- and those
+#: are gated a second time at 150 ms by `_step_key_ready`, because 25 steps
+#: a second walked the practice speed from 100 % to 50 % on one tap.
+MAY_REPEAT = frozenset({
+    pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN,
+    pygame.K_BACKSPACE,
+    pygame.K_PAGEUP, pygame.K_PAGEDOWN,
+    pygame.K_PLUS, pygame.K_MINUS, pygame.K_EQUALS,
+    pygame.K_KP_PLUS, pygame.K_KP_MINUS,
+})
 
 
 class App:
@@ -330,14 +356,13 @@ class App:
             # then drained together: an even number of them and the song is
             # paused with no sign of why.
             #
-            # Only the keys that toggle. The arrows, the tempo and the size
-            # keys want their repeats, and taking those would be a different
-            # bug. Guarded here rather than on each screen, because this is
-            # the one door every screen's events come through and a screen
-            # added later would otherwise have to remember.
-            if event.type == pygame.KEYUP and event.key in NEVER_REPEAT:
+            # Guarded here rather than on each screen, because this is the
+            # one door every screen's events come through and a screen added
+            # later would otherwise have to remember. See MAY_REPEAT for why
+            # the list says which keys repeat rather than which do not.
+            if event.type == pygame.KEYUP:
                 self._held.discard(event.key)
-            if event.type == pygame.KEYDOWN and event.key in NEVER_REPEAT:
+            if event.type == pygame.KEYDOWN and event.key not in MAY_REPEAT:
                 if event.key in self._held:
                     continue                  # the same press, still down
                 self._held.add(event.key)

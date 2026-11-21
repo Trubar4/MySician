@@ -447,12 +447,13 @@ def report(run: Run) -> str:
 # three things the single-log report above does not:
 #
 #  1. **The same sitting is in there several times.** `D` writes a file on
-#     request, and it is NOT in `App.NEVER_REPEAT` -- so a held key writes one
-#     every 40 ms, and pressing it twice during one run writes two logs of
-#     which the first is a PREFIX of the second. Measured on the player's own
+#     request, and pressing it twice during one run writes two logs of which
+#     the first is a PREFIX of the second. Measured on the player's own
 #     folder: eight files of 19 294 bytes within twelve seconds, five of
 #     57 093, three of 50 032. Counted as evenings, one sitting would weigh
-#     eight.
+#     eight. Those eight were a HELD key, which cannot happen any more --
+#     `D` is not in `App.MAY_REPEAT` -- but the logs are on disk for ever
+#     and two deliberate presses still make two files, so the rule stays.
 #
 #  2. **Logs from different builds are not one measurement.** Over eleven
 #     weeks of this project the onset threshold went 0.30 -> 0.05 (+296 notes

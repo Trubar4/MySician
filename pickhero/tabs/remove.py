@@ -46,7 +46,7 @@ AUDIO_SUFFIXES = (".mp3", ".ogg", ".wav", ".flac", ".m4a", ".opus", ".webm")
 #: from the arrow keys. The player lost a folder of songs to it: key repeat
 #: made one held press into 25 a second, each pair arming and confirming, and
 #: with the tuning filter on it walked the filtered list. The repeat is fixed
-#: where it belongs (`NEVER_REPEAT`), and this is the other half, because
+#: where it belongs (`MAY_REPEAT`), and this is the other half, because
 #: **a guard stops the fault it was written for and a copy survives the one
 #: nobody thought of.** It is the same rule the import already follows when
 #: it leaves a `.bak` beside anything it rewrites.

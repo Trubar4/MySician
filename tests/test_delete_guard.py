@@ -72,7 +72,7 @@ class TestAHeldDeleteKeyTakesNothing:
         """The first lock, and it is on the one door every screen's events
         come through. The second is in `_delete_selected`, because a screen
         is only ever as safe as whatever is handing it events."""
-        assert pygame.K_DELETE in app_module.NEVER_REPEAT
+        assert pygame.K_DELETE not in app_module.MAY_REPEAT
 
 
 class TestADeletedSongCanComeBack:

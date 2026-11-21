@@ -921,7 +921,7 @@ class MenuScreen:
             return
 
         if self._delete_key_down:
-            # The SAME press, arriving again. `NEVER_REPEAT` in App already
+            # The SAME press, arriving again. `MAY_REPEAT` in App already
             # drops these, and this is the second lock on the same door
             # because the first one is somewhere else: a screen is only ever
             # as safe as whatever is handing it events, and a test, a tool or

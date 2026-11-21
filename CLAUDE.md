@@ -7884,6 +7884,34 @@ Removed, and `_mp3_rate` with it rather than left tested and unused -- the fault
 file written by an older build still carries a rate, and resetting it when a recording is picked is the repair.
 
 
+## The Repeat Guard Was A List Of The Keys Already Reported
+
+*"S -> songsterr, dann CTRL+V -> wenn ich nicht super schnell bin, wird der Text im Speicher 2x eingefuegt. Haben wir das mit den
+Tastatur-Keys noch immer nicht durchgaengig abgefangen?"*
+
+No, and the second half of his sentence is the better question. Reproduced through the real screen: `set_repeat(300, 40)` makes one
+400 ms press of `Ctrl+V` **three events**, and the search box comes back holding the Songsterr URL three times over.
+
+**`NEVER_REPEAT` held escape, space and DELETE -- and every one of those three was a REPORT, not a rule.** Escape left the song AND
+closed the app on one hold; space counted in and stopped again; a held DELETE emptied a folder of songs. `Ctrl+V` is the fourth, and
+the shape of the list guarantees a fifth.
+
+**So the list says which keys MAY repeat.** `MAY_REPEAT` is the four arrows, Backspace, and the three stepping pairs -- what a hand
+really holds down, and the steppers are gated a second time at 150 ms by `_step_key_ready`. Everything else is one press, one action.
+
+- **The argument is that the two failure modes are not equal.** A key missing from an opt-OUT list destroys a song, duplicates a
+  paste, or undoes the press before it. A key missing from this list has to be pressed twice instead of held, which nobody will ever
+  report. **The list that is allowed to be wrong is the harmless one.**
+- **It closes three faults nobody had reported yet**, which is what says it is a class and not an instance: a held `Shift+T` or
+  `Shift+C` walked its ladder past the answer, a held `R` in the song list opened the rename editor and typed `rrr` into the name, and
+  `D` wrote a run log every 40 ms -- which `coach.py` has a deduplication rule for, measured at **eight files of one sitting in twelve
+  seconds**. That rule stays: the logs are on disk for ever and two deliberate presses still make two files.
+- **The counter in the test is taken at `_dispatch`, not at the screen.** Five of the song list's keys -- `O`, `S`, `D`, `G`, `U` --
+  are answered by the App itself and never reach the screen, so a count taken there reads 0 for them and the test passes on anything.
+  The first version did exactly that and said so.
+- Three of the eleven tests fail on the old rule; the other eight are the controls, including that a held arrow really does arrive
+  five times at the same place the others are counted.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

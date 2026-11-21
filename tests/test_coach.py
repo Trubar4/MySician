@@ -295,11 +295,13 @@ class TestTheWindowIsDaysNotFiles:
 
 
 class TestTheSameSittingWrittenTwice:
-    """D is not in App.NEVER_REPEAT, so one run can produce many files.
+    """Two presses of D in one run write two logs, and one is a prefix.
 
     Measured on the player's own folder: eight files of 19 294 bytes within
     twelve seconds, five of 57 093, three of 50 032. Counted as evenings,
-    one sitting would weigh eight.
+    one sitting would weigh eight. The eight were a held key and cannot
+    happen now (`D` is not in `App.MAY_REPEAT`); the files are on disk for
+    ever, and two deliberate presses still make two.
     """
 
     def _pair(self, tmp_path, first, second):
