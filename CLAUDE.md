@@ -8286,6 +8286,72 @@ somebody switches branch. Reproduced on this machine in one command: HEAD 11:03,
 - **Both are asserted on a `.git` built by hand with HEAD deliberately older than the ref**, because that is what a pull leaves behind and no
   real checkout here can be put into that state on purpose. Both fail on the unfixed code.
 
+## The 389 ms Was Songsterr's Bar 22, And No Filter Of Ours Can Reach It
+
+*"Ich hab ohne Gitarre gesynct. Um Bild und Ton zu syncen - brauche ich keine Gitarre."* Correct, and it retracts the first thing I said
+about his log: the laptop microphone explains `hits 22`, and nothing at all about the sync. He sent the recording, and **it is the same
+master I already had** — 308.50 s against 308.46, a 320 kbps rip of the 192 kbps one, agreeing to within encoder padding. Every number I
+asked him for was already on this machine, and the stored points reproduce from it exactly: `0s:+52  5s:+25  10s:+58  17s:+25  22s:+48
+36s:-38  39s:+351`.
+
+**The excursion is in Songsterr's own map and it is not a spike.** Their bar 22 is timed at **1.270 s** where every other bar of that song
+is 1.71-1.79 and the tab's own grid is a constant 1.714:
+
+| bar | song | Songsterr's step | offset | what the line between its neighbours wants |
+|---|---|---|---|---|
+| 21 | 36.00 s | 1.730 s | −38 ms | +192 |
+| **22** | **37.71 s** | **1.270 s** | **+406** | +156 — **dropped, correctly** |
+| 23 | 39.43 s | 1.770 s | +351 | +356 |
+| 24-31 | 41-52 s | 1.74-1.79 s | +305 → −2 | each within 25 ms of its neighbours' line |
+
+`_without_spikes` convicts bar 22 and nothing else, which is right: bars 23-31 are each about **56 ms long against the tab's 1.714 s — 3 %**,
+inside `MAX_DRIFT_RATE`, so the error walks back to zero over ten bars and no point in it is an outlier. **A one-bar fault that self-corrects
+over ten is a plateau, and a filter that refuses outliers cannot see a plateau.** Convicting it would mean refusing 3 % drift, which is the
+thing a bar map exists to follow.
+
+**And the refinement cannot see it either, which is structural rather than a threshold.** `residual_curve` reads 20 s windows at a 6 s step; a
+bump 17 s wide and 390 ms tall is averaged away by a window longer than itself. Measured — the refinement moves that point from **+382 to
++351**, and the windows either side of it read a flat −0.05 s.
+
+**What a 5 s window says where it is confident at all** (margin over 0.08; 60-70 % of them are ambiguous or match the wrong repeat, which is
+the Dry County warning holding):
+
+| | 43.5 s | 44.4 | 45.4 | 46.4 |
+|---|---|---|---|---|
+| the recording | **+213** | **+196** | **+155** | **+144 ms** |
+| the listening's stored map | +199 | +193 | +184 | +180 |
+| **the bar map** | **+248** | **+226** | **+199** | **+172** |
+
+So the bar map is 30-70 ms out there and reads **+335 at 40 s where the recording says +220** — and that 390 ms excursion, which the picture
+is pulled across at 5 %/s, is both `+11.11 %` sections and most of the `mp3_worst_pull_ms 609` in his log.
+
+**But "switch that song to the listening" is NOT the conclusion, and the measurement is what stopped it.** Scored held out — the listening
+fitted on half the windows and read on the other half, truth being a confident window agreeing with its own neighbourhood to 300 ms:
+
+| | median | p90 |
+|---|---|---|
+| the bar map as it ships | **101 ms** | **165 ms** |
+| the listening, fit on the even windows | 89 | **3701** |
+| the listening, fit on the odd windows | 110 | 168 |
+
+**Over the whole song the two are even**, and the listening's tail is the worse of the two. The bar map's advantage is not accuracy, it is
+that it never collapses. So the difference between them on this song is LOCAL — 36-52 s, where the bar map is wrong and the listening is
+right — and the tool for a local error is the thing he was already using: `Shift+S`, which as of this morning no longer deletes the
+correction before it.
+
+- **A loose truth filter flattered the listening by a factor of three** (32-39 ms at a 1 s neighbourhood tolerance against 89-110 at 300 ms),
+  because at 1 s it keeps windows the listening's own points were fitted beside. **Tenth time in this project that the measuring instrument
+  needed measuring first**, and the tell was the same: the bar map's apparent worst error was at 196 s, where its own bar steps are a regular
+  1.72-1.78 and the WINDOW reads −2392 between neighbours at −3690 and −3476. The window was the outlier.
+
+### And one number from this morning has to be narrowed
+
+The chapter above reports the residual refinement at **4 ms / 9 ms** held out on this song. That figure is right about what it measures —
+re-measured on both rips it is **12-14 ms median, 26-28 ms p90** — and it measures `constant + residual`, the FITTED CURVE. The **stored
+map** carries Songsterr's bar shape as well, and that reads **101 ms**. The refinement removes the constant's error (109 → 12 ms) and cannot
+touch a bar line Songsterr placed wrongly. So the claim is "the refinement is worth a factor of eight on the constant", not "the stored bar
+map is accurate to 9 ms" — and the second is what a reader would have taken from it.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.
