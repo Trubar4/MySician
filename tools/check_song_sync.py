@@ -244,6 +244,20 @@ def main() -> int:
     for lo, hi in report["unreadable"]:
         print(f"    nicht lesbar  {mmss(lo)}-{mmss(hi)}")
 
+    # The KEY, because this tool exists to answer "is it the files or the
+    # app" and a stretch of tab written in another key is a file question
+    # that no sync can touch. The chroma is in hand; it is a dozen more dot
+    # products. Measured on Carol Of The Bells, whose first ten bars were
+    # transcribed a whole tone low.
+    for gap in autosync.key_check(tab_chroma, rec_chroma, fps, rows):
+        print(f"\nTONART  {mmss(gap.from_s)}-{mmss(gap.to_s)} steht "
+              f"{abs(gap.semitones)} Halbtoene "
+              f"{'unter' if gap.semitones > 0 else 'ueber'} der Aufnahme "
+              f"({gap.windows} Fenster, Abstand {gap.margin:.3f}).")
+        print("        Kein Syncpunkt hilft dagegen -- der Tab muss in "
+              "diesen Takten transponiert werden\n"
+              "        (tools/transpose_bars.py).")
+
     if not kept:
         print("\nKein Abschnitt laesst sich ausrichten. Das ist ein "
               "Ergebnis, kein Fehler:\ndie Aufnahme passt so nicht zum Tab.")

@@ -162,6 +162,50 @@ BAR_MAP_AGREE_S = 3.0
 # case the WORDING has to cover rather than the threshold (see `Break.real`).
 MIN_BREAK_BARS = 1.0
 
+# --- Is this stretch of the tab in the recording's KEY? ------------------
+#
+# "Das ist der einzige Song bei dem der Anfang 7-7-6-0 komplett schraeg
+# klingt" -- and the arithmetic to answer it was already here. The chroma of
+# both sides is computed for the lag search; rotating the tab's twelve pitch
+# classes and asking which rotation fits is a dozen more dot products.
+#
+# Measured on the player's own Carol Of The Bells, whose first ten bars were
+# transcribed a whole tone low, against the SAME recording read with the
+# corrected tab -- a pair of controls that differ by exactly the fault:
+#
+#     the fault      0-20 s, +2 semitones, 3 windows, margin 0.067
+#     the corrected  nothing, anywhere
+#
+# and six other songs with a recording on this machine: nothing, anywhere.
+#
+# **The alignment is what gives this any discrimination at all, and that was
+# worth measuring before it was built.** Comparing pitch-class HISTOGRAMS
+# over a stretch -- no lag, no time detail -- reads the fault three times as
+# strongly (margin 0.549) and is useless: Born To Be My Baby then reports 26
+# of its 45 windows a fifth out, and Thunder 14 of 45 a tone out. A chord
+# progression's pitch classes are nearly invariant under a rotation round the
+# circle of fifths; only the TIMES tell one key from another.
+KEY_WINDOW_S = 10.0
+KEY_STEP_S = 5.0
+# How far the lag may be from what the map says. The question is "at the
+# place the map puts it, is this stretch in the recording's key" -- so a free
+# search is not a wider version of this, it is a different question, and it
+# measures worse: the fault's margin falls from 0.154 to 0.065 because
+# rotation 0 finds a spurious match of its own somewhere else in the song.
+KEY_LAG_S = 2.0
+# TWO filters, answering two different questions -- and neither alone is
+# enough, which is what makes both load-bearing.
+#
+# A RUN, because one window preferring another key is the song rhyming with
+# itself: Godsmack has a pair at +7 whose margin is 0.085, above anything
+# this fault produces, and it is two windows in a five-minute song.
+KEY_MIN_WINDOWS = 3
+# A MARGIN over the runner-up, because a run of weak readings is the chroma
+# having nothing to say: Godsmack also has five consecutive windows agreeing
+# on +4 at a margin of 0.006. The window is 0.017 (the worst thing rejected)
+# to 0.062 (the weakest window of the fault's own run).
+KEY_MARGIN = 0.035
+
 
 def decode(path: str | Path, samplerate: int = 44100) -> tuple[np.ndarray, int]:
     """The whole recording as mono float32, through SDL.
@@ -419,6 +463,127 @@ def drift_curve(tab: np.ndarray, rec: np.ndarray, fps: float,
         if progress is not None and progress((done + 1) / len(starts)) is False:
             raise Cancelled()
     return rows
+
+
+class KeyGap(NamedTuple):
+    """A stretch of the tab that is not in the recording's key.
+
+    `semitones` is how far the tab sits BELOW the recording, so +2 means the
+    written notes are a whole tone low and moving them up by two fixes it.
+    Spelled the short way round the circle, so eleven semitones up is -1.
+    """
+
+    from_s: float
+    to_s: float
+    semitones: int
+    margin: float
+    windows: int
+
+
+def key_check(tab: np.ndarray, rec: np.ndarray, fps: float,
+              rows: Sequence[tuple[float, float, float]]) -> list[KeyGap]:
+    """Which stretches of this tab are written in another key.
+
+    A key difference is a rotation of the twelve pitch classes, so the test
+    is the lag search's own arithmetic run at all twelve -- at the lag the
+    MAP already found, within `KEY_LAG_S`, because the question is about the
+    place the map puts this stretch and not about where else in the song it
+    might fit.
+
+    What comes back is in the TAB's own seconds, which on the listening path
+    is song time and on the bar-map path is the warped axis the caller
+    knows how to convert.
+
+    The windows are shorter than the lag search's (`KEY_WINDOW_S` against
+    `WINDOW_S`): this one does not have to pin a lag to a tenth of a second,
+    and a window long enough for that straddles the bar line where the key
+    changes. Measured on the fault this was built for, the reading goes from
+    one window at 12 s to a run of three at 10 s.
+    """
+    kept = usable_rows(rows)
+    if len(kept) < 2:
+        # No map, no place to ask about. "Could not read it" and "needs no
+        # correction" are different answers everywhere else here, and this
+        # is the first of the two.
+        return []
+    xs = np.array([at for at, _ in kept])
+    ys = np.array([lag for _, lag in kept])
+    width = int(KEY_WINDOW_S * fps)
+    step = max(1, int(KEY_STEP_S * fps))
+    band = max(1, int(KEY_LAG_S * fps))
+    if len(rec) < width or len(tab) < width:
+        return []
+    scale = _window_scales(rec, width)
+    windows = sliding_window_view(rec, width, axis=0)
+    read: list[tuple[float, int, float]] = []
+    for start in range(0, len(tab) - width, step):
+        at = start / fps
+        # The window's own lag, in frames, from the map the search produced.
+        # Flat outside the measured coverage, for the reason
+        # `residual_at` holds a residual flat: a slope fitted elsewhere says
+        # nothing about the stretch nobody could read.
+        centre = int(round((float(np.interp(at, xs, ys))
+                            - FRAME_CENTRE_ROWS / fps) * fps))
+        best = np.full(12, -1.0)
+        for rot in range(12):
+            seg = _norm(np.roll(tab[start:start + width], rot, axis=1))
+            _, scores = _lag_scores(seg, windows, scale, start + centre,
+                                    band, len(rec) - width)
+            if len(scores):
+                best[rot] = float(scores.max())
+        order = np.argsort(-best)
+        read.append((at, int(order[0]), float(best[order[0]] - best[order[1]])))
+    out: list[KeyGap] = []
+    run: list[tuple[float, int, float]] = []
+
+    def close(run):
+        if len(run) < KEY_MIN_WINDOWS:
+            return
+        margin = max(m for _, _, m in run)
+        if margin < KEY_MARGIN:
+            return
+        rot = run[0][1]
+        out.append(KeyGap(from_s=run[0][0],
+                          to_s=run[-1][0] + KEY_WINDOW_S,
+                          semitones=rot if rot <= 6 else rot - 12,
+                          margin=margin, windows=len(run)))
+
+    for at, rot, margin in read:
+        if rot and (not run or run[-1][1] == rot):
+            run.append((at, rot, margin))
+            continue
+        close(run)
+        run = [(at, rot, margin)] if rot else []
+    close(run)
+    return _joined(out)
+
+
+def _joined(gaps: list[KeyGap]) -> list[KeyGap]:
+    """One dissenting window does not make two faults.
+
+    A single window reading something else breaks a run, so a forty-second
+    error comes back as two stretches of it -- measured on Kid Rock with an
+    injected tone, where the window at 99.9 s reads a fourth while the eight
+    around it read the tone. Two lines about one fault is a panel saying the
+    wrong shape of thing.
+
+    Exactly ONE window is bridged and no more, and that falls out of the
+    arithmetic rather than being chosen: the stretches either side of a
+    single dissenter meet exactly (`KEY_STEP_S` is half `KEY_WINDOW_S`), so
+    two dissenters leave a real hole and are left as two stretches.
+    """
+    out: list[KeyGap] = []
+    for gap in gaps:
+        last = out[-1] if out else None
+        if (last is not None and last.semitones == gap.semitones
+                and gap.from_s <= last.to_s + 1e-6):
+            out[-1] = last._replace(to_s=gap.to_s,
+                                    margin=max(last.margin, gap.margin),
+                                    windows=last.windows + gap.windows)
+            continue
+        out.append(gap)
+    return out
+
 
 
 def _robust_line(xs: Sequence[float], ys: Sequence[float]
@@ -988,7 +1153,7 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
         "ambiguous": 0, "breaks": [], "covered": None, "song_s": 0.0,
         "wrong_length": False, "sections": 0, "sections_used": 0,
         "unreadable": [], "share": 0.0, "wrong_bars": False,
-        "spikes": 0, "refined": 0,
+        "spikes": 0, "refined": 0, "key_gaps": [],
         "offered": [len(c) for c in candidates],
         # The two lengths, because the panel's tempo line needs them on this
         # path too -- and without them it is a feature that silently does
@@ -1038,14 +1203,16 @@ def align_to_bar_times(timeline: Timeline, audio_path: str | Path,
                                              f"comparing map {d + 1} of {k}"))
             if progress else None)
         found = _fit_one(report, bar_starts, bar_times, rows,
-                         tolerance_ms, timeline)
+                         tolerance_ms, timeline, tab, rec, fps)
         if found["share"] > best["share"]:
             best = found
     return best
 
 
 def _fit_one(base: dict, bar_starts, bar_times, rows, tolerance_ms,
-             timeline: Timeline | None = None) -> dict:
+             timeline: Timeline | None = None,
+             tab: np.ndarray | None = None, rec: np.ndarray | None = None,
+             fps: float = 0.0) -> dict:
     """One candidate map measured against the recording."""
     report = dict(base)
     report["bars"] = len(bar_times)
@@ -1107,6 +1274,21 @@ def _fit_one(base: dict, bar_starts, bar_times, rows, tolerance_ms,
     report["spikes"] = len(raw) - len(kept)
     report["points"] = [(round(a, 1), round(b, 1))
                         for a, b in simplify(kept, tolerance_ms)]
+    # The key check on the WARPED tab, which is the better instrument: the
+    # map has already put the bar lines on the recording's grid, so a ten
+    # second window matches sharply where the unwarped tab's own 7.6 % error
+    # smears it. Measured on the fault this was built for, the reading goes
+    # from one window the margin only just passes to a run of three.
+    #
+    # Its seconds are the warped axis, so they come back to song time
+    # through the very map that warped them.
+    if tab is not None and rec is not None and fps > 0:
+        song_of = [start / 1000.0 for start in bar_starts]
+        report["key_gaps"] = [
+            gap._replace(
+                from_s=float(np.interp(gap.from_s, bar_times, song_of)),
+                to_s=float(np.interp(gap.to_s, bar_times, song_of)))
+            for gap in key_check(tab, rec, fps, rows)]
     return report
 
 
@@ -1198,14 +1380,15 @@ def measure(timeline: Timeline | str | Path, audio_path: str | Path,
             tolerance_ms: float = SIMPLIFY_MS
             ) -> tuple[list[tuple[float, float]],
                        list[tuple[float, float, float]],
-                       tuple[float, float]]:
+                       tuple[float, float], list[KeyGap]]:
     """Measure this recording against this tab.
 
-    Returns (points, rows, (tab seconds, recording seconds)). The rows come
-    back as well as the points, because "how many windows were usable" is the
-    difference between a song this could not read and a song that is already
-    in sync -- and the lengths, because two files of different lengths are
-    not the same transcription and no map can bridge that.
+    Returns (points, rows, (tab seconds, recording seconds), key gaps). The
+    rows come back as well as the points, because "how many windows were
+    usable" is the difference between a song this could not read and a song
+    that is already in sync; the lengths, because two files of different
+    lengths are not the same transcription and no map can bridge that; and
+    the key gaps, because the chroma is in hand here and nowhere else.
     """
     def stage(share: float, base: float, span: float, what: str):
         if progress is None:
@@ -1222,9 +1405,13 @@ def measure(timeline: Timeline | str | Path, audio_path: str | Path,
         tab = chroma_of_tab_file(timeline, fps)
     lengths = (len(tab) / fps, len(samples) / rate)
     if len(tab) == 0 or len(rec) == 0:
-        return [], [], lengths
+        return [], [], lengths, []
     rows = drift_curve(tab, rec, fps, stage(1, 0.5, 0.5, "comparing"))
-    return points_from_rows(rows, tolerance_ms), rows, lengths
+    # Measured at 0.07 s on a five-minute song, against the 0.12 s the lag
+    # search itself costs, so it runs on every measurement rather than
+    # behind a key nobody would press twice.
+    return (points_from_rows(rows, tolerance_ms), rows, lengths,
+            key_check(tab, rec, fps, rows))
 
 
 def find_points(timeline: Timeline | str | Path, audio_path: str | Path,
@@ -1233,7 +1420,7 @@ def find_points(timeline: Timeline | str | Path, audio_path: str | Path,
                 ) -> tuple[list[tuple[float, float]],
                            list[tuple[float, float, float]]]:
     """Just the points and the rows, for the tools and the tests."""
-    points, rows, _ = measure(timeline, audio_path, progress, tolerance_ms)
+    points, rows, _, _ = measure(timeline, audio_path, progress, tolerance_ms)
     return points, rows
 
 
@@ -1245,10 +1432,11 @@ def find(timeline: Timeline | str | Path, audio_path: str | Path,
     The app needs both, and it needs them to agree -- a report derived from a
     second measurement could disagree with the map that was stored.
     """
-    points, rows, (tab_s, rec_s) = measure(
+    points, rows, (tab_s, rec_s), key_gaps = measure(
         timeline, audio_path, progress, tolerance_ms)
     report = read_report(
         rows, timeline if isinstance(timeline, Timeline) else None)
+    report["key_gaps"] = key_gaps
     report["tab_s"] = tab_s
     report["recording_s"] = rec_s
     longer = max(tab_s, rec_s, 1e-9)

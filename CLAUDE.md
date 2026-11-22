@@ -9113,3 +9113,63 @@ before now reads, at the written pitch.
   class includes a control that the check can FAIL, because a check that cannot is the thing it exists to catch.
 - **Nothing is overwritten and nothing is transposed that was not asked for** — not the tuning (that would be the same fret numbers playing
   different music), not another track, not a bar outside the range.
+
+## Ctrl+S Compares The Two KEYS Now, Not Only The Two Clocks
+
+*"Ja, baue den Tonart-Check in Ctrl+S ein."* The arithmetic was already there and was being thrown away: both chroma curves are computed for the lag
+search, and a key difference is a **rotation of the twelve pitch classes**. Twelve more dot products per window, measured at **0.07 s on a five-minute
+song** against the 0.12 s the lag search itself costs — so it runs on every measurement rather than behind a key nobody would press twice.
+
+**The pair of controls is the whole argument, and it exists because the fix was shipped yesterday**: ONE recording read against two tabs that differ by
+exactly the fault — his Carol Of The Bells as transcribed, and the copy `tools/transpose_bars.py` wrote with bars 1-10 moved up a tone.
+
+| | reported |
+|---|---|
+| **the tab as transcribed** | **0:00-0:21, +2 semitones, 3 windows, margin 0.067** |
+| the corrected copy | nothing, anywhere |
+| the six other songs with a recording here | nothing, anywhere |
+
+**The ALIGNMENT is what gives this any discrimination at all, and that was worth measuring before anything was built.** The obvious cheap test is to
+compare pitch-class HISTOGRAMS over a stretch — no lag, no time detail — and it reads the fault three times as strongly (margin 0.549 against 0.067).
+It is also useless: Born To Be My Baby then reports **26 of its 45 windows a fifth out** and Thunder 14 of 45 a tone out. A chord progression's pitch
+classes are nearly invariant under a rotation round the circle of fifths, so only the TIMES tell one key from another. The strong version of the test
+is the one that cannot be trusted.
+
+- **The lag is NOT searched freely either.** The question is *"at the place the map puts it, is this stretch in the recording's key"*, so each rotation
+  may move within `KEY_LAG_S` (2 s) of what the map says and no further. A free ±40 s search is not a wider version of that, it is a different
+  question, and it measures worse: the fault's margin falls from 0.154 to 0.065 because rotation 0 finds a spurious match of its own elsewhere in the
+  song.
+- **TWO filters, and NEITHER alone is enough**, which is what makes both load-bearing. A **run** of `KEY_MIN_WINDOWS` (3) consecutive windows agreeing
+  on one rotation, because one window preferring another key is the song rhyming with itself — Godsmack has a PAIR at +7 whose margin is **0.085**,
+  above anything this fault produces. And a **margin** over the runner-up of `KEY_MARGIN` (0.035), because a run of weak readings is the chroma having
+  nothing to say — Godsmack also has **five consecutive windows agreeing on +4 at a margin of 0.006**. The window is 0.017 (the worst thing rejected)
+  to 0.062 (the weakest window of the fault's own run).
+- **The window is 10 s where the lag search uses 20**, and the reason is the bar line the key changes at: a twenty-second window straddles it. Measured
+  on this fault, the reading goes from one window at 12 s — which only the margin passes — to a run of three at 10 s. Shorter is worse in the other
+  direction: at 6 s Godsmack produces a false positive (21-33 s, −5, margin 0.078) and the fault is lost.
+- **One dissenting window does not make two faults.** `KEY_STEP_S` is half the window, so the stretches either side of a single dissenter meet exactly
+  and are joined, while two dissenters leave a real hole and stay two. Measured on Kid Rock with an injected tone, where the window at 99.9 s reads a
+  fourth while the eight around it read the tone.
+
+**And the honest half: on the player's own song the LISTENING path reads nothing, at every window length tried from 6 to 20 s.** Only the bar-map path
+finds it — which is the path `auto` takes there, so the check fires where it matters, but the reason is worth writing down rather than being
+rediscovered. The bar map has already put the bar lines on the recording's grid, so a ten-second window matches sharply; the unwarped tab's own first
+ten bars run **7.6 % fast** against the recording, so that window is internally distorted and no lag can straighten it. **This song combines two
+faults in one stretch**, and the second is what hides the first.
+
+**So the capability was measured apart from it, by injection** (`tools/check_key_check.py --inject`): a well-aligned stretch of a tab that IS in the
+recording's key, rolled by a known interval, on five real songs through the listening path. **15 of 15 found, every sign right, no stray stretch
+anywhere**, at margins of **0.128 to 0.264** — three to seven times the threshold. Same shape as `simulate_timing.py`: an injected fault with a known
+answer, on real audio, through the real code.
+
+- **It is said in BARS**, because a bar is what he transposes — and said as what it IS: the stretch the difference could be READ over, which is not the
+  stretch it covers. On his own song the run reaches 0:21 where the fault runs to bar 10 at 0:31, so the line says *"bars 1-7 of this tab sit 2
+  semitones under the recording — read over 0:00–0:20, the stretch may run further"*. Claiming an end the measurement does not have would send him to
+  transpose seven bars of ten.
+- **On the HUD as well as in the panel, and ahead of a break.** `_sync_lines` is drawn by `S` and by nothing else — the fifth time in this project that
+  a feature could not be seen working — and a key gap is the more specific finding of the two: a break says *"this may be a different edit, or your
+  riff repeats"*, where this names which bars to transpose and by how much.
+- **In the run log** (`key_gaps`), because the log is what gets sent, and this is the **third** tab/recording conflict in this file to have been
+  measured by hand — after Thunder's length and Dry County's bars.
+- **`check_song_sync.py` reads the same function**, since that tool exists to answer "is it the files or the app" and a stretch written in another key
+  is a file question no sync can touch. Two implementations would be two answers to one question.

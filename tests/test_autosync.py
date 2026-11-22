@@ -450,7 +450,7 @@ class TestATabOfTheWrongLength:
         monkeypatch.setattr(
             autosync, "measure",
             lambda tab, audio, progress=None, tolerance_ms=25.0: (
-                autosync.points_from_rows(rows), rows, (tab_s, rec_s)))
+                autosync.points_from_rows(rows), rows, (tab_s, rec_s), []))
         return autosync.find("tab", "audio")
 
     def test_two_lengths_far_apart_are_not_one_song(self, monkeypatch):

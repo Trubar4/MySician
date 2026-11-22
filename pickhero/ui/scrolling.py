@@ -1405,6 +1405,7 @@ class PlayingScreen:
         # the player is navigating a four-minute song between the two points
         # and an expiring note is gone long before the second one is set.
         self._sync_lines: list[str] = []
+        self._key_gaps: list = []
         # How far the picture ever had to be pulled to stay with the
         # recording, and whether the recording ever led at all. A percentage
         # cannot be debugged and neither can a sync: these two say whether
@@ -8201,6 +8202,14 @@ class PlayingScreen:
         fh.write(f"mp3_corrections\t{len(fixes)}\t"
                  + " ".join(f"{at / 1000:.0f}s:{off:+.0f}ms"
                             for at, off in fixes) + "\n")
+        # A stretch of the tab written in another key. Not a sync fault and
+        # no map can repair it, which is why it is said rather than fitted --
+        # and why a log that carries it saves the session this cost by hand.
+        if self._key_gaps:
+            fh.write("key_gaps\t" + str(len(self._key_gaps)) + "\t"
+                     + " ".join(f"{g.from_s:.0f}-{g.to_s:.0f}s:"
+                                f"{g.semitones:+d}" for g in self._key_gaps)
+                     + "\n")
         fh.write(f"mp3_worst_pull_ms\t{self._worst_sync_pull_ms:.0f}\n")
         fh.write(f"mp3_snaps\t{self._mp3_snaps}\n")
         fh.write(f"mp3_leads\t{'yes' if self._mp3_led else 'no'}\n")
@@ -10341,6 +10350,10 @@ class PlayingScreen:
                                 f"{result[1]}"]
             return
         _, points, report = result
+        # Kept for the run log: a tab in the wrong key is exactly the kind of
+        # finding that has cost this project a session by hand three times,
+        # and the log is what gets sent.
+        self._key_gaps = list(report.get("key_gaps") or [])
         self._sync_lines = self._auto_sync_report_lines(points, report)
         self._say_break(report)
         if not report["readable"] or len(points) < 2:
@@ -10401,6 +10414,15 @@ class PlayingScreen:
         the key that has the link.
         """
         from pickhero.audio import autosync
+        # The key gap FIRST, because it is the more specific finding and the
+        # more actionable one: a break says "this may be a different edit,
+        # or your riff repeats", where this says which bars to transpose and
+        # by how much. It is also the rarer -- one song of eight here.
+        gaps = report.get("key_gaps") or []
+        if gaps:
+            self._say(self._key_gap_sentence(gaps[0]).split(" — ")[0]
+                      + " — S says more")
+            return
         breaks = report.get("breaks") or []
         real = [b for b in breaks if b.real]
         if real:
@@ -10709,6 +10731,7 @@ class PlayingScreen:
                 f"{format_time(covered[1] * 1000)} of "
                 f"{format_time(report['song_s'] * 1000)} covered"
                 if covered else "")
+        lines += self._key_gap_lines(report)
         lines.append(
             f"SYNC   found by listening — {report['usable']} of "
             f"{report['windows']} windows{span}")
@@ -10721,6 +10744,59 @@ class PlayingScreen:
             lines.append(f"SYNC   {said}")
         lines += self._break_lines(report)
         return lines
+
+    def _key_gap_lines(self, report) -> list[str]:
+        """Where this tab is written in another key from the recording.
+
+        *"Das ist der einzige Song bei dem der Anfang 7-7-6-0 komplett
+        schraeg klingt, also meine Gitarre um einen Viertelton anders als
+        das MP3 ist."* The observation was right and the diagnosis was not:
+        his guitar is at A=440 to within a cent and so is the recording, and
+        the first ten bars of that tab are a WHOLE TONE low. Nothing on
+        screen compared the two keys, so it took a session by hand -- the
+        third tab/recording conflict in this file to be measured that way,
+        after Thunder's length and Dry County's bars.
+
+        Said in BARS, because a bar is what he transposes. And said as what
+        it IS: the stretch the difference could be READ over, which is not
+        the same as the stretch it covers. On his own song the run of
+        windows reaches 0:21 where the fault runs to bar 10 at 0:31 -- the
+        windows past it fall below the margin, and claiming an end the
+        measurement does not have would send him to transpose seven bars of
+        ten.
+        """
+        gaps = report.get("key_gaps") or []
+        if not gaps:
+            return []
+        lines = []
+        for gap in gaps[:2]:
+            lines.append(f"SYNC   {self._key_gap_sentence(gap)}")
+        lines.append(
+            "SYNC   check the bars around it: a tab in the wrong key is not "
+            "a sync problem and no point can repair it")
+        return lines
+
+    def _key_gap_sentence(self, gap) -> str:
+        """One key gap, in bars and semitones.
+
+        One implementation, because the panel and the HUD note both say it
+        and two of them is how one comes to name a different stretch.
+        """
+        from pickhero import played as played_module
+        bars = [m.start_ms for m in self._timeline.measures]
+        first = played_module.bar_of(gap.from_s * 1000.0, bars)
+        last = played_module.bar_of(gap.to_s * 1000.0, bars)
+        where = (f"bars {first}-{last}" if first and last and last > first
+                 else f"bar {first}" if first
+                 else f"{format_time(gap.from_s * 1000)}-"
+                      f"{format_time(gap.to_s * 1000)}")
+        side = "under" if gap.semitones > 0 else "over"
+        n = abs(gap.semitones)
+        return (f"{where} of this tab sit {n} semitone"
+                f"{'s' if n != 1 else ''} {side} the recording — read over "
+                f"{format_time(gap.from_s * 1000)}–"
+                f"{format_time(gap.to_s * 1000)}, the stretch may run "
+                f"further")
 
     def _break_lines(self, report) -> list[str]:
         """Where the tab and the recording stop being the same music.
@@ -10921,7 +10997,8 @@ class PlayingScreen:
                if refined else
                ["SYNC   not refined: too few windows to read the map's own "
                 "error, so one constant is the whole of it"])
-        return self._break_lines(report) + self._bar_map_tempo_lines(report) + [
+        return (self._key_gap_lines(report) + self._break_lines(report)
+                + self._bar_map_tempo_lines(report)) + [
             f"SYNC   from Songsterr's {report['bars']} bar times, lined up "
             f"here at {report['constant_s']:+.2f} s — {report['usable']} of "
             f"{report['windows']} windows agree to "
