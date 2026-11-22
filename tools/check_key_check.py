@@ -26,6 +26,8 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pickhero.audio import autosync                        # noqa: E402
@@ -135,13 +137,33 @@ def injected(tab: Path, mp3: Path) -> list[tuple[int, object]]:
     Same shape as `tools/simulate_timing.py`: an injected fault with a known
     answer, on real audio, through the real code.
     """
-    import numpy as np
     samples, rate = autosync.decode(mp3)
     rec, fps = autosync.chroma_of_audio(samples, rate)
     tab_chroma = autosync.chroma_of_tab_file(tab, fps)
     rows = autosync.drift_curve(tab_chroma, rec, fps)
     band = slice(int(INJECT_S[0] * fps), int(INJECT_S[1] * fps))
     out = []
+    # The WHOLE tab first, which is the commonest real shape of this fault:
+    # a tab in the wrong tuning, or read with a capo nobody wrote down. It
+    # is also the hardest for the measurement around it -- the lag search
+    # itself collapses from 32-42 usable windows to 3-10, so nothing is
+    # stored and the panel reports a failure. The rotation test reads the
+    # interval off what is left, which is the whole reason that branch now
+    # says so before it says it could not read anything.
+    whole = np.roll(tab_chroma, 1, axis=1)
+    whole_rows = autosync.drift_curve(whole, rec, fps)
+    whole_gaps = autosync.key_check(whole, rec, fps, whole_rows)
+    # An ABSTENTION is not a failure here, and a wrong number would be.
+    # Where the readings disagree about the interval the panel names none
+    # (see `_key_gap_lines`), so a disagreement counts as a pass and is
+    # printed as one -- it is the honest answer to a tab whose whole key is
+    # wrong and whose lag map is therefore built on almost nothing.
+    spread = {g.semitones for g in whole_gaps}
+    if len(spread) > 1:
+        out.append(("whole", [], []))
+    else:
+        out.append(("whole", [g for g in whole_gaps if g.semitones == -1],
+                    [g for g in whole_gaps if g.semitones != -1]))
     for shift in INJECT_SHIFTS:
         moved = tab_chroma.copy()
         moved[band] = np.roll(tab_chroma[band], shift, axis=1)
@@ -241,11 +263,13 @@ def main() -> int:
         for shift, hit, stray in injected(tab, mp3):
             where = ", ".join(f"{g.from_s:.0f}-{g.to_s:.0f}s/{g.margin:.3f}"
                               for g in hit)
-            print(f"  {tab.name[:34]:34} rolled {shift:+d}    "
-                  + (f"found {-shift:+d} over {where}" if hit
-                     else "NOT FOUND")
+            shift = f"{shift:+d}" if isinstance(shift, int) else shift
+            print(f"  {tab.name[:34]:34} rolled {shift:5}  "
+                  + (f"found over {where}" if hit
+                     else "readings disagree, no number named"
+                     if shift == "whole" else "NOT FOUND")
                   + (f"   STRAY {len(stray)}" if stray else ""))
-            if not hit or stray:
+            if stray or (not hit and shift != "whole"):
                 bad += 1
 
     print("\nFAIL" if bad else "\nOK")

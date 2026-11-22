@@ -310,3 +310,153 @@ class TestOneDissentingWindowIsNotTwoFaults:
         """Which is what makes "one window" the bridge rather than a
         constant somebody chose."""
         assert autosync.KEY_STEP_S * 2 == autosync.KEY_WINDOW_S
+
+
+class TestAWholeTabInTheWrongKey:
+    """The commonest real case of this fault, and the branch that used to
+    return before the answer was reached.
+
+    Measured by rolling four real songs' chroma a semitone: the usable share
+    collapses from 32-42 windows of 42-50 to 3-10, so nothing is stored and
+    the panel says "could not read this recording" -- while the rotation
+    test reads the interval off what is left, at margins of 0.14 to 0.36.
+    Burying that is the "say which half is low" rule broken in the one
+    place it costs most.
+    """
+
+    def _screen(self, tmp_path):
+        from pickhero.tabs.timeline import (MeasureInfo, NoteEvent,
+                                            SongMetadata, Timeline)
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        notes = [NoteEvent(timestamp_ms=i * 3000.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=3, measure=i)
+                 for i in range(90)]
+        measures = [MeasureInfo(index=i, start_ms=i * 3000.0,
+                                end_ms=(i + 1) * 3000.0) for i in range(90)]
+        return PlayingScreen(
+            Timeline(notes, SongMetadata(title="t", tempo=120),
+                     measures=measures), config=config, song_key="song")
+
+    def _unreadable(self, gaps):
+        return {
+            "points": [], "readable": False, "share": 0.2, "windows": 43,
+            "ambiguous": 9, "usable": 7, "breaks": [], "sections": 1,
+            "sections_used": 0, "unreadable": [], "covered": None,
+            "song_s": 270.0, "tab_s": 270.0, "recording_s": 270.0,
+            "length_gap": 0.0, "wrong_length": False, "key_gaps": gaps,
+        }
+
+    def test_the_key_is_named_before_the_failure_it_explains(self, tmp_path):
+        screen = self._screen(tmp_path)
+        gap = autosync.KeyGap(0.0, 273.0, -1, 0.288, 40)
+        lines = screen._auto_sync_report_lines([], self._unreadable([gap]))
+        assert "semitone over the recording" in lines[0]
+        assert "could not read" in " ".join(lines[1:])
+
+    def test_a_song_that_is_merely_unreadable_is_not_accused(self, tmp_path):
+        """What's Up keeps 13 of 41 windows and is in the recording's key.
+        "Could not read it" and "written in another key" are different
+        answers and must not collapse into one."""
+        screen = self._screen(tmp_path)
+        lines = " ".join(screen._auto_sync_report_lines(
+            [], self._unreadable([])))
+        assert "semitone" not in lines
+        assert "could not read" in lines
+
+    def test_the_bar_map_path_says_it_on_its_own_failure_too(self, tmp_path):
+        screen = self._screen(tmp_path)
+        report = self._unreadable([autosync.KeyGap(0.0, 273.0, 2, 0.21, 40)])
+        report.update(source="songsterr", bars=90, measures=90, offered=[90],
+                      wrong_bars=False, spikes=0, refined=0, scatter_ms=0.0)
+        lines = " ".join(screen._auto_sync_report_lines([], report))
+        assert "2 semitones under the recording" in lines
+
+    def test_it_names_the_tool_that_repairs_it(self, tmp_path):
+        """No offset, rate or point moves a key, so the advice beside it
+        must not be "line it up by hand"."""
+        screen = self._screen(tmp_path)
+        gap = autosync.KeyGap(0.0, 273.0, 2, 0.21, 40)
+        lines = " ".join(screen._auto_sync_report_lines([],
+                                                        self._unreadable([gap])))
+        assert "transpose_bars" in lines
+
+    def test_more_than_two_stretches_are_counted_not_listed(self, tmp_path):
+        """A panel nobody finishes reading says nothing. Measured on Kid
+        Rock rolled a semitone: three stretches, and on Godsmack four."""
+        screen = self._screen(tmp_path)
+        gaps = [autosync.KeyGap(float(i * 40), float(i * 40 + 20), 2, 0.2, 3)
+                for i in range(4)]
+        lines = screen._auto_sync_report_lines([], self._unreadable(gaps))
+        assert sum("semitones under" in line for line in lines) == 2
+        assert "2 more stretches like it" in " ".join(lines)
+
+
+class TestADisagreementNamesNoNumber:
+    """Measured by rolling whole songs' chroma a semitone: where the fault
+    covers the ENTIRE tab, the lag map is built from the handful of windows
+    that survived, and on Kid Rock those put three stretches at +1, -1 and
+    +6 -- the strongest of them (0.153) pointing the wrong way.
+
+    A number there would send the player to transpose a tab the wrong
+    direction, which is worse than saying less. Eight of the ten synthetic
+    whole-song cases agree and are named; two abstain, and in both the
+    number would have been a coin flip.
+    """
+
+    def _screen(self, tmp_path):
+        from pickhero.tabs.timeline import (MeasureInfo, NoteEvent,
+                                            SongMetadata, Timeline)
+        song = tmp_path / "backing.mp3"
+        song.write_bytes(b"x")
+        config = Config()
+        config.set_mp3_path_for("song", str(song))
+        notes = [NoteEvent(timestamp_ms=i * 3000.0, duration_ms=400.0,
+                           midi_note=40, string=6, fret=3, measure=i)
+                 for i in range(90)]
+        measures = [MeasureInfo(index=i, start_ms=i * 3000.0,
+                                end_ms=(i + 1) * 3000.0) for i in range(90)]
+        return PlayingScreen(
+            Timeline(notes, SongMetadata(title="t", tempo=120),
+                     measures=measures), config=config, song_key="song")
+
+    def _report(self, gaps):
+        return {
+            "points": [], "readable": False, "share": 0.2, "windows": 50,
+            "ambiguous": 9, "usable": 6, "breaks": [], "sections": 1,
+            "sections_used": 0, "unreadable": [], "covered": None,
+            "song_s": 270.0, "tab_s": 270.0, "recording_s": 270.0,
+            "length_gap": 0.0, "wrong_length": False, "key_gaps": gaps,
+        }
+
+    def test_readings_that_disagree_name_no_interval(self, tmp_path):
+        screen = self._screen(tmp_path)
+        gaps = [autosync.KeyGap(35.0, 55.0, 1, 0.153, 3),
+                autosync.KeyGap(139.0, 169.0, -1, 0.062, 4),
+                autosync.KeyGap(199.0, 219.0, 6, 0.109, 3)]
+        lines = " ".join(screen._auto_sync_report_lines([],
+                                                        self._report(gaps)))
+        assert "semitone" not in lines
+        assert "readings disagree" in lines
+        assert "0:35" in lines, "it still says WHERE"
+
+    def test_the_strongest_reading_does_not_win(self, tmp_path):
+        """A majority or a best-margin rule is exactly the ranking of noise
+        this project refuses everywhere else."""
+        screen = self._screen(tmp_path)
+        gaps = [autosync.KeyGap(0.0, 60.0, 1, 0.400, 9),
+                autosync.KeyGap(80.0, 100.0, -1, 0.040, 3)]
+        lines = " ".join(screen._auto_sync_report_lines([],
+                                                        self._report(gaps)))
+        assert "1 semitone" not in lines
+
+    def test_agreeing_readings_are_still_named(self, tmp_path):
+        """The control: two stretches of one interval is one answer."""
+        screen = self._screen(tmp_path)
+        gaps = [autosync.KeyGap(0.0, 60.0, -1, 0.3, 9),
+                autosync.KeyGap(80.0, 100.0, -1, 0.2, 3)]
+        lines = " ".join(screen._auto_sync_report_lines([],
+                                                        self._report(gaps)))
+        assert "1 semitone over the recording" in lines

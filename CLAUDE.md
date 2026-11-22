@@ -9173,3 +9173,26 @@ answer, on real audio, through the real code.
   measured by hand — after Thunder's length and Dry County's bars.
 - **`check_song_sync.py` reads the same function**, since that tool exists to answer "is it the files or the app" and a stretch written in another key
   is a file question no sync can touch. Two implementations would be two answers to one question.
+
+### A Whole Tab In The Wrong Key, Which Is The Commonest Shape Of It
+
+The chapter above was written about a fault in ten bars, and the commonest real one covers the whole file: a tab in the wrong tuning, or read with a capo
+nobody wrote down. Measured by rolling four real songs' chroma a semitone and running the real `find`:
+
+| | usable windows | what the panel said |
+|---|---|---|
+| in the recording's key | 32-42 of 42-50 | the map, stored |
+| **a semitone out, whole tab** | **3-10 of 42-50** | **"could not read this recording against this tab"** |
+
+**So the commonest case of this fault presents as an unreadable measurement** — and that branch of `_auto_sync_report_lines` returned BEFORE the key lines
+were reached, so the app had the answer and buried it. The rotation test still reads the interval off the few windows that survived, at margins of 0.14
+to 0.36. The key gap is said FIRST there now, because where there is one it is the explanation rather than a detail beside the failure.
+
+**And where the readings disagree, no number is named.** On Kid Rock rolled a semitone the surviving windows put three stretches at **+1, −1 and +6**, and
+the strongest of them (0.153) points the WRONG way — a number there would send the player to transpose a tab in the wrong direction, which is worse than
+saying less. Eight of the ten synthetic whole-song cases agree and are named; two abstain, and in both the number would have been a coin flip. **The
+strongest reading does not win**: a best-margin or majority rule is the ranking of noise this project refuses everywhere else, and the test asserts that
+a 0.400 reading does not outvote a 0.040 one. What is still said is WHERE, and that it is a key rather than a sync problem.
+
+`tools/check_key_check.py --inject` holds all of it: the whole-song roll on every song with a recording, three partial intervals each, and an abstention
+counted as a pass rather than a miss.

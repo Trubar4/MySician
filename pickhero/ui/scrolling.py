@@ -10719,7 +10719,16 @@ class PlayingScreen:
             why = (f"{report['usable']} of {report['windows']} windows agreed"
                    + (f", {report['ambiguous']} could not tell one chorus "
                       f"from another" if report["ambiguous"] else ""))
-            return [
+            # FIRST, because where there is one it is the explanation rather
+            # than a detail beside the failure. A tab in the wrong key is
+            # exactly what an unreadable measurement looks like from here:
+            # measured by rolling four real songs' chroma a semitone, the
+            # usable share collapses from 32-42 windows to 3-10 -- and the
+            # rotation test still reads the interval off what is left. The
+            # commonest real case of this fault is a whole tab in the wrong
+            # tuning, which is precisely the branch that used to return
+            # before the answer was reached.
+            return self._key_gap_lines(report) + [
                 f"SYNC   could not read this recording against this tab — "
                 f"{why}",
                 "SYNC   nothing was stored. Shift+N/M to line it up by hand, "
@@ -10768,12 +10777,36 @@ class PlayingScreen:
         gaps = report.get("key_gaps") or []
         if not gaps:
             return []
+        # A DISAGREEMENT names no interval. Measured by rolling whole songs'
+        # chroma: where the fault covers the entire tab the lag map itself is
+        # built from the handful of windows that survived, and on Kid Rock
+        # those put three stretches at +1, -1 and +6 -- the strongest of them
+        # (0.153) pointing the WRONG way. A number there would send him to
+        # transpose a tab the wrong direction, which is worse than saying
+        # less. Eight of the ten synthetic whole-song cases agree and are
+        # named; two abstain, and in both the number would have been a coin
+        # flip. Same rule as the tuning detector's two folds.
+        if len({gap.semitones for gap in gaps}) > 1:
+            where = ", ".join(f"{format_time(g.from_s * 1000)}–"
+                              f"{format_time(g.to_s * 1000)}"
+                              for g in gaps[:3])
+            return [
+                f"SYNC   parts of this tab are not in the recording's key "
+                f"({where}) — but the readings disagree about how far, so "
+                f"no number is worth acting on",
+                "SYNC   check the tuning the tab is written in, and that "
+                "this recording is the same key as the tab",
+            ]
         lines = []
         for gap in gaps[:2]:
             lines.append(f"SYNC   {self._key_gap_sentence(gap)}")
+        if len(gaps) > 2:
+            lines.append(f"SYNC   and {len(gaps) - 2} more stretch"
+                         f"{'es' if len(gaps) > 3 else ''} like it")
         lines.append(
             "SYNC   check the bars around it: a tab in the wrong key is not "
-            "a sync problem and no point can repair it")
+            "a sync problem and no point can repair it "
+            "(tools/transpose_bars.py moves a bar range)")
         return lines
 
     def _key_gap_sentence(self, gap) -> str:
@@ -10973,7 +11006,7 @@ class PlayingScreen:
             also = ("" if not heard else
                     f", and the listening kept {heard.get('usable', 0)} of "
                     f"{heard.get('windows', 0)}")
-            return (self._break_lines(report)
+            return (self._key_gap_lines(report) + self._break_lines(report)
                     + self._bar_map_tempo_lines(report) + [
                         f"SYNC   Songsterr's bar map does not fit this "
                         f"recording — {report['usable']} of "
