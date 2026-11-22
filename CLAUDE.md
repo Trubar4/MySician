@@ -9087,3 +9087,29 @@ tuning, not the MP3, and not anything the app can score its way out of.
 **It is the third tab/recording conflict measured by hand here** (Thunder's length, Dry County's bars, now the key) and the arithmetic is
 already computed at `Ctrl+S` — both chroma curves exist. A rotation comparison per section costs milliseconds and would have said it in one
 line.
+
+### Moving Ten Bars Of One Track
+
+`tools/transpose_bars.py` writes the corrected copy beside the original. On the song that prompted it:
+
+```
+python tools/transpose_bars.py "Trans-Siberian Orchestra - Carol Of The Bells.gp" \
+    --track 0 --bars 1-10 --semitones 2
+```
+
+**77 notes moved; every other bar and every other track unchanged.** Re-measured against the recording, the intro goes from `best +2
+(+0.351), at +0 −0.119` to **`best +0 (+0.332)`**, and 10-20 s from `+7 / −0.020` to **`+0 (+0.211)`** — the stretch that could not be read
+before now reads, at the written pitch.
+
+- **GPIF writes a pitch FOUR times over** — `Fret`, `Midi`, `ConcertPitch` and `TransposedPitch` — and the app reads the first two. A file
+  that moved the fret and not the spelling would play correctly here and be wrong in Guitar Pro, which is the worst outcome available: a tab
+  that looks right. All four are written, with the octave as `midi // 12` and sharps throughout, verified on 14 pitches of the player's own
+  file across four octaves.
+- **A note carrying only a fret is still moved.** The app derives the pitch from the fret and the string, so a file without the pitch blocks
+  is valid and must not be refused — but `ConcertPitch` present with `Midi` absent IS refused, because there is then nothing to respell it
+  from.
+- **The claim is checked rather than asserted.** It reads the result back through the real loader and compares every pitch, string, duration
+  and mute flag of every track: a quietly transposed tab is worse than no tab, which is the lesson `retune.py` already carries. The test
+  class includes a control that the check can FAIL, because a check that cannot is the thing it exists to catch.
+- **Nothing is overwritten and nothing is transposed that was not asked for** — not the tuning (that would be the same fret numbers playing
+  different music), not another track, not a bar outside the range.

@@ -15,6 +15,8 @@ argument: one mis-fretted string cannot be an exact sub-multiple of two
 different written pitches at once, where a missing fundamental is that by
 definition.
 
+Usage:
+
     python tools/check_common_period.py
     python tools/check_common_period.py --right <take dir> --wrong <take dir>
 
