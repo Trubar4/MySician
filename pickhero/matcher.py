@@ -94,6 +94,39 @@ BEND_MIN_SAMPLES = 4
 # How long after a bend note ends before its verdict is settled, so the last
 # frames of the note have arrived.
 BEND_VERDICT_DELAY_MS = 120.0
+# A strike whose pitch is the exact COMMON PERIOD of the notes written around
+# it. On a figure alternating two notes a perfect fourth apart -- B3 on the D
+# string and E4 on the G string, which is the whole of Carol Of The Bells --
+# monophonic YIN locks onto the period both share and reports E2: B3 is its
+# third harmonic and E4 its fourth. That reading is not a wrong note, it is
+# the missing fundamental of the pair, and the written note really is
+# sounding; but 19 semitones is not a whole number of octaves, so the octave
+# equivalence the matcher already grants misses it entirely. Measured on that
+# song: 185 of 338 misses were one written note, and 97 confident strikes
+# reported E2.
+#
+# The intervals are 1/k of the written pitch for k = 2..6. The halves and
+# quarters (12 and 24) octave equivalence already grants; what is new is the
+# ODD divisions -- 19, 28 and 31 semitones -- and 1/3 is the one that fires.
+COMMON_PERIOD_DIVISORS = (2, 3, 4, 5, 6)
+# How many of the written notes around the strike must share that period
+# before it is credited. TWO, and that is the whole safety argument: one
+# mis-struck string cannot be an exact sub-multiple of two different written
+# pitches at once, where a missing fundamental is that by definition.
+#
+# Measured in both directions on the player's own instrument, same 84 notes
+# of the same passage (tools/check_common_period.py):
+#
+#   played right, one fret off     green before    with the rule
+#   correct take                     36 / 84         55 / 84
+#   the same bars played a fret up   26 / 84         26 / 84   -- not one
+#
+# Two things had to be exact rather than tolerant, and the error take is what
+# says so. The wrong fret produced C3 on 44 strikes, which is one semitone
+# from B2 -- half of the written B3 -- so a +-1 semitone tolerance credits 46
+# of them and the rule becomes worthless. And requiring ONE partner instead of
+# two lets a single stray reading through (+1 on the error take).
+COMMON_PERIOD_PARTNERS = 2
 # How long a pitch reading is kept. Long enough for the longest note anyone
 # writes a bend across, short enough that the list stays small.
 CONTOUR_KEEP_MS = 6000.0
@@ -238,6 +271,7 @@ class NoteMatcher:
         chord_verifier: ChordVerifier | None = None,
         bend_check: bool = True,
         subharmonic_rescue: bool = True,
+        common_period: bool = True,
     ):
         self._timeline = timeline
         self._timing_window_ms = timing_window_ms
@@ -258,6 +292,13 @@ class NoteMatcher:
         # present on both sides -- comparing it against no verifier at all
         # measures the chord verdicts instead, and did on the first attempt.
         self.subharmonic_rescue = subharmonic_rescue
+        # How many notes were credited because the strike carried their
+        # common period. Written only, like strike_trace -- nothing in the
+        # matcher reads it back.
+        self.notes_from_common_period = 0
+        # Off only in the control runs of tools/check_common_period.py and
+        # tools/check_subharmonic_rescue.py. See COMMON_PERIOD_DIVISORS.
+        self.common_period = common_period
 
         # State per note event, keyed by (timestamp_ms, string)
         self._note_states: dict[tuple[float, int], MatchType] = {}
@@ -265,7 +306,7 @@ class NoteMatcher:
         # verdict rested on. Only the pause rewind puts anything in here --
         # see `forget_from(floor_until_ms=...)`.
         self._verdict_floor: dict[tuple[float, int],
-                                  tuple[MatchType, bool]] = {}
+                                  tuple[MatchType, bool, str]] = {}
 
         # Statistics
         self.hits = 0
@@ -482,8 +523,14 @@ class NoteMatcher:
     def _undo_match(self, event: NoteEvent, match_type: MatchType) -> None:
         """Reverse the counters a previous _record_match applied."""
         if match_type in (MatchType.HIT, MatchType.CLOSE):
-            if self._credit_proved.pop(self._note_key(event), True):
+            key = self._note_key(event)
+            # Read before the caller clears it -- which is why forget_from
+            # undoes the match before it pops _unreliable.
+            why = self._unreliable.get(key, "strum")
+            if self._credit_proved.pop(key, True):
                 self.notes_proved -= 1
+            elif why == "common_period":
+                self.notes_from_common_period -= 1
             else:
                 self.notes_by_strum -= 1
         if match_type == MatchType.HIT:
@@ -505,7 +552,8 @@ class NoteMatcher:
         self._record_match(event, match_type)
 
     def _record_match(self, event: NoteEvent, match_type: MatchType,
-                      proved: bool = True) -> None:
+                      proved: bool = True,
+                      credit: str = "strum") -> None:
         """Record a match for a note, updating stats and measure stats.
 
         `proved` says what the credit rests on. A note whose own written pitch
@@ -527,7 +575,7 @@ class NoteMatcher:
             # player's rule, and it is why the rewind is safe to do on every
             # pause: coming back in sloppily cannot cost three notes that
             # were already right.
-            match_type, proved = floored[0], floored[1]
+            match_type, proved, credit = floored
         self._set_state(event, match_type)
         self._unreliable.pop(key, None)
         if match_type in (MatchType.HIT, MatchType.CLOSE):
@@ -535,11 +583,17 @@ class NoteMatcher:
             if proved:
                 self.notes_proved += 1
             else:
-                # Green on the evidence of a STRUM, not of this string. The
-                # player asked to see which of the two a colour rests on:
-                # *"was du eigentlich nicht beurteilen konntest"*.
-                self.notes_by_strum += 1
-                self._unreliable[key] = "strum"
+                # Green on something other than this string's own pitch.
+                # The player asked to see which of the two a colour rests on:
+                # *"was du eigentlich nicht beurteilen konntest"*. `credit`
+                # says WHICH, because a strum and a common period are
+                # different kinds of evidence and are fixed in different
+                # places.
+                if credit == "common_period":
+                    self.notes_from_common_period += 1
+                else:
+                    self.notes_by_strum += 1
+                self._unreliable[key] = credit
         if match_type == MatchType.HIT:
             self.hits += 1
             self._measure_stats[event.measure]["hits"] += 1
@@ -637,6 +691,10 @@ class NoteMatcher:
           so most of a six-string chord is credited this way; the chord
           verifier polices it and can only convict a string whose partials
           are not masked by a lower one.
+        - ``"common_period"`` -- credited green because the strike carried
+          the period this note SHARES with the one beside it, not this note's
+          own pitch. Exact arithmetic about the written note, and still not a
+          reading of the string.
         - ``"unreadable"`` -- marked red with a strike sitting in its window
           that carried no usable pitch at all.
 
@@ -662,6 +720,66 @@ class NoteMatcher:
             return None
         state = self._note_states.get(source_key)
         return state if state in (MatchType.HIT, MatchType.CLOSE) else None
+
+    def _common_period_credit(self, detected_midi: int,
+                              adjusted_ms: float) -> MatchResult | None:
+        """Credit a written note whose common period is what came back.
+
+        Two notes a fourth or a fifth apart share a period several octaves
+        below either of them, and a monophonic detector regularly reports that
+        period rather than the string just struck. The reading is then an
+        exact sub-multiple of BOTH written pitches -- which is the signature
+        and the safeguard in one: a single mis-fretted string cannot be an
+        exact sub-multiple of two different written pitches at once.
+
+        **The partners are the notes written there, whatever their verdict,
+        and only the credit needs one still pending.** The first version
+        looked for both among the PENDING notes and fired not once on the
+        song it was built for: the partner supplying the other harmonic is
+        the note that WAS heard -- B3 reads 26 % and the E4 beside it 92 % --
+        so by the time the E2 arrives its partner has been green for 160 ms.
+        A harmonic coincidence is a property of the music; the scoring state
+        has no business in it.
+
+        It credits ONE note, the nearest in time. The partners are
+        consecutive onsets, not a chord, so crediting both would credit a
+        pick that has not happened yet; where they really are a chord the
+        subharmonic strum rule already covers it.
+        """
+        if not self.common_period:
+            return None
+        sounding = [
+            n for n in self._timeline.get_active_notes_at_time(
+                adjusted_ms, self._timing_window_ms)
+            # A dead note sounds no pitch and so supplies no harmonic, and a
+            # note the fret filter hides is one the player was not asked to
+            # play.
+            if not n.dead and not self._is_filtered(n)
+        ]
+        partners: dict[int, list[NoteEvent]] = {}
+        for note in sounding:
+            for k in COMMON_PERIOD_DIVISORS:
+                # Exact at the semitone. A tolerance of even one semitone
+                # makes this credit a wrong fret -- see COMMON_PERIOD_PARTNERS.
+                if round(note.midi_note - 12.0 * math.log2(k)) == detected_midi:
+                    partners.setdefault(k, []).append(note)
+                    break
+        if len(partners) < COMMON_PERIOD_PARTNERS:
+            return None
+        waiting = [n for ns in partners.values() for n in ns
+                   if self._get_state(n) == MatchType.PENDING]
+        if not waiting:
+            return None
+        nearest = min(waiting, key=lambda n: abs(n.timestamp_ms - adjusted_ms))
+        # Not proved: the note's own pitch was never heard. What was heard is
+        # arithmetic about it, which is why it is counted and drained apart
+        # from the notes heard as themselves.
+        self._record_match(nearest, MatchType.HIT, proved=False,
+                           credit="common_period")
+        return MatchResult(
+            match_type=MatchType.HIT, matched_events=[nearest],
+            semitone_distance=None,
+        )
 
     def _dead_note_credit(self, adjusted_ms: float) -> MatchResult | None:
         """Credit a written dead note for a strike no pitch accounts for.
@@ -838,8 +956,15 @@ class NoteMatcher:
                 # No written pitch explains this strike. A dead note might:
                 # damping the string still lets some pitch through, and which
                 # pitch that is says nothing about whether the mute was right.
-                dead_result = self._dead_note_credit(adjusted_ms)
-                if dead_result is not None:
+                # Before the dead note, which accepts ANY pitch and would
+                # otherwise swallow a reading this can account for exactly.
+                period = self._common_period_credit(
+                    detected_midi, adjusted_ms)
+                dead_result = (None if period is not None
+                               else self._dead_note_credit(adjusted_ms))
+                if period is not None:
+                    results.append(period)
+                elif dead_result is not None:
                     results.append(dead_result)
                 elif (self.subharmonic_rescue
                       and getattr(ts_note.note, "subharmonic", False)):
@@ -870,10 +995,13 @@ class NoteMatcher:
                         self._unreadable_strikes.append(adjusted_ms)
                         self._hold_for_rescue(adjusted_ms,
                                               ts_note.sample_pos)
+                done = period or dead_result
                 self._trace(ts_note, adjusted_ms, playback_ms,
-                            "dead" if dead_result is not None else "unmatched",
-                            dead_result.matched_events[0] if dead_result
-                            and dead_result.matched_events else None, best_dist)
+                            "common_period" if period is not None
+                            else "dead" if dead_result is not None
+                            else "unmatched",
+                            done.matched_events[0] if done
+                            and done.matched_events else None, best_dist)
                 # Too far off otherwise — ignore this detection, no penalty
                 continue
 
@@ -1685,7 +1813,8 @@ class NoteMatcher:
             if (floor_until_ms is not None
                     and note.timestamp_ms < floor_until_ms):
                 self._verdict_floor[key] = (
-                    state, self._credit_proved.get(key, True))
+                    state, self._credit_proved.get(key, True),
+                    self._unreliable.get(key, "strum"))
             self._undo_match(note, state)
             self._note_states.pop(key, None)
             self._credit_proved.pop(key, None)
@@ -1741,6 +1870,7 @@ class NoteMatcher:
         self.misses = 0
         self.notes_proved = 0
         self.notes_by_strum = 0
+        self.notes_from_common_period = 0
         self._credit_proved.clear()
         self._measure_stats.clear()
         self.reset_timing_samples()

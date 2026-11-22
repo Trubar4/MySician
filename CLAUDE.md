@@ -9010,3 +9010,80 @@ wrong, is what would settle it -- the same shape as `check_power_chord_credit.py
 **What it is NOT: `_hold_for_rescue` would gain nothing here even if the flag were widened.** At 162 ms between strikes no
 verification window ever arrives -- his log reads `chord_windows_judged 7` against `windows_dropped_short 455` -- so the existing
 subharmonic path would hold every one of them and answer none.
+
+## Nineteen Semitones, Measured In Both Directions
+
+*"Anbei der falsche Take - riecht das?"* It did, and it is the control the chapter above said was missing. Two takes of the same ten bars on
+the same guitar through the same interface, one played as written and one played a fret high — which turns the sub-multiple idea from a
+plausible story into a measurement.
+
+**The reading is the common period of two written notes.** B3 on the D string and E4 on the G string are a perfect fourth apart, so both are
+harmonics of E2 — B3 its third, E4 its fourth — and monophonic YIN locks onto the period they SHARE. On the player's own run that is 97
+confident strikes reporting E2 and **185 of 338 missed notes being that one written B3**. Nineteen semitones is not a whole number of
+octaves, so the octave equivalence the matcher already grants never saw it; 231 of 801 notes in that song are that one pitch.
+
+| bars 12-21, 84 written notes | rule off | rule on |
+|---|---|---|
+| **played as written** | 31 / 84 | **49 / 84** |
+| **the same bars played a fret high** | 12 / 84 | **12 / 84 — not one** |
+
+Whole correct take, 378 notes reached: **54 % → 65 %**, 43 of them credited by a common period. The error take gains **zero**.
+
+- **Two partners, and that is the whole safety argument.** A single mis-fretted string cannot be an exact sub-multiple of two different
+  written pitches at once, where a missing fundamental is that by definition. Requiring one instead of two lets a stray reading through
+  (+1 on the error take), and it is not an arbitrary tightening: the physics of the thing is the coincidence.
+- **Exact at the semitone, and the error take is what says so.** Played a fret high the detector reported **C3 on 44 strikes** — one
+  semitone from B2, which is half of the written B3 — so a ±1 semitone tolerance credits **46** of them and the rule is worth nothing. The
+  two populations are completely disjoint at exactness and completely overlapping at a semitone.
+- **The partners are the notes WRITTEN there, whatever their verdict; only the credit needs one still pending.** The first version looked
+  for both among the PENDING notes and **fired not once** on the song it was built for — because the partner supplying the other harmonic
+  is the note that WAS heard: B3 reads 26 % on this instrument and the E4 beside it 92 %, so by the time the E2 arrives its partner has been
+  green for 160 ms. A harmonic coincidence is a property of the music and the scoring state has no business in it.
+- **It is drained and counted apart** (`unreliable()` answers `"common_period"`, the run log says `notes_from_a_common_period`). The note's
+  own pitch was never heard; what was heard is arithmetic about it, and the player asked to see which of the two a colour rests on.
+- **Octave equivalence still gets first refusal, deliberately.** An E2 reading beside a pending E4 is credited to the E4, two octaves up —
+  which is why 42 of the 97 readings in that run sat on an E4 already marked hit. Changing that would take credit away from notes that are
+  green today, and the measurement above is with the existing order.
+- **A dead note supplies no harmonic and a note the fret filter hides is not one the player was asked to play**, so neither counts as a
+  partner. And the credit is asked BEFORE the dead-note credit, which accepts any pitch at all and would otherwise swallow a reading this
+  accounts for exactly.
+- **All four controls hold**: `check_ringing_rescue.py` damped takes +0, `check_chord_credit.py` every deliberate error still caught,
+  `check_power_chord_credit.py` gaps 53 and 62 points, `check_subharmonic_rescue.py` no take loses a note. `tools/check_common_period.py`
+  is the new one and it needs both takes — scored alone, a rule that credits everything looks perfect.
+- **The sub-multiple set is 1/2 … 1/6.** Only 1/3 fires on real material (93 of 95 credits), which is the fourth-apart pair; 1/2 and 1/4 are
+  octaves and already granted, so what is genuinely new is 19, 28 and 31 semitones.
+
+**What it does NOT establish**, said before any of these numbers is quoted further: one passage, one player, one pair of takes. It is
+measured in both directions, which is more than the chord credit had when it shipped, and it is not a general claim about every wrong fret —
+a fret LOWER, or a different interval, would produce a different common period and has not been recorded.
+
+## The Intro Was A Whole Tone Low, And It Was Not A Quarter Tone
+
+*"Das ist der einzige Song bei dem der Anfang 7-7-6-0 komplett schräg klingt, also meine Gitarre um einen Viertelton anders als das MP3
+ist."* The observation is right, the diagnosis in it is not, and measuring the proposed cause first is what caught that.
+
+| | |
+|---|---|
+| his guitar, median of 5578 confident readings | **+1.0 cents** |
+| the recording | **+2.1 cents** |
+
+Both on A=440 to within a cent. **A quarter tone is 50.** And a quarter-tone error would scatter every pitch; the E4 beside the failing B3
+reads 92 %.
+
+**What is really wrong is two semitones, in ten bars.** Track 0, the clean guitar, is the only track with notes before 31 s and uses exactly
+four pitches — **A3 D4 F4 E4**, written 7-7-6-0. The recording's first 3.2 s is **E4 G4 B3 F#4**, and A, D and F do not appear in it at all.
+Each written pitch plus two semitones is one of them.
+
+Confirmed from the other side with the player's own sync map applied, per ten seconds of chroma:
+
+| | best rotation | at +0 |
+|---|---|---|
+| **0-10 s** | **+2 (+0.351)** | **−0.119** |
+| 30-40 s onward | **+0 (+0.65, +0.41, +0.32, +0.28, +0.36 …)** | the same |
+
+So the clean intro is a whole tone below the recording and the distorted body is in its key. That is a transcription fault in ten bars, not a
+tuning, not the MP3, and not anything the app can score its way out of.
+
+**It is the third tab/recording conflict measured by hand here** (Thunder's length, Dry County's bars, now the key) and the arithmetic is
+already computed at `Ctrl+S` — both chroma curves exist. A rotation comparison per section costs milliseconds and would have said it in one
+line.

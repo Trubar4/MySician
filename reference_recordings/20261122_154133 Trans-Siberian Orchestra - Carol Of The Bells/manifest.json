@@ -1,0 +1,84 @@
+{
+  "created": "2026-11-22T15:41:33",
+  "samplerate": 44100,
+  "channels": 1,
+  "device": "Analogue 1 + 2 (Focusrite USB A — MME, index 2, 2 of 2 channel(s) at 44100 Hz",
+  "tuning_offset_semitones": 0,
+  "drop_semitones": 0,
+  "recorded_in_app": true,
+  "takes": [
+    {
+      "id": "play_along",
+      "block": 99,
+      "title": "Durchgespielt: Trans-Siberian Orchestra - Carol Of The Bells",
+      "file": "play_along.wav",
+      "technique": "free",
+      "intentional_error": "",
+      "shapes": [],
+      "expected_midi": [],
+      "song": "Trans-Siberian Orchestra - Carol Of The Bells",
+      "tempo_percent": 100,
+      "seconds": 24.38,
+      "start_sample": 662016,
+      "start_song_ms": 31113.4,
+      "song_at": [
+        [
+          0,
+          31038.6
+        ],
+        [
+          58880,
+          14578.3
+        ],
+        [
+          66048,
+          14598.7
+        ],
+        [
+          135168,
+          14618.8
+        ],
+        [
+          227327,
+          14639.0
+        ],
+        [
+          278016,
+          14661.0
+        ],
+        [
+          319488,
+          14681.9
+        ],
+        [
+          364032,
+          14703.7
+        ],
+        [
+          408576,
+          14724.7
+        ],
+        [
+          450048,
+          14745.3
+        ],
+        [
+          516096,
+          14765.8
+        ],
+        [
+          711168,
+          14787.5
+        ],
+        [
+          904704,
+          14808.4
+        ]
+      ],
+      "transpose": 0,
+      "tuning": "Standard",
+      "dropped_blocks": 0,
+      "recorded_in_app": true
+    }
+  ]
+}

@@ -8121,6 +8121,8 @@ class PlayingScreen:
                      f"\t{100 * green / total:.0f}%\n")
         fh.write(f"notes_heard_as_themselves\t{matcher.notes_proved}\n")
         fh.write(f"notes_credited_to_a_strum\t{matcher.notes_by_strum}\n")
+        fh.write("notes_from_a_common_period\t"
+                 f"{matcher.notes_from_common_period}\n")
         fh.write(f"strings_taken_back\t{matcher.chord_strings_corrected}\n")
         fh.write(f"chord_windows_judged\t{matcher.chord_verifications}\n")
         # And the half that was missing: how many strikes never got a window
