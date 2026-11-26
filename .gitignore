@@ -77,7 +77,12 @@ pickhero/_build_stamp.txt
 tools/ffmpeg
 tools/ffmpeg.exe
 
-# What the app writes beside each tab: the bar map it caches, and the
-# song's own settings, which travel with the songs folder.
+# What the app writes beside each tab: the bar map it caches, the song's
+# own settings, and every run of it -- all three travel with the songs
+# folder and none of them belongs in the history. The runs are one
+# character per note of somebody's playing; the player asked for his songs
+# to move between machines "ohne History", and a repository is the one
+# place that is not a machine.
 *.songsterr.json
 *.mysician.json
+*.runs.json
