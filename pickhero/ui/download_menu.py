@@ -36,6 +36,7 @@ from pickhero.tabs.downloader import (
     grab_song,
     sanitize_filename,
 )
+from pickhero.ui.keys import ctrl_held
 from pickhero.ui import clickable
 from pickhero.ui.colors import get_theme
 
@@ -109,7 +110,7 @@ class DownloadMenuScreen:
         # Ctrl+V, because a Songsterr URL is 60 characters of slug nobody
         # types. Without this "paste a link" means "read it off the screen
         # and copy it in by hand", which is not pasting.
-        if event.key == pygame.K_v and event.mod & pygame.KMOD_CTRL:
+        if event.key == pygame.K_v and ctrl_held(event):
             from pickhero.ui.clipboard import clipboard_text
             # One line, whitespace out. A URL copied from a browser can
             # arrive with a trailing newline, and `song_id_of` would still

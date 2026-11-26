@@ -15,6 +15,7 @@ from pickhero.audio.input import validate_device_index
 from pickhero.config import Config
 from pickhero.progress import ProgressTracker
 from pickhero.tabs.loader import extract_backing_track, load_gp_file
+from pickhero.ui.keys import ctrl_held
 from pickhero.ui import clickable
 from pickhero.ui.colors import set_theme
 from pickhero.ui.calibration_menu import CalibrationMenuScreen
@@ -405,7 +406,7 @@ class App:
         # typed" would have switched it off on the search screen, which
         # is the exact screen it was asked for.
         if (event.type == pygame.KEYDOWN and event.key == pygame.K_c
-                and event.mod & pygame.KMOD_CTRL):
+                and ctrl_held(event)):
             self._copy_screen()
             return
 

@@ -11,6 +11,8 @@ No pygame drawing and no screen state, so importing it costs nothing.
 
 from __future__ import annotations
 
+import sys
+
 import pygame
 
 
@@ -38,17 +40,36 @@ def shift_held(event) -> bool:
     return len(letter) == 1 and letter.isalpha() and letter.isupper()
 
 
+#: What counts as "the modifier the shortcuts are written with". On macOS
+#: that is Cmd as well as Ctrl, because Cmd is what a Mac keyboard copies
+#: with -- and `CLAUDE.md` said no mapping was needed on the grounds that
+#: "the physical Ctrl key exists", which is reasoning rather than a
+#: measurement and was overturned by the first report from that machine.
+#:
+#: Accepting it is strictly a repair rather than a new binding, because
+#: today Cmd+C falls THROUGH to the plain `C` that raises the noise gate,
+#: Cmd+Z toggles vsync and Cmd+S opens the sync panel -- the same shape as
+#: `Shift+C` falling through to the gate, which this project has already
+#: shipped and fixed once.
+#:
+#: Not on Windows or Linux: there the Meta key is the Windows/Super key and
+#: it means something else entirely.
+CTRL_MODS = pygame.KMOD_CTRL
+if sys.platform == "darwin":
+    CTRL_MODS |= pygame.KMOD_META
+
+
 def ctrl_held(event) -> bool:
-    """Was CTRL down for this key press.
+    """Was CTRL down for this key press -- or Cmd, on a Mac.
 
     Two signals rather than `shift_held`'s three: a modifier produces no
     character of its own, so there is nothing to read off `unicode`. The live
     keyboard state is guarded for the same reason as there -- a key handler
     that can raise takes the app down with it.
     """
-    if getattr(event, "mod", 0) & pygame.KMOD_CTRL:
+    if getattr(event, "mod", 0) & CTRL_MODS:
         return True
     try:
-        return bool(pygame.key.get_mods() & pygame.KMOD_CTRL)
+        return bool(pygame.key.get_mods() & CTRL_MODS)
     except pygame.error:
         return False

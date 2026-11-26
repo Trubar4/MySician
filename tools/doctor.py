@@ -137,6 +137,20 @@ PACKAGES = (
 #: nothing about this machine, and pinning numpy does not help either.
 #: The mismatch is only the const on two parameters -- ABI-identical, same
 #: generated code -- so downgrading it to a warning is safe.
+#: macOS has no MIDI synth of its own, so this is an install rather than a
+#: setting. Named in full because "no MIDI output" without the fix beside it
+#: is the half a message this project has already shipped twice.
+MIDI_MAC_FIX = (
+    "macOS ships no MIDI synth, so this is an install and not a setting.",
+    "Windows has one built in, which is why B has always worked there.",
+    "    brew install fluid-synth",
+    "then put any General MIDI soundfont (a .sf2 file) beside it and leave",
+    "it running, which is what makes a port the app can see:",
+    "    fluidsynth -a coreaudio -m coremidi -s <soundfont>.sf2",
+    "Audio MIDI Setup's IAC bus is NOT enough -- that is a wire, not a",
+    "synth, so it would list a port that makes no sound.",
+)
+
 AUBIO_FIX = (
     "aubio has no macOS wheel and is compiled, so it needs a compiler:",
     "    xcode-select --install",
@@ -371,6 +385,53 @@ def check_output():
         return (WARN, "the mixer raised: %s: %s" % (type(exc).__name__, exc))
 
 
+def check_midi():
+    """The MIDI ports, because B and Shift+B have nothing else to reach.
+
+    **Windows ships a synth and macOS does not.** "Microsoft GS Wavetable
+    Synth" is a MIDI destination on every Windows box, so `B` has made a
+    sound there since the first day; on macOS CoreMIDI lists a destination
+    only where hardware or an app provides one, and the IAC bus is off by
+    default. So a clean Mac has NO output port at all and the backing track
+    is silent with nothing on screen but a dash.
+
+    The app says so already -- to stdout, where a player does not look, and
+    as a `-` in the HUD, which reads as a key that does nothing. This is the
+    check that was missing: twelve answers and none of them about the one
+    output that can be entirely absent on a platform.
+
+    It LISTS and never opens. Opening takes the device and prints to stdout;
+    the app's own `_open_shared_output` is what does that, once, when the
+    player presses the key.
+    """
+    try:
+        from pickhero.audio import midi_playback
+    except Exception as exc:
+        return (WARN, "could not ask: %s: %s" % (type(exc).__name__, exc))
+    try:
+        outputs = midi_playback.list_midi_outputs()
+    except Exception as exc:
+        return (WARN, "listing the ports raised: %s: %s"
+                % (type(exc).__name__, exc))
+    if not outputs:
+        lines = ["no MIDI output port at all, so B (the band) and Shift+B",
+                 "(the guide track) will be silent. Nothing else is affected;",
+                 "the recorded backing (U) does not use MIDI."]
+        if sys.platform == "darwin":
+            lines += MIDI_MAC_FIX
+        return (WARN, *lines)
+    try:
+        chosen = midi_playback._pick_output_device()
+    except Exception:
+        chosen = -1
+    names = dict(outputs)
+    said = "%d port(s): %s" % (len(outputs),
+                               ", ".join(n for _, n in outputs))
+    if chosen in names:
+        return (OK, said, "the app would use: %s" % names[chosen])
+    return (WARN, said, "but none of them is one the app would choose")
+
+
 def check_display():
     """What a window is, in pixels, which is not what the screen is.
 
@@ -564,6 +625,7 @@ CHECKS = (
     ("microphone", check_microphone),
     ("capture", check_capture_path),
     ("output", check_output),
+    ("midi", check_midi),
     ("display", check_display),
     ("engraver", check_engraver),
     ("clipboard", check_clipboard),

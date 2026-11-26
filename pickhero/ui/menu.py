@@ -23,7 +23,7 @@ from pickhero.ui import chips
 from pickhero.ui import clickable
 from pickhero.ui.colors import cycle_theme, get_theme
 from pickhero.ui.footer import wrap_on_bars
-from pickhero.ui.keys import shift_held
+from pickhero.ui.keys import ctrl_held, shift_held
 
 #: The keys that act on the LIST rather than on the text in the box. Pressing
 #: one lets go of the box without touching the filter it is holding.
@@ -1142,7 +1142,7 @@ class MenuScreen:
             if not self._search_active and (
                     event.key == pygame.K_f
                     or event.unicode == "/"
-                    or (event.key == pygame.K_f and event.mod & pygame.KMOD_CTRL)):
+                    or (event.key == pygame.K_f and ctrl_held(event))):
                 # It RESUMES rather than clears. Leaving the box to press U
                 # or M and coming back to narrow the filter further is the
                 # whole workflow this was asked for; clearing it would make
@@ -1156,12 +1156,12 @@ class MenuScreen:
             # the filter box is open. Ctrl produces no character, so nothing
             # is stolen from the box: Shift+M is how a capital M is typed,
             # and a filter that cannot spell Metallica is not a filter.
-            if event.key == pygame.K_n and event.mod & pygame.KMOD_CTRL:
-                self._set_new(bool(event.mod & pygame.KMOD_SHIFT))
+            if event.key == pygame.K_n and ctrl_held(event):
+                self._set_new(shift_held(event))
                 return None
 
-            if event.key == pygame.K_m and event.mod & pygame.KMOD_CTRL:
-                self._set_favourite(not (event.mod & pygame.KMOD_SHIFT))
+            if event.key == pygame.K_m and ctrl_held(event):
+                self._set_favourite(not shift_held(event))
                 return None
 
             # M marks, Shift+M filters. A letter is fine here because it is
@@ -1197,13 +1197,13 @@ class MenuScreen:
             # Ctrl+I, because the laptop that needs it is the one with only
             # the .exe on it and no way to run a script. Ctrl so it works
             # with the filter box open, like Ctrl+M.
-            if event.key == pygame.K_i and event.mod & pygame.KMOD_CTRL:
+            if event.key == pygame.K_i and ctrl_held(event):
                 self._import_from_folder()
                 return None
 
             # Ctrl+E, the other direction, and Ctrl for the same reason: it
             # produces no character, so it works with the filter box open.
-            if event.key == pygame.K_e and event.mod & pygame.KMOD_CTRL:
+            if event.key == pygame.K_e and ctrl_held(event):
                 self._export_to_folder()
                 return None
 
@@ -1219,7 +1219,7 @@ class MenuScreen:
             # typing key. It is not, in THIS box: backspace is what edits
             # the search text and DEL does nothing there, while "find the
             # song, then delete it" is the order somebody actually works in.
-            if event.key == pygame.K_z and event.mod & pygame.KMOD_CTRL:
+            if event.key == pygame.K_z and ctrl_held(event):
                 self._undo_delete()
                 return None
             if event.key == pygame.K_DELETE:

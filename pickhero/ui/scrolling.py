@@ -41,7 +41,7 @@ from pickhero.audio.note_utils import (
     tuning_notes,
 )
 from pickhero.ui.footer import wrap_on_bars as _wrap_on_bars
-from pickhero.ui.keys import ctrl_held, shift_held  # noqa: F401  (re-exported)
+from pickhero.ui.keys import CTRL_MODS, ctrl_held, shift_held  # noqa: F401  (re-exported)
 from pickhero.ui.colors import (
     OPEN_STRING_COLOR,
     STRING_COLORS,
@@ -1802,7 +1802,7 @@ class PlayingScreen:
         lands where the tab is drawn rather than near it.
         """
         now = self._playback_ms
-        if event.mod & pygame.KMOD_CTRL:
+        if ctrl_held(event):
             return now + direction * SEEK_SECTION_MS
         if shift_held(event):
             starts = [m.start_ms for m in self._timeline.measures]
@@ -2599,17 +2599,17 @@ class PlayingScreen:
             # it: an elif chain is read in order, and Alt is neither Ctrl nor
             # Shift.
             self._cycle_sync_source()
-        elif (event.key == pygame.K_s and event.mod & pygame.KMOD_CTRL
+        elif (event.key == pygame.K_s and ctrl_held(event)
                 and not shift_held(event)):
             self._start_auto_sync()
         elif (event.key == pygame.K_s and not shift_held(event)
-                and not event.mod & pygame.KMOD_CTRL):
+                and not ctrl_held(event)):
             self._toggle_sync_block()
         elif event.key == pygame.K_s and shift_held(event):
             if self._sync_key_held:
                 return None                    # a repeat, not a second press
             self._sync_key_held = True
-            if event.mod & pygame.KMOD_CTRL:
+            if ctrl_held(event):
                 self._clear_sync_rate()
             else:
                 self._set_sync_point()
@@ -2695,7 +2695,7 @@ class PlayingScreen:
         elif event.key in (pygame.K_n, pygame.K_m):
             self._nudge_backing(1 if event.key == pygame.K_m else -1, event.mod)
         elif event.key == pygame.K_u:
-            if event.mod & pygame.KMOD_CTRL:
+            if ctrl_held(event):
                 self._paste_songsterr_link()
             elif shift_held(event):
                 self._choose_mp3_backing()
@@ -4459,9 +4459,9 @@ class PlayingScreen:
         Ctrl+Shift has to be tested before Ctrl, or the wider step can never
         be reached.
         """
-        if mods & pygame.KMOD_CTRL and mods & pygame.KMOD_SHIFT:
+        if mods & CTRL_MODS and mods & pygame.KMOD_SHIFT:
             self._adjust_mp3_offset(direction * MP3_OFFSET_JUMP_MS)
-        elif mods & pygame.KMOD_CTRL:
+        elif mods & CTRL_MODS:
             self._adjust_mp3_offset(direction * MP3_OFFSET_COARSE_MS)
         elif mods & pygame.KMOD_SHIFT:
             self._adjust_mp3_offset(direction * MP3_OFFSET_STEP_MS)

@@ -4103,6 +4103,9 @@ pickhero/
 
 ## Testing
 
+- `tests/test_cmd_key.py` -- Cmd as the modifier on a Mac, and the PROPERTY that nothing in `ui/` reads the Ctrl bit
+  off an event by hand (parsed, with its own control that the check can fail); five of its twelve fail on the unfixed
+  code and the seven that pass are the controls
 - `tests/test_macos.py` -- asking macOS instead of Tk: the three call sites never reaching tkinter (driven with a
   tkinter that raises on being touched, the way the real one aborts), the AppleScript escaping, and the non-darwin
   path unchanged; ten of its tests fail on the unfixed code and the fourteen that pass are the controls
@@ -8516,6 +8519,69 @@ dash. cp1252 holds one and cp850, the German Windows console's page, does not, s
 replaced by a traceback because of one character in a string nobody wrote here. `sys.stdout.reconfigure(errors="replace")`,
 the same fix and the same reason as `coach.py`: **the literals are a rule that can be held and data is not, so the stream
 forgives.** It bit neither machine yet -- the Mac's terminal is UTF-8 -- and the Windows laptops are what this tool is for.
+
+## A Mac Holds Down A Different Key, And Cmd+C Was Raising The Noise Gate
+
+*"2. du meinst a+c oder? geht beides nicht aktuell"* -- `Ctrl+C` and `Ctrl+V` on the MacBook. **The doctor had already
+answered half of it**: `clipboard ok -- pbcopy and pbpaste, and a copy reads back`, which is the real round trip through
+`ui/clipboard.py`. So the pasteboard works and the failure is the KEY.
+
+**And `CLAUDE.md` had argued against the mapping on reasoning rather than on a measurement**: *"no Cmd-for-Ctrl
+mapping -- the physical Ctrl key exists"*. The first report from that machine overturns it, the same way round as the
+loop breath -- one sentence from the person holding the keyboard outranks an argument nobody measured.
+
+**It is a repair rather than a new binding, which is the half worth saying.** A Cmd press sets `KMOD_META`, so
+`ctrl_held` said no and the key fell THROUGH to its unshifted twin:
+
+| on a Mac today | what it did |
+|---|---|
+| **Cmd+C** | **raised the noise gate** (the plain `C`) |
+| Cmd+Z | toggled vsync |
+| Cmd+S | opened the sync panel |
+| Cmd+N | changed the sort order |
+
+That is `Shift+C` falling through to the gate, with a different modifier -- a fault this project has already shipped
+and fixed once.
+
+**And the helper could only reach one keybinding, which is the third instance of the fault its own file warns about.**
+`keys.py`'s docstring says *"a helper that closes a class of fault only closes it where it can be reached"* -- and
+`ctrl_held` was reached from **1 of the 14** places that read Ctrl. The other thirteen asked `event.mod & KMOD_CTRL` by
+hand, so teaching the helper about Cmd would have fixed `Ctrl+PgUp` and nothing else. All fourteen go through it now,
+and the two hand-written `KMOD_SHIFT` reads in the song list went with them.
+
+- **`CTRL_MODS` is public for the one caller that reads the LIVE modifiers** rather than an event's: `_nudge_backing`
+  is handed `get_mods()`, so `ctrl_held` does not fit it and the mask does.
+- **Only on darwin.** On Windows and Linux the Meta key is the Windows/Super key and means something else entirely.
+- **The property is asserted over the SOURCE, not over the fourteen handlers** (`TestNobodyReadsCtrlByHand` parses
+  `ui/*.py` for `event.mod & KMOD_CTRL`), because what has to hold is that a site added tomorrow comes under the helper
+  by being a Ctrl reader rather than by anybody remembering. It carries its own control that the check can fail.
+- Five of the twelve tests fail on the unfixed code; the seven that pass are the controls -- Ctrl still working, Meta
+  still meaning nothing off darwin, and a bare letter still a bare letter.
+
+**And a mechanical refactor nearly changed what a key MEANS.** Converting the thirteen sites, I rewrote
+`_set_new(bool(event.mod & KMOD_SHIFT))` as `_set_new(not shift_held(event))` -- inverting it, to match `Ctrl+M`'s
+own asymmetry. The screen's own footer settles it: `Ctrl+N: not new (Ctrl+Shift+N: new)`, so the original was right
+and documented. **A refactor that reads one of two sites and makes them agree is a behaviour change**, and the only
+thing that caught it was reading the footer rather than the sibling.
+
+## Windows Ships A Synth And macOS Does Not
+
+*"Midi output B und Sh+B gehen nicht."* Not a bug: **a clean Mac has no MIDI output port at all.** "Microsoft GS
+Wavetable Synth" is a CoreMIDI-equivalent destination on every Windows box, which is why `B` has made a sound there
+since the first day; on macOS a destination exists only where hardware or an app provides one, and Audio MIDI Setup's
+IAC bus is off by default -- and is a wire rather than a synth, so enabling it would list a port that makes no sound.
+
+`_open_shared_output` already says `No MIDI output device found - backing track will be silent`, **to stdout**, and the
+HUD already shows a dash. Neither is where a player looks, and a dash reads as a key that does nothing.
+
+- **The doctor had twelve checks and none of them was MIDI** -- the one output this app has that can be entirely absent
+  on a platform. `check_midi` names the ports, names the one the app WOULD pick, and on darwin names the install
+  (`brew install fluid-synth` plus a soundfont, left running). A warning rather than a failure: the band is a feature
+  and the app plays perfectly well without it.
+- **It lists and never opens.** Opening takes the device and prints; that is `_open_shared_output`'s job, once, when
+  the player presses the key. Asserted rather than intended.
+- **The recorded backing (`U`) is untouched** and is the answer on that machine -- it goes through the mixer, which the
+  doctor has reported healthy there from the first run.
 
 ## What NOT To Do
 

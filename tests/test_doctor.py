@@ -304,3 +304,54 @@ class TestTheReportSurvivesTheConsoleItIsReadOn:
 
         monkeypatch.setattr(doctor.sys, "stdout", Deaf())
         doctor._forgive_the_console()      # must simply return
+
+
+class TestTheOutputThatCanBeEntirelyAbsent:
+    """MIDI was the one output the machine check never asked about.
+
+    Windows ships "Microsoft GS Wavetable Synth" as a destination, so `B`
+    has made a sound there since the first day. A clean Mac lists nothing at
+    all, and the app says so to stdout and as a dash in the HUD -- which
+    reads as a key that does nothing. *"Midi output B und Sh+B gehen nicht"*.
+    """
+
+    def test_no_port_is_a_warning_and_not_a_failure(self, doctor,
+                                                    monkeypatch):
+        """The band is a feature; the app plays perfectly well without it."""
+        monkeypatch.setattr(doctor.sys, "platform", "win32")
+        status, *lines = self._with_ports(doctor, monkeypatch, [])
+        assert status == doctor.WARN
+        assert "B" in lines[0]
+
+    def test_and_on_a_mac_it_names_the_install(self, doctor, monkeypatch):
+        monkeypatch.setattr(doctor.sys, "platform", "darwin")
+        status, *lines = self._with_ports(doctor, monkeypatch, [])
+        assert status == doctor.WARN
+        said = " ".join(lines)
+        assert "fluid" in said                    # the fix, not just the fault
+        assert "IAC" in said                      # and the thing that is not
+
+    def test_a_port_is_named_with_the_one_the_app_would_use(self, doctor,
+                                                            monkeypatch):
+        status, *lines = self._with_ports(
+            doctor, monkeypatch, [(0, "Some Port"), (1, "FluidSynth virtual")])
+        assert status == doctor.OK
+        said = " ".join(lines)
+        assert "FluidSynth virtual" in said
+        assert "2 port" in said
+
+    def test_it_never_opens_the_device(self, doctor, monkeypatch):
+        """Opening takes the port and prints; the app does that on the key."""
+        from pickhero.audio import midi_playback
+        opened = []
+        monkeypatch.setattr(midi_playback, "_open_shared_output",
+                            lambda *a: opened.append(1))
+        self._with_ports(doctor, monkeypatch, [(0, "Port")])
+        assert opened == []
+
+    @staticmethod
+    def _with_ports(doctor, monkeypatch, ports):
+        from pickhero.audio import midi_playback
+        monkeypatch.setattr(midi_playback, "list_midi_outputs",
+                            lambda: list(ports))
+        return doctor.check_midi()
