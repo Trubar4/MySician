@@ -90,6 +90,13 @@ def missing() -> str:
     source tree to run a script from, but `_search_folders` looks BESIDE the
     executable -- so dropping `ffmpeg.exe` next to `MySician.exe` works
     without rebuilding anything.
+
+    **And on a Mac it is a different sentence, because the script is a
+    Windows download.** `fetch_ffmpeg.py` pulls gyan.dev's build, whose
+    archive holds `bin/ffmpeg.exe` and nothing else -- so naming it there
+    spends 80 MB to fail. Homebrew is the answer on that platform, and a
+    sentence the player cannot act on is the fault this function was
+    written for in the first place.
     """
     frozen = bool(getattr(sys, "frozen", False))
     try:
@@ -99,9 +106,11 @@ def missing() -> str:
                 if frozen else
                 "yt-dlp is not installed — run: pip install -U yt-dlp")
     if ffmpeg_path() is None:
-        return ("ffmpeg was not found — put ffmpeg.exe next to MySician.exe"
-                if frozen else
-                "ffmpeg was not found — run: python tools/fetch_ffmpeg.py")
+        if frozen:
+            return "ffmpeg was not found — put ffmpeg.exe next to MySician.exe"
+        if sys.platform == "darwin":
+            return "ffmpeg was not found — run: brew install ffmpeg"
+        return "ffmpeg was not found — run: python tools/fetch_ffmpeg.py"
     return ""
 
 

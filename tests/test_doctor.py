@@ -271,3 +271,36 @@ class TestTheRulesTheSuiteAlreadyHas:
         assert not top & {"numpy", "aubio", "sounddevice", "pygame",
                           "guitarpro", "verovio", "resvg_py", "pickhero",
                           "tkinter"}, top
+
+
+class TestTheReportSurvivesTheConsoleItIsReadOn:
+    """cp850 cannot hold an em dash, and the report prints data.
+
+    Every literal in the tool is cp850-safe and `test_spec.py` enforces
+    it -- but a device name, a song title and the app's own `missing()`
+    sentence are not literals in this file, and the German Windows console
+    is the one this tool exists for. Twelve computed answers replaced by a
+    traceback because of one character in somebody else's string is the
+    fault `coach.py` already shipped once.
+    """
+
+    def test_an_unencodable_character_does_not_kill_it(self, doctor,
+                                                       monkeypatch, capsys):
+        import io
+        narrow = io.TextIOWrapper(io.BytesIO(), encoding="cp850",
+                                  errors="strict")
+        monkeypatch.setattr(doctor.sys, "stdout", narrow)
+        monkeypatch.setattr(doctor, "CHECKS",
+                            (("ffmpeg", lambda: (doctor.WARN,
+                                                 "ffmpeg — run: brew")),))
+        assert doctor.run() == 0           # a warning is not a failure
+        narrow.flush()
+
+    def test_and_a_stream_that_cannot_be_reconfigured_is_not_an_error(
+            self, doctor, monkeypatch):
+        class Deaf:
+            def reconfigure(self, **kw):
+                raise OSError("not a real stream")
+
+        monkeypatch.setattr(doctor.sys, "stdout", Deaf())
+        doctor._forgive_the_console()      # must simply return

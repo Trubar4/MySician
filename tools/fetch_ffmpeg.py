@@ -79,6 +79,19 @@ def main(argv: list[str]) -> int:
         print(f"ffmpeg: copied from {on_path}")
         return 0
 
+    if os.name != "nt":
+        # The archive holds bin/ffmpeg.exe and nothing else, so downloading
+        # it here can only end in "not in the archive" 80 MB later.
+        print("ffmpeg: this downloads a WINDOWS build, and this is not "
+              "Windows.")
+        if sys.platform == "darwin":
+            print("        On a Mac:  brew install ffmpeg")
+        else:
+            print("        Install it with your package manager, "
+                  "e.g.  apt install ffmpeg")
+        print("        Then run this again and it copies the one on PATH.")
+        return 1
+
     print(f"ffmpeg: downloading from {URL} ...")
     try:
         with urllib.request.urlopen(URL, timeout=300) as response:

@@ -8493,6 +8493,30 @@ reading of the source.
 **Ten of the twenty-four tests fail on the unfixed code, and the fourteen that pass are the controls** -- the `macos.py`
 arithmetic, and the non-darwin path that must not change.
 
+## The Fix It Named Was A Windows Download
+
+The first clean doctor report off the Mac had one line that is advice nobody can act on:
+
+```
+[warn] ffmpeg      ffmpeg was not found -- run: python tools/fetch_ffmpeg.py
+```
+
+`fetch_ffmpeg.py` pulls gyan.dev's build, whose archive holds **`bin/ffmpeg.exe` and nothing else** -- so on a Mac that
+command copies an ffmpeg already on PATH (fine) and otherwise downloads 80 MB to fail on "not in the archive". The
+sentence exists precisely because *"ffmpeg was not found"* without the fix beside it came straight back from the player
+once; it then named the wrong fix on the one platform where the fix is different.
+
+- **`missing()` answers per platform**, so the DOWNLOAD SCREEN says it too. The doctor was printing `On a Mac: brew
+  install ffmpeg` as a line of its own, which was right and in the wrong place: the app is where a player reads this.
+- **The fetcher says so instead of spending the 80 MB.** A tool that cannot work here is a tool that says which one does.
+
+**And the report could have died on a hyphen.** Every literal in `doctor.py` is cp850-safe and `tests/test_spec.py`
+enforces it -- but the report also prints DATA: a device name, a song title, a package version, and `missing()`'s own em
+dash. cp1252 holds one and cp850, the German Windows console's page, does not, so twelve computed answers would be
+replaced by a traceback because of one character in a string nobody wrote here. `sys.stdout.reconfigure(errors="replace")`,
+the same fix and the same reason as `coach.py`: **the literals are a rule that can be held and data is not, so the stream
+forgives.** It bit neither machine yet -- the Mac's terminal is UTF-8 -- and the Windows laptops are what this tool is for.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

@@ -516,8 +516,7 @@ def check_ffmpeg():
     if not reason:
         return (OK, "ffmpeg and yt-dlp are both there")
     return (WARN, reason,
-            "Tabs and bar maps still download; only the audio does not.",
-            "On a Mac: brew install ffmpeg")
+            "Tabs and bar maps still download; only the audio does not.")
 
 
 def check_songs():
@@ -576,7 +575,27 @@ CHECKS = (
 MARK = {OK: "[ ok ]", WARN: "[warn]", FAIL: "[FAIL]"}
 
 
+def _forgive_the_console() -> None:
+    """A character the console cannot encode must not kill the report.
+
+    Every literal in this file is cp850-safe and `tests/test_spec.py`
+    enforces it -- but the report also prints DATA: a device name, a song
+    title, a package version, and the app's own `missing()` sentence, which
+    carries an em dash. cp1252 holds one and cp850, the German console's
+    page, does not. So twelve computed answers would be replaced by a
+    traceback because of one character in a string nobody here wrote.
+
+    The literals are a rule that can be held; data is not, so the stream
+    forgives. Same fix and same reason as `coach.py`.
+    """
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, OSError):      # not a real stream, or too old
+        pass
+
+
 def run() -> int:
+    _forgive_the_console()
     print("MySician doctor -- %s" % platform.platform())
     print("")
     worst = OK
