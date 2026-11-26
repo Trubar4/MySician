@@ -8374,11 +8374,32 @@ map is accurate to 9 ms" — and the second is what a reader would have taken fr
 | pyguitarpro | sdist, pure Python |
 | **aubio** | **no wheel at all -- one sdist, 0.4.9, from 2019** |
 
-So the one install step nobody would guess is a **compiler** (`xcode-select --install`). Built here to check the rest of the fear was
-unfounded: aubio 0.4.9 compiles against **numpy 2.4 on Python 3.11**, carries no `distutils` import and none of the C API that 3.12 and
-3.13 removed. And **python.org rather than Homebrew**, because python.org bundles Tk and Homebrew's Python needs
-`brew install python-tk` -- Tk being the one dependency that is not a wheel, and the only thing the clipboard keys and the file chooser
-have under them.
+So the one install step nobody would guess is a **compiler** (`xcode-select --install`). And **python.org rather than Homebrew**, because
+python.org bundles Tk and Homebrew's Python needs `brew install python-tk` -- Tk being the one dependency that is not a wheel, and the
+only thing the clipboard keys and the file chooser have under them.
+
+**And then it failed anyway, on the one thing a build measured HERE could not see.** This chapter first said *"built here to check the
+rest of the fear was unfounded: aubio 0.4.9 compiles against numpy 2.4 on Python 3.11"* -- true, on Linux, with gcc, and worth nothing
+about his machine:
+
+| | |
+|---|---|
+| aubio declares its ufunc loops | `void (*)(char **, npy_intp *, npy_intp *, void *)` |
+| numpy declares them, in **1.26 and 2.x alike** | `npy_intp **const** *` |
+| gcc | a warning -- builds |
+| **clang 16+** | **an error -- stops** |
+
+So the compiler was installed and the install still died, with 75 lines of output whose last two name a function pointer. **Pinning numpy
+does not help**, which is the first thing anybody would try: the `const` has been there since 1.26. What it really is is the const
+qualification of two parameters -- ABI-identical, the same generated code -- so it is downgraded to a warning:
+`CFLAGS="-Wno-error=incompatible-function-pointer-types"`.
+
+- **The fix lives in the doctor's own advice** (`AUBIO_FIX`), named for aubio alone and asserted to be, because the compiler line on its
+  own is half an answer to a player who is not a developer -- the same fault as *"ffmpeg was not found"* without the fix beside it.
+- **The lesson is the one this file keeps paying for, in a new place: a control run on the wrong PLATFORM is not a control.** gcc and
+  clang disagree about this exact diagnostic, so the only honest thing the Linux build established is that aubio's own sources are
+  intact. Saying "it compiles" of a machine that was never asked is the same shape as the frame figures measured on the sparsest song in
+  the folder.
 
 ### The doctor, and why it is a tool rather than a chapter
 

@@ -127,6 +127,24 @@ PACKAGES = (
 )
 
 
+#: What to do when aubio is the one that would not install. It has no macOS
+#: wheel at all -- one sdist from 2019 -- so it is COMPILED, and then it
+#: fails on a difference nobody would guess from the error: aubio declares
+#: its ufunc loops as `npy_intp *` where numpy (1.26 and 2.x alike) declares
+#: `npy_intp const *`. gcc calls that a warning and builds; clang 16 and
+#: later call it an error and stop. So a build measured on Linux says
+#: nothing about this machine, and pinning numpy does not help either.
+#: The mismatch is only the const on two parameters -- ABI-identical, same
+#: generated code -- so downgrading it to a warning is safe.
+AUBIO_FIX = (
+    "aubio has no macOS wheel and is compiled, so it needs a compiler:",
+    "    xcode-select --install",
+    "and on clang 16+ it fails on a const mismatch with numpy. Then:",
+    '    export CFLAGS="-Wno-error=incompatible-function-pointer-types"',
+    "    pip install -r requirements.txt",
+)
+
+
 def _version(mod, pip_name: str) -> str:
     """The version, from wherever this package keeps it.
 
@@ -167,8 +185,7 @@ def check_packages():
         lines = ["Missing: " + "; ".join(missing),
                  "Fix: pip install -r requirements.txt"]
         if any(m.startswith("aubio") for m in missing):
-            lines += ["aubio has no macOS wheel and must be compiled, so it",
-                      "needs a compiler: xcode-select --install"]
+            lines += AUBIO_FIX
         return (FAIL, head, *lines)
     if optional:
         return (WARN, head, "Optional, not installed: " + "; ".join(optional))

@@ -73,6 +73,39 @@ class TestTheOneRuleWithANumberInIt:
         assert "-20.0" in doctor._db(0.1)
 
 
+class TestWhatItSaysWhenAubioWillNotBuild:
+    """The one dependency with no macOS wheel, and the one surprising error.
+
+    The first version of this tool said "needs a compiler", which is true and
+    was not the fault: the compiler was installed and aubio still failed, on a
+    const mismatch with numpy that gcc warns about and clang 16+ refuses. A
+    build measured on Linux says nothing about it, which is how that advice
+    came to be half an answer.
+    """
+
+    def test_it_names_the_compiler_and_the_flag(self, doctor):
+        said = " ".join(doctor.AUBIO_FIX)
+        assert "xcode-select --install" in said
+        assert "CFLAGS" in said
+        assert "incompatible-function-pointer-types" in said
+
+    def test_the_advice_is_only_given_for_aubio(self, doctor, monkeypatch):
+        """A missing pygame must not be answered with aubio's compiler flag."""
+        monkeypatch.setattr(doctor, "PACKAGES",
+                            (("no_such_module_at_all", "nothing", True),))
+        status, _head, *lines = doctor.check_packages()
+        assert status == doctor.FAIL
+        assert "CFLAGS" not in " ".join(lines)
+
+    def test_and_it_is_given_when_aubio_is_the_missing_one(self, doctor,
+                                                           monkeypatch):
+        monkeypatch.setattr(doctor, "PACKAGES",
+                            (("aubio_not_installed_here", "aubio", True),))
+        status, _head, *lines = doctor.check_packages()
+        assert status == doctor.FAIL
+        assert "CFLAGS" in " ".join(lines)
+
+
 class TestNothingMayRaise:
     """The property the whole tool rests on.
 
