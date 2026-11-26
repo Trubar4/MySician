@@ -4103,6 +4103,9 @@ pickhero/
 
 ## Testing
 
+- `tests/test_doctor.py` -- the machine check: that a raising check becomes a LINE rather than a traceback that hides the other
+  eleven, and that exact digital silence is told apart from a quiet room. Three of its rules were verified by breaking the tool on
+  purpose; the rest drive the real `run()`
 - `tests/test_unreadable_notes.py` — the GPIF `-1` fret (a muted string with no number), and that one note the reader cannot place no longer takes the whole track; 19 of its 23 fail on the unfixed code and the four that pass are the controls
 - `tests/test_detector.py` — feed known sine waves to aubio, verify correct note detection
 - `tests/test_tempo_sections.py` — the run split by the speed each stretch was played at, the strip tick, and that the completion screen says it
@@ -8351,6 +8354,66 @@ re-measured on both rips it is **12-14 ms median, 26-28 ms p90** — and it meas
 map** carries Songsterr's bar shape as well, and that reads **101 ms**. The refinement removes the constant's error (109 → 12 ms) and cannot
 touch a bar line Songsterr placed wrongly. So the claim is "the refinement is worth a factor of eight on the constant", not "the stored bar
 map is accurate to 9 ms" — and the second is what a reader would have taken from it.
+
+## A Second Computer Fails Every Feature At Once
+
+*"Ich habe nun mein Macbook Air. Was muss ich alles downloaden und installieren? Was bauen wir als erstes um, damit ich testen kann?"*
+
+**Nothing needed porting, which was measured before it was answered.** Searched for `sys.platform`, `os.name`, `winreg`, `startfile`,
+`APPDATA` and a drive letter: the whole package has **one** platform branch, `ffmpeg` against `ffmpeg.exe`, and it is already right.
+`~/.pickhero`, the sidecars, the both-separator split in `mp3_path_for` -- all of it is POSIX-clean, and there is not a single
+`subprocess` call anywhere in `pickhero/`. So the first move on a new machine is to start it, not to rewrite it.
+
+**What the dependencies really need there, from PyPI rather than from memory:**
+
+| | macOS arm64 |
+|---|---|
+| pygame, numpy, resvg-py | wheels |
+| verovio | wheel, macOS 13+ |
+| sounddevice | universal2 wheel, PortAudio bundled |
+| pyguitarpro | sdist, pure Python |
+| **aubio** | **no wheel at all -- one sdist, 0.4.9, from 2019** |
+
+So the one install step nobody would guess is a **compiler** (`xcode-select --install`). Built here to check the rest of the fear was
+unfounded: aubio 0.4.9 compiles against **numpy 2.4 on Python 3.11**, carries no `distutils` import and none of the C API that 3.12 and
+3.13 removed. And **python.org rather than Homebrew**, because python.org bundles Tk and Homebrew's Python needs
+`brew install python-tk` -- Tk being the one dependency that is not a wheel, and the only thing the clipboard keys and the file chooser
+have under them.
+
+### The doctor, and why it is a tool rather than a chapter
+
+Every one of those fails the SAME way: the app starts, draws a frame, and quietly does nothing. That is this file's oldest lesson at the
+scale of a whole machine -- *a feature that cannot be seen working is indistinguishable from one that does not work* -- and the first
+session on a second computer is otherwise spent photographing a screen and typing the error back. `tools/doctor.py` answers twelve
+questions in one pasteable report.
+
+- **Nothing in it may raise.** A doctor that dies on the first missing dependency cannot report the other eleven, so every check catches
+  everything, the reason is REPORTED rather than swallowed, and no dependency is imported at module level. Run with nothing installed at
+  all it still prints twelve lines and names the fix on each.
+- **It says what it MEASURED, not whether it passed.** "ok" with no number cannot be compared against the other machine, which is half of
+  what this is for.
+- **It goes through the app's own code wherever there is some** -- the input resolver, `output.describe()`, `_engraver_state()` on a
+  thread, the clipboard seam -- so it can never pass something the app then fails. Two readers of one answer is how they come to disagree.
+- **The microphone is checked twice on purpose.** The raw read says whether the DEVICE delivers anything; the capture path says what the
+  resolver makes of it. A guitar in input 2 arriving as silence is a fault this project has shipped once, and only the independent read
+  tells it from a device handing over nothing.
+- **Exact zeros are the one rule with a number in it, and the only one worth a test.** A room never measures exactly zero, so digital
+  silence is a refused permission, a muted input or an empty socket -- never quiet playing. `mic_verdict` is separate from the device for
+  that reason, which is also the only way it can be tested on a machine with no audio device. Below `QUIET_PEAK_DB` it warns instead,
+  reusing the knee measured by attenuating a real take rather than inventing a second threshold.
+- **Retina is measured, not judged.** It prints the desktop size, the window size and the drawing surface size; equal window and surface
+  on a 2x screen means the picture is being scaled up, and whether that reads as soft is for the eye in front of it. Two days went on a
+  sharpness complaint that was neither the frame rate nor the machine, so the numbers come first and the verdict comes from him.
+
+**Running it found five faults in it that reading it had not**, which is the whole argument for a tool over a checklist: `songs_path` is a
+method and not a property (so the check raised, and the catch-all turned that into a line rather than a stack trace -- the rule paying for
+itself on its first run); pygame's import banner landed in the middle of the report; four of the eight packages carry no `__version__` and
+came back as `aubio ?`; the macOS advice printed on Linux; and the songs folder was reported as a relative path nobody could find.
+
+**What is NOT built, and named so it is not mistaken for an oversight:** no Mac bundle (`build.bat` and `pickhero.spec` are Windows, and
+running from a checkout needs neither), and no Cmd-for-Ctrl mapping -- the physical Ctrl key exists, and the real keyboard problem on a
+MacBook Air is that **PgUp, PgDn, Home, End and Del do not exist at all**: the practice speed is fn+Up/Down and deleting a song is
+fn+Delete. That works, it is awkward, and it is a measurement of his hands rather than of the code.
 
 ## What NOT To Do
 
