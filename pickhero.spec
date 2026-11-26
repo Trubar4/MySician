@@ -125,6 +125,7 @@ a = Analysis(
         "pickhero.tabs.simplify",
         "pickhero.tabs.youtube",
         "pickhero.ui.chord_view",
+        "pickhero.ui.macos",
     ],
     hookspath=[],
     hooksconfig={},

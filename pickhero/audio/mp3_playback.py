@@ -367,7 +367,19 @@ def pick_audio_file(initial_dir: str | None = None) -> str | None:
     Windows dialog for ten lines, so that is what this is. Returns None when
     tkinter is unavailable (some Linux builds) or the player cancels, and the
     caller must treat both the same way.
+
+    **Except on macOS, where Tk aborts the process** on a selector SDL's own
+    `NSApp` does not have -- uncatchable, so the system's chooser is asked
+    through `osascript` there instead. See `ui/macos.py`.
     """
+    try:
+        from pickhero.ui import macos
+        if macos.is_mac():
+            return macos.choose_file("Backing track for this song",
+                                     initial_dir,
+                                     ("mp3", "ogg", "wav", "flac")) or None
+    except Exception:
+        return None
     try:
         import tkinter
         from tkinter import filedialog

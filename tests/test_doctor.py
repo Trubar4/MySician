@@ -106,6 +106,61 @@ class TestWhatItSaysWhenAubioWillNotBuild:
         assert "CFLAGS" in " ".join(lines)
 
 
+class TestItDoesNotOpenTkOnAMac(object):
+    """The report was killed by the thing it was reporting on.
+
+    Eight checks passed and then the clipboard check opened a Tk window,
+    which aborts the process on macOS once SDL owns `NSApp`. A diagnostic
+    that cannot survive the fault it exists to find is worth nothing, so on
+    darwin it asks the pasteboard tools instead -- and the tkinter put into
+    `sys.modules` here fails on being touched at all, the way the real one
+    does.
+    """
+
+    @staticmethod
+    def _exploding():
+        import types
+
+        class Boom(types.ModuleType):
+            def __getattr__(self, name):
+                raise AssertionError("tkinter was touched: %s" % name)
+
+        return Boom("tkinter")
+
+    def test_the_clipboard_check_never_touches_tkinter(self, doctor,
+                                                       monkeypatch):
+        import subprocess
+        import types
+        monkeypatch.setattr(doctor.sys, "platform", "darwin")
+        monkeypatch.setitem(sys.modules, "tkinter", self._exploding())
+        board = {"text": ""}
+
+        def run(argv, **kw):
+            if argv == ["pbcopy"]:
+                board["text"] = kw["input"].decode("utf-8")
+                return types.SimpleNamespace(returncode=0, stdout=b"",
+                                             stderr=b"")
+            return types.SimpleNamespace(
+                returncode=0, stdout=board["text"].encode("utf-8"),
+                stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", run)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(doctor.shutil, "which", lambda name: "/usr/bin/" + name)
+        status, *lines = doctor.check_clipboard()
+        assert status == doctor.OK
+        assert "pbcopy" in " ".join(lines)
+
+    def test_a_missing_pasteboard_tool_is_named(self, doctor, monkeypatch):
+        monkeypatch.setattr(doctor.sys, "platform", "darwin")
+        monkeypatch.setitem(sys.modules, "tkinter", self._exploding())
+        monkeypatch.setattr(doctor.shutil, "which",
+                            lambda name: None if name == "pbpaste" else "/bin")
+        status, *lines = doctor.check_clipboard()
+        assert status == doctor.WARN
+        assert "pbpaste" in lines[0]
+
+
 class TestNothingMayRaise:
     """The property the whole tool rests on.
 

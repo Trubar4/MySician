@@ -50,6 +50,7 @@ from __future__ import annotations
 import math
 import os
 import platform
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -437,34 +438,49 @@ def check_engraver():
 
 
 def check_clipboard():
-    """Tk, and a round trip through the seam the two keys really use.
+    """The seam the two keys really use, and a round trip through it.
 
-    Tk is the one dependency that is not a wheel: python.org's installer
-    brings it, Homebrew's Python does not without `brew install python-tk`,
-    and on macOS Tk wants the main thread that SDL has already taken. So
-    this creates a window the way the app does rather than only importing
-    the module -- importing is not where it fails.
+    **On macOS this must not open a Tk window, and neither may the app.**
+    Tk asks `NSApp` for `macOSVersion`; pygame has already made SDL's own
+    application subclass the one and only `NSApp`, so the Objective-C runtime
+    raises with no Python frame to catch it and the process aborts -- which
+    is what this report did, after passing eight checks, on the machine it
+    was written for. So here it asks the pasteboard tools the app now uses,
+    and a diagnostic cannot be killed by the thing it is diagnosing.
+
+    Everywhere else Tk is the one dependency that is not a wheel:
+    python.org's installer brings it, Homebrew's Python does not without
+    `brew install python-tk`. The window is opened the way the app opens it
+    rather than only importing the module -- importing is not where it fails.
 
     Whatever is on the clipboard is put back afterwards. A diagnostic that
     eats the link you were about to paste is a diagnostic you run once.
     """
-    try:
-        import tkinter
-    except Exception as exc:
-        return (WARN, "tkinter is missing: %s: %s"
-                % (type(exc).__name__, exc),
-                "Ctrl+C, Ctrl+V and the file chooser (Shift+U) will not",
-                "work; nothing else is affected.",
-                "Fix: install Python from python.org, or with Homebrew",
-                "also run: brew install python-tk")
-    try:
-        root = tkinter.Tk()
-        root.withdraw()
-        root.destroy()
-    except Exception as exc:
-        return (WARN, "Tk would not open a window: %s: %s"
-                % (type(exc).__name__, exc),
-                "The clipboard keys and the file chooser will not work.")
+    if sys.platform == "darwin":
+        for tool in ("pbcopy", "pbpaste", "osascript"):
+            if shutil.which(tool) is None:
+                return (WARN, "%s is missing, which macOS should always have"
+                        % tool,
+                        "Ctrl+C, Ctrl+V and the file chooser (Shift+U) will",
+                        "not work; nothing else is affected.")
+    else:
+        try:
+            import tkinter
+        except Exception as exc:
+            return (WARN, "tkinter is missing: %s: %s"
+                    % (type(exc).__name__, exc),
+                    "Ctrl+C, Ctrl+V and the file chooser (Shift+U) will not",
+                    "work; nothing else is affected.",
+                    "Fix: install Python from python.org, or with Homebrew",
+                    "also run: brew install python-tk")
+        try:
+            root = tkinter.Tk()
+            root.withdraw()
+            root.destroy()
+        except Exception as exc:
+            return (WARN, "Tk would not open a window: %s: %s"
+                    % (type(exc).__name__, exc),
+                    "The clipboard keys and the file chooser will not work.")
     try:
         from pickhero.ui import clipboard
     except Exception as exc:
@@ -482,6 +498,8 @@ def check_clipboard():
         return (WARN, "copied, but read back %r" % read_back,
                 "Ctrl+C works and Ctrl+V does not. %s"
                 % (clipboard.last_error or ""))
+    if sys.platform == "darwin":
+        return (OK, "pbcopy and pbpaste, and a copy reads back")
     return (OK, "Tk opens, and a copy reads back")
 
 

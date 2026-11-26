@@ -4103,6 +4103,9 @@ pickhero/
 
 ## Testing
 
+- `tests/test_macos.py` -- asking macOS instead of Tk: the three call sites never reaching tkinter (driven with a
+  tkinter that raises on being touched, the way the real one aborts), the AppleScript escaping, and the non-darwin
+  path unchanged; ten of its tests fail on the unfixed code and the fourteen that pass are the controls
 - `tests/test_doctor.py` -- the machine check: that a raising check becomes a LINE rather than a traceback that hides the other
   eleven, and that exact digital silence is told apart from a quiet room. Three of its rules were verified by breaking the tool on
   purpose; the rest drive the real `run()`
@@ -8435,6 +8438,60 @@ came back as `aubio ?`; the macOS advice printed on Linux; and the songs folder 
 running from a checkout needs neither), and no Cmd-for-Ctrl mapping -- the physical Ctrl key exists, and the real keyboard problem on a
 MacBook Air is that **PgUp, PgDn, Home, End and Del do not exist at all**: the practice speed is fn+Up/Down and deleting a song is
 fn+Delete. That works, it is awkward, and it is a measurement of his hands rather than of the code.
+
+## Tk And SDL Cannot Share A Process, And The Except Clauses Were Decoration
+
+*"Python crasht"* -- after eight green checks, the doctor's own clipboard probe killed it:
+
+```
+*** Terminating app due to uncaught exception 'NSInvalidArgumentException',
+    reason: '-[SDLApplication macOSVersion]: unrecognized selector sent to instance'
+    5  libtk8.6.dylib  GetRGBA
+    6  libtk8.6.dylib  TkpGetColor
+    19 _tkinter...so   _tkinter_create
+```
+
+**Tk asks `NSApp` for `macOSVersion`, and `NSApp` is SDL's.** pygame installs its own `NSApplication` subclass as the one
+and only application object; `macOSVersion` is implemented by Tk's `TKApplication` and by nothing else, so the
+Objective-C runtime raises -- with **no Python frame in the call stack to catch it** -- and `abort()` follows. So the
+`try/except Exception` wrapped round all three Tk call sites was decoration on macOS, and `Ctrl+C`, `Ctrl+V`, `Ctrl+U`,
+`Shift+U`, `Ctrl+I`, `Ctrl+E` and the settings screen's songs-folder row were each one keypress from killing the app with
+no traceback Python could print.
+
+**Nor is it an ordering problem**, which is the first fix anybody reaches for: whichever toolkit installs `NSApp` first,
+the other one's selectors are missing from it. That half is reasoning rather than measurement -- what is measured is that
+Tk second aborts.
+
+So on darwin the three things Tk was for are asked of the system directly (`ui/macos.py`), and the rest of the tree is
+untouched: Windows and Linux still open the Tk window, asserted rather than assumed.
+
+- **`pbcopy` really writes the bytes to the pasteboard**, which is the one thing Tk never did. Tk registers as the
+  clipboard's OWNER and serves the text on demand -- the whole reason `put_clipboard` has to keep a hidden window alive
+  for the life of the process, and the reason `clipboard_text` must build a throwaway one or read back this app's own
+  last copy. **On macOS there is nothing to own**, so there is no owner window and the read cannot come back stale. Both
+  are asserted: `_owner` stays None, and a write followed by somebody else copying reads back the other copy.
+- **`osascript` opens the system's own chooser**, in its own process, so it comes up in front without the `-topmost` hack
+  Tk needed on Windows. `POSIX path of (...)` is not optional -- without it AppleScript answers
+  `alias Macintosh HD:Users:...`, which is not a path anything here can open.
+- **A song's own name reaches the AppleScript SOURCE**, so a name holding a quote would end the literal and leave the
+  rest of it as script. `_quoted` escapes the backslash first and the quote second, and the test runs a hostile prompt
+  through the real call and requires exactly two unescaped quotes in the script -- the payload present as TEXT.
+- **Cancelled is "" and so is everything that went wrong**, which is the rule the Tk version already had: osascript exits
+  -128 on a cancel, and the caller does the same thing about both.
+- **A clipboard failure is still REPORTED** rather than swallowed. "no clipboard support", "the clipboard is empty" and
+  "pbpaste failed" are three different problems, and `last_error` is what the next screenshot has to carry.
+- **The subprocess is the first in `pickhero/`**, and `build_info`'s refusal to use one does not generalise: that is asked
+  while the window is coming up, where this is a keypress that is already going to block on a human.
+
+**And the doctor had to stop opening Tk before it could report this.** A diagnostic that is killed by the fault it exists
+to find is worth nothing -- it had named the Tk/SDL collision as the likeliest Mac problem in its own docstring and then
+aborted on it, eight checks in, taking the four checks after it with it. On darwin it asks for `pbcopy`, `pbpaste` and
+`osascript` and then runs the same round trip through the app's own seam. The test puts a `tkinter` in `sys.modules`
+that **raises on being touched at all**, the way the real one behaves, so "never reaches Tk" is a property rather than a
+reading of the source.
+
+**Ten of the twenty-four tests fail on the unfixed code, and the fourteen that pass are the controls** -- the `macos.py`
+arithmetic, and the non-darwin path that must not change.
 
 ## What NOT To Do
 

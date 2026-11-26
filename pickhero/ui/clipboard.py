@@ -3,7 +3,7 @@
 Its own module because two screens need it and neither should have to
 import the other: the player screen takes a Songsterr link off it (Ctrl+U),
 and the search box takes one as text (Ctrl+V). The same tkinter the file
-chooser already uses.
+chooser already uses -- except on macOS, where see below.
 
 **The two halves want opposite things from the interpreter**, which is the
 bug the player reported: *"Nachdem ich erstmals mit Str+C den HUD kopiert
@@ -25,6 +25,15 @@ anderes mehr einfuegen."*
 So the write keeps one hidden window for the life of the process and the
 read builds a throwaway one, and neither is the other's leftover.
 
+**On macOS none of that may run at all, and the failure is not catchable.**
+Tk asks `NSApp` for `macOSVersion`; pygame has already made SDL's own
+application subclass the one and only `NSApp`, the Objective-C runtime
+raises `NSInvalidArgumentException` with no Python frame to catch it, and the
+process aborts -- so the `except Exception` below is decoration there. There
+`macos.py` runs `pbcopy`/`pbpaste` instead, which really write the bytes to
+the pasteboard and so need no owner window and cannot read back this app's
+own copy. The whole dance above is Tk's alone.
+
 None of this is reproducible on the machine it was written on -- there is no
 tkinter and no desktop here -- so the reason is REPORTED rather than
 swallowed into an empty string. `last_error` is what the next screenshot
@@ -39,8 +48,18 @@ from __future__ import annotations
 last_error = ""
 
 #: The hidden window that owns what this app has copied. Never destroyed:
-#: destroying it is what takes the text back off the clipboard.
+#: destroying it is what takes the text back off the clipboard. Stays None
+#: on macOS, where there is nothing to own.
 _owner = None
+
+
+def _mac():
+    """The macOS pasteboard module, or None anywhere else."""
+    try:
+        from pickhero.ui import macos
+    except Exception:                      # pragma: no cover - importable here
+        return None
+    return macos if macos.is_mac() else None
 
 
 def _tk():
@@ -62,6 +81,15 @@ def clipboard_text() -> str:
     ever, whatever the player had copied since.
     """
     global last_error
+    macos = _mac()
+    if macos is not None:
+        try:
+            text = macos.paste()
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}".strip() or "pbpaste failed"
+            return ""
+        last_error = "" if text else "the clipboard is empty"
+        return text
     tkinter = _tk()
     if tkinter is None:
         last_error = "no clipboard support on this machine (tkinter missing)"
@@ -110,6 +138,15 @@ def put_clipboard(text: str) -> bool:
     if not text:
         last_error = "nothing to copy"
         return False
+    macos = _mac()
+    if macos is not None:
+        try:
+            macos.copy(text)
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}".strip() or "pbcopy failed"
+            return False
+        last_error = ""
+        return True
     tkinter = _tk()
     if tkinter is None:
         last_error = "no clipboard support on this machine (tkinter missing)"
