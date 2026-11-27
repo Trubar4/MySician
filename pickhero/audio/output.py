@@ -101,6 +101,61 @@ def reopen() -> bool:
     return ensure_mixer()
 
 
+#: How many device names a one-line description may carry. A Windows box
+#: lists the same interface several times over; the rest are counted.
+MAX_NAMED_DEVICES = 4
+
+
+def device_names() -> list[str]:
+    """Every audio OUTPUT device SDL can see, in SDL's own spelling.
+
+    *"Ueber Focusrite kommt kein MP3 mehr auf dem Mac. Wenn ich etwas
+    ausserhalb der App laufen lasse, kommt es ueber Focusrite."*
+
+    The app does not CHOOSE one -- `mixer.init()` takes the system default --
+    so this cannot say which device is open, and must not pretend to: SDL has
+    no way to ask, and the first name in this list is not the default on
+    CoreAudio. What it can say is which were on offer, and that is worth
+    having on its own: a device the player is listening through that is not in
+    this list AT ALL is the whole diagnosis, and one that is in it rules the
+    same thing out. The same rule the input device already follows, where a
+    log that does not name the device cannot tell a wrong one from a blocked
+    one.
+
+    SDL's own spelling, because `mixer.init(devicename=...)` takes these
+    strings and nothing else -- so this is also the list a picker would offer.
+    """
+    try:
+        import pygame
+        from pygame._sdl2 import audio as sdl2_audio
+    except Exception:
+        # An older pygame, or one built without _sdl2. Saying nothing is the
+        # honest answer; it must never be why the run log fails to write.
+        return []
+    try:
+        return [str(name) for name in sdl2_audio.get_audio_device_names(False)]
+    except Exception:
+        return []
+
+
+def describe_devices() -> str:
+    """The output devices on offer, as its OWN line.
+
+    Apart from `describe()` on purpose. One says what the open stream is set
+    to and the other what the machine offered, and they are fixed in different
+    places: a rate the device chose is a conversion, a device missing from
+    this list is a driver. Said together on one line they would be a sentence
+    too wide for the status note that `Shift+A` writes -- and that line is
+    where the answer has to be readable, since a run log is written later.
+    """
+    names = device_names()
+    if not names:
+        return "(SDL named none)"
+    shown = names[:MAX_NAMED_DEVICES]
+    rest = len(names) - len(shown)
+    return ", ".join(shown) + (f" +{rest} more" if rest > 0 else "")
+
+
 def describe() -> str:
     """What the output device is actually set to, for the run log.
 

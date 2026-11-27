@@ -4103,6 +4103,9 @@ pickhero/
 
 ## Testing
 
+- `tests/test_output_device.py` -- the output half: the devices SDL can see named on their own line, and that
+  `autosync.decode` puts `SDL_AUDIODRIVER` back rather than silencing every later sound in the process. The
+  decode control fails on the unfixed code
 - `tests/test_cmd_key.py` -- Cmd as the modifier on a Mac, and the PROPERTY that nothing in `ui/` reads the Ctrl bit
   off an event by hand (parsed, with its own control that the check can fail); five of its twelve fail on the unfixed
   code and the seven that pass are the controls
@@ -8731,6 +8734,54 @@ certificates and every HTTPS request from every Python program on the machine fa
 **What this does NOT establish is the cause on the player's machine.** It cannot be reproduced here, and the certificate story is
 the best-founded suspect rather than a diagnosis. What changed is that the next report is a sentence naming one of four things
 instead of "no results" -- and if it IS the trust store, the screen has already told him what to type.
+
+## D Picks The Input, And There Is No Picker For The Other Half
+
+*"Ueber Focusrite kommt kein MP3 mehr auf dem Mac. Wenn ich umstelle, kommt der Sound aus den NB Speakern. Wenn ich etwas ausserhalb der App
+laufen lasse, kommt es ueber Focusrite. Mit D habe ich das richtige Interface ausgewaehlt."*
+
+**`D` is the INPUT picker.** `ui/device_menu.py` lists `audio.input.list_audio_devices()` and writes `audio_device_index`, which the capture
+reads and the mixer never sees. The app chooses **no output device at all**: `ensure_mixer()` calls `pygame.mixer.init()` with no `devicename`,
+so SDL takes the system default -- and because `ensure_mixer` returns early once the mixer is open, **the device captured at the first open is
+the one the whole session plays to.** `Shift+A` (`output.reopen()`) is the only thing in the app that lets go of it, which makes it both the
+workaround and the experiment.
+
+**And the run log could not say which device it was on.** `describe()` named the rate, the format, the channels and the buffer -- the same gap
+the INPUT device was fixed for, where a log naming only "index 24" cannot tell a wrong device from a blocked one. So `device_names()` asks SDL
+(`pygame._sdl2.audio.get_audio_device_names`) and `output_devices` is its own line in the log and its own line in the doctor.
+
+- **It says what was on OFFER, never which is open, and must not pretend otherwise.** SDL has no way to ask, and the first name in that list is
+  not the default on CoreAudio. What it answers is the worst case: an interface the player is listening through that SDL cannot see at all is
+  the whole diagnosis, and one that IS in the list rules the same thing out.
+- **Apart from `describe()`, on two lines.** A rate the device chose is a conversion and a device SDL cannot see is a driver; together they are
+  also one line too wide for the status note `Shift+A` writes, which is the place that answer has to be readable, since a run log is written
+  later.
+- **SDL's own spelling**, because `pygame.mixer.init(devicename=...)` takes those strings and nothing else -- measured: a name SDL does not
+  know raises `No such device`. So the same list is what a picker would offer, and a picker is buildable; it is not built, because nothing yet
+  establishes that SDL is holding the wrong device rather than failing on the right one, and this project does not ship a feature to answer a
+  question a measurement has not asked.
+
+**This is not a diagnosis.** It has never been reproduced here -- there is no audio device on this machine -- and the player's own sentence
+reads two ways: an app stuck on a device the system has left, or an app that follows the default and is silent on that one interface. The next
+run log parts them, which is what the line is for.
+
+### The Decode Left The Whole Session On The Dummy Driver
+
+Found by reading that path rather than by anybody reporting it. `autosync.decode` opens the mixer when it is not already open -- it only reads a
+file, so it asked SDL for the `dummy` driver and set `SDL_AUDIODRIVER` to get it:
+
+```python
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")   # and never put back
+```
+
+**`SDL_AUDIODRIVER` is read from the environment at EVERY `mixer.init()` in the process.** Measured: open the mixer with it set, quit, change
+the variable, and the next init opens the other driver. So a decode that happened before the mixer was open left the whole run on the dummy
+driver -- **every backing track, every click and every recording silent from then on**, with nothing anywhere to say why, and only closing the
+app to clear it. It is put back now, and left alone where the player named a driver of their own.
+
+The app opens the mixer at song load today (the built-in synth reaches `ensure_mixer()` from `MidiPlayer.open()`), so the window is narrow and
+this is almost certainly not the fault above. A window that silences the app for good is not one to leave standing because it is narrow -- and
+"only restarting the app clears it" is a sentence this project has already received twice.
 
 ## What NOT To Do
 

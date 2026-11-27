@@ -8019,6 +8019,13 @@ class PlayingScreen:
         # The OUTPUT, which this log never mentioned. A run where the sound
         # went wrong and a run where it did not are otherwise identical here.
         fh.write(f"output_device\t{output.describe()}\n")
+        # Apart from the line above, because they are different faults.
+        # The app does not CHOOSE an output -- SDL takes the system
+        # default when the mixer first opens and holds it for the whole
+        # session -- so this cannot say which one is playing. What it
+        # rules out is the worst case: a device the player is listening
+        # through that SDL cannot see at all.
+        fh.write(f"output_devices\t{output.describe_devices()}\n")
         # The OTHER thing in this process that makes sound. A hum that
         # survives Shift+A is not the mixer, and a log naming only the mixer
         # cannot say that.

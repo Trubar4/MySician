@@ -217,8 +217,27 @@ def decode(path: str | Path, samplerate: int = 44100) -> tuple[np.ndarray, int]:
     started = not pygame.mixer.get_init()
     if started:
         import os
-        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-        pygame.mixer.init(frequency=samplerate, size=-16, channels=2)
+        # No speakers are wanted here -- this only reads a file -- so SDL is
+        # asked for the dummy driver, and only where the player has not named
+        # one of their own.
+        #
+        # It is PUT BACK afterwards, which the first version did not do.
+        # `SDL_AUDIODRIVER` is read from the environment at EVERY
+        # `mixer.init()` in the process (measured: a second init with the
+        # variable changed opens the other driver), so a decode that happened
+        # before the mixer was open left the whole session on the dummy driver
+        # -- every backing track, every click and every recording silent from
+        # then on, with nothing anywhere to say why. The app opens the mixer
+        # at song load now, so the window is narrow; a window that silences
+        # the app for good is not one to leave standing.
+        added = "SDL_AUDIODRIVER" not in os.environ
+        if added:
+            os.environ["SDL_AUDIODRIVER"] = "dummy"
+        try:
+            pygame.mixer.init(frequency=samplerate, size=-16, channels=2)
+        finally:
+            if added:
+                os.environ.pop("SDL_AUDIODRIVER", None)
     rate = pygame.mixer.get_init()[0]
     try:
         arr = pygame.sndarray.array(
