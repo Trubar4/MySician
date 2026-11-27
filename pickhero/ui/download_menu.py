@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pygame
 
+from pickhero.tabs import downloader
 from pickhero.tabs.downloader import (
     SongsterrResult,
     find,
@@ -69,6 +70,10 @@ class DownloadMenuScreen:
         self._selected = 0
         self._scroll_offset = 0
         self._status_msg = ""
+        #: The lines UNDER the status message. A fix the player has to type
+        #: is wider than one line and is lost at both ends if it is centred
+        #: unwrapped, so these are drawn the way `_notes` already are.
+        self._status_notes: list[str] = []
         self._searching = False
         self._downloading = False
         self._download_result: str | None = None  # "downloaded" or "failed"
@@ -102,6 +107,7 @@ class DownloadMenuScreen:
         if event.key == pygame.K_RETURN and self._query.strip() and not self._searching:
             self._searching = True
             self._status_msg = "Searching..."
+            self._status_notes = []
             self._state = "status"
             thread = threading.Thread(target=self._do_search, daemon=True)
             thread.start()
@@ -211,6 +217,9 @@ class DownloadMenuScreen:
         out = ["Search Songsterr", f"Query: {self._query}"]
         if self._status_msg:
             out.append(self._status_msg)
+        # Both lists, or `Ctrl+C` on the failure that most needs sending
+        # copies the headline and leaves the command out of it.
+        out += list(self._status_notes)
         out += list(self._notes)
         out += [f"{'> ' if i == self._selected else '  '}"
                 f"{r.artist} - {r.title}  (s{r.song_id})"
@@ -249,16 +258,36 @@ class DownloadMenuScreen:
         if results:
             self._state = "results"
         else:
-            self._status_msg = ("Songsterr has no song with that id. "
-                                "Press ESC to try again."
-                                if self._query.strip().isdigit() else
-                                "No results found. Press ESC to try again.")
+            self._status_msg, self._status_notes = self._nothing_came_back()
         self._wake()
+
+    def _nothing_came_back(self) -> tuple[str, list[str]]:
+        """Why the search found nothing, which was four problems in one line.
+
+        *"Die Songsterr Suche bringt auf Mac keine Ergebnisse."* It said "No
+        results found" -- which is also what it says when the machine is
+        offline, when a proxy refuses, and when the HTTPS handshake cannot be
+        verified. For three of those the player is being sent to retype his
+        query, which cannot possibly help.
+
+        `downloader.last_error` is empty when Songsterr really answered and
+        had nothing, so that sentence is kept for the case it was written
+        for.
+        """
+        reason = downloader.last_error
+        if not reason:
+            return ("Songsterr has no song with that id."
+                    if self._query.strip().isdigit() else
+                    "No results found.", ["Press ESC to try again."])
+        notes = list(downloader.trust_store_fix())
+        notes.append("Press ESC to try again.")
+        return f"Could not reach Songsterr: {reason}", notes
 
     def _start_download(self, result: SongsterrResult) -> None:
         """Begin download in background thread."""
         self._downloading = True
         self._status_msg = f"Downloading {result.artist} - {result.title}..."
+        self._status_notes = []
         self._state = "status"
         thread = threading.Thread(
             target=self._do_download, args=(result,), daemon=True
@@ -314,6 +343,7 @@ class DownloadMenuScreen:
         self._notes = [f"Tab: {grab.tab_path.name}"] + list(grab.notes)
         self._remember(grab.tab_path.stem, grab)
         self._status_msg = f"Downloaded: {name}"
+        self._status_notes = []
         self._download_result = "downloaded"
         self._wake()
 
@@ -466,6 +496,20 @@ class DownloadMenuScreen:
     def _render_status(self, surface, w, h, item_font, hint_font, t) -> None:
         msg_surf = item_font.render(self._status_msg, True, t.hud_text)
         surface.blit(msg_surf, (w // 2 - msg_surf.get_width() // 2, h // 2))
+
+        # Wrapped and line by line, the way `_render_done` already draws its
+        # notes: `render` is single-line, so a "\n" in the message is not a
+        # line break but a box -- and a centred line wider than the window
+        # loses BOTH ends, which is where a path and a command live.
+        if self._status_notes:
+            from pickhero.ui.footer import wrap_words
+            row = 0
+            for note in self._status_notes:
+                for part in wrap_words(note, hint_font, w - 80):
+                    line = hint_font.render(part, True, t.hud_text)
+                    surface.blit(line, (w // 2 - line.get_width() // 2,
+                                        h // 2 + 34 + row * 24))
+                    row += 1
 
         # Four network steps in a row, one of them a whole song's audio.
         # Without a bar that is thirty seconds of a frozen-looking screen,

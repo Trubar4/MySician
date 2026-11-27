@@ -642,6 +642,51 @@ def check_build():
                 % (type(exc).__name__, exc))
 
 
+def check_songsterr():
+    """Whether this machine can reach Songsterr at all.
+
+    *"Die Songsterr Suche bringt auf Mac keine Ergebnisse."* The search said
+    "No results found", which is also what it said when the machine was
+    offline, when a proxy refused, and when the HTTPS handshake could not be
+    verified -- four problems and one sentence.
+
+    The commonest of the four on macOS is not about this app: a python.org
+    build ships its own OpenSSL and looks for root certificates inside its
+    own framework rather than in the system keychain, and the file that puts
+    them there is installed by `Install Certificates.command`, which the
+    installer does NOT run. Until it is run, every HTTPS request from every
+    Python program on the machine fails verification.
+
+    So the trust store is asked FIRST and separately. "Python can verify
+    nothing" and "Songsterr is down" are different reports, and only the
+    first has a fix the player can act on.
+    """
+    try:
+        from pickhero.tabs import downloader
+    except Exception as exc:
+        return (WARN, "could not ask: %s: %s" % (type(exc).__name__, exc))
+
+    if downloader._no_trust_store():
+        return (FAIL, "this Python cannot verify ANY HTTPS certificate,",
+                "so no tab, bar map or audio can be fetched.",
+                *downloader.trust_store_fix())
+
+    try:
+        found = downloader.search("nirvana", max_results=3)
+    except Exception as exc:
+        return (WARN, "the search raised: %s: %s" % (type(exc).__name__, exc))
+    if found:
+        return (OK, "reachable -- a test search came back with %d result(s)"
+                % len(found))
+    reason = downloader.last_error
+    if reason:
+        return (WARN, "could not reach Songsterr: %s" % reason,
+                "Downloads will not work, but every song already on disk",
+                "does -- the bar maps are cached beside the tabs.")
+    return (WARN, "reachable, but a test search came back empty,",
+            "which is Songsterr answering rather than a fault here.")
+
+
 CHECKS = (
     ("python", check_python),
     ("packages", check_packages),
@@ -654,6 +699,7 @@ CHECKS = (
     ("engraver", check_engraver),
     ("clipboard", check_clipboard),
     ("ffmpeg", check_ffmpeg),
+    ("songsterr", check_songsterr),
     ("songs", check_songs),
     ("build", check_build),
 )

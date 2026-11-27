@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,6 +45,59 @@ class SongsterrResult:
     by_id: bool = False
 
 
+#: Why the last request came back with nothing. "" when it did not.
+#:
+#: *"Die Songsterr Suche bringt auf Mac keine Ergebnisse."* The search said
+#: "No results found" -- which is what it says when Songsterr genuinely has
+#: no such song, when the machine is offline, when a proxy refuses, and when
+#: the HTTPS handshake cannot be verified. Four problems, one sentence, and
+#: the player is sent to retype his query for three of them.
+#:
+#: Read by the download screen. The same shape and the same reason as
+#: `ui/clipboard.last_error`.
+last_error = ""
+
+
+def _no_trust_store() -> bool:
+    """Whether this Python can verify ANY certificate. Usually it can.
+
+    The one exception is the commonest HTTPS failure on macOS: a python.org
+    build ships its own OpenSSL and looks for CAs inside its own framework
+    rather than in the system keychain, and that file is put there by
+    `Install Certificates.command`, which the installer does NOT run for
+    you. Until it is run, `cert_store_stats()` reports zero certificates and
+    every HTTPS request fails verification -- which this app reported as "no
+    results".
+    """
+    import ssl
+    try:
+        stats = ssl.create_default_context().cert_store_stats()
+    except Exception:                      # pragma: no cover - no ssl here
+        return False
+    return not stats.get("x509", 0) and not stats.get("x509_ca", 0)
+
+
+def _ssl_context():
+    """The default context, or certifi's bundle where there is no trust store.
+
+    A FALLBACK and never an override: where the system store works it is
+    used, so this cannot weaken anything on a machine that was already fine.
+    Verification is never switched off -- a search is not worth a connection
+    nobody checked, and a silent downgrade is worse than an error message.
+    """
+    import ssl
+    if not _no_trust_store():
+        return None
+    try:
+        import certifi
+    except ImportError:
+        return None
+    try:
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:                      # pragma: no cover
+        return None
+
+
 def _urlopen_full(url: str, timeout: int = REQUEST_TIMEOUT):
     """(body bytes, the response headers) for a URL.
 
@@ -55,7 +109,11 @@ def _urlopen_full(url: str, timeout: int = REQUEST_TIMEOUT):
     file is all there is, and it is a fact rather than an inference.
     """
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    context = _ssl_context()
+    opener = (urllib.request.urlopen(req, timeout=timeout, context=context)
+              if context is not None else
+              urllib.request.urlopen(req, timeout=timeout))
+    with opener as resp:
         return resp.read(), resp.headers
 
 
@@ -84,16 +142,77 @@ def _header_date(headers) -> str:
         return ""
 
 
+def _reason(exc: BaseException) -> str:
+    """One readable line for a request that did not arrive.
+
+    The certificate case is named outright, because it is the commonest
+    HTTPS failure on macOS and because the fix is a file the installer left
+    on the machine rather than anything about this app. Everything else is
+    reported as what it was: "offline", "refused" and "timed out" send the
+    player to three different places.
+    """
+    import ssl
+
+    # HTTPError first: it is a subclass of URLError and carries a `reason`
+    # of its own, so testing in the other order reports a 404 as a socket
+    # problem.
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"Songsterr answered HTTP {exc.code}"
+    inner = getattr(exc, "reason", None)
+    if isinstance(exc, ssl.SSLCertVerificationError) or isinstance(
+            inner, ssl.SSLCertVerificationError):
+        return ("this Python cannot verify HTTPS certificates "
+                "(no trust store)")
+    return f"{type(exc).__name__}: {inner or exc}".strip()
+
+
+def trust_store_fix() -> tuple[str, ...]:
+    """What to do about a Python that can verify nothing. () when it can.
+
+    Said HERE rather than only in the doctor, because this is the screen the
+    player is standing in front of when it happens -- and "ffmpeg was not
+    found" without the fix beside it is a sentence this project has already
+    had come straight back once.
+
+    The macOS answer is a file the installer left on the machine and did not
+    run. It is named with the version this process is actually running, so
+    it is a path to copy rather than a thing to go and look for.
+    """
+    if not _no_trust_store():
+        return ()
+    if sys.platform == "darwin":
+        version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        return (
+            "This Python cannot check any HTTPS certificate, so nothing can",
+            "be fetched. The python.org installer leaves a script for it and",
+            "does not run it. In Terminal, once:",
+            f'    "/Applications/Python {version}/Install Certificates.command"',
+            "That fixes every Python tool on this machine, not just this one.",
+        )
+    return (
+        "This Python cannot check any HTTPS certificate, so nothing can be",
+        "fetched. Reinstalling Python, or `pip install --upgrade certifi`,",
+        "puts a trust store back.",
+    )
+
+
 def _fetch_json(url: str) -> dict | list | None:
-    """Fetch a URL and parse as JSON. Returns None on any error."""
+    """Fetch a URL and parse as JSON. None on any error -- and `last_error`
+    then says which, because "Songsterr has no such song" and "this machine
+    cannot reach Songsterr" were one answer and are different problems."""
+    global last_error
     try:
         data = _urlopen(url)
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError) as exc:
+        last_error = _reason(exc)
         return None
     try:
-        return json.loads(data)
+        parsed = json.loads(data)
     except (json.JSONDecodeError, ValueError):
+        last_error = "Songsterr answered something that is not JSON"
         return None
+    last_error = ""
+    return parsed
 
 
 def search(query: str, max_results: int = 10) -> list[SongsterrResult]:

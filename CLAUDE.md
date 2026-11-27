@@ -4106,6 +4106,9 @@ pickhero/
 - `tests/test_cmd_key.py` -- Cmd as the modifier on a Mac, and the PROPERTY that nothing in `ui/` reads the Ctrl bit
   off an event by hand (parsed, with its own control that the check can fail); five of its twelve fail on the unfixed
   code and the seven that pass are the controls
+- `tests/test_songsterr_reachability.py` -- why a search came back empty: the reason reported rather than swallowed, the
+  certificate case named as itself, the fix carrying no placeholder, and that the lines really reach the screen. Nine of its
+  seventeen fail on the unfixed code and the rest are controls -- including that verification is never switched off
 - `tests/test_softsynth.py` -- the synth inside the app: the voices measured as spectra (the guide really is brighter, the
   drum carries no pitch, a high note does not alias at a rate where it could), and the message handling driven through a fake
   mixer rather than skipped where there is no audio device. Four of its rules were verified by breaking the code on purpose,
@@ -8688,6 +8691,46 @@ HUD already shows a dash. Neither is where a player looks, and a dash reads as a
 - **The recorded backing (`U`) is untouched** and it goes through the mixer, which the doctor has reported healthy
   there from the first run. Naming it as *the answer* was the mistake: he practises with `B`/`Shift+B` precisely where
   the stretched recording is unusable, so `U` is not a substitute for them at the speed they are used at.
+
+## Four Problems, One Sentence, And A Query To Retype
+
+*"Die Songsterr Suche bringt auf Mac keine Ergebnisse."* The search answered **"No results found"**, which is also what it answers
+when the machine is offline, when a proxy refuses, and when the HTTPS handshake cannot be verified. `_fetch_json`'s own docstring
+said so in as many words -- *"Returns None on any error"* -- so for three of the four the player was being sent to retype a query,
+which cannot possibly help. The same fault as `clipboard.py`'s three problems and one return value, and it is fixed the same way:
+`downloader.last_error`.
+
+**The likeliest of the four is not about this app at all.** A python.org build ships its own OpenSSL and looks for root
+certificates inside its own framework rather than in the system keychain, and the file that puts them there is installed by
+`Install Certificates.command`, **which the installer does not run**. Until it is run, `cert_store_stats()` reports zero
+certificates and every HTTPS request from every Python program on the machine fails verification.
+
+- **The trust store is asked SEPARATELY and first**, because it is a different question from reachability: a Python that can verify
+  nothing cannot reach any https host, so the timeout is the symptom and the certificate is the cause. `_no_trust_store()` is the
+  exact test and it costs nothing.
+- **The fix is said on the DOWNLOAD SCREEN, not only in the doctor** -- that is the screen the player is standing in front of when
+  it happens, and *"ffmpeg was not found"* without the fix beside it is a sentence that already came straight back once. It names
+  the version this process is running, so the path is one to copy rather than a thing to go and look for. **No placeholder in
+  brackets**, which is the mistake the fluidsynth advice made: he ran `<soundfont>.sf2` verbatim, as anybody would, and a test
+  asserts that no bracket appears in either platform's wording.
+- **certifi is a FALLBACK and never an override.** Where the system store works it is used, so this cannot weaken a machine that
+  was already fine; where there is no store at all and certifi happens to be installed, the search works instead of explaining
+  itself. **Verification is never switched off** -- a search is not worth a connection nobody checked, and a test greps the module
+  for `CERT_NONE` and `_create_unverified` to keep it that way.
+- **`HTTPError` is tested before `URLError`**, which it subclasses: in the other order a 404 is reported as a socket fault.
+- **A good reply CLEARS the reason.** Otherwise a successful search reports the last failure for ever, which is the "status message
+  that outlives its situation" fault this file has already paid for at the MP3 offset.
+- **The lines are a LIST and not a `\n`.** `Font.render` is single-line, so a newline in the message is a box rather than a break
+  -- and a centred line wider than the window loses BOTH ends, which is where a path and a command live. They are wrapped the way
+  `_render_done` already wraps its notes, cleared on every new search, and `Ctrl+C` copies them: the one failure most worth sending
+  is the one whose headline alone is useless.
+- **The doctor gets a fourteenth check.** It had thirteen and not one of them asked whether the network works, on an app that makes
+  four network calls to learn a song. On the machine this was written on it reports the agent proxy refusing the host, which is the
+  right answer and is how the check was verified at all -- songsterr.com has never been reachable from here.
+
+**What this does NOT establish is the cause on the player's machine.** It cannot be reproduced here, and the certificate story is
+the best-founded suspect rather than a diagnosis. What changed is that the next report is a sentence naming one of four things
+instead of "no results" -- and if it IS the trust store, the screen has already told him what to type.
 
 ## What NOT To Do
 

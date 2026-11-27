@@ -378,3 +378,77 @@ class TestTheOutputThatCanBeEntirelyAbsent:
         monkeypatch.setattr(midi_playback, "list_midi_outputs",
                             lambda: list(ports))
         return doctor.check_midi()
+
+
+class TestTheOneNetworkThisAppUses:
+    """Thirteen checks and none of them asked whether the network works.
+
+    *"Die Songsterr Suche bringt auf Mac keine Ergebnisse."* The download
+    makes four network calls and the search reported every possible failure
+    as "No results found" -- so the machine check could not tell "Songsterr
+    has no such song" from "this Python can verify nothing".
+    """
+
+    def test_an_empty_trust_store_is_asked_first_and_fails(self, doctor,
+                                                           monkeypatch):
+        """It outranks reachability: a Python that can verify nothing cannot
+        reach ANY https host, so a timeout would be the symptom and the
+        certificate the cause. And it is the one of the two with a fix.
+        """
+        from pickhero.tabs import downloader
+        monkeypatch.setattr(downloader, "_no_trust_store", lambda: True)
+        monkeypatch.setattr(downloader.sys, "platform", "darwin")
+        reached = []
+        monkeypatch.setattr(downloader, "search",
+                            lambda *a, **k: reached.append(1) or [])
+        status, *lines = doctor.check_songsterr()
+        assert status == doctor.FAIL
+        assert reached == []                   # never even tried
+        assert any("Install Certificates" in line for line in lines)
+
+    def test_a_search_that_works_is_ok_and_says_how_many(self, doctor,
+                                                         monkeypatch):
+        from pickhero.tabs import downloader
+        monkeypatch.setattr(downloader, "_no_trust_store", lambda: False)
+        monkeypatch.setattr(downloader, "search",
+                            lambda *a, **k: [object(), object()])
+        status, *lines = doctor.check_songsterr()
+        assert status == doctor.OK
+        assert "2 result" in " ".join(lines)
+
+    def test_an_unreachable_host_names_the_reason_and_what_still_works(
+            self, doctor, monkeypatch):
+        """A player whose songs are already on disk is not stuck: the bar
+        maps are cached beside the tabs, so only DOWNLOADS are affected."""
+        from pickhero.tabs import downloader
+        monkeypatch.setattr(downloader, "_no_trust_store", lambda: False)
+        monkeypatch.setattr(downloader, "search", lambda *a, **k: [])
+        monkeypatch.setattr(downloader, "last_error", "URLError: refused")
+        status, *lines = doctor.check_songsterr()
+        said = " ".join(lines)
+        assert status == doctor.WARN
+        assert "refused" in said
+        assert "already on disk" in said
+
+    def test_and_an_empty_answer_is_not_called_a_fault(self, doctor,
+                                                       monkeypatch):
+        """Songsterr answering with nothing is Songsterr, not this machine."""
+        from pickhero.tabs import downloader
+        monkeypatch.setattr(downloader, "_no_trust_store", lambda: False)
+        monkeypatch.setattr(downloader, "search", lambda *a, **k: [])
+        monkeypatch.setattr(downloader, "last_error", "")
+        status, *lines = doctor.check_songsterr()
+        assert "Songsterr answering" in " ".join(lines)
+
+    def test_a_search_that_raises_is_a_line_and_not_a_traceback(self, doctor,
+                                                                monkeypatch):
+        from pickhero.tabs import downloader
+        monkeypatch.setattr(downloader, "_no_trust_store", lambda: False)
+
+        def boom(*a, **k):
+            raise RuntimeError("nope")
+
+        monkeypatch.setattr(downloader, "search", boom)
+        status, *lines = doctor.check_songsterr()
+        assert status == doctor.WARN
+        assert "nope" in " ".join(lines)
