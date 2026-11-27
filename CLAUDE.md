@@ -8783,6 +8783,43 @@ The app opens the mixer at song load today (the built-in synth reaches `ensure_m
 this is almost certainly not the fault above. A window that silences the app for good is not one to leave standing because it is narrow -- and
 "only restarting the app clears it" is a sentence this project has already received twice.
 
+## A Position That Does Not Move Is Not A Clock
+
+*"Beim nur laufen lassen ohne zu spielen springt es immer mal wieder zurueck und geht 2x durch manche Takte."* -- on every song, on the Mac,
+where the output produced no sound at all. Then the one-key test: **`U` aus und es springt nicht mehr.** That is the whole narrowing. Nothing
+else in the app moves the song clock backwards during plain playback except a loop and a drill, so the dragging is `_follow_recording` and
+nothing else.
+
+**And `_mp3_leads` asked whether the recording was SOUNDING, never whether its clock was RUNNING.** The recording leads the picture because its
+clock is in the sound card and cannot be bent without a seek -- that is the whole argument, and it needs the clock to be moving. A stream on a
+device that is not consuming it reports a position that stands still, so the gap to the song grows at real time, passes `SYNC_SNAP_MS` after a
+second and a half, and the picture is **thrown back to it**. Then it grows again. Over and over, on every song, which is exactly what a map
+fault is not: a map belongs to one song.
+
+- **The window is a second of REAL time, not a frame.** `get_pos()` advances in the mixer's own steps -- 46 ms at the shipped buffer -- so a
+  single frame regularly reads the same millisecond twice, and frame by frame would convict a healthy recording.
+- **Innocent until a whole window convicts, and a later window can acquit.** A recording that hiccupped once must not be ignored for the rest
+  of the song.
+- **A JUMP is not a reading either way.** A seek, a loop turn or a resume moves the recording by far more than the time that passed, so the
+  window restarts rather than answering. A pause resets it too: nothing is sounding, so there is nothing to measure.
+- **It is deliberately NOT `MP3_STUCK_DRIFT_MS`.** That asks whether the recording is IN SYNC, and borrowing it here would convict a pull
+  saturated against a map demanding more than it may give -- which is the Carol Of The Bells case, where the recording's clock is running
+  perfectly. Two questions, two places, the same lesson as `MARGIN_DB` against `CONFIRM_MARGIN_DB`.
+- **Both numbers are reasoned and say so.** There is nothing to fit them against: the fault has never been reproduced here, and the only honest
+  claim is that a position which does not move is not a clock. `MP3_STALL_FRACTION` is a quarter of real time, generously below anything real
+  since the practice speed is already divided out of `heard_ms`.
+- **When it fires the song keeps its own time**, which is what it did before any of this existed, and `_update_mp3` still seeks the recording
+  where it can -- so nothing is left unattended. `mp3_not_advancing` is in the run log, because a guard that cannot be seen working is one
+  nobody can confirm.
+
+**A fixture had to be fixed with it, and it is the same lesson.** `test_the_picture_is_pulled_towards_the_recording` held the recording's
+position still for fifteen seconds -- convenient, and a state the app now rules out -- so it was asserting the pull against a clock the app
+refuses to follow. The recording advances in it now and the error comes from the map, which is what the test always meant.
+
+**This is not a diagnosis of the Mac fault.** What is established is that the dragging is the pull, that the pull was believing a clock it had
+never checked, and that a frozen recording can no longer move the picture. Why that Mac produces no output at all is a different question and
+is still open.
+
 ## What NOT To Do
 
 - Don't add ML-based pitch detection. aubio YIN is sufficient and runs everywhere.

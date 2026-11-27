@@ -298,6 +298,35 @@ MP3_STUCK_DRIFT_MS = 250.0
 # Long enough that the sync has had at least one correction attempt at it.
 MP3_STUCK_FOR_MS = 3000.0
 
+# A recording leads the picture because its clock is in the sound card and
+# cannot be bent without a seek. That argument needs the clock to be RUNNING,
+# and `_mp3_leads` never asked: a stream on a device that is not consuming it
+# reports a position that stands still, the gap to the song grows, and past
+# `SYNC_SNAP_MS` the picture is thrown back to it -- over and over, on every
+# song. *"Beim nur laufen lassen ohne zu spielen springt es immer mal wieder
+# zurueck und geht 2x durch manche Takte."* With `U` off it stopped, which is
+# what says the dragging is this and nothing else.
+#
+# Both numbers are REASONED rather than fitted, and say so. There is nothing
+# to fit them against: the fault has never been reproduced here, and the only
+# honest claim is that a position which does not move is not a clock.
+#
+# A whole second, because `get_pos()` advances in the mixer's own steps --
+# 46 ms at the shipped buffer -- so a single frame regularly reads the same
+# millisecond twice and frame-by-frame would convict a healthy recording.
+MP3_STALL_WINDOW_MS = 1000.0
+# A quarter of real time. Generously below anything real: the practice speed
+# is already divided out of `heard_ms`, and the loosest genuine case -- a pull
+# saturated against a map that demands more than it may give -- does not slow
+# `get_pos()` down at all. This is deliberately NOT `MP3_STUCK_DRIFT_MS`,
+# which asks whether the recording is IN SYNC; borrowing it would convict a
+# saturated pull, and the two questions are fixed in different places.
+MP3_STALL_FRACTION = 0.25
+# Above this much more than real time, something MOVED the recording -- a
+# seek, a loop turn, a resume. That is not a reading of its clock either way,
+# so the window restarts rather than answering.
+MP3_STALL_SLACK_MS = 250.0
+
 # The input level: the thresholds, the gate band, and the verdict on a run.
 # Re-exported here because the tests and tools import them from this module,
 # and because one definition is the whole point -- the live HUD advice and the
@@ -1375,6 +1404,11 @@ class PlayingScreen:
         self._mp3_note: str = ""
         # When the recording first fell behind, or None while it is keeping up.
         self._mp3_stuck_since_ms: float | None = None
+        # Whether the recording's own position is really moving. See
+        # MP3_STALL_WINDOW_MS. Innocent until a whole window says otherwise.
+        self._mp3_not_advancing = False
+        self._mp3_stall_heard_ms: float | None = None
+        self._mp3_stall_real_s = 0.0
         # Practice speed below full needs a stretched copy of the recording,
         # which takes seconds to make. It is built on a thread and swapped in
         # when it is ready: the app must not freeze on a tempo key.
@@ -8225,6 +8259,9 @@ class PlayingScreen:
         fh.write(f"mp3_worst_pull_ms\t{self._worst_sync_pull_ms:.0f}\n")
         fh.write(f"mp3_snaps\t{self._mp3_snaps}\n")
         fh.write(f"mp3_leads\t{'yes' if self._mp3_led else 'no'}\n")
+        if self._mp3_not_advancing:
+            fh.write("mp3_not_advancing\tyes\tthe recording's own position "
+                     "stopped moving, so it was not allowed to lead\n")
         # A recording SHORTER than the tab stops while the song runs on, and
         # from the inside that is a backing track that broke. The tab is as
         # long as it is WRITTEN, so an outro the guitar sits out can leave
@@ -9595,9 +9632,44 @@ class PlayingScreen:
             and self._mp3_pending_seek_ms is None
             and self._playing and self._playback_ms >= 0)
 
+    def _restart_mp3_stall_window(self, heard_ms: float | None) -> None:
+        """Begin measuring the recording's own clock again from here."""
+        self._mp3_stall_heard_ms = heard_ms
+        self._mp3_stall_real_s = 0.0
+
+    def _mp3_advancing(self, heard_ms: float, real_elapsed_s: float) -> bool:
+        """Whether the recording's own position is really moving.
+
+        The one thing `_mp3_leads` never asked, and the whole argument for
+        letting the recording lead rests on it -- see MP3_STALL_WINDOW_MS.
+
+        Innocent until a whole window convicts, and it can acquit again on
+        the next one: this must not turn a recording that hiccupped once into
+        one the picture ignores for the rest of the song.
+        """
+        self._mp3_stall_real_s += max(0.0, real_elapsed_s)
+        if self._mp3_stall_heard_ms is None:
+            self._restart_mp3_stall_window(heard_ms)
+            return not self._mp3_not_advancing
+        advance = heard_ms - self._mp3_stall_heard_ms
+        wanted = self._mp3_stall_real_s * 1000.0 * self._tempo_factor
+        if advance < -1.0 or advance > wanted + MP3_STALL_SLACK_MS:
+            # Something moved the recording. Not a reading of its clock.
+            self._restart_mp3_stall_window(heard_ms)
+            return not self._mp3_not_advancing
+        if self._mp3_stall_real_s * 1000.0 < MP3_STALL_WINDOW_MS:
+            return not self._mp3_not_advancing
+        self._mp3_not_advancing = advance < wanted * MP3_STALL_FRACTION
+        self._restart_mp3_stall_window(heard_ms)
+        return not self._mp3_not_advancing
+
     def _follow_recording(self, real_elapsed_s: float) -> None:
         """Pull the song clock towards where the recording actually is."""
         if not self._mp3_leads():
+            # Nothing is sounding, so there is nothing to measure and the
+            # next reading starts a window of its own. Without this, a pause
+            # or a seek would be charged to the recording as a stall.
+            self._restart_mp3_stall_window(None)
             return
         # What the MIXER says, not what this object remembers. `position_ms`
         # falls back to where the current play() started when the mixer has
@@ -9608,6 +9680,13 @@ class PlayingScreen:
         # back to where the recording began. See `Mp3Player.heard_ms`.
         heard = self._mp3_player.heard_ms()
         if heard is None:
+            self._restart_mp3_stall_window(None)
+            return
+        if not self._mp3_advancing(heard, real_elapsed_s):
+            # A position that stands still is not a clock, so it may not drag
+            # the picture. The song keeps its own time -- which is what it did
+            # before any of this existed -- and `_update_mp3` still seeks the
+            # recording where it can, so nothing is left unattended.
             return
         wanted = self._sync_map().song_at(heard)
         error = wanted - self._playback_ms

@@ -1233,9 +1233,20 @@ class TestTheRecordingKeepsTimeAndThePictureFollows:
         assert wanted < screen._playback_ms
         # A 600 ms error, corrected at a fraction of the time that passes,
         # is seconds of playing -- invisible, and that is the point.
+        #
+        # The recording ADVANCES here, the way a real one does. Holding its
+        # position still for fifteen seconds was convenient and is a state
+        # the app now rules out: a position that does not move is not a clock
+        # and may not drag the picture (see `_mp3_advancing`), so a fixture
+        # that freezes it would be testing something the app refuses.
+        step = 1000.0 / 60.0
         for _ in range(60 * 15):
+            screen._mp3_player._fake_at += step
+            screen._playback_ms += step
             screen._follow_recording(1 / 60)
-        assert screen._playback_ms == pytest.approx(wanted, abs=2.0)
+        heard = screen._mp3_player._fake_at
+        assert screen._playback_ms == pytest.approx(
+            screen._sync_map().song_at(heard), abs=2.0)
 
     def test_and_never_faster_than_the_eye(self, tmp_path, monkeypatch):
         """A correction the player can SEE is worse than the error.
@@ -1394,6 +1405,101 @@ class TestTheRecordingKeepsTimeAndThePictureFollows:
         screen._playback_ms = 60_000.0
         screen._follow_recording(1 / 60)
         assert screen._playback_ms == pytest.approx(60_000.0)
+
+
+    # ---- a recording whose own clock has stopped --------------------
+    #
+    # *"Beim nur laufen lassen ohne zu spielen springt es immer mal wieder
+    # zurueck und geht 2x durch manche Takte."* -- on every song, on the Mac,
+    # where the output produced no sound at all. With `U` off it stopped,
+    # which is what says the dragging is the pull and nothing else.
+    #
+    # `_mp3_leads` asked whether the recording was SOUNDING and never whether
+    # its clock was RUNNING. A stream on a device that is not consuming it
+    # reports a position that stands still; the gap to the song grows past
+    # SYNC_SNAP_MS and the picture is thrown back to it, over and over.
+
+    def _freeze(self, screen, seconds: float) -> None:
+        """Run the loop with the recording's position standing still."""
+        for _ in range(int(seconds * 60)):
+            screen._playback_ms += 1000.0 / 60.0
+            screen._follow_recording(1 / 60)
+
+    def test_a_frozen_recording_stops_leading(self, tmp_path, monkeypatch):
+        screen = self._screen(tmp_path, monkeypatch, at_ms=10_000.0)
+        screen._playback_ms = 10_000.0
+        self._freeze(screen, 1.5)
+        assert screen._mp3_not_advancing
+        # And the picture is not thrown back to it. Three more seconds of
+        # song: a recording that led would have snapped it to 10 s.
+        before = screen._playback_ms
+        self._freeze(screen, 3.0)
+        assert screen._playback_ms > before + 2_500.0
+
+    def test_a_recording_that_really_runs_is_never_convicted(
+            self, tmp_path, monkeypatch):
+        """The control. It passes on the unfixed code, and without it this
+        class would go green on a guard that refuses every recording."""
+        screen = self._screen(tmp_path, monkeypatch, at_ms=10_000.0)
+        screen._playback_ms = 10_000.0
+        for _ in range(60 * 10):
+            screen._mp3_player._fake_at += 1000.0 / 60.0
+            screen._playback_ms += 1000.0 / 60.0
+            screen._follow_recording(1 / 60)
+        assert not screen._mp3_not_advancing
+
+    def test_it_lets_go_again_once_the_position_moves(self, tmp_path,
+                                                      monkeypatch):
+        """A recording that hiccupped once must not be ignored for the rest
+        of the song, so a window can acquit as well as convict."""
+        screen = self._screen(tmp_path, monkeypatch, at_ms=10_000.0)
+        screen._playback_ms = 10_000.0
+        self._freeze(screen, 1.5)
+        assert screen._mp3_not_advancing
+        for _ in range(60 * 2):
+            screen._mp3_player._fake_at += 1000.0 / 60.0
+            screen._playback_ms += 1000.0 / 60.0
+            screen._follow_recording(1 / 60)
+        assert not screen._mp3_not_advancing
+
+    def test_a_jump_is_not_a_reading_of_its_clock(self, tmp_path,
+                                                  monkeypatch):
+        """A seek, a loop turn or a resume moves the recording by far more
+        than the time that passed. That is not evidence either way, so the
+        window restarts rather than answering."""
+        screen = self._screen(tmp_path, monkeypatch, at_ms=10_000.0)
+        screen._playback_ms = 10_000.0
+        for _ in range(60 * 3):
+            screen._mp3_player._fake_at += 30_000.0
+            screen._playback_ms += 1000.0 / 60.0
+            screen._follow_recording(1 / 60)
+        assert not screen._mp3_not_advancing
+
+    def test_a_pause_is_not_charged_to_the_recording(self, tmp_path,
+                                                     monkeypatch):
+        """Nothing is sounding, so there is nothing to measure."""
+        screen = self._screen(tmp_path, monkeypatch, at_ms=10_000.0)
+        screen._playback_ms = 10_000.0
+        screen._playing = False
+        for _ in range(60 * 5):
+            screen._follow_recording(1 / 60)
+        assert not screen._mp3_not_advancing
+        assert screen._mp3_stall_heard_ms is None
+
+    def test_the_run_log_says_it(self, tmp_path, monkeypatch):
+        """A guard that cannot be seen working is one nobody can confirm."""
+        import io
+        from pickhero.matcher import NoteMatcher
+        screen = self._screen(tmp_path, monkeypatch, at_ms=10_000.0)
+        screen._matcher = NoteMatcher(screen._timeline)
+        screen._playback_ms = 10_000.0
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "mp3_not_advancing" not in buffer.getvalue()
+        self._freeze(screen, 1.5)
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        assert "mp3_not_advancing\tyes" in buffer.getvalue()
 
 
 class TestTheRecordingsOwnSpeed:
