@@ -325,7 +325,7 @@ class TestTheHelpSaysWhatEverythingIsSetTo:
         would send the player looking for the key that turns it on."""
         screen = _screen()
         assert screen._midi_player is None
-        assert "B: MIDI backing   —" in self._text(screen)
+        assert "Shift+B: the rest of the band   —" in self._text(screen)
 
     def test_the_muted_strings_are_shown_as_strings(self):
         screen = _screen()

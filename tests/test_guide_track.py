@@ -28,8 +28,9 @@ def _track(count=4):
 class _FakePlayer:
     """A MidiPlayer that records what the transport did to it."""
 
-    def __init__(self, track):
+    def __init__(self, track, role="band"):
         self._track = track
+        self.role = role
         self.muted = False
         self.calls = []
 
@@ -69,30 +70,49 @@ def screen(monkeypatch):
 
 
 class TestTheTwoAreSeparate:
+    """The keys were swapped at the player's request, so the assertions below
+    read the other way round than they first did.
+
+    *"Zuerst uebe ich mit Sh+B und dann spaeter mit B, damit es auch den
+    Background hat."* The part he is learning came first in the practice and
+    second on the keyboard, so the unshifted key is the guide now.
+    """
+
     def test_it_starts_silent(self, screen):
         """Producing this part is the point of the app; hearing it play
         itself on the first run would teach the wrong thing."""
         assert screen._guide_muted is True
         assert screen._guide_player.muted is True
 
-    def test_shift_b_turns_it_on(self, screen):
+    def test_plain_b_turns_it_on(self, screen):
         screen.handle_event(pygame.event.Event(
-            pygame.KEYDOWN, key=pygame.K_b, mod=pygame.KMOD_LSHIFT))
+            pygame.KEYDOWN, key=pygame.K_b, mod=0))
         assert screen._guide_muted is False
         assert screen._guide_player.muted is False
 
-    def test_plain_b_still_only_touches_the_band(self, screen):
+    def test_shift_b_only_touches_the_band(self, screen):
         before = screen._guide_muted
         screen.handle_event(pygame.event.Event(
-            pygame.KEYDOWN, key=pygame.K_b, mod=0))
+            pygame.KEYDOWN, key=pygame.K_b, mod=pygame.KMOD_LSHIFT))
         assert screen._guide_muted is before
         assert screen._backing_muted is not (not screen._config.backing_track_enabled)
 
-    def test_shift_b_does_not_touch_the_band(self, screen):
+    def test_plain_b_does_not_touch_the_band(self, screen):
         before = screen._backing_muted
         screen.handle_event(pygame.event.Event(
-            pygame.KEYDOWN, key=pygame.K_b, mod=pygame.KMOD_LSHIFT))
+            pygame.KEYDOWN, key=pygame.K_b, mod=0))
         assert screen._backing_muted is before
+
+    def test_the_guide_player_is_told_which_part_it_is(self, screen):
+        """The built-in synth cannot work it out, and has to know.
+
+        Both tracks are extracted by the same code with the track filter
+        inverted, so the guide's notes arrive on the CHANNEL the band would
+        have used. Only the object they are written through can say which
+        part they belong to -- and the balance between the two rests on it.
+        """
+        assert screen._guide_player.role == "guide"
+        assert screen._midi_player.role == "band"
 
     def test_the_choice_is_remembered(self, screen):
         screen._toggle_guide_track()
@@ -102,14 +122,14 @@ class TestTheTwoAreSeparate:
 
     def test_both_are_named_in_the_footer(self, screen):
         footer = " ".join(text for text, _ in screen.footer_segments())
-        assert "B: Backing" in footer and "Shift+B: My Backing" in footer
+        assert "B: My Part" in footer and "Shift+B: Band" in footer
 
     def test_a_song_without_one_says_so_rather_than_nothing(self, monkeypatch):
         """A dash is the answer to "why does pressing it do nothing"."""
         monkeypatch.setattr("pickhero.ui.scrolling.MidiPlayer", _FakePlayer)
         timeline = Timeline([], SongMetadata(title="x", tempo=100))
         s = PlayingScreen(timeline, config=Config(), song_key="x")
-        assert "Shift+B: My Backing —" in " ".join(
+        assert "B: My Part —" in " ".join(
             text for text, _ in s.footer_segments())
 
 

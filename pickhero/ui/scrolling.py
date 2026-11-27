@@ -2614,10 +2614,15 @@ class PlayingScreen:
             else:
                 self._set_sync_point()
         elif event.key == pygame.K_b:
+            # Asked for by the player, and the reason is the order he works
+            # in: *"Zuerst uebe ich mit Sh+B und dann spaeter mit B, damit es
+            # auch den Background hat."* The part he is learning came second
+            # on the keyboard and first in the practice, so the unshifted key
+            # is the guide now and the band is shifted.
             if shift_held(event):
-                self._toggle_guide_track()
-            else:
                 self._toggle_backing()
+            else:
+                self._toggle_guide_track()
         elif event.key == pygame.K_x:
             self._take_gate_by_hand()
             self.set_noise_gate_db(self._noise_gate_db - 5)
@@ -5674,8 +5679,8 @@ class PlayingScreen:
              on if pct != 100 else off),
             (f"A: Audio {'on' if self._audio_enabled else 'off'}",
              on if self._audio_enabled else off),
-            (f"B: Backing {backing}", on if backing == "on" else off),
-            (f"Shift+B: My Backing {guide}", on if guide == "on" else off),
+            (f"B: My Part {guide}", on if guide == "on" else off),
+            (f"Shift+B: Band {backing}", on if backing == "on" else off),
             (mp3, on if mp3.endswith("on") else off),
             (f"+/- Size ({size})", on if sized else off),
             (f"G: {window} ms",
@@ -8508,11 +8513,12 @@ class PlayingScreen:
                 ], "small"),
 
                 ("Sound and scoring", [
-                ("B: MIDI backing", "—" if self._midi_player is None
-                 else "off" if self._backing_muted else "on"),
-                ("Shift+B: your own part, as a guide",
+                ("B: your own part, as a guide",
                  "—" if self._guide_player is None
                  else "off" if self._guide_muted else "on"),
+                ("Shift+B: the rest of the band", "—"
+                 if self._midi_player is None
+                 else "off" if self._backing_muted else "on"),
                 ("Ctrl+U: paste a Songsterr link, so Ctrl+S can fall back",
                  f"song {self._songsterr_id()}" if self._songsterr_id()
                  else "none pasted"),
@@ -11395,7 +11401,7 @@ class PlayingScreen:
     def _init_guide_player(self, guide_track: BackingTrack) -> None:
         """The written part of the track being played, as something to hear."""
         try:
-            player = MidiPlayer(guide_track)
+            player = MidiPlayer(guide_track, role="guide")
             if player.open():
                 player.set_muted(self._guide_muted)
                 self._guide_player = player
@@ -11405,7 +11411,7 @@ class PlayingScreen:
             print(f"Guide track unavailable: {exc}")
 
     def _toggle_guide_track(self) -> None:
-        """Hear the part you are meant to play, or stop hearing it (Shift+B)."""
+        """Hear the part you are meant to play, or stop hearing it (B)."""
         if self._guide_player is None:
             return
         self._guide_muted = not self._guide_muted
@@ -11434,7 +11440,7 @@ class PlayingScreen:
             print(f"MIDI player init failed: {e}")
 
     def _toggle_backing(self) -> None:
-        """Toggle backing track mute on/off."""
+        """Hear the rest of the band, or stop hearing it (Shift+B)."""
         if self._midi_player is None:
             return
         self._backing_muted = not self._backing_muted

@@ -4106,6 +4106,10 @@ pickhero/
 - `tests/test_cmd_key.py` -- Cmd as the modifier on a Mac, and the PROPERTY that nothing in `ui/` reads the Ctrl bit
   off an event by hand (parsed, with its own control that the check can fail); five of its twelve fail on the unfixed
   code and the seven that pass are the controls
+- `tests/test_softsynth.py` -- the synth inside the app: the voices measured as spectra (the guide really is brighter, the
+  drum carries no pitch, a high note does not alias at a rate where it could), and the message handling driven through a fake
+  mixer rather than skipped where there is no audio device. Four of its rules were verified by breaking the code on purpose,
+  and the fifth -- the Nyquist guard -- had to be rewritten after it passed with the guard removed
 - `tests/test_macos.py` -- asking macOS instead of Tk: the three call sites never reaching tkinter (driven with a
   tkinter that raises on being touched, the way the real one aborts), the AppleScript escaping, and the non-darwin
   path unchanged; ten of its tests fail on the unfixed code and the fourteen that pass are the controls
@@ -8564,7 +8568,108 @@ own asymmetry. The screen's own footer settles it: `Ctrl+N: not new (Ctrl+Shift+
 and documented. **A refactor that reads one of two sites and makes them agree is a behaviour change**, and the only
 thing that caught it was reading the footer rather than the sibling.
 
+## A Synth Inside The App, Because A Port Is Only A Wire
+
+*"Midi output B und Sh+B gehen nicht."* The chapter below diagnosed that correctly as a platform gap and then offered the wrong
+remedy: Homebrew, fluidsynth, a 150 MB soundfont and a background process per sitting, for a player whose `brew` is not even
+installed. **The player's own next sentence is what overturned it**, and it inverts the one judgement I had put in writing.
+
+*"Ich benutze B und Shift+B, wenn ich etwas langsam uebe. In diesem Fall ist das MP3 kaum zu gebrauchen."*
+
+| at 60 % practice speed | |
+|---|---|
+| the recording | a WSOLA copy: the level wobbles about 1 dB, the top of the band is 3-4 dB down, and he reports it as barely usable |
+| **MIDI** | told a position, plays the events at it -- **exact at every speed, nothing is stretched** |
+
+I had written that a simple synth would be *"worse than a real recording for the band"*. That is true at 100 % and **false at the
+speed these keys are actually used**, which is the only speed they are used at. So an install-free synth is not a consolation
+prize: it makes the better path reachable on every machine instead of on the one platform that happens to bundle a wavetable.
+
+**The seam is one method.** `MidiPlayer`'s entire output surface is `write_short(status, data1, data2)`, so an object with that
+method drops in where the port is opened and `BackingTrack`, `MidiPlayer`, `_midi_all()`, every transport call, `play_click`,
+`_silence` and the `Shift+A` panic path are all untouched. `audio/softsynth.py` is a second kind of OUTPUT, not a second code
+path through the app.
+
+- **The real port wins wherever there is one.** The GS Wavetable Synth sounds better than anything here, so Windows is
+  bit-for-bit what it was. The cost is named rather than hidden: the same key sounds different on the player's two laptops.
+- **The guide sits in front and the band sits back**, because he runs both at once (*"sehr wohl B und Sh+B"*). One fixed balance
+  rather than two volume rows -- a setting that ends up at zero looks exactly like a broken feature. The brightness carries it as
+  much as the gain: the guide gets six harmonics and the band three, and the test measures the spectral centroid rather than
+  asserting a number.
+- **The role cannot be derived from the messages, so it is carried by the object.** The guide and the band are extracted by the
+  same function with the track filter inverted, so the guide's notes arrive on the CHANNEL the band would have used.
+  `MidiPlayer` gains a `role` and the synth hands out a tagged view per player -- which is also strictly better than a real
+  port, where `_silence` on a shared device means a guide pause takes the band's notes with it.
+- **A role-LESS message stops every part**, because that is what `panic()` sends: it writes to the shared object on purpose, so
+  a player dropped without being closed cannot leave anything sounding. Getting it the other way round is a `Shift+A` that
+  silences the band and leaves the hum.
+- **Percussion is a noise burst, not a pitch.** A simple synth cannot fake a kit, and a pitched tone on the drum channel is
+  *wrong* rather than merely thin.
+- **No General MIDI set.** 128 sampled instruments are the soundfont this app does not bundle; brightness following the written
+  instrument's family is the most that can honestly be derived from a program number.
+
+### The keys are swapped, and the player asked for it
+
+`B` is the guide and `Shift+B` is the band now. *"Zuerst uebe ich mit Sh+B und dann spaeter mit B, damit es auch den Background
+hat."* The part he is learning came first in the practice and second on the keyboard; the unshifted key is the thing reached for
+first. Six tests in `test_guide_track.py` read the other way round because of it -- a rule change showing up as a failing suite
+rather than as a surprise months later.
+
+### Measured, and one of the four measurements moved the design
+
+| | |
+|---|---|
+| a warm twelve-voice chord | **0.021 ms** |
+| **a COLD twelve-voice chord** | **6.95 ms of a 16.7 ms frame** |
+| rendering one note | 0.65 - 1.06 ms (a drum 0.06) |
+
+Half a frame, on exactly the frames where new pitches first appear -- which in a song is the opening bar of every section. That
+is the loop this display has had to move out of the frame four times already (the chord blocks, the note heads, the tab page,
+the strip), so `SoftSynth.warm` renders the track's own pitches at song load instead. The set is exact: the track knows every
+note and every program change, so nothing is built that the song does not play.
+
+| song | events | warm | sounds | MB | 40 notes: cold -> warm |
+|---|---|---|---|---|---|
+| What's Up | 1066 | 12 ms | 21 | 5.1 | 3.67 -> **0.07 ms** |
+| Born To Be My Baby | 3315 | 23 ms | 40 | 10.4 | 7.97 -> **0.08** |
+| Kid Rock | 1301 | 14 ms | 27 | 7.2 | 8.62 -> **0.09** |
+| Godsmack | 1814 | 9 ms | 11 | 3.5 | 2.03 -> **0.07** |
+
+Nine to twenty-three milliseconds, once, on the frame that already parses the GP file and builds the engraving. `MAX_SOUNDS` is
+128 against the 11-40 a real song reaches, which is a ceiling of about 27 MB.
+
+### Four tests were broken on purpose, and one of them could not fail
+
+Three of the four named the right test straight away: the stolen-channel check, the role-less panic, and the gain applied at play
+time. **The Nyquist test passed with its own guard removed** -- it asked for a G7 at 44.1 kHz, where six harmonics still fit
+under the Nyquist frequency, so there was nothing to alias. It renders at 8 kHz now and asserts that every strong peak is a whole
+multiple of the fundamental, which a folded partial is not. **Ninth time in this project that a control could not contain the
+thing it controls for**, and the only reason it was caught is that breaking the code on purpose is a step rather than an
+afterthought.
+
+And one test found a real fault before it ever ran on a speaker: **`astype(np.int16)` does not clamp, it WRAPS.** The noise
+branch was not normalised, `standard_normal` reaches about four sigma, and an over-full drum sample comes back with its sign
+inverted rather than merely loud. `test_nothing_clips` asks only that nothing exceeds 1.0.
+
+### A test that always skipped was never a control
+
+`test_the_backing_still_plays_the_whole_song` asserted `len(after._events)` -- and `MidiPlayer` has never had an `_events`, so
+that line could only ever have raised. It never ran: on a machine with no MIDI port both players were None and the skip above it
+swallowed the whole test. The built-in synth is what woke it up, and it failed on its own bug in the same minute.
+
+### And the doctor's own verdict had to change with it
+
+No MIDI port was a WARNING, correctly, because there really was nothing at the other end of the wire. The question is now WHICH
+synth rather than whether one exists, so the check says which -- and still warns where even the mixer will not open, because that
+really is silence. **The advice it used to print named a placeholder in brackets** (`<soundfont>.sf2`), which the player ran
+verbatim, as anybody would; a test asserts that no bracket appears in it.
+
 ## Windows Ships A Synth And macOS Does Not
+
+**Superseded in its remedy by the chapter above, which should be read first.** The diagnosis here is right and the
+answer it gives -- install fluidsynth, or use `U` -- was the wrong one: it asked a player whose `brew` is not installed
+for three installs and a background process per sitting, for the keys he uses at the speed where `U` is useless. The
+app carries its own synth now. What survives is why the port is missing at all, and the doctor check.
 
 *"Midi output B und Sh+B gehen nicht."* Not a bug: **a clean Mac has no MIDI output port at all.** "Microsoft GS
 Wavetable Synth" is a CoreMIDI-equivalent destination on every Windows box, which is why `B` has made a sound there
@@ -8580,8 +8685,9 @@ HUD already shows a dash. Neither is where a player looks, and a dash reads as a
   and the app plays perfectly well without it.
 - **It lists and never opens.** Opening takes the device and prints; that is `_open_shared_output`'s job, once, when
   the player presses the key. Asserted rather than intended.
-- **The recorded backing (`U`) is untouched** and is the answer on that machine -- it goes through the mixer, which the
-  doctor has reported healthy there from the first run.
+- **The recorded backing (`U`) is untouched** and it goes through the mixer, which the doctor has reported healthy
+  there from the first run. Naming it as *the answer* was the mistake: he practises with `B`/`Shift+B` precisely where
+  the stretched recording is unusable, so `U` is not a substitute for them at the speed they are used at.
 
 ## What NOT To Do
 

@@ -102,6 +102,7 @@ a = Analysis(
         "resvg_py",
         "pickhero.played",
         "pickhero.audio.take",
+        "pickhero.audio.softsynth",
         "pickhero.ui.tab_view",
         "pickhero.tabs.musicxml",
         # Imported inside the functions that use them, so nothing in the

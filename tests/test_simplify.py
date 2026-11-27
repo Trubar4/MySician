@@ -300,8 +300,12 @@ class TestQIsReallyWired:
         app._load_song(song)
         after = app._playing_screen._guide_player
         if before is None or after is None:
-            pytest.skip("no MIDI output here")
-        assert len(after._events) == len(before._events)
+            pytest.skip("no audio output here")
+        # `_track`, not `_events`: MidiPlayer has never had an `_events`, so
+        # this assertion could only ever have raised -- and it never ran,
+        # because on a machine with no MIDI port both players were None and
+        # the skip above swallowed it. The built-in synth is what woke it up.
+        assert len(after._track) == len(before._track)
 
     def test_the_screen_says_so(self, tmp_path, monkeypatch):
         app, song = self._app(tmp_path)

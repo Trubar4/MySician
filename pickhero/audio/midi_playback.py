@@ -166,6 +166,51 @@ _SHARED_OUTPUT = None
 _SHARED_OUTPUT_NAME = ""
 
 
+def _open_built_in_synth(why: str):
+    """Fall back to the synth inside the app, and say that it happened.
+
+    *"Midi output B und Sh+B gehen nicht."* Windows ships a wavetable synth
+    and a clean macOS ships no MIDI destination at all, so on that machine
+    there was nothing to open and both backings were silent. A port is a
+    wire; `audio/softsynth.py` is something at the other end of it.
+
+    The REAL port wins wherever there is one -- it sounds better than
+    anything written here, so Windows is bit-for-bit what it was. This only
+    ever fills a hole.
+    """
+    global _SHARED_OUTPUT, _SHARED_OUTPUT_NAME
+    from pickhero.audio import softsynth
+
+    synth = softsynth.open_synth()
+    if synth is None:
+        print(f"{why} - and the built-in synth could not open either, "
+              f"so the backing track will be silent")
+        return None
+    _SHARED_OUTPUT = synth
+    _SHARED_OUTPUT_NAME = synth.name
+    print(f"{why} - using the {synth.name}")
+    return synth
+
+
+def _player_port(shared, role: str):
+    """What ONE player writes to: the shared port, or a view of the synth.
+
+    A real device has no idea which part is which and cannot be given one --
+    `_silence` on a shared port stops every channel, so a guide pause takes
+    the band's notes with it. The synth can tell them apart, and has to: the
+    guide and the band are built by the same extraction with the track filter
+    inverted, so the guide's notes arrive on the CHANNEL the band would have
+    used and only the object they are written through can say which part they
+    belong to.
+
+    Asked for by name rather than by type, so this module does not have to
+    import the synth to hand out one of its views.
+    """
+    if shared is not None and hasattr(shared, "port"):
+        return shared.port(role)
+    return shared
+
+
 def _open_shared_output():
     """Open the MIDI output once, verifying it actually works.
 
@@ -183,8 +228,7 @@ def _open_shared_output():
     import pygame.midi
     outputs = list_midi_outputs()
     if not outputs:
-        print("No MIDI output device found - backing track will be silent")
-        return None
+        return _open_built_in_synth("No MIDI output device found")
 
     preferred = _pick_output_device()
     order = [preferred] + [d for d, _ in outputs if d != preferred]
@@ -204,8 +248,8 @@ def _open_shared_output():
         print(f"MIDI output: {_SHARED_OUTPUT_NAME}")
         return _SHARED_OUTPUT
 
-    print("No MIDI output could be opened - backing track will be silent")
-    return None
+    return _open_built_in_synth(
+        "No MIDI output could be opened")
 
 
 def _silence(output, reset_controllers: bool = False) -> None:
@@ -258,10 +302,17 @@ def panic() -> bool:
 
 
 class MidiPlayer:
-    """Wraps pygame.midi.Output for backing track playback."""
+    """Wraps one MIDI output for backing track playback.
 
-    def __init__(self, backing_track: BackingTrack):
+    `role` is "band" or "guide", and it exists for the built-in synth: it
+    cannot be derived from the messages, because the two tracks are extracted
+    by the same code with the track filter inverted and so share their channel
+    numbers. A real MIDI device ignores it.
+    """
+
+    def __init__(self, backing_track: BackingTrack, role: str = "band"):
         self._track = backing_track
+        self._role = role
         self._output = None
         self._active_notes: set[tuple[int, int]] = set()  # (channel, note)
         self._muted = False
@@ -272,8 +323,20 @@ class MidiPlayer:
 
         Returns True on success, False if MIDI is unavailable.
         """
-        self._output = _open_shared_output()
+        self._output = _player_port(_open_shared_output(), self._role)
         self._opened = self._output is not None
+        # The built-in synth renders a note the first time it is asked for,
+        # and a cold six-string chord on both parts costs 6.95 ms of a
+        # 16.7 ms frame. The track knows every pitch, so it is rendered here
+        # instead -- at song load, where the file parse and the engraving
+        # already live. Asked for by name: a real MIDI device has nothing to
+        # warm and does not have this method.
+        warm = getattr(self._output, "warm", None)
+        if warm is not None:
+            try:
+                warm(self._track)
+            except Exception as exc:     # pragma: no cover - no device here
+                print(f"Could not pre-render the backing: {exc}")
         return self._opened
 
     def play_click(self, velocity: int = 100) -> None:

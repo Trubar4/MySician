@@ -140,13 +140,13 @@ PACKAGES = (
 #: macOS has no MIDI synth of its own, so this is an install rather than a
 #: setting. Named in full because "no MIDI output" without the fix beside it
 #: is the half a message this project has already shipped twice.
-MIDI_MAC_FIX = (
-    "macOS ships no MIDI synth, so this is an install and not a setting.",
-    "Windows has one built in, which is why B has always worked there.",
+MIDI_BETTER_FIX = (
+    "The app falls back to its own built-in synth, so B and Shift+B DO make",
+    "a sound -- a few plain tones rather than a band. For a real General",
+    "MIDI set, leave one running and it will be used instead:",
     "    brew install fluid-synth",
-    "then put any General MIDI soundfont (a .sf2 file) beside it and leave",
-    "it running, which is what makes a port the app can see:",
-    "    fluidsynth -a coreaudio -m coremidi -s <soundfont>.sf2",
+    "    fluidsynth -a coreaudio -m coremidi -s SOME_SOUNDFONT.sf2",
+    "(the soundfont is a .sf2 file you supply; GeneralUser GS is one.)",
     "Audio MIDI Setup's IAC bus is NOT enough -- that is a wire, not a",
     "synth, so it would list a port that makes no sound.",
 )
@@ -385,8 +385,22 @@ def check_output():
         return (WARN, "the mixer raised: %s: %s" % (type(exc).__name__, exc))
 
 
+def _built_in_synth_ready() -> bool:
+    """Whether the app's own synth could open. It needs the MIXER, not MIDI.
+
+    Asked rather than assumed, because "no MIDI port" and "no sound at all"
+    are completely different reports and were one line before the synth
+    existed.
+    """
+    try:
+        from pickhero.audio import output as audio_output
+        return bool(audio_output.ensure_mixer())
+    except Exception:
+        return False
+
+
 def check_midi():
-    """The MIDI ports, because B and Shift+B have nothing else to reach.
+    """The MIDI ports, because B and Shift+B used to have nothing else.
 
     **Windows ships a synth and macOS does not.** "Microsoft GS Wavetable
     Synth" is a MIDI destination on every Windows box, so `B` has made a
@@ -399,6 +413,11 @@ def check_midi():
     as a `-` in the HUD, which reads as a key that does nothing. This is the
     check that was missing: twelve answers and none of them about the one
     output that can be entirely absent on a platform.
+
+    Since `audio/softsynth.py` there is a floor under it, so no port is no
+    longer a WARNING: the question became *which* synth, not whether one
+    exists, and this says which. It still warns where even the mixer will
+    not open, because that really is silence.
 
     It LISTS and never opens. Opening takes the device and prints to stdout;
     the app's own `_open_shared_output` is what does that, once, when the
@@ -414,12 +433,17 @@ def check_midi():
         return (WARN, "listing the ports raised: %s: %s"
                 % (type(exc).__name__, exc))
     if not outputs:
-        lines = ["no MIDI output port at all, so B (the band) and Shift+B",
-                 "(the guide track) will be silent. Nothing else is affected;",
-                 "the recorded backing (U) does not use MIDI."]
+        built_in = _built_in_synth_ready()
+        if not built_in:
+            return (WARN,
+                    "no MIDI output port, and the built-in synth cannot open",
+                    "either (no audio output device), so B and Shift+B will",
+                    "be silent. The recorded backing (U) does not use MIDI.")
+        lines = ["no MIDI output port -- the built-in synth will be used,",
+                 "so B (your own part) and Shift+B (the band) do sound."]
         if sys.platform == "darwin":
-            lines += MIDI_MAC_FIX
-        return (WARN, *lines)
+            lines += MIDI_BETTER_FIX
+        return (OK, *lines)
     try:
         chosen = midi_playback._pick_output_device()
     except Exception:

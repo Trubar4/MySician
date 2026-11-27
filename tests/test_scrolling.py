@@ -1344,7 +1344,7 @@ class TestEveryKeyIsWrittenDownSomewhere:
     LABELS = {
         "SPACE": "SPACE", "ESCAPE": "ESC", "LEFT": "LEFT", "RIGHT": "RIGHT",
         "HOME": "HOME", "PAGEDOWN": "PgDn", "PAGEUP": "PgUp", "TAB": "TAB",
-        "a": "A: audio", "b": "B: MIDI backing", "c": "X/C",
+        "a": "A: audio", "b": "B: your own part", "c": "X/C",
         "d": "D: save a full run log", "e": "E: skip a long rest",
         "f": "F: fret limit", "g": "G: hit window", "h": "H: this help",
         "i": "I/O", "j": "J: per-string", "k": "K: measure",
@@ -1385,7 +1385,7 @@ class TestEveryKeyIsWrittenDownSomewhere:
         screen = PlayingScreen(_make_timeline())
         assert screen._midi_player is None
         text = self._help_text(screen)
-        assert "B: MIDI backing" in text and "W: wait mode" in text
+        assert "B: your own part" in text and "W: wait mode" in text
 
 
 class TestTheFooterIsTheTwelveWorthWatching:
@@ -1418,8 +1418,8 @@ class TestTheFooterIsTheTwelveWorthWatching:
     def test_every_entry_the_player_asked_for_is_there(self):
         screen = PlayingScreen(_make_timeline())
         joined = "  ".join(self._texts(screen))
-        for wanted in ("SPACE", "PgDn/PgUp: Tempo", "A: Audio", "B: Backing",
-                       "Shift+B: My Backing", "+/- Size", "G: ",
+        for wanted in ("SPACE", "PgDn/PgUp: Tempo", "A: Audio", "B: My Part",
+                       "Shift+B: Band", "+/- Size", "G: ",
                        "Shift+C: Chords", "Shift+T: View", "E: Skip",
                        "H: help"):
             assert wanted in joined, f"{wanted} is not in the footer"

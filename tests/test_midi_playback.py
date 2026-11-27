@@ -314,3 +314,106 @@ class TestSeekingDoesNotWalkTheWholeSong:
                                         event_type=PROGRAM_CHANGE, data1=30)])
         assert len(track.get_program_changes_before(0.0)) == 1
         assert len(track.get_program_changes_before(-2000.0)) == 1
+
+
+class TestTheFallbackToTheBuiltInSynth:
+    """*"Midi output B und Sh+B gehen nicht."*
+
+    Windows ships a wavetable synth as a MIDI destination and a clean macOS
+    ships none, so on that machine there was nothing to open and both
+    backings were silent. The REAL port still wins wherever there is one --
+    it sounds better than anything written here, so Windows is bit-for-bit
+    what it was and this only ever fills a hole.
+    """
+
+    def _no_ports(self, monkeypatch):
+        from pickhero.audio import midi_playback as mp
+        monkeypatch.setattr(mp, "_SHARED_OUTPUT", None)
+        monkeypatch.setattr(mp, "_SHARED_OUTPUT_NAME", "")
+        monkeypatch.setattr(mp, "list_midi_outputs", lambda: [])
+        monkeypatch.setattr(mp, "_init_midi_once", lambda: True)
+        return mp
+
+    def test_no_port_gives_the_synth_instead_of_nothing(self, monkeypatch):
+        from pickhero.audio import softsynth
+        mp = self._no_ports(monkeypatch)
+        out = mp._open_shared_output()
+        assert isinstance(out, softsynth.SoftSynth)
+
+    def test_and_the_run_log_says_no_device_was_involved(self, monkeypatch):
+        """A log naming a port that does not exist cannot say why a backing
+        sounds different on one of the player's two laptops."""
+        mp = self._no_ports(monkeypatch)
+        mp._open_shared_output()
+        assert "no MIDI device" in mp.output_name()
+
+    def test_a_real_port_is_handed_straight_through(self, monkeypatch):
+        """Asked for by NAME rather than by type, so this module does not
+        import the synth to hand out one of its views -- and a real device,
+        which has no `port`, is passed through untouched."""
+        from pickhero.audio import midi_playback as mp
+
+        class _Port:
+            def write_short(self, *a):
+                pass
+
+        port = _Port()
+        assert mp._player_port(port, "guide") is port
+        assert mp._player_port(None, "guide") is None
+
+    def test_the_synth_gives_each_player_its_own_view(self, monkeypatch):
+        """The guide and the band are extracted by the same code with the
+        track filter inverted, so the guide's notes arrive on the CHANNEL the
+        band would have used. Only the object can say which part they are."""
+        mp = self._no_ports(monkeypatch)
+        synth = mp._open_shared_output()
+        assert mp._player_port(synth, "guide").role == "guide"
+        assert mp._player_port(synth, "band").role == "band"
+
+    def test_opening_a_player_really_pre_renders_its_notes(self, monkeypatch):
+        """A cold six-string chord on both parts costs 6.95 ms of a 16.7 ms
+        frame, so the notes are rendered at song load instead. A feature
+        nothing calls is a feature that ships doing nothing, which this
+        project has shipped four times -- so this drives `open()` rather
+        than `warm()`.
+        """
+        mp = self._no_ports(monkeypatch)
+        track = BackingTrack([
+            MidiEvent(timestamp_ms=0.0, channel=0, event_type=0x90,
+                      data1=40 + i, data2=90) for i in range(5)])
+        player = mp.MidiPlayer(track, role="guide")
+        assert player.open()
+        synth = mp._SHARED_OUTPUT
+        assert len(synth._sounds) == 5
+        # And a second open renders nothing again: they are already there.
+        assert synth.warm(track, role="guide") == 0
+
+    def test_a_player_whose_warm_raises_still_opens(self, monkeypatch):
+        """The band is a nuisance to lose; the app dying is not -- the rule
+        `MidiPlayer._send` already follows."""
+        mp = self._no_ports(monkeypatch)
+
+        def explode(self, track):
+            raise RuntimeError("no")
+
+        monkeypatch.setattr(
+            "pickhero.audio.softsynth._RolePort.warm", explode)
+        player = mp.MidiPlayer(BackingTrack([]), role="band")
+        assert player.open()
+
+    def test_shift_a_reaches_the_synth_through_the_module(self, monkeypatch):
+        """`panic()` is a module function, which is what makes it work: a
+        player dropped without being closed still has its notes sounding and
+        by definition nothing is tracking them.
+
+        It writes to the SYNTH rather than to a player's view, so the
+        role-less message has to stop every part. Getting that the other way
+        round is a Shift+A that silences the band and leaves the hum.
+        """
+        mp = self._no_ports(monkeypatch)
+        synth = mp._open_shared_output()
+        mp._player_port(synth, "band").write_short(0x90, 40, 90)
+        mp._player_port(synth, "guide").write_short(0x90, 52, 90)
+        assert len(synth._playing) == 2
+        assert mp.panic() is True
+        assert synth._playing == {}

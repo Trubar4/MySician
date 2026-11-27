@@ -315,21 +315,44 @@ class TestTheOutputThatCanBeEntirelyAbsent:
     reads as a key that does nothing. *"Midi output B und Sh+B gehen nicht"*.
     """
 
-    def test_no_port_is_a_warning_and_not_a_failure(self, doctor,
-                                                    monkeypatch):
-        """The band is a feature; the app plays perfectly well without it."""
-        monkeypatch.setattr(doctor.sys, "platform", "win32")
-        status, *lines = self._with_ports(doctor, monkeypatch, [])
-        assert status == doctor.WARN
-        assert "B" in lines[0]
+    def test_no_port_is_no_longer_a_warning(self, doctor, monkeypatch):
+        """Inverted deliberately: it used to warn, and warning was right.
 
-    def test_and_on_a_mac_it_names_the_install(self, doctor, monkeypatch):
-        monkeypatch.setattr(doctor.sys, "platform", "darwin")
+        Before `audio/softsynth.py` there really was nothing at the other end
+        of the wire, so no port meant silence. Now the question is WHICH
+        synth, not whether one exists -- so this says which, and a rule
+        change shows up as a failing suite rather than as a surprise later.
+        """
+        monkeypatch.setattr(doctor.sys, "platform", "win32")
+        monkeypatch.setattr(doctor, "_built_in_synth_ready", lambda: True)
+        status, *lines = self._with_ports(doctor, monkeypatch, [])
+        assert status == doctor.OK
+        assert "built-in synth" in " ".join(lines)
+
+    def test_but_no_synth_at_all_still_is_one(self, doctor, monkeypatch):
+        """No port AND no mixer is real silence, which is a different report."""
+        monkeypatch.setattr(doctor.sys, "platform", "win32")
+        monkeypatch.setattr(doctor, "_built_in_synth_ready", lambda: False)
         status, *lines = self._with_ports(doctor, monkeypatch, [])
         assert status == doctor.WARN
+        assert "silent" in " ".join(lines)
+
+    def test_and_on_a_mac_it_names_the_better_sound(self, doctor, monkeypatch):
+        monkeypatch.setattr(doctor.sys, "platform", "darwin")
+        monkeypatch.setattr(doctor, "_built_in_synth_ready", lambda: True)
+        status, *lines = self._with_ports(doctor, monkeypatch, [])
         said = " ".join(lines)
-        assert "fluid" in said                    # the fix, not just the fault
+        assert "fluid" in said                    # the upgrade, not the fault
         assert "IAC" in said                      # and the thing that is not
+
+    def test_the_mac_advice_names_no_placeholder_in_brackets(self, doctor):
+        """A `<soundfont>.sf2` is what zsh answers with "no such file".
+
+        The player ran the line verbatim, as anybody would, and that is the
+        tool's fault rather than his.
+        """
+        said = " ".join(doctor.MIDI_BETTER_FIX)
+        assert "<" not in said and ">" not in said
 
     def test_a_port_is_named_with_the_one_the_app_would_use(self, doctor,
                                                             monkeypatch):
