@@ -376,13 +376,20 @@ class TestItIsReallyWiredUp:
 
 
 class TestTheRateIsAskedForAndNotNegotiated:
-    """Two conversions by a good resampler beat one by a bad one.
+    """The device's own rate is accepted, and the measurement says why.
 
-    *"Jetzt kommt der Output, aber in sehr schlechter Qualitaet."* Letting
-    SDL open at the device's own rate moves the 44.1 -> 48 kHz conversion
-    out of the OS's resampler and into SDL_mixer's, which is linear unless
-    it was built against libsamplerate -- 27-43 dB SNR on real music, where
-    a proper one is 90 to 140.
+    Both of the arguments this switch was flipped on before were false, and
+    the player reported bad sound on BOTH of its positions -- which is the
+    tell that it is not the cause. `allowedchanges=0` hands back the spec
+    that was asked for and converts INSIDE SDL, so SDL resamples the
+    recording either way and the OS converts in neither case. And SDL's
+    resampler is not linear: 57.7 dB SNR measured through `sndarray` on a
+    44.1 kHz file in a 48 kHz mixer, against 41.2 for linear interpolation
+    and 106.9 for our own windowed sinc.
+
+    What it does decide is the app's OWN audio: the synth and the click are
+    rendered at the mixer rate, so a pinned rate has SDL resample them for
+    nothing. Hence True.
     """
 
     def _asked(self, monkeypatch):
@@ -396,24 +403,131 @@ class TestTheRateIsAskedForAndNotNegotiated:
         output._init("")
         return seen
 
-    def test_the_device_rate_is_not_accepted(self, monkeypatch):
-        assert output.ALLOW_RATE_CHANGE is False
-        assert self._asked(monkeypatch).get("allowedchanges") == 0
-
-    def test_and_the_switch_still_works(self, monkeypatch):
-        """The negotiation stays, because describe() printing the real rate
-        beside the asked-for one is what made the question answerable."""
+    def test_the_device_rate_is_accepted(self, monkeypatch):
         import pygame
-        monkeypatch.setattr(output, "ALLOW_RATE_CHANGE", True)
+        assert output.ALLOW_RATE_CHANGE is True
         asked = self._asked(monkeypatch)
         assert asked.get("allowedchanges") == pygame.AUDIO_ALLOW_FREQUENCY_CHANGE
+
+    def test_and_the_switch_still_works(self, monkeypatch):
+        """Pinned, it is the behaviour that shipped for three days."""
+        monkeypatch.setattr(output, "ALLOW_RATE_CHANGE", False)
+        assert self._asked(monkeypatch).get("allowedchanges") == 0
 
     def test_the_format_and_the_channels_are_never_negotiable(self, monkeypatch):
         """`pygame.sndarray` reads what `_decode` hands the time-stretch, so
         an 8-bit or mono device would change what that means."""
         import pygame
-        monkeypatch.setattr(output, "ALLOW_RATE_CHANGE", True)
         asked = self._asked(monkeypatch)
         allowed = asked.get("allowedchanges", 0)
         assert not allowed & pygame.AUDIO_ALLOW_FORMAT_CHANGE
         assert not allowed & pygame.AUDIO_ALLOW_CHANNELS_CHANGE
+
+    def test_everything_downstream_reads_the_rate_rather_than_assuming_it(self):
+        """A device at 48 kHz is only safe because nothing hardcodes 44100.
+
+        The stretch writes the mixer's rate into the WAV it builds and the
+        chroma reads it back; a constant in either would play a stretched
+        copy 8.8 % flat, which is the fault the synth had one layer down.
+        """
+        import inspect
+        from pickhero.audio import timestretch, autosync
+        for module in (timestretch, autosync):
+            source = inspect.getsource(module)
+            assert "pygame.mixer.get_init()[0]" in source
+
+
+class TestTheMixerIsTheONEThisModuleOpened:
+    """`pygame.init()` opens the mixer itself, and that made two features inert.
+
+    It initialises every pygame module, the mixer among them, with pygame's
+    own defaults -- the system default device and a 512-frame buffer -- and
+    `ensure_mixer` then returns early for the rest of the session. So the
+    stored output name did nothing until `Shift+A` reopened it, the 2048
+    frames `output.py` exists to ask for were never in force, and
+    `describe()` printed a buffer the mixer did not have.
+    """
+
+    def test_pygame_init_really_does_open_it(self):
+        """The premise. A pygame that stopped doing this would leave the
+        call in `App.run` dead rather than wrong, and nothing would say so."""
+        import pygame
+        pygame.mixer.quit()
+        pygame.quit()
+        assert pygame.mixer.get_init() is None
+        pygame.init()
+        assert pygame.mixer.get_init() is not None
+
+    def test_the_app_opens_it_before_pygame_init(self, monkeypatch):
+        """Driven through the real `App.run`, because the fault was an
+        ORDER and a test that calls the helper cannot see a caller that
+        calls it too late."""
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui import app as app_module
+
+        order = []
+
+        class Stop(Exception):
+            pass
+
+        monkeypatch.setattr(app_module.audio_output, "ensure_mixer",
+                            lambda: order.append("mixer") or True)
+
+        def stop_here():
+            order.append("pygame")
+            raise Stop
+
+        monkeypatch.setattr(pygame, "init", stop_here)
+        app = app_module.App.__new__(app_module.App)
+        app._config = Config()
+        try:
+            app.run()
+        except Stop:
+            pass
+        assert order == ["mixer", "pygame"]
+
+    def test_a_mixer_it_did_not_open_claims_no_buffer(self, monkeypatch):
+        """SDL does not report the buffer it got, so the constant may only
+        be named for a stream this module opened."""
+        import pygame
+        monkeypatch.setattr(pygame.mixer, "get_init", lambda: (48000, -16, 2))
+        monkeypatch.setattr(output, "_ours", False)
+        monkeypatch.setattr(output, "_opened", "")
+        assert "buffer unknown" in output.describe()
+        assert "frame buffer" not in output.describe()
+
+    def test_and_one_it_did_open_says_what_it_asked_for(self, monkeypatch):
+        import pygame
+        monkeypatch.setattr(pygame.mixer, "get_init", lambda: (44100, -16, 2))
+        monkeypatch.setattr(output, "_ours", True)
+        monkeypatch.setattr(output, "_opened", "")
+        assert f"{output.BUFFER} frame buffer" in output.describe()
+
+    def test_opening_it_here_marks_it_as_ours(self, monkeypatch):
+        state = {"open": False}
+        import pygame
+        monkeypatch.setattr(pygame.mixer, "get_init",
+                            lambda: (44100, -16, 2) if state["open"] else None)
+        monkeypatch.setattr(pygame.mixer, "pre_init", lambda *a, **k: None)
+        monkeypatch.setattr(pygame.mixer, "init",
+                            lambda *a, **k: state.update(open=True))
+        monkeypatch.setattr(output, "_ours", False)
+        monkeypatch.setattr(output, "_wanted", "")
+        assert output.ensure_mixer()
+        assert output._ours is True
+
+    def test_a_reopen_that_fails_does_not_claim_the_buffer(self, monkeypatch):
+        """Where no device comes up at all, nothing was asked for either."""
+        import pygame
+        monkeypatch.setattr(pygame.mixer, "get_init", lambda: None)
+        monkeypatch.setattr(pygame.mixer, "pre_init", lambda *a, **k: None)
+
+        def no(*a, **k):
+            raise pygame.error("no such device")
+
+        monkeypatch.setattr(pygame.mixer, "init", no)
+        monkeypatch.setattr(output, "_ours", True)
+        monkeypatch.setattr(output, "_wanted", "Focusrite")
+        assert not output.ensure_mixer()
+        assert output._ours is False

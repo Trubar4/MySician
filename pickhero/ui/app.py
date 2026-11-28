@@ -151,6 +151,24 @@ class App:
         # describe() and on the settings row. Silence is the one outcome this
         # must not produce.
         audio_output.set_output_device(self._config.audio.output_device)
+        # **And the mixer is opened HERE, before `pygame.init()`.** That call
+        # initialises every pygame module, the mixer among them, with
+        # pygame's own defaults -- the system default device and a 512-frame
+        # buffer -- and `ensure_mixer` then returns early for the rest of
+        # the session because the mixer is already open. So until this line
+        # the stored output name did nothing at all ("vor dem Sh+A kommt
+        # nichts": Shift+A reopens, which is the only thing that ever
+        # applied it), and the 2048 frames `output.py` exists to ask for
+        # were never in force on any run. A starved output is what this
+        # project went looking for a buffer for in the first place.
+        #
+        # A mixer that is already up is left alone by pygame.init(), so one
+        # call here is one device open, on the right device, with our
+        # buffer. It must never be why the app fails to start: a machine
+        # with no output at all still has the picture, the input and the
+        # scoring, which is why ensure_mixer answers False rather than
+        # raising.
+        audio_output.ensure_mixer()
 
         pygame.init()
         # Fonts and the surfaces drawn with them belong to this

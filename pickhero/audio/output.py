@@ -35,32 +35,40 @@ CHANNELS = 2
 BUFFER = 2048
 
 #: Whether SDL may open the device at ITS rate rather than the 44100 asked
-#: for above. **False, and it was True for three days.**
+#: for above. **True, and both of the arguments this was flipped on before
+#: were false. Measured, on this machine, with the dummy driver:**
 #:
-#: The argument for True was *"one conversion instead of two"*: Windows and
-#: CoreAudio both run a shared mixer at the device's own rate, almost always
-#: 48000, so asking for 44100 makes the OS convert everything the app plays
-#: on top of whatever SDL_mixer already did to the file.
+#: It went True on *"one conversion instead of two"* -- the claim that asking
+#: for 44100 makes the OS convert on top of whatever SDL already did. Then
+#: False on *"SDL's resampler is linear unless it was built against
+#: libsamplerate"*. The player reported bad sound on BOTH positions, which is
+#: the tell: a switch that is the cause cannot be the cause in both of its
+#: positions.
 #:
-#: **That counted the conversions and never asked whether they are the same
-#: quality.** With the device opened at 48000, SDL_mixer resamples a 44.1 kHz
-#: recording itself -- and SDL's resampler is linear unless it was built
-#: against libsamplerate, which pygame's bundled copy is not. This project
-#: has measured what linear interpolation costs on real music: 27-43 dB SNR,
-#: 1.0 dB off 8-12 kHz and 2.2 dB off 12-16 before any aliasing (see the
-#: resampler chapter). Asking for 44100 leaves the conversion to the OS,
-#: whose resampler is a proper one. **Two conversions by a good resampler
-#: beat one by a bad one.**
+#: What `allowedchanges=0` really does is hand back the spec that was ASKED
+#: for and convert inside SDL. So SDL resamples the recording either way --
+#: at the device boundary with the rate pinned, in SDL_mixer with it free --
+#: and the OS converts in neither case. **The switch cannot change what
+#: happens to the recording at all.**
 #:
-#: It fits the report that produced it: *"Jetzt kommt der Output, aber in
-#: sehr schlechter Qualitaet"*, days after this was changed and on a path
-#: (100 % speed, written tuning) where nothing else in the app touches the
-#: audio at all. The ear is the player's and the verdict is his; nothing
-#: here has been heard on this machine, which has no audio device.
+#: And SDL's resampler is not linear. A 44.1 kHz file loaded into a 48 kHz
+#: mixer and read back with `sndarray`, against an exact FFT resample of the
+#: same signal: **57.7 dB SNR, flat to 0.1 dB up to 20 kHz** -- where linear
+#: interpolation on that signal is 41.2 dB and our own windowed sinc is
+#: 106.9. Not transparent, and nothing like the 27-43 dB that was quoted for
+#: it.
 #:
-#: The negotiation itself stays, because `describe()` printing the device's
-#: real rate beside the asked-for one is what made the question answerable.
-ALLOW_RATE_CHANGE = False
+#: What the switch DOES decide is the app's own audio. The built-in synth and
+#: the click are rendered AT the mixer rate, so with the rate pinned they are
+#: resampled by SDL for no reason, and with it free they go out untouched.
+#: That is the whole of it, and it is why True: better for the synth, neutral
+#: for the recording -- and `get_init()[0]` is then the device's real rate,
+#: which is the one fact a run log could not previously carry.
+#:
+#: Everything downstream reads the rate rather than assuming it:
+#: `timestretch` writes it into the WAV it builds, `autosync.decode` reads it
+#: back, and the synth follows a reopen.
+ALLOW_RATE_CHANGE = True
 
 
 #: The output the player ASKED for, in SDL's spelling, or "" for the system
@@ -76,6 +84,19 @@ _wanted = ""
 #: `vsync_outcome`.
 _opened = ""
 _fell_back = ""
+#: Whether the mixer that is open is the one THIS module opened. **It was
+#: not, for the whole life of the picker and of `BUFFER`.** `pygame.init()`
+#: initialises every pygame module, the mixer among them, with pygame's own
+#: defaults -- the system default device and a 512-frame buffer -- and
+#: `ensure_mixer` then returns early for the rest of the session because the
+#: mixer is open. So the stored output name did nothing until `Shift+A`
+#: reopened it ("vor dem Sh+A kommt nichts"), the 2048 frames this module
+#: exists to ask for were never in force, and `describe()` printed a buffer
+#: the mixer did not have. `App.run` opens it deliberately now; this is the
+#: tell that says so, because a route that lets something else get there
+#: first has to be visible in the log rather than silently claiming the
+#: buffer it asked for.
+_ours = False
 
 
 def set_output_device(name: str) -> str:
@@ -154,11 +175,12 @@ def ensure_mixer() -> bool:
     one stored name to blame, where a device that was unplugged since it was
     chosen is the commonest thing that happens to a name.
     """
-    global _opened, _fell_back
+    global _opened, _fell_back, _ours
     import pygame
     if pygame.mixer.get_init():
         return True
     _fell_back = ""
+    _ours = True
     if _wanted and _init(_wanted):
         _opened = _wanted
         return True
@@ -168,6 +190,7 @@ def ensure_mixer() -> bool:
         _opened = ""
         return True
     _opened = ""
+    _ours = False
     return False
 
 
@@ -177,6 +200,7 @@ def reopen() -> bool:
     The caller is expected to reload and reposition its own audio -- this
     knows nothing about songs.
     """
+    global _ours
     import pygame
     try:
         if pygame.mixer.get_init():
@@ -184,6 +208,7 @@ def reopen() -> bool:
             pygame.mixer.quit()
     except Exception:
         pass
+    _ours = False
     return ensure_mixer()
 
 
@@ -264,8 +289,18 @@ def describe() -> str:
     where = _opened or "system default"
     if _fell_back:
         where += f" — {_fell_back} would not open"
+    # The BUFFER is what was ASKED FOR, and SDL does not report back what it
+    # got -- so it may only be named for a stream this module opened. A
+    # mixer somebody else opened (pygame.init() does, with 512 frames) has a
+    # buffer nothing here can know, and printing the constant anyway is a
+    # log asserting a number that was never true.
+    if not _ours:
+        buffer_text = "buffer unknown — not opened by the app"
+    else:
+        buffer_text = (f"{BUFFER} frame buffer "
+                       f"({1000 * BUFFER / rate:.0f} ms)")
     return (f"{where}, {rate} Hz{asked}, {abs(fmt)}-bit, {channels} ch, "
-            f"{BUFFER} frame buffer ({1000 * BUFFER / rate:.0f} ms)")
+            f"{buffer_text}")
 
 
 #: How long a click lasts. Short enough to be a point in time rather than a

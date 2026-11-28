@@ -4105,9 +4105,12 @@ pickhero/
 
 - `tests/test_output_device.py` -- the output half: the devices SDL can see named on their own line, the picker (one
   screen for both kinds, and neither reading the other's setting), a named device that will not open falling back to the
-  system default and SAYING so on the row, that the mixer asks for a fixed rate rather than taking the device's (with the
-  switch's other position and the format/channels asserted as never negotiable), and that `autosync.decode` puts
-  `SDL_AUDIODRIVER` back rather than silencing every later sound in the process. The decode control fails on the unfixed code
+  system default and SAYING so on the row, that the device's own rate is accepted (with the switch's other position, the
+  format/channels asserted as never negotiable, and nothing downstream hardcoding 44100), that the mixer `App.run` plays
+  through is the one this module opened -- driven through the real `run()`, with `pygame.init()` opening one by itself
+  pinned as the premise -- that `describe()` claims the buffer only for a stream it opened, and that `autosync.decode` puts
+  `SDL_AUDIODRIVER` back rather than silencing every later sound in the process. The ordering and the decode controls fail
+  on the unfixed code
 - `tests/test_cmd_key.py` -- Cmd as the modifier on a Mac, and the PROPERTY that nothing in `ui/` reads the Ctrl bit
   off an event by hand (parsed, with its own control that the check can fail); five of its twelve fail on the unfixed
   code and the seven that pass are the controls
@@ -8851,38 +8854,75 @@ the earlier argument for the change -- *"one conversion instead of two"* -- coun
 quality. **Two conversions by a good resampler beat one by a bad one.** That is a hypothesis with a mechanism and not a measurement: it has never
 been heard here, and the ear it needs is the player's.
 
-## Two Conversions By A Good Resampler Beat One By A Bad One
+## The Switch Was The Cause In Both Of Its Positions, So It Was Not The Cause
 
-*"Jetzt kommt der Output, aber in sehr schlechter Qualitaet (MP3, und MIDI auch einzeln in schlechter Qualitaet mit Rauschen). Sonst Musik
-laufen lassen, ausserhalb der App - gute Qualitaet. Wir hatten vorgestern nicht diese Probleme."*
+*"Jetzt kommt der Output, aber in sehr schlechter Qualitaet"* — on `ALLOW_RATE_CHANGE = True`. Then, after it was taken back:
+*"Klingt noch immer sehr schlecht. Vor dem Sh+A kommt nichts, danach schlechte Quali."* **A switch that is the cause cannot be the
+cause in both of its positions**, and that one sentence is worth more than either of the arguments this constant was flipped on — both
+of which turn out to be false, and both of which were mine.
 
-`ALLOW_RATE_CHANGE` is False again, three days after it went in. The MIDI half of his sentence was the synth's stale rate (the chapter above);
-the MP3 half is this, and it is the decision rather than a bug in it.
+- **True shipped on *"one conversion instead of two"***: asking for 44100 on a 48 kHz device supposedly makes the OS convert on top of
+  whatever SDL already did. **`allowedchanges=0` hands back the spec that was ASKED for and converts INSIDE SDL**, so SDL resamples the
+  recording at the device boundary with the rate pinned and in SDL_mixer with it free. The OS converts in neither case, and the count was
+  one either way. **The switch cannot change what happens to the recording at all.**
+- **False shipped on *"SDL's resampler is linear unless it was built against libsamplerate"***. Measured here, with the dummy driver, no
+  audio device needed: a 44.1 kHz file loaded into a 48 kHz mixer and read back through `sndarray`, against an exact FFT resample of the
+  same signal.
 
-**The argument for True counted the conversions and never asked whether they are the same quality.** It is written out in the constant's own
-comment: a 48 kHz recording went `48000 -> (SDL) 44100 -> (OS) 48000` for nothing, so letting SDL open at the device's rate leaves "exactly one
-conversion -- the same one any player does". Both halves of that are true and the conclusion does not follow:
-
-| a 44.1 kHz recording on a 48 kHz device | who converts |
+| | SNR against an exact resample |
 |---|---|
-| asking for 44100 (before, and now) | **the OS** -- CoreAudio / the Windows mixer, a proper resampler |
-| **accepting 48000** | **SDL_mixer**, linear unless built against libsamplerate, which pygame's bundled copy is not |
+| linear interpolation | **41.2 dB** |
+| **SDL_mixer, SDL 2.28.4** | **57.7 dB**, flat to 0.1 dB up to 20 kHz |
+| our own windowed sinc | 106.9 dB |
 
-And this project has already measured what linear interpolation costs on real music, in its own resampler chapter: **27-43 dB SNR** where a
-windowed sinc reads 88-106, **1.0 dB off 8-12 kHz and 2.2 dB off 12-16** before any aliasing. That is a mix going dull, which is what he
-reported -- days after the change, on the one path where nothing else in the app touches the audio: 100 % speed and the written tuning, where
-`_ensure_mp3_source` builds no copy at all.
+  Not transparent — about ten bits — and nothing like the 27-43 dB that was quoted for it. **SDL has had a sinc resampler since 2.0.7 and
+  the claim was never checked**, in a file whose own rule is that a threshold nobody fitted will one day answer the opposite of the
+  measurement it is made of.
 
-- **The timing is evidence and the mechanism is a hypothesis.** Nothing here has been heard on this machine, which has no audio device, and one
-  clean resample is not obviously "wesentlich schlechter". What makes reverting right anyway is that the change was shipped on reasoning that
-  has now been shown incomplete, and the ear belongs to the player.
-- **The negotiation itself stays**, switched off. `describe()` printing the device's real rate beside the asked-for one is what made the
-  question answerable at all, and it is also how the synth's stale-rate bug was found.
-- **The format and the channel count were never negotiable** and still are not: `pygame.sndarray` reads what `_decode` hands the time-stretch,
-  so a device coming back 8-bit or mono would change what that means. Asserted rather than left in a comment.
-- **Measured on his own files when the change went in: 48 kHz through the 44.1 kHz mixer was CLEAN** -- flat to 0.7 dB up to 20 kHz against the
-  file decoded at its own rate. So the thing the change was made to avoid was never audible, and the thing it introduced may be. **The suspect
-  that measures innocent is not an argument for the fix that was shipped instead.**
+**So it is True, for a third reason neither argument had: the app's OWN audio.** The built-in synth and the click are rendered AT the
+mixer rate, so with the rate pinned SDL resamples them for nothing and with it free they go out untouched. Better for the synth, neutral
+for the recording — and `get_init()[0]` is then **the device's real rate**, which is the one fact a run log could not previously carry.
+
+- **It is only safe because nothing downstream hardcodes 44100**, and that is asserted rather than assumed: `timestretch` writes the
+  mixer's rate into the WAV it builds and `autosync.decode` reads it back. A constant in either would play a stretched copy 8.8 % flat,
+  which is the fault the synth had one layer down.
+- **The format and the channels stay non-negotiable.** `pygame.sndarray` is what `_decode` hands the time-stretch, so a device coming
+  back 8-bit or mono would change what that means.
+- **And the real fault in both of those runs was underneath this.** See the chapter below: the mixer was not the one this module opened,
+  so neither the device nor the buffer was ever what the log said it was.
+
+## Nothing Opened The Mixer, And `pygame.init()` Did It Instead
+
+*"Vor dem Sh+A kommt nichts, danach schlechte Quali."* Both halves are one line, and it is not in `output.py` at all.
+
+**`pygame.init()` initialises every pygame module, the mixer among them** — with pygame's own defaults: the **system default device** and a
+**512-frame buffer**. `App.run` stored the chosen output name and then called it. `ensure_mixer()` returns early once the mixer is open, so
+for the rest of the session nothing could change either. Measured in one run here: `pygame.mixer.get_init()` is `None`, then
+`(44100, -16, 2)` after `pygame.init()` and nothing else.
+
+Three things were inert because of it, and each had shipped with a chapter saying it worked:
+
+| | what it says | what was true |
+|---|---|---|
+| **the output picker** | the chosen device is opened at once | the system default was opened, whatever was stored |
+| **`BUFFER = 2048`** | *"a backing track is not a monitoring path... `BUFFER` is the whole change"* | **512 frames**, on a machine also running aubio, a WSOLA stretch and a 60 Hz loop |
+| **the run log's `output_device`** | the device, the rate and the buffer | it printed the CONSTANT beside a device nobody had opened |
+
+- **`Shift+A` was the only thing that ever applied any of it**, which is exactly the shape of the report: nothing from the interface until
+  the one key that closes and reopens the mixer, and the picker looking like a setting that does nothing. The player had already said so a
+  week earlier — *"wenn ich umstelle, kommt der Sound aus den NB Speakern"* — and it was read as a device fault.
+- **The fix is one call in the one place that owns startup**: `ensure_mixer()` before `pygame.init()`, which leaves an already-open mixer
+  alone. One device open, on the right device, with the asked-for buffer.
+- **And the class is closed rather than the instance.** `_ours` records whether the open stream is the one this module opened, and
+  `describe()` may name `BUFFER` only then: SDL does not report the buffer it got, so for anybody else's mixer the number is unknowable and
+  printing the constant is **a log asserting a value that was never true**. A future route that lets something else get there first says
+  `buffer unknown — not opened by the app` instead of lying.
+- **A starved 512-frame output is the best-founded suspect for the crackle**, and it is NOT a diagnosis: the fault has never been
+  reproduced here (no audio device), and the player reports the sound still poor after a `Shift+A` that really did open the Scarlett at
+  2048. What changed is that the setting now applies without a key, and the log stops claiming a buffer and a device it could not know.
+- The ordering is asserted through the real `App.run`, because the fault was an ORDER and a test that calls the helper cannot see a caller
+  that calls it too late. It fails on the unfixed code; the premise — that `pygame.init()` really does open the mixer — is pinned beside
+  it, or a pygame that stopped doing so would leave the new call dead with nothing to say so.
 
 ## A Position That Does Not Move Is Not A Clock
 
