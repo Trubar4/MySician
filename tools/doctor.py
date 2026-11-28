@@ -380,16 +380,18 @@ def check_output():
             return (WARN, "the mixer would not open",
                     "No backing track and no metronome. The notes still",
                     "scroll and the microphone still works.")
-        # The devices on their own line, because the app does not choose
-        # one: SDL takes the system default when the mixer first opens and
-        # keeps it for the session. So this cannot say which is playing --
-        # what it answers is whether the interface the player is listening
-        # through is visible to SDL at all, which is the one thing that
-        # would make every other number here unreadable.
-        return (OK, output.describe(),
-                "SDL sees: %s" % output.describe_devices(),
-                "The app plays to the system default, taken when the mixer",
-                "first opens. Shift+A in a song reopens it.")
+        # The devices on their own line. Where no name is stored the app
+        # takes the system default and SDL cannot be asked which that was --
+        # so what this answers is whether the interface the player is
+        # listening through is visible to SDL AT ALL, which is the one thing
+        # that would make every other number here unreadable.
+        lines = [output.describe(),
+                 "SDL sees: %s" % output.describe_devices()]
+        if not output.wanted_device():
+            lines.append("No output chosen, so this is your computer's own"
+                         " default:")
+            lines.append("O -> Audio output picks the interface instead.")
+        return tuple([OK] + lines)
     except Exception as exc:
         return (WARN, "the mixer raised: %s: %s" % (type(exc).__name__, exc))
 

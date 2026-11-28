@@ -56,23 +56,77 @@ BUFFER = 2048
 ALLOW_RATE_CHANGE = True
 
 
-def ensure_mixer() -> bool:
-    """Open the mixer if it is not open. True when it is usable."""
+#: The output the player ASKED for, in SDL's spelling, or "" for the system
+#: default. Held here rather than passed in, because the four callers of
+#: `ensure_mixer` (the stretch, the recording, the synth and the click) have
+#: no business knowing about the config -- and a second reader of this answer
+#: is how two of them come to open different devices.
+_wanted = ""
+#: What was really opened, and why it is not what was asked for. Both are
+#: about THIS process on THIS machine, so neither is ever stored: the whole
+#: reason they exist is that "asked" and "got" turned out to be different
+#: things nobody could tell apart afterwards -- the same lesson as
+#: `vsync_outcome`.
+_opened = ""
+_fell_back = ""
+
+
+def set_output_device(name: str) -> str:
+    """Choose which output the mixer opens. "" is the system default.
+
+    Returns a sentence for the player, empty where nothing had to change.
+
+    It REOPENS at once where the mixer is already on another device, because
+    a setting that takes effect at the next restart is indistinguishable from
+    one that does nothing -- and this app has shipped that four times. The
+    caller is expected to know nothing is playing; the picker is reached from
+    the settings screen, where no song is loaded.
+    """
+    global _wanted
+    name = str(name or "")
+    if name == _wanted and (not name or name == _opened):
+        return ""
+    _wanted = name
     import pygame
-    if pygame.mixer.get_init():
-        return True
+    if not pygame.mixer.get_init():
+        return ""
+    if not reopen():
+        return "The audio output could not be reopened"
+    return f"Audio output: {describe()}"
+
+
+def wanted_device() -> str:
+    """The output name the mixer is being asked for. "" is the default."""
+    return _wanted
+
+
+def open_device() -> str:
+    """What the mixer really opened, or "" for the system default."""
+    return _opened
+
+
+def fallback_reason() -> str:
+    """Why the asked-for device was not the one opened. "" when it was."""
+    return _fell_back
+
+
+def _init(devicename: str) -> bool:
+    """One attempt at opening the mixer. True when it came up."""
+    import pygame
     allowed = (pygame.AUDIO_ALLOW_FREQUENCY_CHANGE
                if ALLOW_RATE_CHANGE and hasattr(
                    pygame, "AUDIO_ALLOW_FREQUENCY_CHANGE") else 0)
+    extra = {"devicename": devicename} if devicename else {}
     try:
         pygame.mixer.pre_init(RATE, SIZE, CHANNELS, BUFFER,
-                              allowedchanges=allowed)
+                              allowedchanges=allowed, **extra)
         pygame.mixer.init(RATE, SIZE, CHANNELS, BUFFER,
-                          allowedchanges=allowed)
+                          allowedchanges=allowed, **extra)
     except TypeError:
-        # An older pygame without `allowedchanges`. The rate is then what it
-        # always was, which is the behaviour this replaces rather than a
-        # failure -- so it opens rather than reporting no output at all.
+        # An older pygame without `allowedchanges` -- or without
+        # `devicename`, which is why the retry drops BOTH. The rate is then
+        # what it always was, which is the behaviour this replaces rather
+        # than a failure, so it opens rather than reporting no output at all.
         try:
             pygame.mixer.pre_init(RATE, SIZE, CHANNELS, BUFFER)
             pygame.mixer.init(RATE, SIZE, CHANNELS, BUFFER)
@@ -83,6 +137,31 @@ def ensure_mixer() -> bool:
         # scoring, the picture and the input are all independent of this.
         return False
     return bool(pygame.mixer.get_init())
+
+
+def ensure_mixer() -> bool:
+    """Open the mixer if it is not open. True when it is usable.
+
+    A named device that will not open FALLS BACK to the system default and
+    says why. Refusing outright would leave the player with a silent app and
+    one stored name to blame, where a device that was unplugged since it was
+    chosen is the commonest thing that happens to a name.
+    """
+    global _opened, _fell_back
+    import pygame
+    if pygame.mixer.get_init():
+        return True
+    _fell_back = ""
+    if _wanted and _init(_wanted):
+        _opened = _wanted
+        return True
+    if _wanted:
+        _fell_back = _wanted
+    if _init(""):
+        _opened = ""
+        return True
+    _opened = ""
+    return False
 
 
 def reopen() -> bool:
@@ -112,15 +191,15 @@ def device_names() -> list[str]:
     *"Ueber Focusrite kommt kein MP3 mehr auf dem Mac. Wenn ich etwas
     ausserhalb der App laufen lasse, kommt es ueber Focusrite."*
 
-    The app does not CHOOSE one -- `mixer.init()` takes the system default --
-    so this cannot say which device is open, and must not pretend to: SDL has
-    no way to ask, and the first name in this list is not the default on
-    CoreAudio. What it can say is which were on offer, and that is worth
-    having on its own: a device the player is listening through that is not in
-    this list AT ALL is the whole diagnosis, and one that is in it rules the
-    same thing out. The same rule the input device already follows, where a
-    log that does not name the device cannot tell a wrong one from a blocked
-    one.
+    This is the list the picker offers, and it is also what a run log can say
+    about a machine whose output nobody chose: with no stored name the mixer
+    takes the system default, and SDL cannot be asked which device that was.
+    So `describe_devices()` says what was on OFFER and never which is open --
+    a device the player is listening through that is not in this list AT ALL
+    is the whole diagnosis, and one that is in it rules the same thing out.
+    Only a device the app itself CHOSE may be named, which is what `_opened`
+    is for. The same rule the input device already follows, where a log that
+    does not name the device cannot tell a wrong one from a blocked one.
 
     SDL's own spelling, because `mixer.init(devicename=...)` takes these
     strings and nothing else -- so this is also the list a picker would offer.
@@ -171,7 +250,14 @@ def describe() -> str:
     # a request now, so a log that prints only the answer cannot say whether
     # the device chose it or the app did -- and that is the whole question.
     asked = "" if rate == RATE else f" (asked {RATE})"
-    return (f"{rate} Hz{asked}, {abs(fmt)}-bit, {channels} ch, "
+    # The device is NAMED only where the app chose it, which is the whole
+    # difference this picker makes: SDL cannot be asked which output it took
+    # for itself, so "system default" is an honest answer and a guessed name
+    # would not be. A fall-back says so rather than reading as a choice.
+    where = _opened or "system default"
+    if _fell_back:
+        where += f" — {_fell_back} would not open"
+    return (f"{where}, {rate} Hz{asked}, {abs(fmt)}-bit, {channels} ch, "
             f"{BUFFER} frame buffer ({1000 * BUFFER / rate:.0f} ms)")
 
 

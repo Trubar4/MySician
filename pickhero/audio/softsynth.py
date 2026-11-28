@@ -344,6 +344,9 @@ class SoftSynth:
 
         Returns how many it built, for the measurement.
         """
+        # Before the `key in self._sounds` check below, or a cache rendered
+        # at the old rate would be believed for the notes it already holds.
+        self._follow_the_mixer()
         programs: dict[int, int] = {}
         wanted: list[tuple[Voice, int]] = []
         seen: set[tuple[str, int]] = set()
@@ -441,6 +444,36 @@ class SoftSynth:
         except pygame.error:
             pass
 
+    def _follow_the_mixer(self) -> None:
+        """Re-read the rate, and throw the rendered notes away if it moved.
+
+        The rate was read ONCE, in `__init__`, and `Shift+A` reopens the
+        mixer: `AUDIO_ALLOW_FREQUENCY_CHANGE` lets SDL open at the device's
+        own rate, so reopening onto another output can come back at 48000
+        where it was 44100. `make_sound` reads a raw array at whatever rate
+        the MIXER is on, so every cached note then plays 8.8 % sharp and
+        short -- a hiss and a wrong pitch, from a key whose whole job is to
+        make the sound sane again.
+
+        Asked here rather than wired to `reopen()`, so it cannot be missed by
+        a caller: any route that changes the rate is covered by being a route
+        that changes the rate. The reopen is seconds of device work, so a
+        `get_init()` beside it is free, and a note is about a millisecond to
+        render again.
+        """
+        import pygame
+        try:
+            init = pygame.mixer.get_init()
+        except pygame.error:
+            return
+        if not init:
+            return
+        rate, channels = int(init[0]), int(init[2])
+        if rate == self._rate and channels == self._channels:
+            return
+        self._rate, self._channels = rate, channels
+        self._sounds.clear()
+
     def _sound_for(self, voice: Voice, pitch: int):
         """One rendered note per voice and pitch, built once and kept.
 
@@ -452,6 +485,7 @@ class SoftSynth:
         import pygame
         import pygame.sndarray
 
+        self._follow_the_mixer()
         key = (voice.name, pitch)
         cached = self._sounds.get(key)
         if cached is not None:

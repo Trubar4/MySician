@@ -1,13 +1,26 @@
-"""Audio input device selector screen.
+"""The audio device pickers -- the input, and now the output too.
 
-Lists available audio input devices and lets the user pick one.
-Selected device is persisted to config immediately on confirm.
+Lists the devices and writes the choice to the config at once, on confirm.
+
+ONE screen for both halves, with a `kind`. *"Mit D habe ich das richtige
+Interface ausgewaehlt"* -- that is the INPUT, and for months there was no
+answer at all for the other side: SDL took the system default at the first
+`mixer.init()` and the whole session played to it. Everything about picking
+one from a list is the same job, and two copies of it would be two ideas of
+what the arrow keys do; what really differs is four small things, and they
+are the four places this file branches.
+
+The two are NOT the same device list, and must not be: an input is named by
+PortAudio and carries an index, an API and a rate, while an output is named
+by SDL -- which is the spelling `mixer.init(devicename=...)` takes and
+nothing else.
 """
 
 from __future__ import annotations
 
 import pygame
 
+from pickhero.audio import output as audio_output
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import Config
 from pickhero.ui import clickable
@@ -28,30 +41,62 @@ def _get_font(name: str, size: int) -> pygame.font.Font:
 class DeviceMenuScreen:
     """Device selector screen — mirrors MenuScreen list-selection pattern."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, kind: str = "input"):
         #: Where the hint line's underlined keys landed. Rebuilt by the
         #: drawing and read by the App, so a click cannot land on the
         #: neighbour of the word under the pointer.
         self._links = clickable.Links()
         self._config = config
+        #: "input" or "output". Anything else is the input, because a screen
+        #: that refuses to draw is worse than one that draws the commoner
+        #: half of what it is for.
+        self._kind = "output" if kind == "output" else "input"
         self._devices: list[dict] = []
         self._selected = 0
         self._scroll_offset = 0
         self._refresh_devices()
 
     def _refresh_devices(self) -> None:
-        """Re-scan available audio input devices."""
-        self._devices = list_audio_devices()
+        """Re-scan the devices of this kind and put the cursor on the one set."""
+        if self._kind == "output":
+            self._devices = [{"name": name}
+                             for name in audio_output.device_names()]
+        else:
+            self._devices = list_audio_devices()
         # Set selection to match current config
         self._selected = 0  # "System Default" is index 0
-        current = self._config.audio.device_index
-        if current is not None:
-            for i, dev in enumerate(self._devices):
-                if dev["index"] == current:
-                    self._selected = i + 1  # +1 because of "System Default" entry
-                    break
+        for i, label in enumerate(self._items()):
+            if i and label[1]:
+                self._selected = i
+                break
         self._scroll_offset = 0
         self._ensure_visible()
+
+    def _items(self) -> list[tuple[str, bool]]:
+        """(label, is the one in force) for the default and every device.
+
+        One reader for the drawing and for where the cursor opens, so the dot
+        can never sit on a row the cursor did not start on.
+        """
+        if self._kind == "output":
+            wanted = self._config.audio.output_device
+            items: list[tuple[str, bool]] = [("System Default", not wanted)]
+            for dev in self._devices:
+                name = str(dev["name"])
+                items.append((name, name == wanted))
+            return items
+        current = self._config.audio.device_index
+        items = [("System Default", current is None)]
+        for dev in self._devices:
+            # The API, not just the index. One interface is listed several
+            # times over and they do not behave the same: measured across the
+            # player's run logs, the same Scarlett Solo kept the clock flat on
+            # one entry and drifted 0.61 % on another.
+            api = dev.get("host_api") or "?"
+            items.append((f"[{dev['index']}] {dev['name']}  "
+                          f"({api}, {dev['sample_rate']:.0f} Hz)",
+                          dev["index"] == current))
+        return items
 
     @property
     def _item_count(self) -> int:
@@ -93,11 +138,20 @@ class DeviceMenuScreen:
 
     def _apply_selection(self) -> None:
         """Persist the selected device to config."""
-        if self._selected == 0:
-            self._config.audio.device_index = None
-        else:
-            dev = self._devices[self._selected - 1]
-            self._config.audio.device_index = dev["index"]
+        picked = None if self._selected == 0 else self._devices[self._selected - 1]
+        if self._kind == "output":
+            name = "" if picked is None else str(picked["name"])
+            self._config.audio.output_device = name
+            self._config.save()
+            # REOPENED here rather than at the next restart. A setting that
+            # takes effect later is indistinguishable from one that does
+            # nothing, which this app has shipped four times -- and nothing
+            # is playing: this screen is reached from the song list and the
+            # settings, never from inside a song.
+            audio_output.set_output_device(name)
+            return
+        self._config.audio.device_index = (
+            None if picked is None else picked["index"])
         self._config.save()
 
     @property
@@ -117,12 +171,15 @@ class DeviceMenuScreen:
         hint_font = _get_font("arial", 16)
 
         # Title
-        title_surf = title_font.render("Audio Device", True, t.hud_accent)
+        title = ("Audio Output" if self._kind == "output"
+                 else "Audio Device")
+        title_surf = title_font.render(title, True, t.hud_accent)
         surface.blit(title_surf, (w // 2 - title_surf.get_width() // 2, 24))
 
-        sub_surf = hint_font.render(
-            "Select an audio input device", True, t.hud_text
-        )
+        sub = ("Where the backing track and the metronome are played"
+               if self._kind == "output"
+               else "Select an audio input device")
+        sub_surf = hint_font.render(sub, True, t.hud_text)
         surface.blit(sub_surf, (w // 2 - sub_surf.get_width() // 2, 68))
 
         list_top = 110
@@ -130,21 +187,7 @@ class DeviceMenuScreen:
         list_left = 60
         list_width = w - 120
 
-        current_device_index = self._config.audio.device_index
-
-        # Build display items: (label, is_active)
-        items: list[tuple[str, bool]] = []
-        items.append(("System Default", current_device_index is None))
-        for dev in self._devices:
-            # The API, not just the index. One interface is listed several
-            # times over and they do not behave the same: measured across the
-            # player's run logs, the same Scarlett Solo kept the clock flat on
-            # one entry and drifted 0.61 % on another.
-            api = dev.get("host_api") or "?"
-            label = (f"[{dev['index']}] {dev['name']}  "
-                     f"({api}, {dev['sample_rate']:.0f} Hz)")
-            is_active = dev["index"] == current_device_index
-            items.append((label, is_active))
+        items = self._items()
 
         # Render visible slice
         visible_end = min(self._scroll_offset + VISIBLE_ITEMS, len(items))

@@ -146,3 +146,230 @@ class TestTheDecodeDoesNotSilenceTheWholeSession:
         finally:
             if was_open:
                 output.ensure_mixer()
+
+
+class TestThePicker:
+    """One screen, two kinds, and they must not read each other's setting."""
+
+    def _screen(self, kind, names=("Focusrite", "MacBook Air Speakers")):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.device_menu import DeviceMenuScreen
+        pygame.init()
+        import pickhero.audio.output as out
+        from unittest.mock import patch
+        with patch.object(out, "device_names", lambda: list(names)):
+            return DeviceMenuScreen(Config(), kind), out
+
+    def test_the_output_picker_lists_sdls_names(self):
+        screen, _ = self._screen("output")
+        labels = [label for label, _ in screen._items()]
+        assert labels == ["System Default", "Focusrite", "MacBook Air Speakers"]
+
+    def test_enter_writes_the_name_and_saves(self, monkeypatch):
+        from pickhero.config import Config
+        screen, out = self._screen("output")
+        saved = []
+        monkeypatch.setattr(Config, "save", lambda self: saved.append(1))
+        monkeypatch.setattr(out, "set_output_device", lambda name: "")
+        screen._selected = 1
+        screen._apply_selection()
+        assert screen._config.audio.output_device == "Focusrite"
+        assert saved
+
+    def test_the_default_row_clears_it(self, monkeypatch):
+        from pickhero.config import Config
+        screen, out = self._screen("output")
+        monkeypatch.setattr(Config, "save", lambda self: None)
+        monkeypatch.setattr(out, "set_output_device", lambda name: "")
+        screen._config.audio.output_device = "Focusrite"
+        screen._selected = 0
+        screen._apply_selection()
+        assert screen._config.audio.output_device == ""
+
+    def test_it_reopens_at_once_rather_than_at_the_next_restart(self, monkeypatch):
+        """A setting that takes effect later cannot be seen working."""
+        from pickhero.config import Config
+        screen, out = self._screen("output")
+        monkeypatch.setattr(Config, "save", lambda self: None)
+        asked = []
+        monkeypatch.setattr(out, "set_output_device",
+                            lambda name: asked.append(name) or "")
+        screen._selected = 2
+        screen._apply_selection()
+        assert asked == ["MacBook Air Speakers"]
+
+    def test_the_cursor_opens_on_the_one_in_force(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.device_menu import DeviceMenuScreen
+        from unittest.mock import patch
+        import pickhero.audio.output as out
+        pygame.init()
+        config = Config()
+        config.audio.output_device = "MacBook Air Speakers"
+        with patch.object(out, "device_names",
+                          lambda: ["Focusrite", "MacBook Air Speakers"]):
+            screen = DeviceMenuScreen(config, "output")
+        assert screen._selected == 2
+        assert screen._items()[2][1] is True
+
+    def test_the_input_half_is_untouched(self, monkeypatch):
+        """It writes an INDEX and never the output name."""
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.device_menu import DeviceMenuScreen
+        from unittest.mock import patch
+        import pickhero.ui.device_menu as dm
+        pygame.init()
+        monkeypatch.setattr(Config, "save", lambda self: None)
+        with patch.object(dm, "list_audio_devices", lambda: [
+                {"index": 7, "name": "Scarlett Solo", "host_api": "MME",
+                 "sample_rate": 44100.0}]):
+            screen = DeviceMenuScreen(Config(), "input")
+            screen._selected = 1
+            screen._apply_selection()
+        assert screen._config.audio.device_index == 7
+        assert screen._config.audio.output_device == ""
+
+    def test_an_unknown_kind_is_the_input(self):
+        """A screen that refuses to draw is worse than one that draws."""
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.device_menu import DeviceMenuScreen
+        pygame.init()
+        assert DeviceMenuScreen(Config(), "sideways")._kind == "input"
+
+    def test_both_kinds_really_draw(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.device_menu import DeviceMenuScreen
+        pygame.init()
+        surface = pygame.Surface((1280, 720))
+        for kind in ("input", "output"):
+            DeviceMenuScreen(Config(), kind).render(surface)
+
+
+class TestFallingBackIsSaidOutLoud:
+    """A device that will not open must never come out as silence."""
+
+    def test_the_mixer_falls_back_to_the_system_default(self, monkeypatch):
+        import pygame
+        tried = []
+        state = {"open": False}
+
+        def init(*args, **kwargs):
+            tried.append(kwargs.get("devicename"))
+            if kwargs.get("devicename"):
+                raise pygame.error("No such device")
+            state["open"] = True
+
+        monkeypatch.setattr(pygame.mixer, "get_init",
+                            lambda: (44100, -16, 2) if state["open"] else None)
+        monkeypatch.setattr(pygame.mixer, "pre_init", lambda *a, **k: None)
+        monkeypatch.setattr(pygame.mixer, "init", init)
+        monkeypatch.setattr(output, "_wanted", "Focusrite")
+        monkeypatch.setattr(output, "_opened", "")
+        assert output.ensure_mixer() is True
+        assert tried == ["Focusrite", None]
+        assert output.fallback_reason() == "Focusrite"
+
+    def test_and_a_device_that_opens_is_named(self, monkeypatch):
+        import pygame
+        state = {"open": False}
+        monkeypatch.setattr(pygame.mixer, "get_init",
+                            lambda: (44100, -16, 2) if state["open"] else None)
+        monkeypatch.setattr(pygame.mixer, "pre_init", lambda *a, **k: None)
+        monkeypatch.setattr(pygame.mixer, "init",
+                            lambda *a, **k: state.update(open=True))
+        monkeypatch.setattr(output, "_wanted", "Focusrite")
+        monkeypatch.setattr(output, "_opened", "")
+        monkeypatch.setattr(output, "_fell_back", "Focusrite")
+        assert output.ensure_mixer() is True
+        assert output.open_device() == "Focusrite"
+        assert output.fallback_reason() == ""
+
+    def test_the_settings_row_says_it_refused(self, monkeypatch):
+        """On the row, not in a note -- a note expires and this does not."""
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.settings_menu import SettingsMenuScreen
+        pygame.init()
+        config = Config()
+        config.audio.output_device = "Focusrite"
+        monkeypatch.setattr(output, "_fell_back", "Focusrite")
+        screen = SettingsMenuScreen(config, None)
+        row = next(r for r in screen._rows if r.key == "output")
+        assert "would not open" in row.value()
+
+    def test_and_names_it_plainly_when_it_opened(self, monkeypatch):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.settings_menu import SettingsMenuScreen
+        pygame.init()
+        config = Config()
+        config.audio.output_device = "Focusrite"
+        monkeypatch.setattr(output, "_fell_back", "")
+        screen = SettingsMenuScreen(config, None)
+        row = next(r for r in screen._rows if r.key == "output")
+        assert row.value() == "Focusrite"
+        assert row.is_default() is False
+
+    def test_the_default_is_the_default(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.settings_menu import SettingsMenuScreen
+        pygame.init()
+        screen = SettingsMenuScreen(Config(), None)
+        row = next(r for r in screen._rows if r.key == "output")
+        assert row.value() == "system default"
+        assert row.is_default() is True
+
+
+class TestItIsReallyWiredUp:
+    """A picker nothing opens is a feature that ships doing nothing."""
+
+    def test_the_row_opens_the_output_picker(self):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.settings_menu import SettingsMenuScreen
+        pygame.init()
+        screen = SettingsMenuScreen(Config(), None)
+        screen._selected = next(i for i, r in enumerate(screen._rows)
+                                if r.key == "output")
+        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0,
+                                   unicode="\r")
+        assert screen.handle_event(event) == "output"
+
+    def test_the_app_opens_it_as_the_output_kind(self, monkeypatch):
+        import pygame
+        from pickhero.config import Config
+        from pickhero.ui.app import App
+        pygame.init()
+        app = App.__new__(App)
+        app._config = Config()
+        app._device_menu = None
+        app._return_to = "menu"
+        app._state = "settings"
+        app._open_device_menu("settings", "output")
+        assert app._device_menu._kind == "output"
+        app._open_device_menu("settings")
+        assert app._device_menu._kind == "input"
+
+    def test_a_stored_name_is_honoured_before_anything_opens(self, monkeypatch):
+        """At startup there is nothing to validate against, so it is stored."""
+        import pygame
+        monkeypatch.setattr(pygame.mixer, "get_init", lambda: None)
+        monkeypatch.setattr(output, "_wanted", "")
+        assert output.set_output_device("Focusrite") == ""
+        assert output.wanted_device() == "Focusrite"
+
+    def test_the_name_stays_on_this_machine(self):
+        """An output name describes an interface, not a player.
+
+        `song_settings()` returns only the `song_*` fields, so the whole
+        audio block is machine-local by construction and a new name in it
+        needs no rule of its own -- which is the half worth asserting.
+        """
+        from pickhero import transfer
+        assert not any(f.startswith("audio") for f in transfer.song_settings())

@@ -11,6 +11,7 @@ from pathlib import Path
 import pygame
 
 from pickhero import dashboard
+from pickhero.audio import output as audio_output
 from pickhero.audio.input import validate_device_index
 from pickhero.config import Config
 from pickhero.progress import ProgressTracker
@@ -142,6 +143,14 @@ class App:
             )
             self._config.audio.device_index = None
             self._config.save()
+
+        # The stored output device, before anything opens the mixer. There is
+        # no validating it first: SDL cannot be asked without a video system
+        # up, and a name it does not know raises on init -- which ensure_mixer
+        # answers by falling back to the system default and SAYING so, in
+        # describe() and on the settings row. Silence is the one outcome this
+        # must not produce.
+        audio_output.set_output_device(self._config.audio.output_device)
 
         pygame.init()
         # Fonts and the surfaces drawn with them belong to this
@@ -650,8 +659,8 @@ class App:
             # what puts the sitting in the log.
             self._write_dashboard()
 
-    def _open_device_menu(self, came_from: str) -> None:
-        self._device_menu = DeviceMenuScreen(self._config)
+    def _open_device_menu(self, came_from: str, kind: str = "input") -> None:
+        self._device_menu = DeviceMenuScreen(self._config, kind)
         self._return_to = came_from
         self._state = "device"
 
@@ -692,6 +701,8 @@ class App:
             self._state = "menu"
         elif result == "device":
             self._open_device_menu("settings")
+        elif result == "output":
+            self._open_device_menu("settings", "output")
         elif result == "calibration":
             self._open_calibration("settings")
         elif result == "latency":
@@ -733,6 +744,8 @@ class App:
         result = self._device_menu.handle_event(event)
         if result in ("back", "selected"):
             if result == "selected":
+                # The song list names the INPUT device, so only that pick
+                # changes what it has to redraw.
                 self._menu.refresh_device_name()
             self._device_menu = None
             self._state = self._return_to

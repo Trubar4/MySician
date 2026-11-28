@@ -318,3 +318,76 @@ class TestTheRolePort:
 
     def test_it_names_its_role(self, synth):
         assert synth.port(ROLE_GUIDE).role == ROLE_GUIDE
+
+
+class TestItFollowsAMixerReopen:
+    """`Shift+A` can come back at another rate, and a cached note cannot.
+
+    *"Sh+A hat es zurueckgesetzt. Jetzt kommt der Output, aber in sehr
+    schlechter Qualitaet (MIDI auch einzeln in schlechter Qualitaet mit
+    Rauschen)."*
+
+    `make_sound` reads a raw array at whatever rate the MIXER is on, and the
+    synth read the rate once in `__init__`. Reopened onto a device that wants
+    48000 where it had 44100, every rendered note plays 8.8 % sharp and short.
+    """
+
+    def _synth(self, monkeypatch, rate):
+        import pygame
+        from pickhero.audio.softsynth import SoftSynth
+        state = {"rate": rate}
+        monkeypatch.setattr(pygame.mixer, "get_init",
+                            lambda: (state["rate"], -16, 2))
+        monkeypatch.setattr(pygame.mixer, "get_num_channels", lambda: 64)
+        return SoftSynth(), state
+
+    def test_the_rate_is_re_read(self, monkeypatch):
+        synth, state = self._synth(monkeypatch, 44100)
+        assert synth._rate == 44100
+        state["rate"] = 48000
+        synth._follow_the_mixer()
+        assert synth._rate == 48000
+
+    def test_and_the_rendered_notes_are_thrown_away(self, monkeypatch):
+        synth, state = self._synth(monkeypatch, 44100)
+        synth._sounds[("band", 60)] = object()
+        state["rate"] = 48000
+        synth._follow_the_mixer()
+        assert synth._sounds == {}
+
+    def test_a_rate_that_did_not_move_keeps_them(self, monkeypatch):
+        """A reopen onto the same rate must not cost the whole cache."""
+        synth, _ = self._synth(monkeypatch, 44100)
+        kept = object()
+        synth._sounds[("band", 60)] = kept
+        synth._follow_the_mixer()
+        assert synth._sounds[("band", 60)] is kept
+
+    def test_a_mixer_that_is_shut_changes_nothing(self, monkeypatch):
+        import pygame
+        synth, _ = self._synth(monkeypatch, 44100)
+        kept = object()
+        synth._sounds[("band", 60)] = kept
+        monkeypatch.setattr(pygame.mixer, "get_init", lambda: None)
+        synth._follow_the_mixer()
+        assert synth._rate == 44100
+        assert synth._sounds[("band", 60)] is kept
+
+    def test_rendering_a_note_asks_rather_than_waiting_to_be_told(
+            self, monkeypatch):
+        """Wired where it cannot be missed by a caller."""
+        import pygame
+        from pickhero.audio.softsynth import SoftSynth, voice_for
+        state = {"rate": 44100}
+        monkeypatch.setattr(pygame.mixer, "get_init",
+                            lambda: (state["rate"], -16, 2))
+        monkeypatch.setattr(pygame.mixer, "get_num_channels", lambda: 64)
+        synth = SoftSynth()
+        stale = object()
+        synth._sounds[("stale", 60)] = stale
+        state["rate"] = 48000
+        monkeypatch.setattr(pygame.sndarray, "make_sound",
+                            lambda arr: ("rendered", len(arr)))
+        synth._sound_for(voice_for("band", 0, None, 60), 60)
+        assert ("stale", 60) not in synth._sounds
+        assert synth._rate == 48000

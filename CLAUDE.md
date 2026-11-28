@@ -4103,9 +4103,10 @@ pickhero/
 
 ## Testing
 
-- `tests/test_output_device.py` -- the output half: the devices SDL can see named on their own line, and that
-  `autosync.decode` puts `SDL_AUDIODRIVER` back rather than silencing every later sound in the process. The
-  decode control fails on the unfixed code
+- `tests/test_output_device.py` -- the output half: the devices SDL can see named on their own line, the picker (one
+  screen for both kinds, and neither reading the other's setting), a named device that will not open falling back to the
+  system default and SAYING so on the row, and that `autosync.decode` puts `SDL_AUDIODRIVER` back rather than silencing
+  every later sound in the process. The decode control fails on the unfixed code
 - `tests/test_cmd_key.py` -- Cmd as the modifier on a Mac, and the PROPERTY that nothing in `ui/` reads the Ctrl bit
   off an event by hand (parsed, with its own control that the check can fail); five of its twelve fail on the unfixed
   code and the seven that pass are the controls
@@ -4113,8 +4114,9 @@ pickhero/
   certificate case named as itself, the fix carrying no placeholder, and that the lines really reach the screen. Nine of its
   seventeen fail on the unfixed code and the rest are controls -- including that verification is never switched off
 - `tests/test_softsynth.py` -- the synth inside the app: the voices measured as spectra (the guide really is brighter, the
-  drum carries no pitch, a high note does not alias at a rate where it could), and the message handling driven through a fake
-  mixer rather than skipped where there is no audio device. Four of its rules were verified by breaking the code on purpose,
+  drum carries no pitch, a high note does not alias at a rate where it could), the message handling driven through a fake
+  mixer rather than skipped where there is no audio device, and that a mixer reopened at another rate throws the rendered
+  notes away (the wiring test fails on the unfixed code; a rate that did not move is the control). Four of its rules were verified by breaking the code on purpose,
   and the fifth -- the Nyquist guard -- had to be rewritten after it passed with the guard removed
 - `tests/test_macos.py` -- asking macOS instead of Tk: the three call sites never reaching tkinter (driven with a
   tkinter that raises on being touched, the way the real one aborts), the AppleScript escaping, and the non-darwin
@@ -8735,7 +8737,7 @@ certificates and every HTTPS request from every Python program on the machine fa
 the best-founded suspect rather than a diagnosis. What changed is that the next report is a sentence naming one of four things
 instead of "no results" -- and if it IS the trust store, the screen has already told him what to type.
 
-## D Picks The Input, And There Is No Picker For The Other Half
+## D Picks The Input, And For Months Nothing Picked The Other Half
 
 *"Ueber Focusrite kommt kein MP3 mehr auf dem Mac. Wenn ich umstelle, kommt der Sound aus den NB Speakern. Wenn ich etwas ausserhalb der App
 laufen lasse, kommt es ueber Focusrite. Mit D habe ich das richtige Interface ausgewaehlt."*
@@ -8757,9 +8759,7 @@ the INPUT device was fixed for, where a log naming only "index 24" cannot tell a
   also one line too wide for the status note `Shift+A` writes, which is the place that answer has to be readable, since a run log is written
   later.
 - **SDL's own spelling**, because `pygame.mixer.init(devicename=...)` takes those strings and nothing else -- measured: a name SDL does not
-  know raises `No such device`. So the same list is what a picker would offer, and a picker is buildable; it is not built, because nothing yet
-  establishes that SDL is holding the wrong device rather than failing on the right one, and this project does not ship a feature to answer a
-  question a measurement has not asked.
+  know raises `No such device`. So the same list is what the picker offers -- see the chapter below, which is what he asked for next.
 
 **This is not a diagnosis.** It has never been reproduced here -- there is no audio device on this machine -- and the player's own sentence
 reads two ways: an app stuck on a device the system has left, or an app that follows the default and is silent on that one interface. The next
@@ -8782,6 +8782,72 @@ app to clear it. It is put back now, and left alone where the player named a dri
 The app opens the mixer at song load today (the built-in synth reaches `ensure_mixer()` from `MidiPlayer.open()`), so the window is narrow and
 this is almost certainly not the fault above. A window that silences the app for good is not one to leave standing because it is narrow -- and
 "only restarting the app clears it" is a sentence this project has already received twice.
+
+## The Picker For The Other Half
+
+*"Kannst du einen Output-Picker bauen?"* -- after the chapter above established that the app chose no output at all, and that `Shift+A` was both
+the workaround and the only experiment available. `O` -> **Audio output** is that choice, stored as `audio.output_device`.
+
+**It is ONE screen with both halves, not a second copy of it.** `DeviceMenuScreen(config, kind)` branches in four places -- the list, where the
+cursor opens, what ENTER writes, and the title -- and nowhere else. Two copies of "arrow keys walk a list and ENTER picks" is how the two come to
+disagree about what `R` does, which is the "four readers of one plan" fault at the size of a keypress.
+
+**The two lists are not interchangeable and must not be.** An input is PortAudio's, carrying an index, a host API and a rate; an output is SDL's,
+and the NAME is the whole of it -- `mixer.init(devicename=...)` takes that spelling and nothing else, so a name is what is stored rather than an
+index. An index would also be the wrong thing to store: SDL renumbers its devices when one is plugged in.
+
+- **A stored name that will not open FALLS BACK to the system default and says so.** A device unplugged since it was chosen is the commonest
+  thing that happens to a name, and refusing outright would leave the player a silent app and one word to blame. **Silence is the one outcome
+  this must not produce** -- which is the fault it was built for, pointed at itself.
+- **The fall-back is said on the ROW, not in a note after the keypress.** A note expires (`STATUS_NOTE_SECONDS`) and this row is recomputed every
+  frame, so `Focusrite — would not open, using system default` cannot outlive its situation. A row saying "Focusrite" while the laptop speakers
+  are playing is the exact thing this row exists to stop, and that is the same lesson as the pacing switches: **a setting under test must be
+  readable at the moment the measurement is taken, in the same words the measurement will use.**
+- **It reopens at once rather than at the next restart.** A setting that takes effect later is indistinguishable from one that does nothing, which
+  this project has shipped four times. The picker is reached from the settings screen and the song list and never from inside a song, so nothing
+  is playing when it happens.
+- **At startup the name is stored and NOT validated.** There is nothing to validate against: SDL cannot be asked for its devices before a video
+  system is up, and a name it does not know raises on init -- which `ensure_mixer` already answers correctly. The input device's own
+  `validate_device_index` check is the opposite case (PortAudio will answer at any time), so the two are deliberately not the same shape.
+- **`describe()` names the device the app CHOSE, and nothing else.** `_opened` is set by the only code that passes a `devicename`, so where
+  nothing was chosen it still reads `system default` rather than naming the first row of the list -- which is not the default on CoreAudio.
+  **The app may name what it decided and may never name what SDL decided**, which is why `describe_devices()` stays a separate line saying what
+  was on offer.
+- **The name stays on this machine, by construction rather than by a rule.** `transfer.song_settings()` returns only the dataclass fields
+  beginning with `song_`, so the whole `audio` block is machine-local already -- which is the same reason the device index and the calibration
+  have never travelled. An interface is not a player.
+- **The doctor says the choice is unmade** and names the row, rather than printing the default as though it were a decision.
+
+**What this does NOT do is diagnose the Mac.** It has never been reproduced here -- there is no audio device on this machine -- and *"der Ausgang
+wird nicht erkannt"* reads two ways: an app stuck on a device the system has left, or an app following a default that is silent on that one
+interface. The picker settles it from the player's side in one keypress either way, and the next run log names what was chosen.
+
+## The Synth Read The Rate Once, And Shift+A Can Change It
+
+*"Sh+A hat es zurueckgesetzt. Jetzt kommt der Output, aber in sehr schlechter Qualitaet (MP3, und MIDI auch einzeln in schlechter Qualitaet mit
+Rauschen)."*
+
+The MIDI half of that is a bug and it is this project's own `ALLOW_RATE_CHANGE` biting one layer down. `SoftSynth.__init__` read
+`pygame.mixer.get_init()` **once** -- correctly, at the time -- and `pygame.sndarray.make_sound` reads a raw array at whatever rate the mixer is
+on NOW. `Shift+A` closes and reopens the mixer, and since the app lets SDL open at the device's own rate, a reopen onto another output comes back
+at 48000 where it was 44100. Every cached note and every new one is then rendered against the old rate and played at the new one: **8.8 % sharp
+and 8 % short**, on every voice at once, which is a hiss and a wrong pitch produced by the one key whose whole job is to make the sound sane again.
+
+- **`_follow_the_mixer()` is ASKED, not told.** Wired to `reopen()` it would be one caller away from being missed; asked at the top of
+  `_sound_for` and `warm`, any route that changes the rate is covered by being a route that changes the rate. The reopen is seconds of device
+  work, so a `get_init()` beside it is free, and a note is about a millisecond to render again.
+- **The cache is thrown away, not re-rendered eagerly.** Those sounds were built at the old rate and there is no telling which the song will
+  reach; `warm` runs again at the next song load.
+- **A rate that did not move keeps them**, which is the control: a reopen onto the same device must not cost a whole song's warm-up.
+- **The channel count rides along**, for the same reason and in the same comparison.
+
+**The MP3 half is NOT this and is not fixed here.** `pygame.mixer.music` is decoded and resampled by SDL_mixer, which has no idea what the synth
+cached -- so the same report about the recording points at the rate-change decision itself: before it, a 44.1 kHz file reached a 48 kHz device
+through **macOS's** converter, and after it through **SDL's**, which is a linear resampler unless it was built against libsamplerate. This project
+has already measured what linear interpolation costs on real music (27-43 dB SNR, 1-2 dB off the top two octaves, see the resampler chapter), and
+the earlier argument for the change -- *"one conversion instead of two"* -- counted the conversions and never asked whether they are the same
+quality. **Two conversions by a good resampler beat one by a bad one.** That is a hypothesis with a mechanism and not a measurement: it has never
+been heard here, and the ear it needs is the player's.
 
 ## A Position That Does Not Move Is Not A Clock
 

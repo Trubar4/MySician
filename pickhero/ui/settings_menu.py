@@ -27,6 +27,7 @@ from typing import Callable
 
 import pygame
 
+from pickhero.audio import output as audio_output
 from pickhero.audio.input import list_audio_devices
 from pickhero.config import (MAX_GATE_DB, MAX_LATENCY_OFFSET_MS,
                              MIN_GATE_DB, Config)
@@ -120,6 +121,21 @@ class SettingsMenuScreen:
             except Exception:
                 pass
             return f"device #{index}"
+
+        def audio_output_name() -> str:
+            """The output that is set, and whether it actually opened.
+
+            The fall-back belongs HERE rather than in a note after the
+            keypress: a note expires and this row is recomputed every frame,
+            so it cannot outlive its situation -- and "Focusrite" on a row
+            while the laptop speakers are playing is the one thing this row
+            exists to stop.
+            """
+            name = c.audio.output_device
+            refused = audio_output.fallback_reason()
+            if refused and refused == name:
+                return f"{name} — would not open, using system default"
+            return name or "system default"
 
         def cycle_sync_source(step: int) -> None:
             order = list(c.SYNC_SOURCES)
@@ -217,6 +233,14 @@ class SettingsMenuScreen:
                     note="Which interface the guitar comes in on. ENTER to "
                          "choose.",
                     is_default=lambda: c.audio.device_index is None),
+            Setting("output", "Audio output", audio_output_name,
+                    opens="output",
+                    note="Where the backing track and the metronome are "
+                         "played. ENTER to choose — the system default "
+                         "follows whatever your computer is set to, which "
+                         "is not always the interface you are listening "
+                         "through.",
+                    is_default=lambda: not c.audio.output_device),
             Setting("calibrate", "Guitar calibration",
                     lambda: "done" if c.calibration else "not done",
                     opens="calibration",

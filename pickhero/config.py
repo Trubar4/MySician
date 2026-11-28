@@ -61,6 +61,21 @@ class StringCalibration:
 class AudioConfig:
     """Audio capture and detection settings."""
     device_index: int | None = None  # None = system default
+    #: Which audio OUTPUT the mixer opens, in SDL's own spelling, or "" for
+    #: the system default. A NAME and not an index, because that is what
+    #: `pygame.mixer.init(devicename=...)` takes and an index is not stable
+    #: across a reboot or a device being unplugged.
+    #:
+    #: *"Ueber Focusrite kommt kein MP3 mehr auf dem Mac. Mit D habe ich das
+    #: richtige Interface ausgewaehlt."* -- `D` is the INPUT, and until now
+    #: there was no answer at all for the other half: SDL took the system
+    #: default at the first `mixer.init()` and the whole session played to it.
+    #:
+    #: It lives in the audio block, so `song_settings()` leaves it where it
+    #: is: a device name describes one machine's interface, and carrying it
+    #: to the other laptop would silence that one while looking like a
+    #: settings problem.
+    output_device: str = ""
     sample_rate: int = 44100
     buf_size: int = 4096
     hop_size: int = 512
