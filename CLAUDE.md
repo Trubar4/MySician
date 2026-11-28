@@ -9892,3 +9892,122 @@ a 0.400 reading does not outvote a 0.040 one. What is still said is WHERE, and t
 
 `tools/check_key_check.py --inject` holds all of it: the whole-song roll on every song with a recording, three partial intervals each, and an abstention
 counted as a pass rather than a miss.
+
+## Most Songsterr Tabs Have No Guitar Pro File, And That Is Not A Dead End
+
+*"Mit dem Songsterr Downloader konnte ich das GP downloaden selbst. Das kam auch bei den naechsten 3 anderen Songs."* Four songs in a row answered
+`Songsterr holds no Guitar Pro file for this tab`, and the chapter that established why got the consequence wrong: Songsterr keeps those tabs in a format
+of their own, a third-party downloader produces a `.gp` because it **builds** one from that data -- and this app could read that data too. `tabs/songsterr_tab.py` does.
+
+Per track, `{songId}/{revisionId}/{hash}/{partId}.json` holds `measures -> voices -> beats -> notes`, the tuning, the instrument and the tempo
+automations. A complete tab, and the only route to a playable song for the tabs the revision walk comes back empty on.
+
+**Every rule in it was measured against the third-party `.gp` of one revision** that has both (Nirvana, "Come As You Are", revision 10510536), which is
+what `tools/check_songsterr_tab.py` runs. On all eight pitched tracks:
+
+| track | our notes | the .gp | placed alike |
+|---|---|---|---|
+| vocals (two) | 232, 54 | 232, 54 | **100 %** |
+| guitars (four) | 77, 77, 715, 1184 | the same | **100 %** |
+| rhythm guitar | 1240 | 1240 | **100 %** |
+| bass | 712 | 712 | **100 %** |
+
+- **`json notes - ties = gp notes`, exactly** (1406 - 166 = 1240; 1369 - 185 = 1184; 108 - 31 = 77), which is what says the tie rule is the same rule.
+- **This source carries MORE than the .gp does**: 1013 let-ring notes against **none** -- the string `LetRing` does not appear in that file's GPIF at
+  all -- 48 slides against 36, 14 bends against 10, and the chord names. **Neither source is a strict superset**, which has to be said rather than
+  implied: that GPIF carries 18 `PalmMute` the JSON does not.
+- **The bend units are measured, not guessed.** `tone: 100` is the .gp's **2.0 semitones**, so 50 is one semitone -- the same unit GP5 used and GPIF
+  kept -- and `position: 60` is its **1.0**, the end of the note. pyguitarpro's own scale is 0..12, so two formats, two scales, each read off a file.
+- **`duration` already includes the dot.** A dotted quarter is `type: 4, duration: [3, 8], dots: 1`: `dots` and `type` say how to ENGRAVE the beat and
+  `duration` says how long it is. Applying the dot as well would make every dotted note half a beat too long -- which is the fault that was about to
+  ship, caught by counting the `(type, duration, dots)` combinations rather than by reading the key names.
+- **A bar is as long as its SIGNATURE**, not as long as the beats it happens to hold, or a sparsely filled bar reads short and moves every bar after it
+  -- the fault that cost the MusicXML export 42 seconds on one song. `signature` appears only where it CHANGES (once, on measure 0), so it is carried
+  forward.
+- **Each voice starts at the bar line and keeps its own cursor**, so a let-ring bass note under a run of eighths lands where it is written.
+- **The positions are worked out in QUARTERS and turned into time afterwards**, so a tempo change inside a note is accounted for rather than averaged
+  away. Four diagnostics in the MusicXML work measured accumulated drift and blamed whatever they were looking at, because every one compared
+  milliseconds against a clock that had already slipped.
+- **Songsterr counts strings from the HIGH one at 0 and the GPIF reader's tuning array is LOW first**, so the two conversions are deliberately not the
+  same shape.
+- **A legato slide maps to `slide_to_next` and not to `hammer_to_next`**, which is what the GP loader does with GP5's own legato slide: a second reader
+  must not score one technique two ways.
+- **Vocals are written as a SAX on a six-string staff with guitar tuning**, so the program number is the only thing that says they are not a guitar
+  part -- and the GM window comes from the loader rather than being written down again.
+- **There is no second `NoteEvent(` construction.** `test_unreadable_notes.py` asserts that `note_or_skip` wraps the only one in the package, and it was
+  right to: the rules about an incomplete read now live in `timeline.py`, beside the dataclass they are about, read by both readers. Two copies would be
+  two answers to what a tab is, and the test covers the new reader for free.
+
+### The Pickup Bar, And Which Of The Two Readings Is Right
+
+The one place the two sources disagree, and it is worth the paragraph because the obvious reading of it is wrong. Every note sat **exactly 1000 ms**
+apart, which looks like a constant and therefore like nothing -- a per-song offset absorbs a constant. It is not a constant: three notes, the pickup's
+own, sit at the **same** millisecond in both.
+
+| | the pickup's three eighths | the first downbeat |
+|---|---|---|
+| Songsterr's JSON (a rest and three eighths, `anacrusis: true`) | 250, 500, 750 ms | **1000 ms** |
+| the third-party .gp (the bar padded to a full one) | 250, 500, 750 ms | **2000 ms** |
+
+**So the .gp leaves 1250 ms of silence between the pickup and the downbeat it exists to lead into.** Ours is the right reading, not merely the
+literal one -- and it is also the reading Songsterr's own per-bar map expects, since `video-points` gives one timestamp per MEASURE and their player
+renders this same JSON.
+
+The control reports the disagreement as **blocks** rather than ruling on it: a per-note timing fault SCATTERS, where a structural difference between two
+files moves a whole stretch of the song together. At most two blocks, none under three notes, and it NAMES them (`1237 of 1240 notes, the .gp +1000.0 ms
+away (our bars 1-105)` over `3 of 1240 notes, the .gp +0.0 ms away (our bars 0-0)`). A tolerance wide enough to swallow this would have swallowed a real
+timing bug with it.
+
+### The Structures One Song Cannot Show
+
+This revision has **no repeats, no tuplets, no alternate endings and one voice everywhere**, so nothing about any of them can be verified -- and a
+reader that skipped a repeat in silence would read a song with one as a song that is simply shorter. So the reader knows which keys it understands at
+each level and **names anything else, with its count**: `2x a bar carrying repeatStart, which this reader does not read`. The bend unit, the tempo
+`position` outside 0 and a `type` other than 4 are named the same way. That is the instrument the next song pays for rather than another round of
+guessing at a format nobody here can fetch twice.
+
+### And Every One Of Those Sentences Was Invisible
+
+`unreadable_line()` returned `""` whenever `unreadable_notes == 0` -- so a reason that is not about a NOTE was stored and never said. Nothing in the GP
+readers could produce one (every reason there comes from `note_or_skip`), so the gate had never been wrong before; the moment a reader named a repeat,
+a short bar or an unchecked tempo unit, all of it went into the metadata and nowhere else. **The run log had the same gate**, which is the file that
+gets sent.
+
+The fifth instance of this project's own oldest fault, and the first inside the one function whose whole job is saying what the reader could not do.
+
+### What Is NOT Built, And What It Needs
+
+**The FETCHER.** The converter reads JSON that is already in hand; getting it needs the track list and the hash, and the `{hash}` in that URL cannot be
+derived from anything measured here. Two facts the files DO carry, which narrow it: each track JSON holds its own `songId`, `revisionId` and `partId`,
+and the eight tracks of this revision share one hash. The safe reading is therefore the i-th track's own `tracks[i].hash` from
+`/api/revision/{id}` -- correct whether the hashes are shared or per track -- and it is unverified, because the HAR capture holds no songsterr API call
+at all (that browser had them cached). One reply settles it:
+
+```
+curl -s "https://www.songsterr.com/api/revision/10510536" | head -c 3000
+```
+
+Until then nothing in the app reaches this reader, which is why `pickhero.spec` names no hidden import for it: a spec entry for a module nothing
+imports is a hidden import for dead code, and `tests/test_spec.py` will demand one the moment the download screen wires it.
+
+## A Network Diagnostic Refused To Run For Want Of A Tab Parser
+
+```
+python3 tools/songsterr_fields.py "https://www.songsterr.com/a/wsa/nirvana-come-as-you-are-tab-s14"
+ModuleNotFoundError: No module named 'guitarpro'
+```
+
+That tool prints every key of every Songsterr reply. It touches no tab file, and it exists for the machine that cannot reach them -- which is exactly
+the machine least likely to have a full install. `pickhero/tabs/__init__.py` imported the GP loader eagerly, so every `pickhero.tabs.*` submodule needed
+`guitarpro`, `downloader` among them -- and `downloader` needed it for **one constant**, `GP_EXTENSIONS`.
+
+- **The loader is reached through PEP 562 now**, so `pickhero.tabs.load_gp_file` still works and still needs the parser, while importing a sibling
+  module costs nothing. `timeline` stays eager: pure arithmetic with no dependency of its own, and the dataclasses are what everything else is typed
+  against.
+- **`GP_EXTENSIONS` did not move**, because the comment at its definition says why it lives in the reader (*what the app can READ is a property of the
+  reader*). `downloader` asks for it inside the one function that uses it, which is the style that file already uses in nine places.
+- **The test runs in a SUBPROCESS with a meta-path finder that refuses guitarpro**, because by the time a test runs the real one is long since in
+  `sys.modules` and re-importing it proves nothing. `test_guitarpro_really_is_refused` is there because without it the whole class passes on any machine
+  that has it. Five of its eight tests fail on the unfixed code and the three that pass are the controls.
+- **The rule is the general one this project keeps paying for**: anything reachable only from a shell does not exist on the machine that most needs
+  it -- the merge tool in `tools/`, the ffmpeg fetch, the songs folder, and now a diagnostic that would not import.

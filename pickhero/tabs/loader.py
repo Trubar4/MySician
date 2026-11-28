@@ -19,7 +19,9 @@ from pickhero.audio.midi_playback import (
     NOTE_ON, NOTE_OFF, PROGRAM_CHANGE, BackingTrack, MidiEvent,
 )
 from pickhero.tabs import gpx
-from pickhero.tabs.timeline import MeasureInfo, NoteEvent, SongMetadata, Timeline
+from pickhero.tabs.timeline import (MeasureInfo, NoteEvent, SongMetadata,
+                                    Timeline, distinct_reasons, extend_tied,
+                                    note_or_skip)
 
 # GP tick resolution: 960 ticks = 1 quarter note
 TICKS_PER_QUARTER = 960
@@ -278,48 +280,6 @@ def _song_plan(song: guitarpro.Song, tempo_map: TempoMap) -> list[PlayedBar]:
     return played_bars([_bar_repeat(h) for h in headers], starts, ends)
 
 
-def _note_or_skip(skipped: list[str], **fields) -> NoteEvent | None:
-    """A NoteEvent, or None with the reason written down.
-
-    A tab is somebody else's file and a reader cannot be complete. GPIF
-    writes a fret of -1 for a note whose fret the transcriber left out; a
-    seven-string tab puts a note on a string this app does not have; a
-    damaged beat can put a pitch outside MIDI's range. NoteEvent refuses all
-    of those on purpose -- that invariant is what caught the -1 -- but one
-    such note used to raise straight out of the loader and take the whole
-    TRACK with it. On the file that prompted this, ten notes of about 3800
-    cost four of the six guitars, and what the player saw was a traceback
-    rather than a song.
-
-    So a note the reader cannot place is skipped and the reason kept, which
-    is the rule `scan_files` already follows for a folder it cannot read: a
-    screen saying "3 notes could not be read" is a screen; a traceback is
-    not. It covers every invariant NoteEvent has and any added later, rather
-    than the one quirk that happened to be reported.
-    """
-    try:
-        return NoteEvent(**fields)
-    except ValueError as exc:
-        skipped.append(str(exc))
-        return None
-
-
-def _distinct_reasons(skipped: Sequence[str],
-                      limit: int = 3) -> tuple[str, ...]:
-    """The reasons, once each, in the order they first came up.
-
-    One quirk in a file is usually the same quirk a few dozen times, so the
-    count is the size of it and the reasons are what it IS. Capped because
-    this goes on a screen and in a run log, and a hundred copies of one
-    sentence says less than three.
-    """
-    seen: list[str] = []
-    for reason in skipped:
-        if reason not in seen:
-            seen.append(reason)
-        if len(seen) == limit:
-            break
-    return tuple(seen)
 
 
 def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap,
@@ -328,7 +288,7 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap,
     """Extract all playable notes from a track, in playing order.
 
     Returns the notes and the reasons any note had to be skipped; see
-    `_note_or_skip`.
+    `note_or_skip`.
     """
     notes = []
     skipped: list[str] = []
@@ -349,14 +309,14 @@ def _extract_notes(track: guitarpro.Track, tempo_map: TempoMap,
                     # A tie (2) is not struck, but it is not nothing either:
                     # it lengthens the note it continues.
                     if note.type.value == 2:
-                        _extend_tied(notes, note.string,
+                        extend_tied(notes, note.string,
                                      timestamp_ms, duration_ms)
                         continue
                     if note.type.value not in (1, 3):
                         continue
                     to_next, slide_in, slide_out = _extract_slides(note)
                     effect = getattr(note, "effect", None)
-                    event = _note_or_skip(
+                    event = note_or_skip(
                         skipped,
                         timestamp_ms=timestamp_ms,
                         duration_ms=duration_ms,
@@ -699,29 +659,6 @@ def _gpif_bend(values: dict[str, float]) -> tuple[tuple[float, float], ...]:
     return curve if any(value > 0 for _, value in curve) else ()
 
 
-def _extend_tied(events: list[NoteEvent], string: int,
-                 start_ms: float, duration_ms: float) -> None:
-    """Make the note this one continues last through it.
-
-    A tie is one note written twice, and both formats had only the first
-    half of that right: the continuation was skipped (GP3-5) or played again
-    (GPIF), and in neither case did the note it belongs to get any longer.
-    So a note held across two beats was drawn for one -- or, on a GP6/7/8
-    file, drawn twice, which is what the player reported.
-
-    Nothing is appended: a tied note is not struck, and giving it an event of
-    its own would ask for a pick the music does not contain.
-    """
-    for i in range(len(events) - 1, -1, -1):
-        event = events[i]
-        if event.string == string:
-            # NoteEvent is frozen on purpose -- a note that can be edited in
-            # place is a note some later pass can quietly move.
-            events[i] = replace(event, duration_ms=max(
-                event.duration_ms,
-                start_ms + duration_ms - event.timestamp_ms))
-            return
-
 
 def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
     """Every <Note> in a GPIF score, by id.
@@ -812,7 +749,7 @@ def _parse_gpif_notes(root: ET.Element) -> dict[str, _GpifNote]:
         #
         # A negative fret on a note that is NOT muted is deliberately left
         # alone: that number WOULD be shown, and inventing a 0 for it
-        # would put a wrong fret on screen. `_note_or_skip` then skips it
+        # would put a wrong fret on screen. `note_or_skip` then skips it
         # and says so.
         if fret < 0 and dead:
             fret = 0
@@ -1072,7 +1009,7 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                         # reader could not place was counted here and not
                         # there -- the number has to mean one thing. The
                         # string check stays ahead of the tie branch: a
-                        # seven-string tab must not reach `_extend_tied`
+                        # seven-string tab must not reach `extend_tied`
                         # with a string this app does not have.
                         if not 1 <= our_string <= 6:
                             skipped.append(
@@ -1089,11 +1026,11 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
                             continue
 
                         if gpif_note.tie_to_previous:
-                            _extend_tied(note_events, our_string,
+                            extend_tied(note_events, our_string,
                                          beat_pos_ms, dur_ms)
                             continue
 
-                        event = _note_or_skip(
+                        event = note_or_skip(
                             skipped,
                             timestamp_ms=beat_pos_ms,
                             duration_ms=dur_ms,
@@ -1139,7 +1076,7 @@ def _load_gp7_file(path: str | Path, track_index: int | None = None) -> Timeline
         tuning=tuning_dict,
         track_index=selected_index,
         unreadable_notes=len(skipped),
-        unreadable_reasons=_distinct_reasons(skipped),
+        unreadable_reasons=distinct_reasons(skipped),
     )
 
     return Timeline(note_events, metadata, measures=measure_infos)
@@ -1379,7 +1316,7 @@ def load_gp_file(path: str | Path, track_index: int | None = None) -> Timeline:
         tuning=_extract_tuning(track),
         track_index=selected_index,
         unreadable_notes=len(skipped),
-        unreadable_reasons=_distinct_reasons(skipped),
+        unreadable_reasons=distinct_reasons(skipped),
     )
 
     return Timeline(notes, metadata, measures=measures)

@@ -209,3 +209,89 @@ class TestTheScreenSaysIt:
         menu.render(without)
         assert pygame.image.tostring(with_lines, "RGB") != \
             pygame.image.tostring(without, "RGB")
+
+
+class TestADiagnosticRunsWithoutATabParser:
+    """The same fault one layer down, and the player met this one first.
+
+    `tools/songsterr_fields.py` prints every key of every Songsterr reply --
+    a pure network diagnostic, for the machine that cannot reach them. On his
+    Mac it answered `ModuleNotFoundError: No module named 'guitarpro'`,
+    because `pickhero/tabs/__init__.py` imported the GP loader eagerly and
+    `downloader` imported one CONSTANT from it. So a tool whose whole subject
+    is the network refused to run for want of a tab parser, in exactly the
+    case where somebody reaches for it.
+
+    Run in a subprocess, because by the time a test runs `guitarpro` is long
+    since in `sys.modules` and re-importing it proves nothing.
+    """
+
+    #: Refuse guitarpro the way a machine without it does, then import.
+    BLOCK = """
+import sys
+sys.path.insert(0, {root!r})
+
+
+class Refuse:
+    def find_module(self, name, path=None):
+        return self if name.split(".")[0] == "guitarpro" else None
+
+    def load_module(self, name):
+        raise ImportError("No module named 'guitarpro'")
+
+
+sys.meta_path.insert(0, Refuse())
+{body}
+print("ok")
+"""
+
+    def _run(self, body: str):
+        import subprocess
+        import sys as _sys
+        root = str(Path(__file__).resolve().parent.parent)
+        return subprocess.run(
+            [_sys.executable, "-c", self.BLOCK.format(root=root, body=body)],
+            capture_output=True, text=True, timeout=120)
+
+    def test_guitarpro_really_is_refused(self):
+        """Without this the whole class passes on a machine that has it."""
+        done = self._run("import guitarpro")
+        assert done.returncode != 0
+        assert "guitarpro" in done.stderr
+
+    @pytest.mark.parametrize("module", [
+        "pickhero.tabs",
+        "pickhero.tabs.timeline",
+        "pickhero.tabs.songsterr",
+        "pickhero.tabs.downloader",
+    ])
+    def test_the_network_modules_import(self, module):
+        done = self._run(f"import {module}")
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().endswith("ok")
+
+    def test_the_tool_itself_gets_past_its_imports(self):
+        """What the player actually ran. It may fail at the NETWORK -- that
+        is the machine's answer and the tool's subject -- but it may not fail
+        for want of a parser it never uses."""
+        done = self._run(
+            "import importlib.util as u\n"
+            "spec = u.spec_from_file_location('sf', "
+            f"{str(Path(__file__).resolve().parent.parent / 'tools' / 'songsterr_fields.py')!r})\n"
+            "mod = u.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n")
+        assert done.returncode == 0, done.stderr
+
+    def test_the_loader_still_needs_it(self):
+        """The lazy import is not a way to open a tab without a parser. A
+        name that answers anyway would be answering with nothing."""
+        done = self._run("import pickhero.tabs as t\nt.load_gp_file")
+        assert done.returncode != 0
+        assert "guitarpro" in done.stderr
+
+    def test_and_the_names_are_still_there(self):
+        """PEP 562 only runs for a name the module does not have, so a typo
+        in the tuple would make a public name silently vanish."""
+        from pickhero import tabs
+        for name in tabs.__all__:
+            assert getattr(tabs, name) is not None

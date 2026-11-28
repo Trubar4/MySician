@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass, field, replace
+from typing import Sequence
 
 
 @dataclass(frozen=True)
@@ -133,14 +134,23 @@ class SongMetadata:
         what it is: "3 notes could not be read" sends the next report back
         here with no more information than the first one had.
         """
-        if not self.unreadable_notes:
+        if not self.unreadable_notes and not self.unreadable_reasons:
             return ""
+        reasons = "; ".join(self.unreadable_reasons)
+        if not self.unreadable_notes:
+            # A reason that is not about a NOTE used to be stored and never
+            # said, because this gated on the COUNT: a Songsterr tab
+            # carrying a repeat nobody has read, or a bar that does not
+            # fill its signature, reported nothing at all unless a note
+            # happened to be unreadable as well. That is the feature that
+            # cannot be seen working, in the one place whose whole job is
+            # saying what the reader could not do.
+            return f"This tab is not read exactly as written: {reasons}"
         n = self.unreadable_notes
         what = "1 note" if n == 1 else f"{n} notes"
-        if not self.unreadable_reasons:
+        if not reasons:
             return f"{what} in this tab could not be read"
-        return (f"{what} in this tab could not be read: "
-                + "; ".join(self.unreadable_reasons))
+        return f"{what} in this tab could not be read: {reasons}"
 
 
 class Timeline:
@@ -259,3 +269,76 @@ class Timeline:
         result = self._notes[self._cursor:end]
         self._cursor = end
         return result
+
+# Reading a tab is the one job two readers in this package share -- the GP
+# loader and the Songsterr one -- so the two rules about an incomplete read
+# live here, beside the dataclass they are about, rather than in whichever
+# reader needed them first. Two copies would be two answers to what a tab
+# is, which is the fault this project has paid for at the repeats, at the
+# transpose and at the shifted keys.
+
+def note_or_skip(skipped: list[str], **fields) -> NoteEvent | None:
+    """A NoteEvent, or None with the reason written down.
+
+    A tab is somebody else's file and a reader cannot be complete. GPIF
+    writes a fret of -1 for a note whose fret the transcriber left out; a
+    seven-string tab puts a note on a string this app does not have; a
+    damaged beat can put a pitch outside MIDI's range. NoteEvent refuses all
+    of those on purpose -- that invariant is what caught the -1 -- but one
+    such note used to raise straight out of the loader and take the whole
+    TRACK with it. On the file that prompted this, ten notes of about 3800
+    cost four of the six guitars, and what the player saw was a traceback
+    rather than a song.
+
+    So a note the reader cannot place is skipped and the reason kept, which
+    is the rule `scan_files` already follows for a folder it cannot read: a
+    screen saying "3 notes could not be read" is a screen; a traceback is
+    not. It covers every invariant NoteEvent has and any added later, rather
+    than the one quirk that happened to be reported.
+    """
+    try:
+        return NoteEvent(**fields)
+    except ValueError as exc:
+        skipped.append(str(exc))
+        return None
+
+def extend_tied(events: list[NoteEvent], string: int,
+                 start_ms: float, duration_ms: float) -> None:
+    """Make the note this one continues last through it.
+
+    A tie is one note written twice, and both formats had only the first
+    half of that right: the continuation was skipped (GP3-5) or played again
+    (GPIF), and in neither case did the note it belongs to get any longer.
+    So a note held across two beats was drawn for one -- or, on a GP6/7/8
+    file, drawn twice, which is what the player reported.
+
+    Nothing is appended: a tied note is not struck, and giving it an event of
+    its own would ask for a pick the music does not contain.
+    """
+    for i in range(len(events) - 1, -1, -1):
+        event = events[i]
+        if event.string == string:
+            # NoteEvent is frozen on purpose -- a note that can be edited in
+            # place is a note some later pass can quietly move.
+            events[i] = replace(event, duration_ms=max(
+                event.duration_ms,
+                start_ms + duration_ms - event.timestamp_ms))
+            return
+
+
+def distinct_reasons(skipped: Sequence[str],
+                      limit: int = 3) -> tuple[str, ...]:
+    """The reasons, once each, in the order they first came up.
+
+    One quirk in a file is usually the same quirk a few dozen times, so the
+    count is the size of it and the reasons are what it IS. Capped because
+    this goes on a screen and in a run log, and a hundred copies of one
+    sentence says less than three.
+    """
+    seen: list[str] = []
+    for reason in skipped:
+        if reason not in seen:
+            seen.append(reason)
+        if len(seen) == limit:
+            break
+    return tuple(seen)

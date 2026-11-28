@@ -7969,7 +7969,11 @@ class PlayingScreen:
         # beside the count, because the count alone sends the next report
         # back here knowing no more than the first one did.
         meta = self._timeline.metadata
-        if meta.unreadable_notes:
+        if meta.unreadable_notes or meta.unreadable_reasons:
+            # Either, not the count: a reason that is not about a note --
+            # a repeat this reader does not read, a bar that does not fill
+            # its signature -- would otherwise never reach the log that
+            # gets sent.
             fh.write(f"unreadable_notes\t{meta.unreadable_notes}"
                      f"\t{'; '.join(meta.unreadable_reasons)}\n")
         if self._loop_enabled and self._loop_start_ms is not None:

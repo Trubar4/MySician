@@ -15,7 +15,6 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pickhero.tabs.loader import GP_EXTENSIONS
 
 SONGSTERR_API_URL = "https://www.songsterr.com/api/songs"
 SONGSTERR_META_URL = "https://www.songsterr.com/api/meta"
@@ -415,7 +414,16 @@ def suffix_for(source_url: str) -> str:
     called `.gp5` still opened; but it is a lie on disk, and it is the wrong
     file to hand to Guitar Pro itself.
     """
+    # Asked for here rather than at the top of the module: GP_EXTENSIONS
+    # lives in the loader on purpose (what the app can READ is a property of
+    # the reader), and the loader needs guitarpro. Imported eagerly, that
+    # made this module -- which touches no tab file at all -- impossible to
+    # import without a GP parser installed, so a player running
+    # tools/songsterr_fields.py to find out why a SEARCH came back empty got
+    # ModuleNotFoundError instead of an answer.
     from urllib.parse import urlparse
+
+    from pickhero.tabs.loader import GP_EXTENSIONS
     found = Path(urlparse(source_url).path).suffix.lower()
     return found if found in GP_EXTENSIONS else ".gp5"
 

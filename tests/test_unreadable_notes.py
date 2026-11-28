@@ -317,3 +317,34 @@ class TestItReallyReachesTheScreenAndTheLog:
         written = self._log_text(_gp(tmp_path, 7))
         assert written                       # the log was really written
         assert "unreadable_notes" not in written
+
+
+class TestAReasonThatIsNotAboutANote:
+    """The count was the gate, so a reason with no unreadable NOTE behind
+    it was stored and never said.
+
+    Nothing in the GP readers could produce one -- every reason there comes
+    from `note_or_skip` -- but the Songsterr reader names what it does not
+    read (a repeat, a tuplet, a bar that does not fill its signature), and
+    all of it was invisible. The feature that cannot be seen working, in
+    the one place whose job is saying what the reader could not do.
+    """
+
+    def test_it_is_said_without_a_single_unreadable_note(self):
+        meta = SongMetadata(unreadable_notes=0, unreadable_reasons=(
+            "2x a bar carrying repeatStart, which this reader does not read",
+        ))
+        line = meta.unreadable_line()
+        assert "repeatStart" in line
+        assert "could not be read" not in line
+
+    def test_a_count_and_a_reason_still_read_as_one_sentence(self):
+        meta = SongMetadata(unreadable_notes=2,
+                            unreadable_reasons=("a", "b"))
+        assert meta.unreadable_line() == \
+            "2 notes in this tab could not be read: a; b"
+
+    def test_and_nothing_at_all_is_still_silent(self):
+        """The control. A line that always has something to say -- which is
+        almost every song -- would be saying nothing."""
+        assert SongMetadata().unreadable_line() == ""
