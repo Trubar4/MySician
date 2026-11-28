@@ -313,8 +313,25 @@ class DownloadMenuScreen:
             # own that does. The bar map came down anyway and is already
             # sitting in the songs folder waiting for a tab of that name, so
             # the useful thing to say is the NAME.
+            #
+            # **And everything else `grab` reported, which this branch used
+            # to throw away.** The tab, the bar map and the audio are three
+            # separate requests and `grab.notes` says what became of each --
+            # "No bar map: ...", "Songsterr has no timing for this tab.",
+            # "No audio: ffmpeg was not found". Printing `notes[0]` alone
+            # meant a download that fetched the map and failed only on the
+            # tab looked identical to one that fetched nothing at all, which
+            # is exactly how the player read it: *"es wird nichts geladen,
+            # weder Gp, noch map noch mp3"*. He could not tell, because the
+            # screen did not say.
             self._notes = [grab.notes[0] if grab.notes
                            else "The tab could not be downloaded."]
+            rest = list(grab.notes[1:])
+            if grab.bars:
+                # The block below names the count, so `grab`'s own bar-map
+                # line would be the same number twice.
+                rest = [n for n in rest if not n.startswith("Bar map:")]
+            self._notes += rest
             if grab.bars:
                 self._notes.append(f"Its bar map ({grab.bars} bars) is saved "
                                    f"and waiting.")

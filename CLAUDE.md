@@ -7899,6 +7899,33 @@ called; a tab rebuilt by a third-party downloader is a `.gp`, and renaming it is
 of 121** -- so the map he was told was "saved and waiting" would have been dropped in silence and the song would have fallen back to the
 listening, which is the thing he was trying to get away from.
 
+## Three Requests, One Sentence On Screen
+
+*"Egal was ich ueber Songsterr laden will. Es wird nichts geladen, weder Gp, noch map noch mp3."* The first half of that is Songsterr's
+answer and the second half was the screen's fault. A download is **three separate requests** -- the tab, the bar map, the audio -- and
+`grab.notes` has said what became of each since the day `grab_song` was written to carry on after a missing tab. The failure branch printed
+**`notes[0]` and threw the rest away.**
+
+So a download that fetched the map and failed only on the tab looked **identical** to one that fetched nothing at all, and there was no way
+to tell from the screen which had happened. On his own screenshot (Nirvana, "Come As You Are") the only line under the headline is
+*"Songsterr is open in your browser"*: no bar-map line, which means the map really did fail -- and the reason was computed, appended, and
+discarded one line later.
+
+- **Every note is shown now**, headline first, then what became of the map and the audio, then what to do about it, then the browser line.
+  Diagnosis, then remedy.
+- **The bar count is not said twice.** `grab` reports `Bar map: 124 bars.` and the block below says `Its bar map (124 bars) is saved and
+  waiting.`; where the block is printed, `grab`'s own line is dropped.
+- **This is the same fault as `_fetch_json` returning `None` for four different problems**, one layer up: the reason existed and the screen
+  reduced it to one. Said in this file's own words a chapter earlier -- *"Songsterr did not answer, has no revision, or holds no Guitar Pro
+  file"* are three different problems -- and then the three sentences that distinguish them were printed one at a time.
+- **Nothing covered the failure branch of `_do_download`** at all, which is why it survived three rounds of work on the screen it draws.
+  Three of the six new tests fail on the old code and three are the controls.
+
+**And the screenshot answers the open question from the chapter above.** `source: no, tracks: yes` -- the keys that decide, now named by name
+rather than falling off the end of an alphabetical list. Songsterr holds this tab in their own format with a per-track hash and no Guitar Pro
+file, on the newest revision and with no `prevRevisionId` to walk back to, so the walk honestly stops at one. That is their answer and no
+amount of retrying changes it.
+
 ## A Rate Nothing Builds From Is A Number That Moves And Changes Nothing
 
 The Audio line printed `[-1.64 % Shift+S]`, and it was wrong twice in eight characters. The rate is the FIRST SEGMENT of the stored sync

@@ -798,3 +798,94 @@ class TestTheNotesFitTheWindow:
         font = self._font()
         word = "x" * 400
         assert wrap_words(word, font, 200) == [word]
+
+
+class TestTheFailureScreenSaysWhatElseCameDown:
+    """*"Egal was ich ueber songsterr laden will. Es wird nichts geladen,
+    weder Gp, noch map noch mp3."*
+
+    The tab, the bar map and the audio are three separate requests and
+    `grab.notes` says what became of each. This branch printed `notes[0]`
+    alone -- the Guitar Pro reason -- and threw the other two away, so a
+    download that fetched the map and failed only on the tab looked
+    exactly like one that fetched nothing at all. The player could not
+    tell which, because the screen did not say.
+    """
+
+    def _screen(self, tmp_path, notes, bars=0):
+        from pickhero.ui.download_menu import DownloadMenuScreen
+        from pickhero.ui import download_menu as dm
+        from pickhero.tabs.downloader import Grab, SongsterrResult
+
+        screen = DownloadMenuScreen(tmp_path)
+        grab = Grab(song_id=1)
+        grab.notes = list(notes)
+        grab.bars = bars
+        grab.wanted_name = "Nirvana - Come As You Are.gp5"
+        original_grab, original_open = dm.grab_song, dm.webbrowser.open
+        dm.grab_song = lambda *a, **k: grab
+        dm.webbrowser.open = lambda url: None
+        try:
+            screen._do_download(SongsterrResult(
+                song_id=1, title="Come As You Are", artist="Nirvana"))
+        finally:
+            dm.grab_song, dm.webbrowser.open = original_grab, original_open
+        return screen
+
+    def test_the_bar_map_reason_reaches_the_screen(self, tmp_path):
+        """His own case: no Guitar Pro file AND no timing. Only the first
+        of those was ever on screen, so "no map" and "a map is waiting"
+        looked identical."""
+        screen = self._screen(tmp_path, [
+            "Songsterr holds no Guitar Pro file for this tab - 1 revision",
+            "Songsterr has no timing for this tab.",
+        ])
+        said = " ".join(screen._notes)
+        assert "no Guitar Pro file" in said
+        assert "no timing for this tab" in said
+
+    def test_the_audio_reason_reaches_it_too(self, tmp_path):
+        """"ffmpeg was not found" and "this video is private" send the
+        player to completely different places, and neither was shown."""
+        screen = self._screen(tmp_path, [
+            "Songsterr holds no Guitar Pro file for this tab - 1 revision",
+            "Bar map: 124 bars.",
+            "No audio: ffmpeg was not found - run: brew install ffmpeg",
+        ], bars=124)
+        said = " ".join(screen._notes)
+        assert "brew install ffmpeg" in said
+
+    def test_the_headline_is_still_first(self, tmp_path):
+        screen = self._screen(tmp_path, [
+            "Songsterr holds no Guitar Pro file for this tab - 1 revision",
+            "Songsterr has no timing for this tab.",
+        ])
+        assert screen._notes[0].startswith("Songsterr holds no Guitar Pro")
+
+    def test_the_bar_count_is_not_said_twice(self, tmp_path):
+        """`grab` reports "Bar map: 124 bars." and the block below says
+        "Its bar map (124 bars) is saved and waiting." -- the same number
+        twice, one line apart."""
+        screen = self._screen(tmp_path, [
+            "no file for this tab",
+            "Bar map: 124 bars.",
+        ], bars=124)
+        assert not any(n.startswith("Bar map:") for n in screen._notes)
+        assert any("saved and waiting" in n for n in screen._notes)
+
+    def test_what_to_do_about_it_comes_last(self, tmp_path):
+        """Diagnosis, then remedy. The name to save the tab under and the
+        browser line are the two things to act on."""
+        screen = self._screen(tmp_path, [
+            "no file for this tab",
+            "No audio: ffmpeg was not found",
+        ], bars=124)
+        said = screen._notes
+        assert "Nirvana - Come As You Are" in said
+        assert said.index("Nirvana - Come As You Are") > \
+            said.index("No audio: ffmpeg was not found")
+        assert said[-1] == "Songsterr is open in your browser."
+
+    def test_a_grab_with_nothing_to_say_still_says_something(self, tmp_path):
+        screen = self._screen(tmp_path, [])
+        assert screen._notes[0] == "The tab could not be downloaded."
