@@ -4105,8 +4105,9 @@ pickhero/
 
 - `tests/test_output_device.py` -- the output half: the devices SDL can see named on their own line, the picker (one
   screen for both kinds, and neither reading the other's setting), a named device that will not open falling back to the
-  system default and SAYING so on the row, and that `autosync.decode` puts `SDL_AUDIODRIVER` back rather than silencing
-  every later sound in the process. The decode control fails on the unfixed code
+  system default and SAYING so on the row, that the mixer asks for a fixed rate rather than taking the device's (with the
+  switch's other position and the format/channels asserted as never negotiable), and that `autosync.decode` puts
+  `SDL_AUDIODRIVER` back rather than silencing every later sound in the process. The decode control fails on the unfixed code
 - `tests/test_cmd_key.py` -- Cmd as the modifier on a Mac, and the PROPERTY that nothing in `ui/` reads the Ctrl bit
   off an event by hand (parsed, with its own control that the check can fail); five of its twelve fail on the unfixed
   code and the seven that pass are the controls
@@ -6534,7 +6535,8 @@ loads the file itself and builds nothing. So the resampler is a real fault and i
 - **What the app chooses and a standalone player does not is a second rate conversion.** Windows runs its shared mixer at the device's own
   rate, almost always 48000; `pre_init(44100)` makes the OS convert everything the app plays, on top of whatever SDL_mixer already did to the
   file -- so a 48 kHz recording went 48000 → (SDL) 44100 → (Windows) 48000 for nothing. `AUDIO_ALLOW_FREQUENCY_CHANGE` lets SDL open the
-  device at ITS rate and report back what it got, which leaves one conversion, the same one any player does.
+  device at ITS rate and report back what it got, which leaves one conversion, the same one any player does. **Shipped, reported worse by the
+  player, and reverted three days later: see "Two Conversions By A Good Resampler Beat One By A Bad One".**
 - **The format and the channel count stay fixed.** `pygame.sndarray` is what `timestretch._decode` reads, and a device that came back 8-bit or
   mono would change what that means.
 - **`describe()` prints what was asked for beside what was got**, where they differ. The rate is a request now, so a log that printed only the
@@ -8848,6 +8850,39 @@ has already measured what linear interpolation costs on real music (27-43 dB SNR
 the earlier argument for the change -- *"one conversion instead of two"* -- counted the conversions and never asked whether they are the same
 quality. **Two conversions by a good resampler beat one by a bad one.** That is a hypothesis with a mechanism and not a measurement: it has never
 been heard here, and the ear it needs is the player's.
+
+## Two Conversions By A Good Resampler Beat One By A Bad One
+
+*"Jetzt kommt der Output, aber in sehr schlechter Qualitaet (MP3, und MIDI auch einzeln in schlechter Qualitaet mit Rauschen). Sonst Musik
+laufen lassen, ausserhalb der App - gute Qualitaet. Wir hatten vorgestern nicht diese Probleme."*
+
+`ALLOW_RATE_CHANGE` is False again, three days after it went in. The MIDI half of his sentence was the synth's stale rate (the chapter above);
+the MP3 half is this, and it is the decision rather than a bug in it.
+
+**The argument for True counted the conversions and never asked whether they are the same quality.** It is written out in the constant's own
+comment: a 48 kHz recording went `48000 -> (SDL) 44100 -> (OS) 48000` for nothing, so letting SDL open at the device's rate leaves "exactly one
+conversion -- the same one any player does". Both halves of that are true and the conclusion does not follow:
+
+| a 44.1 kHz recording on a 48 kHz device | who converts |
+|---|---|
+| asking for 44100 (before, and now) | **the OS** -- CoreAudio / the Windows mixer, a proper resampler |
+| **accepting 48000** | **SDL_mixer**, linear unless built against libsamplerate, which pygame's bundled copy is not |
+
+And this project has already measured what linear interpolation costs on real music, in its own resampler chapter: **27-43 dB SNR** where a
+windowed sinc reads 88-106, **1.0 dB off 8-12 kHz and 2.2 dB off 12-16** before any aliasing. That is a mix going dull, which is what he
+reported -- days after the change, on the one path where nothing else in the app touches the audio: 100 % speed and the written tuning, where
+`_ensure_mp3_source` builds no copy at all.
+
+- **The timing is evidence and the mechanism is a hypothesis.** Nothing here has been heard on this machine, which has no audio device, and one
+  clean resample is not obviously "wesentlich schlechter". What makes reverting right anyway is that the change was shipped on reasoning that
+  has now been shown incomplete, and the ear belongs to the player.
+- **The negotiation itself stays**, switched off. `describe()` printing the device's real rate beside the asked-for one is what made the
+  question answerable at all, and it is also how the synth's stale-rate bug was found.
+- **The format and the channel count were never negotiable** and still are not: `pygame.sndarray` reads what `_decode` hands the time-stretch,
+  so a device coming back 8-bit or mono would change what that means. Asserted rather than left in a comment.
+- **Measured on his own files when the change went in: 48 kHz through the 44.1 kHz mixer was CLEAN** -- flat to 0.7 dB up to 20 kHz against the
+  file decoded at its own rate. So the thing the change was made to avoid was never audible, and the thing it introduced may be. **The suspect
+  that measures innocent is not an argument for the fix that was shipped instead.**
 
 ## A Position That Does Not Move Is Not A Clock
 

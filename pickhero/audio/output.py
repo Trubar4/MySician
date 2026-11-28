@@ -34,26 +34,33 @@ SIZE = -16
 CHANNELS = 2
 BUFFER = 2048
 
-#: The rate is a REQUEST, not a demand. *"Warum ist die Playback-Qualitaet
-#: des MP3s in der App wesentlich schlechter als mit einem Player?"* -- and
-#: the one thing in this path that the app chooses and a standalone player
-#: does not is a second rate conversion. Windows runs its shared mixer at
-#: the device's own rate, almost always 48000; asking for 44100 makes the
-#: OS convert everything the app plays, on top of whatever SDL_mixer already
-#: did to the file. Three of the player's seven recordings are 48 kHz, so
-#: those went 48000 -> (SDL) 44100 -> (Windows) 48000 for no reason at all.
+#: Whether SDL may open the device at ITS rate rather than the 44100 asked
+#: for above. **False, and it was True for three days.**
 #:
-#: `AUDIO_ALLOW_FREQUENCY_CHANGE` lets SDL open the device at ITS rate and
-#: report back what it got, which leaves exactly one conversion -- the same
-#: one any player does. The format and the channel count are NOT negotiable:
-#: `pygame.sndarray` reads what `_decode` hands the time-stretch, and a
-#: device that came back 8-bit or mono would change what that means.
+#: The argument for True was *"one conversion instead of two"*: Windows and
+#: CoreAudio both run a shared mixer at the device's own rate, almost always
+#: 48000, so asking for 44100 makes the OS convert everything the app plays
+#: on top of whatever SDL_mixer already did to the file.
 #:
-#: **This is the best-founded suspect and not a diagnosis.** It has never
-#: been reproduced here; what makes it worth doing anyway is that it costs
-#: nothing and that `describe()` then prints the device's real rate, so the
-#: next run log answers the question instead of another round of guessing.
-ALLOW_RATE_CHANGE = True
+#: **That counted the conversions and never asked whether they are the same
+#: quality.** With the device opened at 48000, SDL_mixer resamples a 44.1 kHz
+#: recording itself -- and SDL's resampler is linear unless it was built
+#: against libsamplerate, which pygame's bundled copy is not. This project
+#: has measured what linear interpolation costs on real music: 27-43 dB SNR,
+#: 1.0 dB off 8-12 kHz and 2.2 dB off 12-16 before any aliasing (see the
+#: resampler chapter). Asking for 44100 leaves the conversion to the OS,
+#: whose resampler is a proper one. **Two conversions by a good resampler
+#: beat one by a bad one.**
+#:
+#: It fits the report that produced it: *"Jetzt kommt der Output, aber in
+#: sehr schlechter Qualitaet"*, days after this was changed and on a path
+#: (100 % speed, written tuning) where nothing else in the app touches the
+#: audio at all. The ear is the player's and the verdict is his; nothing
+#: here has been heard on this machine, which has no audio device.
+#:
+#: The negotiation itself stays, because `describe()` printing the device's
+#: real rate beside the asked-for one is what made the question answerable.
+ALLOW_RATE_CHANGE = False
 
 
 #: The output the player ASKED for, in SDL's spelling, or "" for the system

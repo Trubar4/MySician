@@ -373,3 +373,47 @@ class TestItIsReallyWiredUp:
         """
         from pickhero import transfer
         assert not any(f.startswith("audio") for f in transfer.song_settings())
+
+
+class TestTheRateIsAskedForAndNotNegotiated:
+    """Two conversions by a good resampler beat one by a bad one.
+
+    *"Jetzt kommt der Output, aber in sehr schlechter Qualitaet."* Letting
+    SDL open at the device's own rate moves the 44.1 -> 48 kHz conversion
+    out of the OS's resampler and into SDL_mixer's, which is linear unless
+    it was built against libsamplerate -- 27-43 dB SNR on real music, where
+    a proper one is 90 to 140.
+    """
+
+    def _asked(self, monkeypatch):
+        import pygame
+        seen = {}
+        monkeypatch.setattr(pygame.mixer, "get_init",
+                            lambda: (44100, -16, 2))
+        monkeypatch.setattr(pygame.mixer, "pre_init", lambda *a, **k: None)
+        monkeypatch.setattr(pygame.mixer, "init",
+                            lambda *a, **k: seen.update(k))
+        output._init("")
+        return seen
+
+    def test_the_device_rate_is_not_accepted(self, monkeypatch):
+        assert output.ALLOW_RATE_CHANGE is False
+        assert self._asked(monkeypatch).get("allowedchanges") == 0
+
+    def test_and_the_switch_still_works(self, monkeypatch):
+        """The negotiation stays, because describe() printing the real rate
+        beside the asked-for one is what made the question answerable."""
+        import pygame
+        monkeypatch.setattr(output, "ALLOW_RATE_CHANGE", True)
+        asked = self._asked(monkeypatch)
+        assert asked.get("allowedchanges") == pygame.AUDIO_ALLOW_FREQUENCY_CHANGE
+
+    def test_the_format_and_the_channels_are_never_negotiable(self, monkeypatch):
+        """`pygame.sndarray` reads what `_decode` hands the time-stretch, so
+        an 8-bit or mono device would change what that means."""
+        import pygame
+        monkeypatch.setattr(output, "ALLOW_RATE_CHANGE", True)
+        asked = self._asked(monkeypatch)
+        allowed = asked.get("allowedchanges", 0)
+        assert not allowed & pygame.AUDIO_ALLOW_FORMAT_CHANGE
+        assert not allowed & pygame.AUDIO_ALLOW_CHANNELS_CHANGE
