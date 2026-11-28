@@ -303,6 +303,157 @@ def describe() -> str:
             f"{buffer_text}")
 
 
+#: How far apart two rates may be and still be the same rate. PortAudio
+#: reports a float and SDL an int, so this is about 48000.0 against 48000
+#: and nothing else -- never a tolerance for a real mismatch, the smallest
+#: of which is 44100 against 48000.
+RATE_SLACK_HZ = 1.0
+
+
+def _name_matches(listed: str, chosen: str) -> bool:
+    """Whether a PortAudio device name is the one SDL was given.
+
+    They are usually the identical string on CoreAudio and usually not on
+    Windows, where the same interface is listed under MME, DirectSound and
+    WASAPI with the host API tacked on. So: the same name, the same name in
+    another case, or one contained in the other -- and nothing cleverer,
+    because a near-miss resolved by guessing is how this check would come to
+    report another device's rate as this one's.
+    """
+    a, b = listed.strip(), chosen.strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    la, lb = a.casefold(), b.casefold()
+    return la == lb or la in lb or lb in la
+
+
+def device_rate() -> tuple[float, str]:
+    """The nominal rate of the OUTPUT device, and why it is not known.
+
+    **This is the one number the run log could not carry, and it cost
+    several sessions.** The player's Scarlett stood at 48 kHz in macOS's
+    Audio MIDI Setup while `describe()` printed `44100 Hz`. Both were true:
+    SDL reports the rate of the stream it opened, and CoreAudio had accepted
+    44100 and was resampling 44.1 -> 48 behind it. Every number in that log
+    was right and the conversion between two of them was invisible -- the
+    same shape as a run log naming the mixer and saying nothing about which
+    device was silent.
+
+    **`ALLOW_RATE_CHANGE` cannot save this and that is why it must be
+    measured instead.** The switch lets SDL open at the DEVICE's rate rather
+    than the one asked for -- but the OS never refuses a rate, it converts,
+    so SDL is granted its 44100 and has no reason to change. Both positions
+    of that switch resample; only the device's own setting does not.
+
+    PortAudio has the number: every device it lists carries
+    `default_samplerate`, which on CoreAudio and on WASAPI is the device's
+    CURRENT nominal rate -- the 48000 nothing could see. `input.py` has been
+    putting it in a `sample_rate` field since the device picker was written
+    and nobody read it back.
+
+    Returns `(rate, "")` where it is known and `(0.0, reason)` where it is
+    not. **Not knowing is an answer and is returned as one**: a blank where
+    a rate belongs reads as agreement, which is exactly the fault being
+    closed here.
+    """
+    try:
+        import sounddevice as sd
+    except Exception as exc:                    # pragma: no cover - no PortAudio
+        return 0.0, f"PortAudio is not available ({type(exc).__name__})"
+    try:
+        listed = [(i, str(dev["name"]), float(dev["default_samplerate"]))
+                  for i, dev in enumerate(sd.query_devices())
+                  if dev["max_output_channels"] > 0]
+    except Exception as exc:
+        return 0.0, (f"PortAudio would not list the devices "
+                     f"({type(exc).__name__})")
+    if not listed:
+        return 0.0, "PortAudio names no output device"
+    # Where the app chose nothing, SDL took the system default and cannot be
+    # asked which that was -- so the honest comparison is against
+    # PortAudio's own idea of the default output, and where those two
+    # disagree this says nothing rather than naming a third device's rate.
+    if not _opened:
+        try:
+            index = sd.default.device[1]
+        except Exception:
+            index = None
+        for i, _name, rate in listed:
+            if i == index:
+                return rate, ""
+        return 0.0, ("the app chose no output, and PortAudio names no "
+                     "default one to compare against")
+    rates = {rate for _, name, rate in listed
+             if _name_matches(name, _opened)}
+    if not rates:
+        return 0.0, (f"PortAudio names no output device matching "
+                     f"{_opened!r}")
+    if len(rates) > 1:
+        # One interface under several host APIs, disagreeing about its own
+        # rate. Picking one would be ranking noise.
+        shown = ", ".join(f"{r:.0f}" for r in sorted(rates))
+        return 0.0, (f"PortAudio lists {_opened!r} at several rates "
+                     f"({shown} Hz) and they disagree")
+    return rates.pop(), ""
+
+
+def stream_rate() -> int:
+    """The rate of the open stream, or 0 where there is none."""
+    import pygame
+    got = pygame.mixer.get_init()
+    return int(got[0]) if got else 0
+
+
+def describe_device_rate() -> str:
+    """The DEVICE's own rate beside the stream's, for the run log.
+
+    Its own line rather than folded into `describe()`, for the reason
+    `describe_devices()` is its own line: a stream rate and a device rate
+    are fixed in two different places, and said as one sentence neither is
+    readable in the status note `Shift+A` writes.
+    """
+    stream = stream_rate()
+    if not stream:
+        return "(not open)"
+    rate, why = device_rate()
+    if not rate:
+        return f"unknown — {why}"
+    if abs(rate - stream) <= RATE_SLACK_HZ:
+        return f"{rate:.0f} Hz, the same as the stream"
+    return (f"{rate:.0f} Hz against the stream's {stream} Hz — the system "
+            f"is resampling every sound")
+
+
+def rate_advice() -> str:
+    """What to do about a device running at another rate, or "".
+
+    Named where the fix is, because *"the device runs at 48000"* without it
+    is half a message to somebody who is not a developer -- the fault
+    `missing()` already shipped once for ffmpeg. Silent where the rates
+    agree and silent where they cannot be compared: a line that fires on
+    "unknown" would send a player to change a setting that is already right.
+    """
+    import sys
+    stream = stream_rate()
+    if not stream:
+        return ""
+    rate, _why = device_rate()
+    if not rate or abs(rate - stream) <= RATE_SLACK_HZ:
+        return ""
+    if sys.platform == "darwin":
+        where = ("Audio MIDI Setup — that device — Format, on the Input "
+                 "and the Output tab both")
+    elif sys.platform.startswith("win"):
+        where = ("Sound settings — that device — Advanced — Default Format")
+    else:
+        where = "your sound server's settings for that device"
+    return (f"The device runs at {rate:.0f} Hz and the app plays at "
+            f"{stream} Hz, so the system resamples everything you hear. "
+            f"Set the device to {stream} Hz in {where}, then Shift+A.")
+
+
 #: How long a click lasts. Short enough to be a point in time rather than a
 #: sound with a shape -- a long click has no single moment to play ON.
 CLICK_MS = 25.0

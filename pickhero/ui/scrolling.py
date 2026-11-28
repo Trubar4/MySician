@@ -8060,6 +8060,13 @@ class PlayingScreen:
         # rules out is the worst case: a device the player is listening
         # through that SDL cannot see at all.
         fh.write(f"output_devices\t{output.describe_devices()}\n")
+        # And the DEVICE's own rate beside the stream's. The two were
+        # the fault that cost several sittings: the player's Scarlett
+        # stood at 48 kHz while `output_device` printed 44100, both
+        # true, and nothing said the OS was converting between them.
+        # Its own line, because a stream rate and a device rate are
+        # fixed in two different places.
+        fh.write(f"output_device_rate\t{output.describe_device_rate()}\n")
         # The OTHER thing in this process that makes sound. A hum that
         # survives Shift+A is not the mixer, and a log naming only the mixer
         # cannot say that.
@@ -10282,6 +10289,17 @@ class PlayingScreen:
                 self._mp3_player.seek(self._mp3_ms(self._playback_ms))
         for player in self._midi_all():
             player.seek(self._backing_ms(self._playback_ms))
+        # The rate the DEVICE runs at, where it is not the one we
+        # play at. This key exists to make the sound sane again and
+        # it cannot: no reopen reaches a conversion the OS is doing
+        # on the other side of the stream, so the one useful thing
+        # it can do is name it. Said FIRST, because it outranks
+        # everything else on this line -- a device at another rate
+        # makes the buffer and the format beside it unreadable.
+        advice = output.rate_advice()
+        if advice:
+            self._say(advice)
+            return
         self._say(f"Audio output reopened — {output.describe()}"
                   + ("; MIDI synth silenced" if had_midi
                      else "; no MIDI output to silence"))

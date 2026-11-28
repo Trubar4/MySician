@@ -8951,6 +8951,66 @@ Three things were inert because of it, and each had shipped with a chapter sayin
   that calls it too late. It fails on the unfixed code; the premise — that `pygame.init()` really does open the mixer — is pinned beside
   it, or a pygame that stopped doing so would leave the new call dead with nothing to say so.
 
+## The Log Said 44100, The Device Said 48000, And Both Were True
+
+*"Audio klingt immer noch schlecht (sowohl MP3 als auch midi)"* -- over three builds, and the run log said this on every one of
+them:
+
+```
+output_device  Scarlett Solo USB, 44100 Hz, 16-bit, 2 ch, 2048 frame buffer (46 ms)
+sample_rate    44100
+```
+
+`describe()` prints `" (asked 44100)"` only where the stream is NOT on the rate that was asked for, so the absence of that
+suffix is a measurement: SDL asked for 44100 and got it. Every number in that log was right. **The Scarlett was running at
+48 kHz**, set in macOS's Audio MIDI Setup, and CoreAudio had accepted 44100 without complaint and was resampling 44.1 -> 48
+behind the stream. The log named one side of a conversion and could not say the conversion existed.
+
+- **`ALLOW_RATE_CHANGE` cannot reach this in either position, which is why that switch was the cause in both of them and in
+  neither.** It lets SDL open at the DEVICE's rate rather than the one asked for -- but an OS never refuses a rate, it
+  converts, so SDL is granted its 44100 and has no reason to change. Flipping it was two days of work on a knob that was
+  never connected to the fault.
+- **The number was already on disk.** `sd.query_devices()` carries `default_samplerate` per device, which on CoreAudio and on
+  WASAPI is the device's CURRENT nominal rate -- the 48000 nothing could see -- and `input.py` has been writing it into a
+  `sample_rate` field since the device picker was built, read by nobody. **A log can carry an answer for weeks without anybody
+  comparing two of its numbers**, which is the same fault as `adjusted_ms - strike_ms` being `audio_offset_ms` in every row of
+  a table for months.
+- **It is its own line** (`output_device_rate`, `Device runs at:` in the doctor), for the reason `describe_devices()` is its
+  own: a stream rate and a device rate are fixed in two different places, and said as one sentence neither is readable in the
+  status note.
+- **`Shift+A` says it FIRST and instead of its usual line.** That key exists to make the sound sane again and here it cannot:
+  no reopen reaches a conversion the OS is doing on the far side of the stream. The one useful thing it can do is name it, and
+  naming it beside "reopened" would read as success.
+- **The fix is named with the fault**, per platform -- Audio MIDI Setup on both the Input and the Output tab, or Windows'
+  Default Format. *"The device runs at 48000"* on its own is half a message to somebody who is not a developer, which is the
+  fault `missing()` already shipped once for ffmpeg.
+- **Not knowing is said as not knowing.** A blank where a rate belongs reads as agreement, which is the fault being closed, so
+  `device_rate()` returns a REASON rather than falling back to silence: PortAudio absent, PortAudio raising, no device matching
+  the chosen name, no default to compare against. And it never advises a change on an unknown -- that would send a player to
+  alter a setting that is already right.
+- **One interface at two rates picks neither.** Windows lists the same device under MME, DirectSound and WASAPI; where those
+  disagree about its rate, choosing one is ranking noise. It names both and abstains.
+- **And it cannot raise**, because it is asked while a run log is being written and the log is what the whole diagnosis
+  depends on.
+
+**What narrowed it was the player's own sentence, and checking it rather than believing it.** *"Wie wir Midi ergaenzt haben,
+hatten wir kein Problem."* The synth shipped on 2026-11-27 in `9cff8f8`; `App.run` had no `ensure_mixer()` before
+`pygame.init()` until `b7f537a` the next day, so the mixer he heard it on was pygame's own:
+
+| | 27.11., sound fine | after 28.11., sound bad |
+|---|---|---|
+| device | **system default** | **Scarlett, chosen with `O`** |
+| buffer | **512 frames** | **2048** |
+| rate / format / channels | 44100 / -16 / 2 | **identical** |
+
+Two variables moved, so neither could be credited -- this file's own rule, for the fourth time -- but both were now one line
+each to test, which is cheaper than the two A/B tests that had been on the table for three builds. The third suspect was the
+device's own rate, and that was the answer.
+
+**The general form, and it is the input device's lesson at the other end of the signal path:** a wrong input device makes every
+other number in a run log unreadable, and so does a device running at another rate than the stream. Both have to be the first
+thing the app is able to say.
+
 ## A Position That Does Not Move Is Not A Clock
 
 *"Beim nur laufen lassen ohne zu spielen springt es immer mal wieder zurueck und geht 2x durch manche Takte."* -- on every song, on the Mac,

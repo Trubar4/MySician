@@ -531,3 +531,213 @@ class TestTheMixerIsTheONEThisModuleOpened:
         monkeypatch.setattr(output, "_wanted", "Focusrite")
         assert not output.ensure_mixer()
         assert output._ours is False
+
+
+class TestTheDeviceRateBesideTheStreamRate:
+    """The one number the run log could not carry.
+
+    The player's Scarlett stood at 48 kHz in macOS's Audio MIDI Setup while
+    `describe()` printed `44100 Hz`. Both were true -- SDL reports the rate
+    of the stream it opened, and CoreAudio had accepted 44100 and was
+    resampling behind it -- and nothing anywhere said a conversion was
+    happening. It cost several sittings, and `ALLOW_RATE_CHANGE` cannot
+    reach it in either position, because the OS never refuses a rate: it
+    converts.
+    """
+
+    @staticmethod
+    def _devices(monkeypatch, entries, default_out=None):
+        """Stand in for PortAudio. `entries` is (name, rate, out_channels)."""
+        import sys
+        import types
+
+        fake = types.ModuleType("sounddevice")
+        fake.query_devices = lambda: [
+            {"name": name, "default_samplerate": rate,
+             "max_output_channels": chans, "max_input_channels": 0}
+            for name, rate, chans in entries]
+        fake.default = types.SimpleNamespace(device=(None, default_out))
+        monkeypatch.setitem(sys.modules, "sounddevice", fake)
+
+    def test_the_rates_agreeing_says_so_and_advises_nothing(self, monkeypatch):
+        self._devices(monkeypatch, [("Scarlett Solo USB", 44100.0, 2)])
+        monkeypatch.setattr(output, "_opened", "Scarlett Solo USB")
+        monkeypatch.setattr(output, "stream_rate", lambda: 44100)
+        assert output.device_rate() == (44100.0, "")
+        assert "the same as the stream" in output.describe_device_rate()
+        # Nothing to do, so nothing is said. A line that fired here would
+        # send a player to change a setting that is already right.
+        assert output.rate_advice() == ""
+
+    def test_the_players_own_fault_is_named_with_both_rates(self, monkeypatch):
+        """48 kHz device, 44100 stream -- said as one sentence with both."""
+        self._devices(monkeypatch, [("Scarlett Solo USB", 48000.0, 2)])
+        monkeypatch.setattr(output, "_opened", "Scarlett Solo USB")
+        monkeypatch.setattr(output, "stream_rate", lambda: 44100)
+        line = output.describe_device_rate()
+        assert "48000" in line and "44100" in line
+        assert "resampling" in line
+
+    def test_and_the_fix_is_named_beside_it(self, monkeypatch):
+        """Naming the fault without the fix is half a message.
+
+        The same rule `missing()` already shipped once for ffmpeg: "ffmpeg
+        was not found" told a player who is not a developer nothing they
+        could act on.
+        """
+        self._devices(monkeypatch, [("Scarlett Solo USB", 48000.0, 2)])
+        monkeypatch.setattr(output, "_opened", "Scarlett Solo USB")
+        monkeypatch.setattr(output, "stream_rate", lambda: 44100)
+        advice = output.rate_advice()
+        assert "44100" in advice and "48000" in advice
+        # It names a place to go, whichever platform this runs on.
+        assert any(word in advice for word in
+                   ("Audio MIDI Setup", "Sound settings", "sound server"))
+
+    def test_a_float_against_an_int_is_the_same_rate(self, monkeypatch):
+        """PortAudio answers 48000.0 and SDL 48000. Not a mismatch."""
+        self._devices(monkeypatch, [("X", 48000.0, 2)])
+        monkeypatch.setattr(output, "_opened", "X")
+        monkeypatch.setattr(output, "stream_rate", lambda: 48000)
+        assert output.rate_advice() == ""
+        assert "the same as the stream" in output.describe_device_rate()
+
+    def test_not_knowing_is_said_rather_than_left_blank(self, monkeypatch):
+        """A blank where a rate belongs reads as agreement.
+
+        Which is the fault being closed, so the one thing this must never do
+        is answer an unknown the way it answers a match.
+        """
+        self._devices(monkeypatch, [("Built-in Output", 44100.0, 2)])
+        monkeypatch.setattr(output, "_opened", "Scarlett Solo USB")
+        monkeypatch.setattr(output, "stream_rate", lambda: 44100)
+        rate, why = output.device_rate()
+        assert rate == 0.0
+        assert "Scarlett Solo USB" in why
+        assert output.describe_device_rate().startswith("unknown")
+        # And it does not advise a change it cannot justify.
+        assert output.rate_advice() == ""
+
+    def test_one_interface_at_two_rates_picks_neither(self, monkeypatch):
+        """Windows lists one device under MME, DirectSound and WASAPI.
+
+        Where those disagree about its rate, choosing one is ranking noise.
+        """
+        self._devices(monkeypatch, [("Scarlett Solo USB", 44100.0, 2),
+                                    ("Scarlett Solo USB", 48000.0, 2)])
+        monkeypatch.setattr(output, "_opened", "Scarlett Solo USB")
+        monkeypatch.setattr(output, "stream_rate", lambda: 44100)
+        rate, why = output.device_rate()
+        assert rate == 0.0
+        assert "44100" in why and "48000" in why
+
+    def test_but_the_same_rate_twice_is_one_answer(self, monkeypatch):
+        """The control. Several host APIs agreeing is not ambiguity."""
+        self._devices(monkeypatch, [("Scarlett Solo USB", 48000.0, 2),
+                                    ("Scarlett Solo USB (WASAPI)", 48000.0, 2)])
+        monkeypatch.setattr(output, "_opened", "Scarlett Solo USB")
+        monkeypatch.setattr(output, "stream_rate", lambda: 44100)
+        assert output.device_rate() == (48000.0, "")
+
+    def test_with_no_output_chosen_portaudios_default_answers(self, monkeypatch):
+        """SDL cannot be asked which device it took for itself."""
+        self._devices(monkeypatch,
+                      [("Built-in Output", 44100.0, 2),
+                       ("Scarlett Solo USB", 48000.0, 2)],
+                      default_out=1)
+        monkeypatch.setattr(output, "_opened", "")
+        monkeypatch.setattr(output, "stream_rate", lambda: 44100)
+        assert output.device_rate() == (48000.0, "")
+
+    def test_and_with_no_default_either_it_says_so(self, monkeypatch):
+        self._devices(monkeypatch, [("Built-in Output", 44100.0, 2)],
+                      default_out=None)
+        monkeypatch.setattr(output, "_opened", "")
+        monkeypatch.setattr(output, "stream_rate", lambda: 44100)
+        rate, why = output.device_rate()
+        assert rate == 0.0
+        assert "no default" in why
+
+    def test_an_input_only_device_is_not_an_output(self, monkeypatch):
+        """A microphone's rate says nothing about what we play through."""
+        import sys
+        import types
+
+        fake = types.ModuleType("sounddevice")
+        fake.query_devices = lambda: [
+            {"name": "Scarlett Solo USB", "default_samplerate": 48000.0,
+             "max_output_channels": 0, "max_input_channels": 2}]
+        fake.default = types.SimpleNamespace(device=(0, None))
+        monkeypatch.setitem(sys.modules, "sounddevice", fake)
+        monkeypatch.setattr(output, "_opened", "Scarlett Solo USB")
+        monkeypatch.setattr(output, "stream_rate", lambda: 44100)
+        rate, why = output.device_rate()
+        assert rate == 0.0
+        assert "no output device" in why or "matching" in why
+
+    def test_portaudio_exploding_is_a_sentence_and_not_a_crash(self,
+                                                               monkeypatch):
+        """This is asked while a run log is being written.
+
+        A check that raises takes the log with it, and the log is the thing
+        the whole diagnosis depends on.
+        """
+        import sys
+        import types
+
+        fake = types.ModuleType("sounddevice")
+
+        def boom():
+            raise RuntimeError("PortAudio said no")
+
+        fake.query_devices = boom
+        fake.default = types.SimpleNamespace(device=(None, None))
+        monkeypatch.setitem(sys.modules, "sounddevice", fake)
+        monkeypatch.setattr(output, "_opened", "Scarlett Solo USB")
+        monkeypatch.setattr(output, "stream_rate", lambda: 44100)
+        rate, why = output.device_rate()
+        assert rate == 0.0 and "RuntimeError" in why
+        assert output.describe_device_rate().startswith("unknown")
+        assert output.rate_advice() == ""
+
+    def test_with_no_mixer_open_there_is_nothing_to_compare(self, monkeypatch):
+        self._devices(monkeypatch, [("X", 48000.0, 2)])
+        monkeypatch.setattr(output, "_opened", "X")
+        monkeypatch.setattr(output, "stream_rate", lambda: 0)
+        assert output.describe_device_rate() == "(not open)"
+        assert output.rate_advice() == ""
+
+
+class TestTheRunLogCarriesTheDeviceRate:
+    """A field nothing writes is a feature that ships doing nothing.
+
+    This project has shipped that four times, so the wiring is asserted
+    through the real run-log writer rather than by reading the source.
+    """
+
+    def test_the_log_names_it_on_its_own_line(self, monkeypatch):
+        import io
+
+        from pickhero.config import Config
+        from pickhero.matcher import NoteMatcher
+        from pickhero.tabs.timeline import NoteEvent, SongMetadata, Timeline
+        from pickhero.ui.scrolling import PlayingScreen
+
+        monkeypatch.setattr(output, "describe_device_rate",
+                            lambda: "48000 Hz against the stream's 44100 Hz")
+        timeline = Timeline(
+            notes=[NoteEvent(timestamp_ms=0.0, midi_note=40, string=6,
+                             fret=0, duration_ms=500.0)],
+            metadata=SongMetadata(title="t", artist="a", tempo=120.0,
+                                  tuning=[40, 45, 50, 55, 59, 64]))
+        screen = PlayingScreen(timeline, config=Config())
+        screen._song_key = "test.gp5"
+        screen._matcher = NoteMatcher(timeline, timing_window_ms=150.0)
+        buffer = io.StringIO()
+        screen._write_run_log(buffer)
+        fields = dict(line.split("\t", 1)
+                      for line in buffer.getvalue().splitlines()
+                      if "\t" in line)
+        assert "48000" in fields["output_device_rate"]
+        # Apart from the stream's own line, because they are two faults.
+        assert "48000" not in fields["output_device"]

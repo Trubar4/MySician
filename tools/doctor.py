@@ -386,7 +386,16 @@ def check_output():
         # listening through is visible to SDL AT ALL, which is the one thing
         # that would make every other number here unreadable.
         lines = [output.describe(),
-                 "SDL sees: %s" % output.describe_devices()]
+                 "SDL sees: %s" % output.describe_devices(),
+                 "Device runs at: %s" % output.describe_device_rate()]
+        # A device at another rate than the stream makes every other
+        # number on this check unreadable -- the player's Scarlett
+        # stood at 48 kHz while the app played at 44100 and nothing
+        # anywhere said so. It is a WARN rather than a FAIL: the
+        # sound still comes out, it is just converted on the way.
+        advice = output.rate_advice()
+        if advice:
+            return tuple([WARN] + lines + [advice])
         if not output.wanted_device():
             lines.append("No output chosen, so this is your computer's own"
                          " default:")
